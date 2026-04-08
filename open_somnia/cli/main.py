@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from open_somnia import __version__
 from open_somnia.cli.prompting import (
     choose_item_interactively,
     prompt_provider_details_interactively,
@@ -31,8 +32,16 @@ def _add_provider_overrides(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="somnia")
-    parser.add_argument("--workspace", default=".", help="Workspace root for the agent.")
     parser.add_argument(
+        "-version",
+        "--version",
+        action="version",
+        version=f"somnia {__version__}",
+        help="Show the installed somnia version and exit.",
+    )
+    parser.add_argument("--workspace", default=".", help="Workspace root for the agent.")
+    session_group = parser.add_mutually_exclusive_group()
+    session_group.add_argument(
         "-r",
         "-resume",
         "--resume",
@@ -40,17 +49,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open the interactive session picker and resume a saved chat.",
     )
+    session_group.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue the latest saved chat in this workspace.",
+    )
     _add_provider_overrides(parser)
     subparsers = parser.add_subparsers(dest="command")
 
     chat_parser = subparsers.add_parser("chat", help="Start interactive chat mode.")
-    chat_parser.add_argument(
+    chat_session_group = chat_parser.add_mutually_exclusive_group()
+    chat_session_group.add_argument(
         "-r",
         "-resume",
         "--resume",
         dest="resume",
         action="store_true",
         help="Open the interactive session picker and resume a saved chat.",
+    )
+    chat_session_group.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue the latest saved chat in this workspace.",
     )
     _add_provider_overrides(chat_parser)
 
@@ -200,7 +224,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.command in {None, "chat"}:
-            return cmd_chat(runtime, resume=getattr(args, "resume", False))
+            return cmd_chat(
+                runtime,
+                resume=getattr(args, "resume", False),
+                continue_session=getattr(args, "continue_session", False),
+            )
         if args.command == "run":
             return cmd_run(runtime, args.prompt)
         if args.command == "tasks" and args.tasks_command == "list":

@@ -157,10 +157,23 @@ def _select_session(runtime: OpenAgentRuntime):
     return runtime.load_session(selected_id), True
 
 
-def cmd_chat(runtime: OpenAgentRuntime, resume: bool = False) -> int:
+def _select_latest_session(runtime: OpenAgentRuntime):
+    choices = _build_session_choices(runtime)
+    if not choices:
+        print("No saved sessions. Starting a new chat.")
+        return runtime.create_session(), False
+    return runtime.load_session(choices[0].session_id), True
+
+
+def cmd_chat(runtime: OpenAgentRuntime, resume: bool = False, continue_session: bool = False) -> int:
     from open_somnia.cli.repl import run_repl
 
-    session, resumed = _select_session(runtime) if resume else (runtime.create_session(), False)
+    if resume:
+        session, resumed = _select_session(runtime)
+    elif continue_session:
+        session, resumed = _select_latest_session(runtime)
+    else:
+        session, resumed = runtime.create_session(), False
     return run_repl(runtime, session, resumed=resumed)
 
 

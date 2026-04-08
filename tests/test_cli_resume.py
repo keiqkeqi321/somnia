@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import io
 import unittest
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_somnia import __version__
 from open_somnia.cli.commands import _build_session_choices, cmd_chat, print_user_message
 from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
 from open_somnia.cli.prompting import PROMPT_BORDER
@@ -13,6 +15,14 @@ from open_somnia.cli.repl import _print_resumed_history
 
 
 class CliResumeTests(unittest.TestCase):
+    def test_parser_supports_single_dash_version_flag(self) -> None:
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            with self.assertRaises(SystemExit) as exited:
+                build_parser().parse_args(["-version"])
+        self.assertEqual(exited.exception.code, 0)
+        self.assertIn(f"somnia {__version__}", stream.getvalue())
+
     def test_parser_defaults_to_chat_mode_without_command(self) -> None:
         args = build_parser().parse_args([])
         self.assertIsNone(args.command)
@@ -21,6 +31,7 @@ class CliResumeTests(unittest.TestCase):
     def test_parser_supports_short_and_single_dash_resume_flags(self) -> None:
         self.assertTrue(build_parser().parse_args(["-r"]).resume)
         self.assertTrue(build_parser().parse_args(["-resume"]).resume)
+        self.assertTrue(build_parser().parse_args(["-c"]).continue_session)
 
     def test_parser_supports_provider_and_model_overrides(self) -> None:
         args = build_parser().parse_args(["--provider", "openai", "--model", "gpt-5", "run", "hello"])
@@ -35,6 +46,13 @@ class CliResumeTests(unittest.TestCase):
 
         self.assertEqual(args.provider, "anthropic")
         self.assertEqual(args.model, "glm-5")
+        self.assertEqual(args.command, "chat")
+
+    def test_parser_supports_continue_after_subcommand(self) -> None:
+        args = build_parser().parse_args(["chat", "-c"])
+
+        self.assertTrue(args.continue_session)
+        self.assertFalse(args.resume)
         self.assertEqual(args.command, "chat")
 
     def test_parser_supports_provider_and_model_for_doctor_subcommand(self) -> None:
@@ -94,7 +112,7 @@ class CliResumeTests(unittest.TestCase):
             api_key="sk-test",
             base_url="https://openrouter.ai/api/v1",
         )
-        mock_chat.assert_called_once_with(runtime, resume=False)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
 
     def test_main_bootstraps_first_provider_when_stale_provider_config_was_cleared(self) -> None:
         settings = SimpleNamespace()
@@ -129,7 +147,7 @@ class CliResumeTests(unittest.TestCase):
             api_key="sk-ant-test",
             base_url="https://api.anthropic.com",
         )
-        mock_chat.assert_called_once_with(runtime, resume=False)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
 
     def test_main_reports_missing_provider_in_noninteractive_mode(self) -> None:
         with patch("open_somnia.cli.main.load_settings", side_effect=NoConfiguredProvidersError("missing")), patch(
@@ -149,6 +167,53 @@ class CliResumeTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(mock_repl.call_args.args[1].id, "new-session")
+        self.assertFalse(mock_repl.call_args.kwargs["resumed"])
+
+    def test_cmd_chat_continue_loads_latest_visible_session(self) -> None:
+        latest = SimpleNamespace(
+            id="latest",
+            updated_at=20.0,
+            created_at=20.0,
+            messages=[
+                {"role": "user", "content": "latest question"},
+                {"role": "assistant", "content": [{"type": "text", "text": "latest answer"}]},
+            ],
+        )
+        older = SimpleNamespace(
+            id="older",
+            updated_at=10.0,
+            created_at=10.0,
+            messages=[
+                {"role": "user", "content": "older question"},
+                {"role": "assistant", "content": [{"type": "text", "text": "older answer"}]},
+            ],
+        )
+        runtime = SimpleNamespace(
+            list_sessions=lambda: [latest, older],
+            load_session=lambda session_id: latest if session_id == "latest" else older,
+            create_session=lambda: SimpleNamespace(id="fresh", messages=[]),
+        )
+
+        with patch("open_somnia.cli.repl.run_repl", return_value=0) as mock_repl:
+            result = cmd_chat(runtime, continue_session=True)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(mock_repl.call_args.args[1].id, "latest")
+        self.assertTrue(mock_repl.call_args.kwargs["resumed"])
+
+    def test_cmd_chat_continue_falls_back_to_new_session_when_none_available(self) -> None:
+        session = SimpleNamespace(id="fresh", messages=[])
+        runtime = SimpleNamespace(
+            list_sessions=lambda: [SimpleNamespace(id="empty", updated_at=1.0, created_at=1.0, messages=[])],
+            load_session=lambda session_id: None,
+            create_session=lambda: session,
+        )
+
+        with patch("open_somnia.cli.repl.run_repl", return_value=0) as mock_repl:
+            result = cmd_chat(runtime, continue_session=True)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(mock_repl.call_args.args[1].id, "fresh")
         self.assertFalse(mock_repl.call_args.kwargs["resumed"])
 
     def test_cmd_chat_resume_loads_selected_session(self) -> None:
