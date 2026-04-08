@@ -2,7 +2,9 @@
 # =============================================================
 #  用法:
 #    powershell -File scripts\release.ps1 0.2.0
+#    powershell -File scripts\release.ps1
 #    powershell -File scripts\release.ps1 0.2.0 -Dry
+#    powershell -File scripts\release.ps1 -Dry
 #
 #  流程 (本地):
 #    1. 检查工作区干净
@@ -18,8 +20,7 @@
 # =============================================================
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Version,
+    [string]$Version = "",
 
     [switch]$Dry
 )
@@ -27,6 +28,84 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
+
+function Parse-SemVer {
+    param([string]$InputVersion)
+    if ($InputVersion -notmatch '^\s*v?(\d+)\.(\d+)\.(\d+)\s*$') {
+        return $null
+    }
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    $patch = [int]$Matches[3]
+    return [PSCustomObject]@{
+        Version = "$major.$minor.$patch"
+        Major   = $major
+        Minor   = $minor
+        Patch   = $patch
+    }
+}
+
+function Compare-SemVer {
+    param(
+        [object]$Left,
+        [object]$Right
+    )
+    if ($Left.Major -ne $Right.Major) { return $Left.Major - $Right.Major }
+    if ($Left.Minor -ne $Right.Minor) { return $Left.Minor - $Right.Minor }
+    return $Left.Patch - $Right.Patch
+}
+
+function Get-LatestSemVer {
+    $candidates = New-Object System.Collections.Generic.List[object]
+
+    if (Test-Path "VERSION") {
+        $parsed = Parse-SemVer ((Get-Content "VERSION" -Raw).Trim())
+        if ($parsed) { $candidates.Add($parsed) }
+    }
+
+    $tags = git tag -l "v*" 2>$null
+    foreach ($tag in @($tags)) {
+        $trimmed = "$tag".Trim()
+        if (-not $trimmed) { continue }
+        $parsed = Parse-SemVer $trimmed
+        if ($parsed) { $candidates.Add($parsed) }
+    }
+
+    if (Test-Path "CHANGELOG.md") {
+        $changelog = Get-Content "CHANGELOG.md" -Raw
+        $matches = [regex]::Matches($changelog, '(?m)^##\s+(\d+\.\d+\.\d+)\b')
+        foreach ($match in $matches) {
+            $parsed = Parse-SemVer $match.Groups[1].Value
+            if ($parsed) { $candidates.Add($parsed) }
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        return $null
+    }
+
+    $latest = $candidates[0]
+    for ($i = 1; $i -lt $candidates.Count; $i++) {
+        if ((Compare-SemVer -Left $candidates[$i] -Right $latest) -gt 0) {
+            $latest = $candidates[$i]
+        }
+    }
+    return $latest
+}
+
+function Get-NextVersion {
+    param([object]$BaseVersion)
+    $major = $BaseVersion.Major
+    $minor = $BaseVersion.Minor
+    $patch = $BaseVersion.Patch
+    if ($patch -ge 9) {
+        $minor += 1
+        $patch = 0
+    } else {
+        $patch += 1
+    }
+    return "$major.$minor.$patch"
+}
 
 Write-Host ""
 Write-Host "🚀 Somnia Release" -ForegroundColor Cyan
@@ -42,12 +121,23 @@ if ($status) {
 Write-Host "✓ 工作区干净" -ForegroundColor Green
 
 # ─── 2. 验证版本号格式 ──────────────────────────────────────
+$currentVersion = (Get-Content "VERSION" -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $latest = Get-LatestSemVer
+    if ($latest) {
+        $Version = Get-NextVersion $latest
+        Write-Host "  未传版本号，自动推断: $($latest.Version) -> $Version" -ForegroundColor Cyan
+    } else {
+        $Version = "0.1.0"
+        Write-Host "  未检测到历史版本，默认使用: $Version" -ForegroundColor Cyan
+    }
+}
+
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     Write-Host "✗ 版本号格式错误: $Version (需要 semver: x.y.z)" -ForegroundColor Red
     exit 1
 }
 
-$currentVersion = (Get-Content "VERSION" -Raw).Trim()
 Write-Host "  当前版本: $currentVersion" -ForegroundColor Yellow
 Write-Host "  目标版本: $Version" -ForegroundColor Green
 Write-Host ""
