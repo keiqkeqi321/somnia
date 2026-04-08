@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import uuid
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any
 
 
@@ -31,10 +32,14 @@ class StdioTransport:
     def start(self) -> None:
         if self.process is not None:
             return
+        process_env: dict[str, str] | None = None
+        if self.env is not None:
+            process_env = dict(os.environ)
+            process_env.update(self.env)
         self.process = subprocess.Popen(
             [self.command, *self.args],
             cwd=self.cwd,
-            env=self.env,
+            env=process_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -103,6 +108,16 @@ class StdioTransport:
         )
         try:
             response = response_queue.get(timeout=self.timeout_seconds)
+        except Empty as exc:
+            process = self.process
+            return_code = process.poll() if process is not None else None
+            stderr_tail = "\n".join(self.stderr_lines[-8:]).strip()
+            details: list[str] = [f"MCP stdio request '{method}' timed out after {self.timeout_seconds}s."]
+            if return_code is not None:
+                details.append(f"Process exited with code {return_code}.")
+            if stderr_tail:
+                details.append(f"stderr:\n{stderr_tail}")
+            raise RuntimeError(" ".join(details)) from exc
         finally:
             self._responses.pop(msg_id, None)
         if "error" in response:
@@ -117,4 +132,28 @@ class StdioTransport:
         process = self.process
         self.process = None
         if process is not None:
-            process.terminate()
+            for stream_name in ("stdin", "stdout", "stderr"):
+                stream = getattr(process, stream_name, None)
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            terminate = getattr(process, "terminate", None)
+            if callable(terminate):
+                try:
+                    terminate()
+                except Exception:
+                    pass
+            wait = getattr(process, "wait", None)
+            if callable(wait):
+                try:
+                    wait(timeout=1)
+                except Exception:
+                    kill = getattr(process, "kill", None)
+                    if callable(kill):
+                        try:
+                            kill()
+                        except Exception:
+                            pass

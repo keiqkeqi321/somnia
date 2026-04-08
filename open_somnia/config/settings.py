@@ -234,10 +234,16 @@ def _resolve_optional_path(root: Path, value: str | None) -> Path | None:
 
 def _build_mcp_server(root: Path, name: str, item: dict) -> MCPServerSettings:
     transport = str(item.get("transport", "http" if item.get("url") else "stdio")).lower()
+    url_value = str(item["url"]).strip() if item.get("url") else ""
+    if transport == "http":
+        resolved_url = url_value or None
+    else:
+        # Avoid stale merged HTTP URL when an override explicitly switches to stdio.
+        resolved_url = None
     return MCPServerSettings(
         name=name,
         transport=transport,
-        url=str(item["url"]) if item.get("url") else None,
+        url=resolved_url,
         command=str(item.get("command", "")),
         args=[str(arg) for arg in item.get("args", [])],
         cwd=_resolve_optional_path(root, item.get("cwd")),

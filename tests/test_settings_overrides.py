@@ -254,6 +254,47 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.runtime.teammate_poll_interval_seconds, 9)
         self.assertEqual(settings.provider_profiles["openai"].models, ["gpt-4.1", "gpt-4.1-mini"])
 
+    def test_load_settings_workspace_stdio_mcp_override_ignores_stale_global_http_url(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_global_config(
+                home,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "global-key"
+
+                [mcp_servers.unityMCP]
+                transport = "http"
+                url = "http://192.168.3.161:8081/mcp"
+                enabled = false
+                """,
+            )
+            self._write_workspace_config(
+                root,
+                """
+                [mcp_servers.unityMCP]
+                transport = "stdio"
+                command = "C:/Users/user/.local/bin/uvx.exe"
+                args = ["--from", "mcpforunityserver==1.0.1-9.alpha", "mcp-for-unity", "--transport", "stdio"]
+                enabled = true
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        unity = next(server for server in settings.mcp_servers if server.name == "unityMCP")
+        self.assertEqual(unity.transport, "stdio")
+        self.assertIsNone(unity.url)
+        self.assertEqual(unity.command, "C:/Users/user/.local/bin/uvx.exe")
+        self.assertTrue(unity.enabled)
+
     def test_persist_provider_selection_updates_openagent_toml_and_roundtrips(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
