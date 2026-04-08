@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.8 (2026-04-08)
+
+- Add -c continue-session flag and refresh release flow docs (86da771)
+
 ## 0.3.7 (2026-04-08)
 
 - Maintenance release.
