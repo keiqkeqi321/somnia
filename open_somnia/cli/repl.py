@@ -766,6 +766,80 @@ def _handle_providers_command(runtime) -> None:
         print(f"Added provider '{submission.provider_name}' in {config_path}.")
 
 
+def _handle_mcp_command(runtime) -> None:
+    registry = getattr(runtime, "mcp_registry", None)
+    if registry is None or not callable(getattr(registry, "server_summaries", None)):
+        print(runtime.mcp_status())
+        return
+    summaries = registry.server_summaries()
+    if not summaries:
+        print("No MCP servers configured.")
+        return
+
+    while True:
+        items = []
+        for summary in summaries:
+            status = summary["status"]
+            suffix = f"tools={summary['tool_count']}" if status == "connected" else (summary["error"] or status)
+            items.append(
+                (
+                    summary["name"],
+                    f"{summary['name']} | {status} | {summary['transport']} | {suffix}",
+                )
+            )
+        selected_server = choose_item_interactively(
+            "MCP Servers",
+            "Choose an MCP server to inspect its registered tools.",
+            items,
+        )
+        if not selected_server:
+            return
+
+        server_summary = next((item for item in summaries if item["name"] == selected_server), None)
+        if server_summary is None:
+            return
+        while True:
+            tool_summaries = registry.tool_summaries(selected_server)
+            subtitle_lines = [
+                f"Server: {selected_server}",
+                f"Status: {server_summary['status']}",
+                f"Transport: {server_summary['transport']}",
+                f"Target: {server_summary['target']}",
+            ]
+            if server_summary["error"]:
+                subtitle_lines.append(f"Error: {server_summary['error']}")
+            subtitle_lines.append("Choose a tool to inspect, or go back.")
+            tool_items = [("__back__", "Back to MCP servers")]
+            tool_items.extend(
+                (
+                    tool["name"],
+                    f"{tool['name']} | {tool['description'] or '(no description)'}",
+                )
+                for tool in tool_summaries
+            )
+            selected_tool = choose_item_interactively(
+                "MCP Tools",
+                "\n".join(subtitle_lines),
+                tool_items,
+            )
+            if not selected_tool or selected_tool == "__back__":
+                break
+
+            tool_summary = next((item for item in tool_summaries if item["name"] == selected_tool), None)
+            if tool_summary is None:
+                continue
+            choose_item_interactively(
+                "MCP Tool Details",
+                (
+                    f"Server: {selected_server}\n"
+                    f"Tool: {tool_summary['name']}\n"
+                    f"Description: {tool_summary['description'] or '(no description)'}\n"
+                    f"Input schema:\n{json.dumps(tool_summary['input_schema'], ensure_ascii=False, indent=2)}"
+                ),
+                [("__back__", "Back to tools list")],
+            )
+
+
 def _handle_undo_command(runtime, session) -> None:
     undo_stack = list(getattr(session, "undo_stack", []) or [])
     if not undo_stack:
@@ -1005,7 +1079,10 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                     print(json.dumps(runtime.bus.read_inbox("lead"), indent=2, ensure_ascii=False))
                     continue
                 if stripped == "/mcp":
-                    print(runtime.mcp_status())
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /mcp]")
+                        continue
+                    _handle_mcp_command(runtime)
                     continue
                 if stripped == "/toollog":
                     print(runtime.recent_tool_logs())

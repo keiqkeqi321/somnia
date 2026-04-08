@@ -27,6 +27,7 @@ class MCPRegistry:
         self.clients: dict[str, MCPClient] = {}
         self.errors: dict[str, str] = {}
         self.server_tools: dict[str, list[str]] = {}
+        self.server_tool_details: dict[str, list[dict[str, Any]]] = {}
 
     def register_tools(self, registry) -> None:
         for server in self.servers:
@@ -35,6 +36,7 @@ class MCPRegistry:
                 tools = client.list_tools()
                 self.clients[server.name] = client
                 self.server_tools[server.name] = [tool["name"] for tool in tools]
+                self.server_tool_details[server.name] = list(tools)
             except Exception as exc:
                 self.errors[server.name] = str(exc)
                 continue
@@ -92,6 +94,44 @@ class MCPRegistry:
             if tools:
                 lines.append(f"  tools: {', '.join(tools)}")
         return "\n".join(lines)
+
+    def server_summaries(self) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for server in self.all_servers:
+            target = server.url or server.command or "(unconfigured)"
+            tools = list(self.server_tool_details.get(server.name, []))
+            if not server.enabled:
+                status = "disabled"
+            elif server.name in self.clients:
+                status = "connected"
+            else:
+                status = "error"
+            summaries.append(
+                {
+                    "name": server.name,
+                    "transport": server.transport,
+                    "target": target,
+                    "enabled": server.enabled,
+                    "status": status,
+                    "error": self.errors.get(server.name, ""),
+                    "tool_count": len(tools),
+                }
+            )
+        return summaries
+
+    def tool_summaries(self, server_name: str) -> list[dict[str, Any]]:
+        tools = self.server_tool_details.get(server_name, [])
+        summaries: list[dict[str, Any]] = []
+        for tool in tools:
+            input_schema = tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+            summaries.append(
+                {
+                    "name": str(tool.get("name", "")),
+                    "description": str(tool.get("description", "")).strip(),
+                    "input_schema": input_schema,
+                }
+            )
+        return summaries
 
     def close(self) -> None:
         for client in self.clients.values():

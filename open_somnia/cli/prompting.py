@@ -34,7 +34,7 @@ COMMAND_SPECS = [
     ("/team", "Show teammate roster and states"),
     ("/teamlog", "Show the full message and tool history for a teammate"),
     ("/inbox", "Read the lead inbox"),
-    ("/mcp", "Show configured MCP servers and tools"),
+    ("/mcp", "Browse configured MCP servers and tools"),
     ("/toollog", "Show recent tool logs or expand one by id"),
     ("/bg", "Show background jobs"),
     ("/help", "Show available REPL commands"),

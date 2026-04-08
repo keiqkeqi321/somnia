@@ -11,6 +11,7 @@ from open_somnia.cli.repl import (
     TurnQueueRunner,
     _expand_skill_command,
     _is_exit_command,
+    _handle_mcp_command,
     _handle_model_command,
     _handle_providers_command,
     _handle_skills_command,
@@ -293,6 +294,39 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertEqual(reloaded, [("openrouter-main", "gpt-4.1-mini")])
         mock_print.assert_called_once()
+
+    def test_mcp_command_uses_interactive_browser_instead_of_printing_status(self) -> None:
+        runtime = SimpleNamespace(
+            mcp_registry=SimpleNamespace(
+                server_summaries=lambda: [
+                    {
+                        "name": "minimal",
+                        "transport": "stdio",
+                        "target": "python",
+                        "status": "connected",
+                        "error": "",
+                        "tool_count": 2,
+                    }
+                ],
+                tool_summaries=lambda server_name: [
+                    {
+                        "name": "echo",
+                        "description": "Echo text",
+                        "input_schema": {"type": "object", "properties": {"message": {"type": "string"}}},
+                    }
+                ],
+            ),
+            mcp_status=lambda: "should not print",
+        )
+
+        with patch(
+            "open_somnia.cli.repl.choose_item_interactively",
+            side_effect=["minimal", "echo", "__back__", "__back__", None],
+        ) as mock_choose, patch("builtins.print") as mock_print:
+            _handle_mcp_command(runtime)
+
+        self.assertEqual(mock_choose.call_count, 5)
+        mock_print.assert_not_called()
 
     def test_request_interrupt_marks_runner_interrupting(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
