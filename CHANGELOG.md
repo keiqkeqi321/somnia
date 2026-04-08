@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 (2026-04-08)
+
+- Maintenance release.
+
 ## 0.3.6 (2026-04-08)
 
 - Infer next release version when version arg is omitted (ecc17c1)
