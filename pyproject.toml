@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "somnia"
+dynamic = ["version"]
+description = "A modular AI agent CLI inspired by the full reference harness."
+readme = {file = "README.md", content-type = "text/markdown"}
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "OpenAgent Team"},
+]
+keywords = ["ai", "agent", "cli", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "anthropic>=0.25.0",
+    "prompt_toolkit>=3.0.43",
+    "tiktoken>=0.8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/openagent"
+Repository = "https://github.com/your-org/openagent"
+Issues = "https://github.com/your-org/openagent/issues"
+
+[project.scripts]
+openagent = "openagent.cli.main:main"
+somnia = "openagent.cli.main:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openagent*"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}

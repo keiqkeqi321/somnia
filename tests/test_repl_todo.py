@@ -1,0 +1,422 @@
+from __future__ import annotations
+
+import time
+import unittest
+from threading import Thread
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from openagent.cli.prompting import PROMPT_BORDER
+from openagent.cli.repl import (
+    TurnQueueRunner,
+    _expand_skill_command,
+    _is_exit_command,
+    _handle_model_command,
+    _handle_skills_command,
+    _handle_undo_command,
+    _resolve_authorization_requests,
+    _resolve_mode_switch_requests,
+)
+from openagent.runtime.compact import ContextWindowUsage
+from openagent.tools.todo import TodoManager
+
+
+def _render_prompt_text(fragments) -> str:
+    return "".join(text for _, text, *rest in fragments)
+
+
+class ReplTodoTests(unittest.TestCase):
+    def test_is_exit_command_requires_explicit_exit_text(self) -> None:
+        self.assertFalse(_is_exit_command(""))
+        self.assertFalse(_is_exit_command("   "))
+        self.assertFalse(_is_exit_command("/compact"))
+        self.assertTrue(_is_exit_command("q"))
+        self.assertTrue(_is_exit_command(" exit "))
+        self.assertTrue(_is_exit_command("/exit"))
+
+    def test_current_model_label_uses_active_provider_and_model(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(runner.current_model_label(), "model: anthropic / glm-5")
+        self.assertIn("accept edits on", runner.execution_mode_label())
+
+    def test_bottom_toolbar_shows_model_and_context_window(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),
+            context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=40_000,
+                max_tokens=200_000,
+                counter_name="tiktoken",
+            ),
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(
+            runner.bottom_toolbar(),
+            [
+                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#64748b", " | "),
+                ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
+            ],
+        )
+
+    def test_context_health_gradient_styles_follow_thresholds(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        cases = [
+            (ContextWindowUsage(used_tokens=40, max_tokens=100), "fg:#22c55e"),
+            (ContextWindowUsage(used_tokens=60, max_tokens=100), "fg:#84cc16"),
+            (ContextWindowUsage(used_tokens=75, max_tokens=100), "fg:#f59e0b"),
+            (ContextWindowUsage(used_tokens=76, max_tokens=100), "fg:#ef4444"),
+        ]
+
+        for usage, expected_style in cases:
+            runner.runtime = SimpleNamespace(context_window_usage=lambda session, usage=usage: usage)
+            self.assertEqual(runner.current_context_style(), expected_style)
+
+    def test_prompt_message_shows_open_todos_before_mode_and_prompt(self) -> None:
+        session = SimpleNamespace(
+            todo_items=[
+                {"content": "Refactor module", "status": "in_progress", "activeForm": "Refactoring module"},
+                {"content": "Add tests", "status": "pending", "activeForm": "Adding tests"},
+                {"content": "Run checks", "status": "completed", "activeForm": "Running checks"},
+            ]
+        )
+        runner = TurnQueueRunner(SimpleNamespace(), session, stable_prompt=True)
+        runner._status = "thinking"
+        runner._thinking_phrase = "Loading genius"
+        runner._status_changed_at = 0.0
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertTrue(rendered.startswith("│ "))
+        self.assertIn(f"\n{PROMPT_BORDER}\n❯ ", rendered)
+        self.assertIn("todo (1/3 completed)", rendered)
+        self.assertIn("accept edits on  (Shift+Tab to cycle)", rendered)
+        self.assertIn("Refactor module <- Refactoring module", rendered)
+        self.assertIn("Add tests", rendered)
+        self.assertIn("Run checks", rendered)
+        self.assertNotIn(f"{PROMPT_BORDER}\n│ Loading genius", rendered)
+        self.assertLess(rendered.index("│ Loading genius"), rendered.index("│ todo (1/3 completed)"))
+        self.assertLess(rendered.index("todo (1/3 completed)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+        self.assertLess(rendered.index("accept edits on  (Shift+Tab to cycle)"), rendered.rindex(PROMPT_BORDER))
+        self.assertLess(rendered.rindex(PROMPT_BORDER), rendered.index("❯ "))
+        self.assertNotIn("model: unknown", rendered)
+
+    def test_prompt_message_hides_todos_when_all_completed(self) -> None:
+        session = SimpleNamespace(
+            todo_items=[
+                {"content": "Refactor module", "status": "completed", "activeForm": "Refactoring module"},
+                {"content": "Add tests", "status": "completed", "activeForm": "Adding tests"},
+            ]
+        )
+        runner = TurnQueueRunner(SimpleNamespace(), session, stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertNotIn("todo (", rendered)
+        self.assertEqual(rendered, f"│ ⏵⏵ accept edits on  (Shift+Tab to cycle)\n{PROMPT_BORDER}\n❯ ")
+
+    def test_prompt_message_shows_compacting_status(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._status = "compacting"
+        runner._status_changed_at = 0.0
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("compacting context", rendered)
+
+    def test_prompt_message_shows_active_teammates_before_mode_and_prompt(self) -> None:
+        runtime = SimpleNamespace(
+            team_manager=SimpleNamespace(
+                active_member_summaries=lambda: [
+                    {
+                        "name": "Analyst",
+                        "role": "algorithm analyst",
+                        "status": "working",
+                        "activity": "running_tool:grep",
+                        "current_tool_name": "grep",
+                        "last_activity_at": 0.0,
+                    }
+                ],
+                _format_member_summary=lambda member: "Analyst (algorithm analyst): working [tool grep] View team logs: /teamlog Analyst",
+            )
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("team (1 active)", rendered)
+        self.assertIn("View team logs: /teamlog Analyst", rendered)
+        self.assertLess(rendered.index("team (1 active)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+
+    def test_prompt_message_omits_cancelled_items_from_visible_todo_block(self) -> None:
+        session = SimpleNamespace(
+            todo_items=[
+                {"content": "Refactor module", "status": "in_progress", "activeForm": "Refactoring module"},
+                {
+                    "content": "Drop old approach",
+                    "status": "cancelled",
+                    "activeForm": "Dropping old approach",
+                    "cancelledReason": "Superseded by the new approach",
+                },
+                {"content": "Run checks", "status": "completed", "activeForm": "Running checks"},
+            ]
+        )
+        runner = TurnQueueRunner(SimpleNamespace(), session, stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("todo (1/2 completed)", rendered)
+        self.assertIn("Refactor module <- Refactoring module", rendered)
+        self.assertIn("Run checks", rendered)
+        self.assertNotIn("Drop old approach", rendered)
+
+    def test_prompt_message_shows_context_window_before_mode(self) -> None:
+        runtime = SimpleNamespace(
+            context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=64_000,
+                max_tokens=200_000,
+                counter_name="anthropic_native",
+            )
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+        context_fragments = [fragment for fragment in runner.prompt_message() if fragment[1] == "ctx: 32.0% (64.0k / 200.0k tokens)"]
+
+        self.assertIn("ctx: 32.0% (64.0k / 200.0k tokens)", rendered)
+        self.assertLess(rendered.index("ctx: 32.0% (64.0k / 200.0k tokens)"), rendered.index("accept edits on"))
+        self.assertEqual(context_fragments, [("fg:#22c55e", "ctx: 32.0% (64.0k / 200.0k tokens)")])
+
+    def test_todo_manager_treats_cancelled_items_as_closed_and_hidden(self) -> None:
+        session = SimpleNamespace(todo_items=[])
+        manager = TodoManager()
+
+        rendered = manager.update(
+            session,
+            [
+                {
+                    "content": "Drop old approach",
+                    "status": "cancelled",
+                    "activeForm": "Dropping old approach",
+                    "cancelledReason": "Superseded by the new approach",
+                }
+            ],
+        )
+
+        self.assertEqual(session.todo_items[0]["status"], "cancelled")
+        self.assertEqual(session.todo_items[0]["cancelledReason"], "Superseded by the new approach")
+        self.assertFalse(manager.has_open_items(session))
+        self.assertEqual(rendered, "No todos.")
+
+    def test_todo_manager_requires_cancelled_reason_for_cancelled_items(self) -> None:
+        session = SimpleNamespace(todo_items=[])
+        manager = TodoManager()
+
+        with self.assertRaisesRegex(ValueError, "cancelledReason required"):
+            manager.update(
+                session,
+                [
+                    {
+                        "content": "Drop old approach",
+                        "status": "cancelled",
+                        "activeForm": "Dropping old approach",
+                    }
+                ],
+            )
+
+    def test_cycle_execution_mode_advances_in_danger_order(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(runner.current_execution_mode().key, "accept_edits")
+        runner.cycle_execution_mode()
+        self.assertEqual(runner.current_execution_mode().key, "yolo")
+        runner.cycle_execution_mode()
+        self.assertEqual(runner.current_execution_mode().key, "shortcuts")
+        runner.cycle_execution_mode()
+        self.assertEqual(runner.current_execution_mode().key, "plan")
+        runner.cycle_execution_mode()
+        self.assertEqual(runner.current_execution_mode().key, "accept_edits")
+        self.assertEqual(runtime.execution_mode, "accept_edits")
+
+    def test_model_command_switches_provider_and_model_from_interactive_choices(self) -> None:
+        runtime = SimpleNamespace(
+            configured_provider_profiles=lambda: {
+                "anthropic": SimpleNamespace(default_model="glm-5", models=["glm-5", "claude-sonnet-4-5"])
+            },
+            switch_provider_model=lambda provider, model: f"switched {provider}:{model}",
+        )
+
+        with patch("openagent.cli.repl.choose_item_interactively", side_effect=["anthropic", "glm-5"]), patch(
+            "builtins.print"
+        ) as mock_print:
+            _handle_model_command(runtime)
+
+        mock_print.assert_called_with("switched anthropic:glm-5")
+
+    def test_request_interrupt_marks_runner_interrupting(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+
+        requested = runner.request_interrupt()
+
+        self.assertTrue(requested)
+        self.assertTrue(runner.should_interrupt())
+        self.assertEqual(runner._status, "interrupting")
+
+    def test_request_interrupt_propagates_to_active_teammates(self) -> None:
+        reasons: list[str] = []
+        runtime = SimpleNamespace(
+            interrupt_active_teammates=lambda reason="lead_interrupt": reasons.append(reason) or 1,
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+
+        requested = runner.request_interrupt()
+
+        self.assertTrue(requested)
+        self.assertEqual(reasons, ["lead_interrupt"])
+
+    def test_compact_task_runs_before_queued_turn(self) -> None:
+        events: list[str] = []
+        runtime = SimpleNamespace(
+            compact_session=lambda session: events.append("compact"),
+            run_turn=lambda session, query, text_callback=None, should_interrupt=None: events.append(f"turn:{query}") or "Done.",
+            print_last_turn_file_summary=lambda session: False,
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner.start()
+
+        runner.enqueue_compact()
+        runner.enqueue("follow-up prompt")
+        runner.close(drain=True)
+
+        self.assertEqual(events, ["compact", "turn:follow-up prompt"])
+
+    def test_expand_skill_command_wraps_loaded_skill_and_user_request(self) -> None:
+        runtime = SimpleNamespace(
+            skill_loader=SimpleNamespace(load=lambda name: f"<skill name=\"{name}\">body</skill>"),
+        )
+
+        expanded = _expand_skill_command(runtime, "/+unity inspect this folder")
+
+        self.assertIn("<skill name=\"unity\">body</skill>", expanded)
+        self.assertIn("The user explicitly requested skill 'unity'.", expanded)
+        self.assertTrue(expanded.endswith("inspect this folder"))
+
+    def test_skills_command_returns_selected_skill_prefix(self) -> None:
+        runtime = SimpleNamespace(
+            skill_loader=SimpleNamespace(
+                list_entries=lambda: [
+                    {
+                        "name": "Review",
+                        "description": "review code",
+                        "path": "D:/skills/Review/SKILL.md",
+                        "scope": "workspace",
+                    }
+                ]
+            )
+        )
+
+        with patch("openagent.cli.repl.choose_item_interactively", return_value="Review"):
+            prefix = _handle_skills_command(runtime)
+
+        self.assertEqual(prefix, "/+Review ")
+
+    def test_skills_command_prints_no_skills_when_empty(self) -> None:
+        runtime = SimpleNamespace(skill_loader=SimpleNamespace(list_entries=lambda: []))
+
+        with patch("builtins.print") as mock_print:
+            prefix = _handle_skills_command(runtime)
+
+        self.assertIsNone(prefix)
+        mock_print.assert_called_once_with("No skills.")
+
+    def test_request_authorization_is_resolved_on_main_thread(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        result: dict[str, dict[str, str]] = {}
+
+        worker = Thread(
+            target=lambda: result.setdefault(
+                "value",
+                runner.request_authorization(
+                    tool_name="bash",
+                    reason="Need to inspect git state",
+                    argument_summary="git status",
+                    execution_mode="accept_edits",
+                ),
+            )
+        )
+        worker.start()
+
+        with patch("openagent.cli.repl.choose_authorization_interactively", return_value="once"):
+            for _ in range(50):
+                if _resolve_authorization_requests(runner):
+                    break
+                time.sleep(0.01)
+
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result["value"]["status"], "approved")
+        self.assertEqual(result["value"]["scope"], "once")
+
+    def test_request_mode_switch_is_resolved_on_main_thread(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        result: dict[str, dict[str, str]] = {}
+
+        worker = Thread(
+            target=lambda: result.setdefault(
+                "value",
+                runner.request_mode_switch(
+                    target_mode="accept_edits",
+                    reason="Plan is complete",
+                    current_mode="plan",
+                ),
+            )
+        )
+        worker.start()
+
+        with patch("openagent.cli.repl.choose_mode_switch_interactively", return_value="switch"):
+            for _ in range(50):
+                if _resolve_mode_switch_requests(runner):
+                    break
+                time.sleep(0.01)
+
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(result["value"]["approved"])
+        self.assertEqual(result["value"]["active_mode"], "accept_edits")
+        self.assertEqual(runtime.execution_mode, "accept_edits")
+
+    def test_undo_command_confirms_before_running(self) -> None:
+        runtime = SimpleNamespace(undo_last_turn=lambda session: "undid last change set")
+        session = SimpleNamespace(undo_stack=[{"turn_id": "turn-1"}])
+
+        with patch("openagent.cli.repl.choose_item_interactively", return_value="confirm"), patch(
+            "builtins.print"
+        ) as mock_print:
+            _handle_undo_command(runtime, session)
+
+        mock_print.assert_called_with("undid last change set")
+
+    def test_undo_command_cancels_by_default_without_action(self) -> None:
+        runtime = SimpleNamespace(undo_last_turn=lambda session: "should not run")
+        session = SimpleNamespace(undo_stack=[{"turn_id": "turn-1"}])
+
+        with patch("openagent.cli.repl.choose_item_interactively", return_value="cancel"), patch(
+            "builtins.print"
+        ) as mock_print:
+            _handle_undo_command(runtime, session)
+
+        mock_print.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

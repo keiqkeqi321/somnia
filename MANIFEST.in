@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include VERSION
+include openagent.toml.example
+recursive-include Docs *.md
+recursive-include scripts *.sh *.ps1 *.json
+global-exclude __pycache__
+global-exclude *.py[cod]

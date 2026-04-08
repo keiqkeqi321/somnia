@@ -1,0 +1,14 @@
+.dockerignore
+.git
+.github
+__pycache__
+*.pyc
+*.egg-info
+dist
+build
+.eggs
+tests
+*.md
+scripts
+npm
+.openagent*

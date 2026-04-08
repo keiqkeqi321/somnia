@@ -1,0 +1,133 @@
+name: Publish to PyPI & npm
+
+on:
+  push:
+    tags:
+      - 'v*'           # 推送 v0.2.0 等 tag 时触发
+  workflow_dispatch:    # 允许手动触发
+
+jobs:
+  # ─── 验证版本号一致性 ───────────────────────────────────────
+  verify-version:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: OpenAgent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check VERSION matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "Tag:    $TAG_VERSION"
+          echo "VERSION:$FILE_VERSION"
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "❌ VERSION file ($FILE_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "✅ 版本号一致: $TAG_VERSION"
+
+  # ─── PyPI 发布 ─────────────────────────────────────────────
+  publish-pypi:
+    runs-on: ubuntu-latest
+    needs: verify-version
+    defaults:
+      run:
+        working-directory: OpenAgent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Check package
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
+
+  # ─── npm 发布（可选，没配 NPM_TOKEN 则跳过）────────────────
+  publish-npm:
+    runs-on: ubuntu-latest
+    needs: verify-version
+    defaults:
+      run:
+        working-directory: OpenAgent/npm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org/
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        continue-on-error: true  # 没配 NPM_TOKEN 时不阻塞后续
+
+  # ─── GitHub Release ────────────────────────────────────────
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [publish-pypi]
+    if: always() && needs.publish-pypi.result == 'success'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Read CHANGELOG
+        id: changelog
+        working-directory: OpenAgent
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CHANGELOG=$(sed -n "/^## $VERSION/,/^## /{ /^## $VERSION/p; /^## [0-9]/d; p; }" CHANGELOG.md | head -50)
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Somnia ${{ steps.version.outputs.tag }}
+          body: |
+            ## 📦 Somnia ${{ steps.version.outputs.tag }}
+
+            ${{ steps.changelog.outputs.content }}
+
+            ---
+
+            **安装:**
+            ```bash
+            pip install somnia
+            pip install --upgrade somnia
+            ```
+
+            **PyPI:** https://pypi.org/project/somnia/${{ steps.version.outputs.version }}/
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'rc') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'alpha') }}
