@@ -6,7 +6,6 @@ import sys
 from open_somnia.cli.prompting import (
     choose_item_interactively,
     prompt_provider_details_interactively,
-    prompt_text_interactively,
 )
 from open_somnia.config.settings import (
     NoConfiguredProvidersError,
@@ -94,17 +93,6 @@ def _default_base_url(provider_type: str) -> str:
     return "https://api.anthropic.com"
 
 
-def _prompt_required_text(title: str, subtitle: str, *, default: str = "", password: bool = False) -> str | None:
-    while True:
-        value = prompt_text_interactively(title, subtitle, default=default, password=password)
-        if value is None:
-            return None
-        normalized = value.strip()
-        if normalized:
-            return normalized
-        print(f"{title} is required.", file=sys.stderr)
-
-
 def _bootstrap_first_provider() -> bool:
     provider_type = choose_item_interactively(
         "First Provider Setup",
@@ -117,26 +105,21 @@ def _bootstrap_first_provider() -> bool:
     if provider_type is None:
         return False
 
-    provider_name = _prompt_required_text(
-        "Provider Name",
-        "Enter the provider profile name.\nExamples: anthropic, openai, openrouter, kimi.",
-        default=provider_type,
-    )
-    if provider_name is None:
-        return False
-
     details = prompt_provider_details_interactively(
-        provider_name=provider_name,
         provider_type=provider_type,
+        default_provider_name=provider_type,
         default_base_url=_default_base_url(provider_type),
     )
     if details is None:
         return False
     while True:
+        provider_name = details["provider_name"].strip()
         base_url = details["base_url"].strip()
         api_key = details["api_key"].strip()
         models = _parse_model_ids(details["models"])
-        if not base_url:
+        if not provider_name:
+            print("Provider Name is required.", file=sys.stderr)
+        elif not base_url:
             print("Base URL is required.", file=sys.stderr)
         elif not api_key:
             print("API Key is required.", file=sys.stderr)
@@ -145,8 +128,8 @@ def _bootstrap_first_provider() -> bool:
         else:
             break
         details = prompt_provider_details_interactively(
-            provider_name=provider_name,
             provider_type=provider_type,
+            default_provider_name=provider_name or provider_type,
             default_base_url=base_url or _default_base_url(provider_type),
         )
         if details is None:

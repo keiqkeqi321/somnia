@@ -70,11 +70,9 @@ class CliResumeTests(unittest.TestCase):
         ), patch(
             "open_somnia.cli.main.choose_item_interactively", side_effect=["openai", "save"]
         ), patch(
-            "open_somnia.cli.main.prompt_text_interactively",
-            side_effect=["openrouter"],
-        ), patch(
             "open_somnia.cli.main.prompt_provider_details_interactively",
             return_value={
+                "provider_name": "openrouter",
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key": "sk-test",
                 "models": "gpt-5, gpt-4.1-mini",
@@ -107,11 +105,9 @@ class CliResumeTests(unittest.TestCase):
         ), patch(
             "open_somnia.cli.main.choose_item_interactively", side_effect=["anthropic", "save"]
         ), patch(
-            "open_somnia.cli.main.prompt_text_interactively",
-            side_effect=["anthropic"],
-        ), patch(
             "open_somnia.cli.main.prompt_provider_details_interactively",
             return_value={
+                "provider_name": "anthropic",
                 "base_url": "https://api.anthropic.com",
                 "api_key": "sk-ant-test",
                 "models": "claude-sonnet-4-5, claude-3-5-haiku-latest",

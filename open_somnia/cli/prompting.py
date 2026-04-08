@@ -11,6 +11,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completion, Completer
+from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
@@ -306,6 +307,14 @@ def create_prompt_session(
             on_cycle_mode()
             return
 
+    @bindings.add("c-c", eager=True)
+    def _handle_ctrl_c(event) -> None:
+        buffer = event.current_buffer
+        if buffer.text:
+            buffer.reset()
+            return
+        event.app.exit(exception=KeyboardInterrupt())
+
     return PromptSession(
         history=FileHistory(str(_history_file(workspace_root))),
         auto_suggest=AutoSuggestFromHistory(),
@@ -396,6 +405,7 @@ def choose_item_interactively(title: str, subtitle: str, items: list[tuple[str, 
             mouse_support=True,
             full_screen=True,
             style=SESSION_PICKER_STYLE,
+            erase_when_done=True,
         )
         return app.run()
     except Exception:
@@ -427,7 +437,7 @@ def prompt_text_interactively(
     password: bool = False,
 ) -> str | None:
     try:
-        return input_dialog(
+        app = input_dialog(
             title=title,
             text=subtitle,
             ok_text="OK (Enter)",
@@ -435,7 +445,9 @@ def prompt_text_interactively(
             style=SESSION_PICKER_STYLE,
             default=default,
             password=password,
-        ).run()
+        )
+        app.erase_when_done = True
+        return app.run()
     except Exception:
         print(title)
         print(subtitle)
@@ -447,18 +459,18 @@ def prompt_text_interactively(
 
 def prompt_provider_details_interactively(
     *,
-    provider_name: str,
     provider_type: str,
+    default_provider_name: str,
     default_base_url: str,
 ) -> dict[str, str] | None:
     title = "Provider Details"
     subtitle = (
-        f"Provider: {provider_name}\n"
         f"Compatibility mode: {provider_type}\n"
         "Models must be comma-separated.\n"
         "Example: gpt-5, gpt-4.1-mini"
     )
     try:
+        provider_name_field = TextArea(text=default_provider_name, multiline=False)
         base_url_field = TextArea(text=default_base_url, multiline=False)
         api_key_field = TextArea(text="", multiline=False, password=True)
         models_field = TextArea(text="", multiline=False)
@@ -466,6 +478,7 @@ def prompt_provider_details_interactively(
         def ok_handler() -> None:
             get_app().exit(
                 result={
+                    "provider_name": provider_name_field.text.strip(),
                     "base_url": base_url_field.text.strip(),
                     "api_key": api_key_field.text.strip(),
                     "models": models_field.text.strip(),
@@ -480,6 +493,8 @@ def prompt_provider_details_interactively(
             body=HSplit(
                 [
                     Label(text=subtitle, style="class:session-picker.subtitle", dont_extend_height=True),
+                    Label(text="Provider Name", dont_extend_height=True),
+                    provider_name_field,
                     Label(text="Base URL", dont_extend_height=True),
                     base_url_field,
                     Label(text="API Key", dont_extend_height=True),
@@ -487,7 +502,7 @@ def prompt_provider_details_interactively(
                     Label(text="Models (comma-separated)", dont_extend_height=True),
                     models_field,
                     Label(
-                        text="Switch focus: Tab | Save after moving to buttons with Tab | Cancel: Esc",
+                        text="Switch focus: Tab/Shift+Tab or Up/Down | Enter: next field, then trigger focused button | Cancel: Esc",
                         style="class:session-picker.help",
                         dont_extend_height=True,
                     ),
@@ -504,6 +519,19 @@ def prompt_provider_details_interactively(
         bindings = KeyBindings()
         bindings.add("tab")(focus_next)
         bindings.add("s-tab")(focus_previous)
+        bindings.add("down")(focus_next)
+        bindings.add("up")(focus_previous)
+
+        @bindings.add(
+            "enter",
+            filter=has_focus(provider_name_field.buffer)
+            | has_focus(base_url_field.buffer)
+            | has_focus(api_key_field.buffer)
+            | has_focus(models_field.buffer),
+            eager=True,
+        )
+        def _move_focus_forward_on_enter(event) -> None:
+            focus_next(event)
 
         @bindings.add("escape", eager=True)
         def _cancel(event) -> None:
@@ -515,11 +543,15 @@ def prompt_provider_details_interactively(
             mouse_support=True,
             full_screen=True,
             style=SESSION_PICKER_STYLE,
+            erase_when_done=True,
         )
         return app.run()
     except Exception:
         print(title)
         print(subtitle)
+        provider_name = input("Provider Name (blank to cancel): ").strip()
+        if not provider_name:
+            return None
         base_url = input("Base URL (blank to cancel): ").strip()
         if not base_url:
             return None
@@ -530,6 +562,7 @@ def prompt_provider_details_interactively(
         if not models:
             return None
         return {
+            "provider_name": provider_name,
             "base_url": base_url,
             "api_key": api_key,
             "models": models,
