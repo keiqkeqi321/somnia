@@ -6,8 +6,8 @@ from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openagent.cli.prompting import PROMPT_BORDER
-from openagent.cli.repl import (
+from open_somnia.cli.prompting import PROMPT_BORDER
+from open_somnia.cli.repl import (
     TurnQueueRunner,
     _expand_skill_command,
     _is_exit_command,
@@ -17,8 +17,8 @@ from openagent.cli.repl import (
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
 )
-from openagent.runtime.compact import ContextWindowUsage
-from openagent.tools.todo import TodoManager
+from open_somnia.runtime.compact import ContextWindowUsage
+from open_somnia.tools.todo import TodoManager
 
 
 def _render_prompt_text(fragments) -> str:
@@ -250,7 +250,7 @@ class ReplTodoTests(unittest.TestCase):
             switch_provider_model=lambda provider, model: f"switched {provider}:{model}",
         )
 
-        with patch("openagent.cli.repl.choose_item_interactively", side_effect=["anthropic", "glm-5"]), patch(
+        with patch("open_somnia.cli.repl.choose_item_interactively", side_effect=["anthropic", "glm-5"]), patch(
             "builtins.print"
         ) as mock_print:
             _handle_model_command(runtime)
@@ -321,7 +321,7 @@ class ReplTodoTests(unittest.TestCase):
             )
         )
 
-        with patch("openagent.cli.repl.choose_item_interactively", return_value="Review"):
+        with patch("open_somnia.cli.repl.choose_item_interactively", return_value="Review"):
             prefix = _handle_skills_command(runtime)
 
         self.assertEqual(prefix, "/+Review ")
@@ -353,7 +353,7 @@ class ReplTodoTests(unittest.TestCase):
         )
         worker.start()
 
-        with patch("openagent.cli.repl.choose_authorization_interactively", return_value="once"):
+        with patch("open_somnia.cli.repl.choose_authorization_interactively", return_value="once"):
             for _ in range(50):
                 if _resolve_authorization_requests(runner):
                     break
@@ -382,7 +382,7 @@ class ReplTodoTests(unittest.TestCase):
         )
         worker.start()
 
-        with patch("openagent.cli.repl.choose_mode_switch_interactively", return_value="switch"):
+        with patch("open_somnia.cli.repl.choose_mode_switch_interactively", return_value="switch"):
             for _ in range(50):
                 if _resolve_mode_switch_requests(runner):
                     break
@@ -399,7 +399,7 @@ class ReplTodoTests(unittest.TestCase):
         runtime = SimpleNamespace(undo_last_turn=lambda session: "undid last change set")
         session = SimpleNamespace(undo_stack=[{"turn_id": "turn-1"}])
 
-        with patch("openagent.cli.repl.choose_item_interactively", return_value="confirm"), patch(
+        with patch("open_somnia.cli.repl.choose_item_interactively", return_value="confirm"), patch(
             "builtins.print"
         ) as mock_print:
             _handle_undo_command(runtime, session)
@@ -410,7 +410,7 @@ class ReplTodoTests(unittest.TestCase):
         runtime = SimpleNamespace(undo_last_turn=lambda session: "should not run")
         session = SimpleNamespace(undo_stack=[{"turn_id": "turn-1"}])
 
-        with patch("openagent.cli.repl.choose_item_interactively", return_value="cancel"), patch(
+        with patch("open_somnia.cli.repl.choose_item_interactively", return_value="cancel"), patch(
             "builtins.print"
         ) as mock_print:
             _handle_undo_command(runtime, session)

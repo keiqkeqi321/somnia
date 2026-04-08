@@ -1,6 +1,6 @@
 "use strict";
-// openagent npm wrapper — see ./bin/openagent.js for the CLI entry point
+// somnia npm wrapper — see ./bin/somnia.js for the CLI entry point
 module.exports = {
-  name: "openagent",
+  name: "somnia",
   version: require("./package.json").version,
 };

@@ -4,10 +4,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openagent.cli.commands import _build_session_choices, cmd_chat, print_user_message
-from openagent.cli.main import build_parser
-from openagent.cli.prompting import PROMPT_BORDER
-from openagent.cli.repl import _print_resumed_history
+from open_somnia.cli.commands import _build_session_choices, cmd_chat, print_user_message
+from open_somnia.cli.main import build_parser
+from open_somnia.cli.prompting import PROMPT_BORDER
+from open_somnia.cli.repl import _print_resumed_history
 
 
 class CliResumeTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class CliResumeTests(unittest.TestCase):
             create_session=lambda: SimpleNamespace(id="new-session", messages=[]),
         )
 
-        with patch("openagent.cli.repl.run_repl", return_value=0) as mock_repl:
+        with patch("open_somnia.cli.repl.run_repl", return_value=0) as mock_repl:
             result = cmd_chat(runtime, resume=False)
 
         self.assertEqual(result, 0)
@@ -76,8 +76,8 @@ class CliResumeTests(unittest.TestCase):
             create_session=lambda: SimpleNamespace(id="fresh", messages=[]),
         )
 
-        with patch("openagent.cli.commands.choose_session_interactively", return_value="session-1"), patch(
-            "openagent.cli.repl.run_repl", return_value=0
+        with patch("open_somnia.cli.commands.choose_session_interactively", return_value="session-1"), patch(
+            "open_somnia.cli.repl.run_repl", return_value=0
         ) as mock_repl:
             result = cmd_chat(runtime, resume=True)
 
@@ -93,8 +93,8 @@ class CliResumeTests(unittest.TestCase):
             create_session=lambda: session,
         )
 
-        with patch("openagent.cli.commands.choose_session_interactively", return_value=None), patch(
-            "openagent.cli.repl.run_repl", return_value=0
+        with patch("open_somnia.cli.commands.choose_session_interactively", return_value=None), patch(
+            "open_somnia.cli.repl.run_repl", return_value=0
         ) as mock_repl:
             result = cmd_chat(runtime, resume=True)
 

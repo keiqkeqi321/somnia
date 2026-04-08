@@ -5,8 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openagent.cli.commands import ConsoleStreamer, _build_session_choices
-from openagent.runtime.messages import render_markdown_text
+from open_somnia.cli.commands import ConsoleStreamer, _build_session_choices
+from open_somnia.runtime.messages import render_markdown_text
 
 
 class MarkdownRenderingTests(unittest.TestCase):

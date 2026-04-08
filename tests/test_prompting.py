@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from prompt_toolkit.document import Document
 
-from openagent.cli.prompting import OpenAgentCompleter, _handle_tab_action
+from open_somnia.cli.prompting import OpenAgentCompleter, _handle_tab_action
 
 
 class PromptingTests(unittest.TestCase):

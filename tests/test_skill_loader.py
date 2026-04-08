@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openagent.skills.loader import SkillLoader
+from open_somnia.skills.loader import SkillLoader
 
 
 class SkillLoaderTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class SkillLoaderTests(unittest.TestCase):
     def test_render_listing_includes_scope_and_usage_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            skills_dir = root / ".openagent" / "skills"
+            skills_dir = root / ".open_somnia" / "skills"
             (skills_dir / "Review").mkdir(parents=True)
             (skills_dir / "Review" / "Skill.MD").write_text(
                 "---\ndescription: review code\n---\nbody\n",

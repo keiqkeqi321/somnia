@@ -107,7 +107,7 @@ tests
 *.md
 scripts
 npm
-.openagent*
+.open_somnia*
 ```
 
 减小镜像体积，只打包运行所需文件。

@@ -1,4 +1,6 @@
+.open_somnia/
 .openagent/
+.tmp-tests/
 .venv/
 venv/
 env/

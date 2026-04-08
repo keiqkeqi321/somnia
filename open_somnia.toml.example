@@ -1,0 +1,65 @@
+[agent]
+name = "Somnia"
+# system_prompt = """
+# You are Somnia, a top-rated AI assistant.
+# You are exceptionally strong at coding tasks, implementation, debugging, and complex reasoning.
+# Be precise, pragmatic, and direct. Prefer concrete actions over vague advice.
+# """
+
+[providers]
+default = "anthropic"
+
+[providers.anthropic]
+models = ["claude-sonnet-4-5", "claude-3-5-haiku-latest"]
+default_model = "claude-sonnet-4-5"
+api_key = "replace-with-your-anthropic-key"
+# base_url = "https://api.anthropic.com"
+# max_tokens = 8000
+
+[providers.openai]
+models = ["gpt-4.1", "gpt-4.1-mini"]
+default_model = "gpt-4.1"
+api_key = "replace-with-your-openai-key"
+# base_url = "https://api.openai.com/v1"
+# organization = "org_xxx"
+# max_tokens = 8000
+
+[model_traits."claude-sonnet-4-5"]
+cwt = 200000
+
+[model_traits."claude-3-5-haiku-latest"]
+cwt = 200000
+
+[model_traits."gpt-4.1"]
+cwt = 1047576
+
+[model_traits."gpt-4.1-mini"]
+cwt = 1047576
+
+# Provider-specific override when the same model id behaves differently.
+#[model_traits.openrouter."gpt-4.1"]
+#cwt = 262144
+
+[runtime]
+token_threshold = 100000
+command_timeout_seconds = 120
+background_poll_interval_seconds = 2
+teammate_idle_timeout_seconds = 60
+teammate_poll_interval_seconds = 5
+
+[[mcp_servers]]
+name = "filesystem"
+transport = "stdio"
+command = "python"
+args = ["server.py"]
+cwd = "D:/tools/mcp-filesystem"
+enabled = false
+timeout_seconds = 30
+protocol_version = "2025-11-25"
+
+[mcp_servers.unityMCP]
+transport = "http"
+url = "http://127.0.0.1:8081/mcp"
+http_headers = { "X-API-Key" = "replace-me", "Accept" = "text/event-stream" }
+startup_timeout_sec = 20
+enabled = false

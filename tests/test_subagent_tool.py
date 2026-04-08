@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openagent.config.models import AgentSettings, AppSettings, ProviderSettings, RuntimeSettings, StorageSettings
-from openagent.runtime.agent import OpenAgentRuntime
-from openagent.runtime.messages import AssistantTurn, ToolCall
-from openagent.tools.registry import ToolRegistry
-from openagent.tools.subagent import register_subagent_tool
+from open_somnia.config.models import AgentSettings, AppSettings, ProviderSettings, RuntimeSettings, StorageSettings
+from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.tools.registry import ToolRegistry
+from open_somnia.tools.subagent import register_subagent_tool
 
 
 class SubagentToolTests(unittest.TestCase):
@@ -80,7 +80,7 @@ class SubagentToolTests(unittest.TestCase):
             self.assertEqual(result, "Done.")
 
     def _make_settings(self, root: Path) -> AppSettings:
-        data_dir = root / ".openagent"
+        data_dir = root / ".open_somnia"
         transcripts_dir = data_dir / "transcripts"
         sessions_dir = data_dir / "sessions"
         tasks_dir = data_dir / "tasks"

@@ -9,14 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from openagent.collaboration.bus import MessageBus
-from openagent.collaboration.protocols import RequestTracker
-from openagent.runtime.messages import AssistantTurn, ToolCall
-from openagent.runtime.teammate import TeammateRuntimeManager
-from openagent.storage.inbox import InboxStore
-from openagent.storage.tasks import TaskStore
-from openagent.storage.team import TeamStore
-from openagent.tools.registry import ToolDefinition
+from open_somnia.collaboration.bus import MessageBus
+from open_somnia.collaboration.protocols import RequestTracker
+from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.runtime.teammate import TeammateRuntimeManager
+from open_somnia.storage.inbox import InboxStore
+from open_somnia.storage.tasks import TaskStore
+from open_somnia.storage.team import TeamStore
+from open_somnia.tools.registry import ToolDefinition
 
 
 def write_text(path: Path, content: str) -> None:

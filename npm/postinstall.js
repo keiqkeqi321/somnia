@@ -31,9 +31,9 @@ if (!pythonCmd) {
   process.exit(0);
 }
 
-// Check if somnia is already installed
+// Check if the Python package is already installed
 try {
-  execSync(`${pythonCmd} -c "import openagent"`, { stdio: "pipe" });
+  execSync(`${pythonCmd} -c "import open_somnia"`, { stdio: "pipe" });
   console.log("✅ somnia Python package is already installed.");
 } catch (_) {
   console.log("📦 Installing somnia Python package via pip ...");

@@ -10,13 +10,13 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openagent.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
-from openagent.providers.base import ProviderError
-from openagent.providers.openai_provider import OpenAIProvider
-from openagent.runtime.agent import OpenAgentRuntime, TurnInterrupted
-from openagent.runtime.compact import ContextWindowUsage
-from openagent.runtime.messages import AssistantTurn, ToolCall
-from openagent.runtime.session import AgentSession
+from open_somnia.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
+from open_somnia.providers.base import ProviderError
+from open_somnia.providers.openai_provider import OpenAIProvider
+from open_somnia.runtime.agent import OpenAgentRuntime, TurnInterrupted
+from open_somnia.runtime.compact import ContextWindowUsage
+from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.runtime.session import AgentSession
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
@@ -65,11 +65,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 runtime,
                 "lead",
                 "edit_file",
-                {"path": "openagent/config/settings.py", "old_text": "a\n", "new_text": "a\nb\n"},
+                {"path": "open_somnia/config/settings.py", "old_text": "a\n", "new_text": "a\nb\n"},
                 {
                     "status": "ok",
-                    "path": "openagent/config/settings.py",
-                    "absolute_path": "D:/workspace/openagent/config/settings.py",
+                    "path": "open_somnia/config/settings.py",
+                    "absolute_path": "D:/workspace/open_somnia/config/settings.py",
                     "added_lines": 1,
                     "removed_lines": 0,
                 },
@@ -77,7 +77,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         rendered = fake_stdout.getvalue()
         self.assertEqual(log_id, "edit-log")
-        self.assertIn("Update(openagent/config/settings.py)", rendered)
+        self.assertIn("Update(open_somnia/config/settings.py)", rendered)
         self.assertIn("Added 1 lines", rendered)
         self.assertIn("@@ -1 +1,2 @@", rendered)
         self.assertIn("+b", rendered)
@@ -138,7 +138,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(
             write=lambda **kwargs: {"id": "bash-long"},
-            root=Path("D:/workspace/.openagent/logs/tool_logs"),
+            root=Path("D:/workspace/.open_somnia/logs/tool_logs"),
         )
         runtime._supports_ansi_output = lambda: False
         runtime.settings = SimpleNamespace(workspace_root=Path("D:/workspace"))
@@ -428,7 +428,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
     def test_workspace_authorization_is_persisted_under_openagent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir) / ".openagent"
+            data_dir = Path(tmpdir) / ".open_somnia"
             runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
             runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
             runtime.execution_mode = "plan"
@@ -544,11 +544,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
             "model": provider_settings.model,
         }
 
-        with patch("openagent.runtime.agent.persist_provider_selection") as mock_persist:
+        with patch("open_somnia.runtime.agent.persist_provider_selection") as mock_persist:
             message = OpenAgentRuntime.switch_provider_model(runtime, "openai", "gpt-4.1-mini")
 
         self.assertIn("gpt-4.1-mini", message)
-        self.assertIn("saved it to .openagent/openagent.toml", message)
+        self.assertIn("saved it to .open_somnia/open_somnia.toml", message)
         self.assertEqual(runtime.settings.provider.name, "openai")
         self.assertEqual(runtime.settings.provider.provider_type, "openai")
         self.assertEqual(runtime.settings.provider.model, "gpt-4.1-mini")
@@ -624,8 +624,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_instantiate_provider_uses_provider_type_instead_of_profile_name(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
 
-        with patch("openagent.runtime.agent.OpenAIProvider", return_value="openai-adapter") as mock_openai, patch(
-            "openagent.runtime.agent.AnthropicProvider", return_value="anthropic-adapter"
+        with patch("open_somnia.runtime.agent.OpenAIProvider", return_value="openai-adapter") as mock_openai, patch(
+            "open_somnia.runtime.agent.AnthropicProvider", return_value="anthropic-adapter"
         ) as mock_anthropic:
             provider = OpenAgentRuntime._instantiate_provider(
                 runtime,
@@ -744,7 +744,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             ],
         )
 
-        with patch("openagent.runtime.agent.atomic_write_text", return_value=None) as mock_write:
+        with patch("open_somnia.runtime.agent.atomic_write_text", return_value=None) as mock_write:
             message = OpenAgentRuntime.undo_last_turn(runtime, session)
 
         self.assertIn("Undid 1 file change", message)

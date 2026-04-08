@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openagent.config.settings import load_settings, persist_provider_selection
+from open_somnia.config.settings import load_settings, persist_provider_selection
 
 
 class SettingsOverrideTests(unittest.TestCase):
@@ -221,7 +221,7 @@ class SettingsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
-            config_path = root / ".openagent" / "openagent.toml"
+            config_path = root / ".open_somnia" / "open_somnia.toml"
             self._write_workspace_config(
                 root,
                 """
@@ -249,18 +249,18 @@ class SettingsOverrideTests(unittest.TestCase):
                 self.assertTrue(config_path.exists())
 
     def _write_workspace_config(self, root: Path, content: str) -> None:
-        config_path = root / ".openagent" / "openagent.toml"
+        config_path = root / ".open_somnia" / "open_somnia.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
 
     def _write_global_config(self, home: Path, content: str) -> None:
-        config_path = home / ".openagent" / "openagent.toml"
+        config_path = home / ".open_somnia" / "open_somnia.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
 
     def _patched_home(self, home: Path):
         home.mkdir(parents=True, exist_ok=True)
-        return patch("openagent.config.settings.Path.home", return_value=home)
+        return patch("open_somnia.config.settings.Path.home", return_value=home)
 
 
 if __name__ == "__main__":

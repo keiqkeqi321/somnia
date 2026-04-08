@@ -89,7 +89,7 @@ def repo_root() -> Path:
 
 
 def default_config_source() -> Path | None:
-    candidate = repo_root().parent / ".openagent" / "openagent.toml"
+    candidate = repo_root().parent / ".open_somnia" / "open_somnia.toml"
     return candidate if candidate.exists() else None
 
 
@@ -127,7 +127,7 @@ def reset_workspace(path: Path) -> None:
         shutil.rmtree(path)
     (path / "inputs").mkdir(parents=True, exist_ok=True)
     (path / "artifacts").mkdir(parents=True, exist_ok=True)
-    (path / ".openagent").mkdir(parents=True, exist_ok=True)
+    (path / ".open_somnia").mkdir(parents=True, exist_ok=True)
     write_text(path / "inputs" / "alpha.md", ALPHA_INPUT)
     write_text(path / "inputs" / "beta.md", BETA_INPUT)
     write_text(path / "inputs" / "constraints.md", CONSTRAINTS_INPUT)
@@ -135,9 +135,9 @@ def reset_workspace(path: Path) -> None:
 
 def configure_workspace(path: Path, config_source: Path | None) -> None:
     permissions = {"authorized_tools": ["bash", "background_run", "submit_plan"]}
-    write_text(path / ".openagent" / "permissions.json", json.dumps(permissions, ensure_ascii=False, indent=2))
+    write_text(path / ".open_somnia" / "permissions.json", json.dumps(permissions, ensure_ascii=False, indent=2))
     if config_source is not None:
-        shutil.copyfile(config_source, path / ".openagent" / "openagent.toml")
+        shutil.copyfile(config_source, path / ".open_somnia" / "open_somnia.toml")
     else:
         fallback = "\n".join(
             [
@@ -151,7 +151,7 @@ def configure_workspace(path: Path, config_source: Path | None) -> None:
                 "",
             ]
         )
-        write_text(path / ".openagent" / "openagent.toml", fallback)
+        write_text(path / ".open_somnia" / "open_somnia.toml", fallback)
 
 
 def run_openagent(
@@ -160,7 +160,7 @@ def run_openagent(
     timeout: int,
     stdout_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    cmd = [sys.executable, "-m", "openagent.cli.main", "--workspace", str(workspace), *args]
+    cmd = [sys.executable, "-m", "open_somnia.cli.main", "--workspace", str(workspace), *args]
     env = dict(**__import__("os").environ)
     env["PYTHONIOENCODING"] = "utf-8"
     try:
@@ -195,7 +195,7 @@ def wait_for(label: str, predicate, timeout: int, interval: float = 2.0) -> Any:
 
 
 def task_path(workspace: Path, task_id: int) -> Path:
-    return workspace / ".openagent" / "tasks" / f"task_{task_id}.json"
+    return workspace / ".open_somnia" / "tasks" / f"task_{task_id}.json"
 
 
 def task_data(workspace: Path, task_id: int) -> dict[str, Any]:
@@ -203,7 +203,7 @@ def task_data(workspace: Path, task_id: int) -> dict[str, Any]:
 
 
 def team_data(workspace: Path) -> dict[str, Any]:
-    return read_json(workspace / ".openagent" / "team" / "team.json", {"members": []}) or {"members": []}
+    return read_json(workspace / ".open_somnia" / "team" / "team.json", {"members": []}) or {"members": []}
 
 
 def team_member(workspace: Path, name: str) -> dict[str, Any] | None:
@@ -214,7 +214,7 @@ def team_member(workspace: Path, name: str) -> dict[str, Any] | None:
 
 
 def tool_index(workspace: Path) -> list[dict[str, Any]]:
-    return read_jsonl(workspace / ".openagent" / "logs" / "tool_logs" / "index.jsonl")
+    return read_jsonl(workspace / ".open_somnia" / "logs" / "tool_logs" / "index.jsonl")
 
 
 def tool_seen(workspace: Path, actor: str | None, tool_name: str) -> bool:
@@ -274,7 +274,7 @@ def main() -> int:
     parser.add_argument(
         "--config-source",
         default=str(default_config_source()) if default_config_source() else "",
-        help="Optional source openagent.toml to copy into the test workspace.",
+        help="Optional source open_somnia.toml to copy into the test workspace.",
     )
     parser.add_argument("--run-timeout", type=int, default=150, help="Timeout in seconds for each openagent run.")
     parser.add_argument("--wait-timeout", type=int, default=45, help="Timeout in seconds for post-run polling checks.")
@@ -312,7 +312,7 @@ def main() -> int:
         stdout_path=main_workspace / "artifacts" / "phase1_stdout.txt",
     )
     task4 = task_data(main_workspace, 4)
-    jobs = read_json(main_workspace / ".openagent" / "jobs" / "jobs.json", {}) or {}
+    jobs = read_json(main_workspace / ".open_somnia" / "jobs" / "jobs.json", {}) or {}
     append_check(
         checks,
         "task_board_created",
@@ -342,7 +342,7 @@ def main() -> int:
     )
     planner_plan = wait_for(
         "planner_plan_request",
-        lambda: read_json(main_workspace / ".openagent" / "requests" / "plan_requests.json", {}),
+        lambda: read_json(main_workspace / ".open_somnia" / "requests" / "plan_requests.json", {}),
         timeout=args.wait_timeout,
     )
     append_check(
@@ -372,7 +372,7 @@ def main() -> int:
     approved_plan = wait_for(
         "approved_plan",
         lambda: (
-            read_json(main_workspace / ".openagent" / "requests" / "plan_requests.json", {})
+            read_json(main_workspace / ".open_somnia" / "requests" / "plan_requests.json", {})
             or {}
         ),
         timeout=args.wait_timeout,
@@ -432,7 +432,7 @@ def main() -> int:
         and tool_seen(main_workspace, "Writer", "idle")
         and (
             tool_seen(main_workspace, "Writer", "claim_task")
-            or log_contains(main_workspace / ".openagent" / "team" / "logs" / "Writer.jsonl", '"source": "auto_claimed"')
+            or log_contains(main_workspace / ".open_somnia" / "team" / "logs" / "Writer.jsonl", '"source": "auto_claimed"')
         ),
         f"writer_claimed={bool(writer_claimed)}, task_2.owner={task_data(main_workspace, 2).get('owner')}, writer_claim_tool_seen={tool_seen(main_workspace, 'Writer', 'claim_task')}",
     )
@@ -481,7 +481,7 @@ def main() -> int:
         timeout=args.run_timeout,
         stdout_path=shutdown_workspace / "artifacts" / "shutdown_stdout.txt",
     )
-    shutdown_requests = read_json(shutdown_workspace / ".openagent" / "requests" / "shutdown_requests.json", {}) or {}
+    shutdown_requests = read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}
     sleeper = team_member(shutdown_workspace, "Sleeper") or {}
     if not any(req.get("status") == "accepted" for req in shutdown_requests.values()):
         for cycle in range(1, 3):
@@ -490,11 +490,11 @@ def main() -> int:
                 f"shutdown_continue_{cycle}",
                 lambda: any(
                     req.get("status") == "accepted"
-                    for req in (read_json(shutdown_workspace / ".openagent" / "requests" / "shutdown_requests.json", {}) or {}).values()
+                    for req in (read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}).values()
                 ),
                 timeout=min(args.wait_timeout, 20),
             )
-            shutdown_requests = read_json(shutdown_workspace / ".openagent" / "requests" / "shutdown_requests.json", {}) or {}
+            shutdown_requests = read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}
             sleeper = team_member(shutdown_workspace, "Sleeper") or {}
             if any(req.get("status") == "accepted" for req in shutdown_requests.values()):
                 break

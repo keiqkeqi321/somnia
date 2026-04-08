@@ -1,10 +1,10 @@
-﻿{
+{
     "name":  "somnia",
     "version":  "0.3.2",
-    "description":  "A modular AI agent CLI — npm wrapper that calls the Python openagent package",
+    "description":  "A modular AI agent CLI — npm wrapper that calls the Python open_somnia package",
     "main":  "index.js",
     "bin":  {
-                "somnia":  "./bin/openagent.js"
+                "somnia":  "./bin/somnia.js"
             },
     "scripts":  {
                     "postinstall":  "node postinstall.js"
@@ -20,13 +20,13 @@
                      "agent",
                      "cli",
                      "llm",
-                     "openagent"
+                     "somnia"
                  ],
-    "author":  "OpenAgent Team",
+    "author":  "Somnia Team",
     "license":  "MIT",
     "repository":  {
                        "type":  "git",
-                       "url":  "https://github.com/your-org/openagent.git",
+                       "url":  "https://github.com/your-org/somnia.git",
                        "directory":  "npm"
                    },
     "engines":  {

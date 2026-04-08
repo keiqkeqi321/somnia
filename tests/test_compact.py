@@ -3,14 +3,14 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from openagent.runtime.agent import OpenAgentRuntime
-from openagent.runtime.compact import (
+from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.compact import (
     ContextWindowUsage,
     MICROCOMPACT_RECENT_TOOL_BUDGET_CHARS,
     build_payload_messages,
     should_auto_compact,
 )
-from openagent.runtime.session import AgentSession
+from open_somnia.runtime.session import AgentSession
 
 
 def _tool_call(call_id: str, name: str) -> dict:

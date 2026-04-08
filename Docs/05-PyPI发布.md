@@ -57,7 +57,7 @@ dynamic = ["version"]          # 从 VERSION 文件读取
 requires-python = ">=3.11"
 
 [project.scripts]
-somnia = "openagent.cli.main:main"   # 安装后注册 somnia 命令
+somnia = "open_somnia.cli.main:main"   # 安装后注册 somnia 命令
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}         # 版本号来源

@@ -5,7 +5,7 @@
 npm 包是一个 **wrapper**，本身不包含逻辑，功能：
 1. 检测本地 Python 环境
 2. 自动 `pip install somnia`
-3. 调用 `python -m openagent` 运行
+3. 调用 `python -m open_somnia` 运行
 
 用户通过 `npx somnia` 或 `npm install -g somnia` 使用。
 
@@ -59,7 +59,7 @@ npm publish --access public
 npm/
 ├── package.json        # 包配置
 ├── bin/
-│   └── openagent.js    # CLI 入口（注册为 somnia 命令）
+│   └── somnia.js         # CLI 入口（注册为 somnia 命令）
 ├── postinstall.js      # npm install 后自动 pip install somnia
 ├── index.js            # 模块入口
 └── LICENSE             # MIT
@@ -71,7 +71,7 @@ npm/
 {
   "name": "somnia",
   "bin": {
-    "somnia": "./bin/openagent.js"
+    "somnia": "./bin/somnia.js"
   },
   "scripts": {
     "postinstall": "node postinstall.js"
@@ -79,7 +79,7 @@ npm/
 }
 ```
 
-### CLI 入口行为（bin/openagent.js）
+### CLI 入口行为（bin/somnia.js）
 
 ```
 npx somnia chat "你好"
@@ -95,7 +95,7 @@ npx somnia chat "你好"
       ├─ 未安装 → 自动 pip install somnia
       │
       ▼
-  执行 python -m openagent chat "你好"
+  执行 python -m open_somnia chat "你好"
 ```
 
 ## 发版后验证

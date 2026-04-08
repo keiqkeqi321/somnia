@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from openagent.tools.filesystem import edit_file, glob_search, grep_search, read_file, safe_path, write_file
-from openagent.tools.registry import ToolDefinition, ToolRegistry
+from open_somnia.tools.filesystem import edit_file, glob_search, grep_search, read_file, safe_path, write_file
+from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 
 
 class FilesystemToolTests(unittest.TestCase):

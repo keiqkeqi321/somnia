@@ -3,7 +3,7 @@
 Somnia 是一个面向开发者的 AI Agent CLI 工具。名字来源于拉丁语 **somnia**（梦），寓意把复杂的软件任务拆解、协作并自动执行。
 
 > 发布名：`somnia`  
-> 内部 Python 模块名：`openagent`
+> 内部 Python 模块名：`open_somnia`
 
 ## Somnia 是什么
 
@@ -240,7 +240,7 @@ somnia --help
 可先尝试：
 
 ```bash
-python -m openagent --help
+python -m open_somnia --help
 ```
 
 如果这样能运行，说明是 Python Scripts 路径未加入 PATH。
@@ -256,7 +256,7 @@ pip install --upgrade somnia
 运行数据默认保存在当前工作区的：
 
 ```text
-.openagent/
+.open_somnia/
 ```
 
 ## 文档导航

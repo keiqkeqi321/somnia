@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from openagent.tools.background import BackgroundManager
-from openagent.tools.process import CommandResult, decode_output, run_command
-from openagent.tools.shell import run_shell
+from open_somnia.tools.background import BackgroundManager
+from open_somnia.tools.process import CommandResult, decode_output, run_command
+from open_somnia.tools.shell import run_shell
 
 
 class _FakeJobStore:
@@ -40,7 +40,7 @@ class ProcessOutputTests(unittest.TestCase):
         self.assertEqual(decode_output(text.encode("utf-8")), text)
 
     def test_run_command_uses_binary_mode_and_decodes_output(self) -> None:
-        with patch("openagent.tools.process.subprocess.run") as mock_run:
+        with patch("open_somnia.tools.process.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args="git status",
                 returncode=0,
@@ -63,8 +63,8 @@ class ProcessOutputTests(unittest.TestCase):
             )
         )
 
-        with patch("openagent.tools.shell._is_windows", return_value=False), patch(
-            "openagent.tools.shell.run_command"
+        with patch("open_somnia.tools.shell._is_windows", return_value=False), patch(
+            "open_somnia.tools.shell.run_command"
         ) as mock_run:
             mock_run.return_value = CommandResult(
                 args="git status",
@@ -87,8 +87,8 @@ class ProcessOutputTests(unittest.TestCase):
             )
         )
 
-        with patch("openagent.tools.shell._is_windows", return_value=True), patch(
-            "openagent.tools.shell.run_command"
+        with patch("open_somnia.tools.shell._is_windows", return_value=True), patch(
+            "open_somnia.tools.shell.run_command"
         ) as mock_run:
             mock_run.return_value = CommandResult(args=[], returncode=0, stdout="ok", stderr="")
 
@@ -111,8 +111,8 @@ class ProcessOutputTests(unittest.TestCase):
             )
         )
 
-        with patch("openagent.tools.shell._is_windows", return_value=True), patch(
-            "openagent.tools.shell.run_command"
+        with patch("open_somnia.tools.shell._is_windows", return_value=True), patch(
+            "open_somnia.tools.shell.run_command"
         ) as mock_run:
             mock_run.return_value = CommandResult(args=[], returncode=0, stdout="ok", stderr="")
 
@@ -139,8 +139,8 @@ class ProcessOutputTests(unittest.TestCase):
             )
         )
 
-        with patch("openagent.tools.shell._is_windows", return_value=True), patch(
-            "openagent.tools.shell.run_command"
+        with patch("open_somnia.tools.shell._is_windows", return_value=True), patch(
+            "open_somnia.tools.shell.run_command"
         ) as mock_run:
             result = run_shell(ctx, {"command": "grep foo README.md"})
 
@@ -153,7 +153,7 @@ class ProcessOutputTests(unittest.TestCase):
             manager = BackgroundManager(store, Path(tmpdir), default_timeout=30, max_output_chars=500)
             store.create("job1", {"id": "job1", "command": "git status", "status": "running", "result": None})
 
-            with patch("openagent.tools.background.run_command") as mock_run:
+            with patch("open_somnia.tools.background.run_command") as mock_run:
                 mock_run.return_value = CommandResult(
                     args="git status",
                     returncode=0,
