@@ -62,6 +62,11 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(args.model, "gpt-4.1")
         self.assertEqual(args.command, "doctor")
 
+    def test_parser_supports_providers_subcommand(self) -> None:
+        args = build_parser().parse_args(["providers"])
+
+        self.assertEqual(args.command, "providers")
+
     def test_parser_accepts_custom_provider_profile_name(self) -> None:
         args = build_parser().parse_args(["--provider", "openrouter", "--model", "stepfun/step-3.5-flash"])
 
@@ -86,15 +91,14 @@ class CliResumeTests(unittest.TestCase):
         with patch("open_somnia.cli.main.load_settings", side_effect=[NoConfiguredProvidersError("missing"), settings]), patch(
             "open_somnia.cli.main._can_prompt_interactively", return_value=True
         ), patch(
-            "open_somnia.cli.main.choose_item_interactively", side_effect=["openai", "save"]
-        ), patch(
-            "open_somnia.cli.main.prompt_provider_details_interactively",
-            return_value={
-                "provider_name": "openrouter",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "sk-test",
-                "models": "gpt-5, gpt-4.1-mini",
-            },
+            "open_somnia.cli.main.collect_provider_profile_interactively",
+            return_value=SimpleNamespace(
+                provider_name="openrouter",
+                provider_type="openai",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="sk-test",
+                models=["gpt-5", "gpt-4.1-mini"],
+            ),
         ), patch(
             "open_somnia.cli.main.persist_initial_provider_setup"
         ) as mock_persist, patch(
@@ -121,15 +125,14 @@ class CliResumeTests(unittest.TestCase):
         with patch("open_somnia.cli.main.load_settings", side_effect=[NoUsableProvidersError("stale"), settings]), patch(
             "open_somnia.cli.main._can_prompt_interactively", return_value=True
         ), patch(
-            "open_somnia.cli.main.choose_item_interactively", side_effect=["anthropic", "save"]
-        ), patch(
-            "open_somnia.cli.main.prompt_provider_details_interactively",
-            return_value={
-                "provider_name": "anthropic",
-                "base_url": "https://api.anthropic.com",
-                "api_key": "sk-ant-test",
-                "models": "claude-sonnet-4-5, claude-3-5-haiku-latest",
-            },
+            "open_somnia.cli.main.collect_provider_profile_interactively",
+            return_value=SimpleNamespace(
+                provider_name="anthropic",
+                provider_type="anthropic",
+                base_url="https://api.anthropic.com",
+                api_key="sk-ant-test",
+                models=["claude-sonnet-4-5", "claude-3-5-haiku-latest"],
+            ),
         ), patch(
             "open_somnia.cli.main.persist_initial_provider_setup"
         ) as mock_persist, patch(
@@ -156,6 +159,49 @@ class CliResumeTests(unittest.TestCase):
             result = main([])
 
         self.assertEqual(result, 2)
+
+    def test_main_providers_command_saves_selected_profile(self) -> None:
+        profile = SimpleNamespace(
+            name="openrouter",
+            provider_type="openai",
+            default_model="gpt-5",
+            models=["gpt-5"],
+            api_key="sk-old",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        with patch("open_somnia.cli.main._can_prompt_interactively", return_value=True), patch(
+            "open_somnia.cli.main.load_settings",
+            return_value=SimpleNamespace(provider_profiles={"openrouter": profile}),
+        ), patch(
+            "open_somnia.cli.main.choose_provider_target_interactively",
+            return_value="openrouter",
+        ), patch(
+            "open_somnia.cli.main.collect_provider_profile_interactively",
+            return_value=SimpleNamespace(
+                previous_provider_name="openrouter",
+                provider_name="openrouter",
+                provider_type="openai",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="sk-new",
+                models=["gpt-5", "gpt-4.1-mini"],
+            ),
+        ), patch(
+            "open_somnia.cli.main.persist_provider_profile",
+            return_value="C:/Users/test/.open_somnia/open_somnia.toml",
+        ) as mock_persist, patch("builtins.print") as mock_print:
+            result = main(["providers"])
+
+        self.assertEqual(result, 0)
+        mock_persist.assert_called_once_with(
+            "openrouter",
+            "openai",
+            ["gpt-5", "gpt-4.1-mini"],
+            api_key="sk-new",
+            base_url="https://openrouter.ai/api/v1",
+            previous_provider_name="openrouter",
+        )
+        mock_print.assert_called_once()
 
     def test_cmd_chat_starts_new_session_by_default(self) -> None:
         runtime = SimpleNamespace(

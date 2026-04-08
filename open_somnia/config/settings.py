@@ -117,6 +117,26 @@ def _upsert_section_value(lines: list[str], section_name: str, key: str, value: 
     lines.insert(insert_at, assignment)
 
 
+def _remove_section(lines: list[str], section_name: str) -> list[str]:
+    start, end = _find_section_bounds(lines, section_name)
+    if start is None or end is None:
+        return list(lines)
+    updated = list(lines[:start]) + list(lines[end:])
+    while updated and not updated[0].strip():
+        updated.pop(0)
+    while updated and not updated[-1].strip():
+        updated.pop()
+    normalized: list[str] = []
+    previous_blank = False
+    for line in updated:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        normalized.append(line)
+        previous_blank = is_blank
+    return normalized
+
+
 def _remove_provider_sections(lines: list[str]) -> list[str]:
     cleaned: list[str] = []
     skip_section = False
@@ -191,9 +211,28 @@ def persist_initial_provider_setup(
     api_key: str,
     base_url: str,
 ) -> Path:
+    return persist_provider_profile(
+        provider_name,
+        provider_type,
+        models,
+        api_key=api_key,
+        base_url=base_url,
+    )
+
+
+def persist_provider_profile(
+    provider_name: str,
+    provider_type: str,
+    models: list[str],
+    *,
+    api_key: str,
+    base_url: str,
+    previous_provider_name: str | None = None,
+) -> Path:
     normalized_provider_name = str(provider_name).strip().lower()
     if not normalized_provider_name:
-        raise ValueError("A provider name is required to configure the first provider.")
+        raise ValueError("A provider name is required to configure the provider.")
+    previous_name = str(previous_provider_name or "").strip().lower() or None
     normalized_provider_type = _normalize_provider_type(provider_type, profile_name=normalized_provider_name)
     normalized_models: list[str] = []
     for model in models:
@@ -201,22 +240,39 @@ def persist_initial_provider_setup(
         if normalized_model and normalized_model not in normalized_models:
             normalized_models.append(normalized_model)
     if not normalized_models:
-        raise ValueError("At least one model id is required to configure the first provider.")
+        raise ValueError("At least one model id is required to configure the provider.")
     normalized_api_key = str(api_key).strip()
     if not normalized_api_key:
-        raise ValueError("An API key is required to configure the first provider.")
+        raise ValueError("An API key is required to configure the provider.")
     normalized_base_url = str(base_url).strip()
     if not normalized_base_url:
-        raise ValueError("A base URL is required to configure the first provider.")
+        raise ValueError("A base URL is required to configure the provider.")
 
     config_path = global_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    raw = _read_toml(config_path)
+    providers_raw = raw.get("providers", {}) if isinstance(raw.get("providers", {}), dict) else {}
+    current_default_name = str(providers_raw.get("default", "")).strip().lower()
+    existing_raw = providers_raw.get(previous_name or normalized_provider_name, {})
+    existing_default_model = (
+        str(existing_raw.get("default_model", "")).strip() if isinstance(existing_raw, dict) else ""
+    )
+
+    if previous_name and previous_name != normalized_provider_name:
+        lines = _remove_section(lines, f"providers.{previous_name}")
+
     provider_section = f"providers.{normalized_provider_name}"
-    _upsert_section_value(lines, "providers", "default", _toml_string(normalized_provider_name))
+    should_update_default = not current_default_name or current_default_name in {
+        previous_name or "",
+        normalized_provider_name,
+    }
+    if should_update_default:
+        _upsert_section_value(lines, "providers", "default", _toml_string(normalized_provider_name))
     _upsert_section_value(lines, provider_section, "provider_type", _toml_string(normalized_provider_type))
     _upsert_section_value(lines, provider_section, "models", _toml_array(normalized_models))
-    _upsert_section_value(lines, provider_section, "default_model", _toml_string(normalized_models[0]))
+    default_model = existing_default_model if existing_default_model in normalized_models else normalized_models[0]
+    _upsert_section_value(lines, provider_section, "default_model", _toml_string(default_model))
     _upsert_section_value(lines, provider_section, "api_key", _toml_string(normalized_api_key))
     _upsert_section_value(lines, provider_section, "base_url", _toml_string(normalized_base_url))
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

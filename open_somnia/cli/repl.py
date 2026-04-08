@@ -21,6 +21,8 @@ from open_somnia.cli.prompting import (
     fallback_prompt_message,
     styled_prompt_message,
 )
+from open_somnia.cli.provider_management import collect_provider_profile_interactively, choose_provider_target_interactively
+from open_somnia.config.settings import persist_provider_profile
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.compact import ContextWindowUsage
 from open_somnia.runtime.execution_mode import (
@@ -40,6 +42,7 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 
 
 READ_ONLY_COMMAND_PREFIXES = (
+    "/providers",
     "/skills",
     "/tasks",
     "/team",
@@ -726,6 +729,43 @@ def _handle_model_command(runtime) -> None:
     print(runtime.switch_provider_model(selected_provider, selected_model))
 
 
+def _handle_providers_command(runtime) -> None:
+    profiles = runtime.configured_provider_profiles()
+    selected = choose_provider_target_interactively(profiles)
+    if not selected:
+        return
+    previous_provider_name = None if selected == "__add__" else selected
+    submission = collect_provider_profile_interactively(
+        profiles,
+        previous_provider_name=previous_provider_name,
+    )
+    if submission is None:
+        return
+
+    config_path = persist_provider_profile(
+        submission.provider_name,
+        submission.provider_type,
+        submission.models,
+        api_key=submission.api_key,
+        base_url=submission.base_url,
+        previous_provider_name=submission.previous_provider_name,
+    )
+    current_provider_name = runtime.settings.provider.name
+    current_model = runtime.settings.provider.model
+    if submission.previous_provider_name == current_provider_name:
+        current_provider_name = submission.provider_name
+        if current_model not in submission.models:
+            current_model = submission.models[0]
+    runtime.reload_provider_configuration(provider_name=current_provider_name, model=current_model)
+
+    if submission.previous_provider_name and submission.previous_provider_name != submission.provider_name:
+        print(f"Renamed provider '{submission.previous_provider_name}' to '{submission.provider_name}' in {config_path}.")
+    elif submission.previous_provider_name:
+        print(f"Updated provider '{submission.provider_name}' in {config_path}.")
+    else:
+        print(f"Added provider '{submission.provider_name}' in {config_path}.")
+
+
 def _handle_undo_command(runtime, session) -> None:
     undo_stack = list(getattr(session, "undo_stack", []) or [])
     if not undo_stack:
@@ -932,6 +972,12 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /model]")
                         continue
                     _handle_model_command(runtime)
+                    continue
+                if stripped == "/providers":
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /providers]")
+                        continue
+                    _handle_providers_command(runtime)
                     continue
                 if stripped == "/tasks":
                     tasks = runtime.task_store.list_all()

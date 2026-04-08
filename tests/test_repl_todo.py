@@ -12,6 +12,7 @@ from open_somnia.cli.repl import (
     _expand_skill_command,
     _is_exit_command,
     _handle_model_command,
+    _handle_providers_command,
     _handle_skills_command,
     _handle_undo_command,
     _resolve_authorization_requests,
@@ -256,6 +257,42 @@ class ReplTodoTests(unittest.TestCase):
             _handle_model_command(runtime)
 
         mock_print.assert_called_with("switched anthropic:glm-5")
+
+    def test_providers_command_updates_existing_active_provider_and_reloads_runtime(self) -> None:
+        reloaded: list[tuple[str, str]] = []
+        runtime = SimpleNamespace(
+            configured_provider_profiles=lambda: {
+                "openrouter": SimpleNamespace(
+                    name="openrouter",
+                    provider_type="openai",
+                    default_model="gpt-5",
+                    models=["gpt-5"],
+                    api_key="sk-old",
+                    base_url="https://openrouter.ai/api/v1",
+                )
+            },
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openrouter", model="gpt-5")),
+            reload_provider_configuration=lambda provider_name, model: reloaded.append((provider_name, model)),
+        )
+
+        with patch("open_somnia.cli.repl.choose_provider_target_interactively", return_value="openrouter"), patch(
+            "open_somnia.cli.repl.collect_provider_profile_interactively",
+            return_value=SimpleNamespace(
+                previous_provider_name="openrouter",
+                provider_name="openrouter-main",
+                provider_type="openai",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="sk-old",
+                models=["gpt-4.1-mini"],
+            ),
+        ), patch(
+            "open_somnia.cli.repl.persist_provider_profile",
+            return_value="C:/Users/test/.open_somnia/open_somnia.toml",
+        ), patch("builtins.print") as mock_print:
+            _handle_providers_command(runtime)
+
+        self.assertEqual(reloaded, [("openrouter-main", "gpt-4.1-mini")])
+        mock_print.assert_called_once()
 
     def test_request_interrupt_marks_runner_interrupting(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)

@@ -13,6 +13,7 @@ from open_somnia.config.settings import (
     NoUsableProvidersError,
     load_settings,
     persist_initial_provider_setup,
+    persist_provider_profile,
     persist_provider_selection,
 )
 
@@ -352,6 +353,45 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertEqual(settings.provider.api_key, "sk-test")
             self.assertEqual(settings.provider.base_url, "https://openrouter.ai/api/v1")
             self.assertEqual(settings.provider_profiles["openrouter"].models, ["gpt-5", "gpt-4.1-mini"])
+
+    def test_persist_provider_profile_renames_existing_default_profile(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            global_config = home / ".open_somnia" / "open_somnia.toml"
+            self._write_global_config(
+                home,
+                """
+                [providers]
+                default = "openrouter"
+
+                [providers.openrouter]
+                provider_type = "openai"
+                models = ["gpt-5", "gpt-4.1-mini"]
+                default_model = "gpt-5"
+                api_key = "sk-old"
+                base_url = "https://openrouter.ai/api/v1"
+                """,
+            )
+
+            with self._patched_home(home):
+                persist_provider_profile(
+                    "openrouter-main",
+                    "openai",
+                    ["gpt-4.1-mini", "gpt-5"],
+                    api_key="sk-new",
+                    base_url="https://openrouter.ai/api/v1",
+                    previous_provider_name="openrouter",
+                )
+                settings = load_settings(root)
+
+            written = global_config.read_text(encoding="utf-8")
+
+            self.assertEqual(settings.provider.name, "openrouter-main")
+            self.assertEqual(settings.provider.model, "gpt-5")
+            self.assertEqual(settings.provider.api_key, "sk-new")
+            self.assertIn("[providers.openrouter-main]", written)
+            self.assertNotIn("[providers.openrouter]", written)
 
     def _write_workspace_config(self, root: Path, content: str) -> None:
         config_path = root / ".open_somnia" / "open_somnia.toml"

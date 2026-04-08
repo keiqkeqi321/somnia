@@ -26,6 +26,7 @@ from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 
 COMMAND_SPECS = [
     ("/model", "Choose the active provider and model"),
+    ("/providers", "Add or edit shared provider profiles"),
     ("/undo", "Undo the most recent file change set"),
     ("/compact", "Compact the current session context"),
     ("/skills", "Choose a skill to apply to the next prompt"),
@@ -69,6 +70,10 @@ SESSION_PICKER_STYLE = Style.from_dict(
         "button.focused": "bg:#0f766e fg:#ecfeff bold",
         "button.focused.arrow": "bg:#0f766e fg:#99f6e4 bold",
         "button.text": "",
+        "text-area": "bg:#0f172a fg:#e5e7eb",
+        "text-area.cursor": "bg:#f8fafc fg:#0f172a",
+        "text-area.selection": "bg:#1d4ed8 fg:#eff6ff",
+        "text-area.focused": "bg:#111827 fg:#f9fafb",
         "radio-list": "bg:#0f172a fg:#cbd5e1",
         "radio": "bg:#0f172a fg:#94a3b8",
         "radio-selected": "bg:#1e293b fg:#e2e8f0",
@@ -462,18 +467,24 @@ def prompt_provider_details_interactively(
     provider_type: str,
     default_provider_name: str,
     default_base_url: str,
+    default_models: str = "",
+    api_key_hint: str = "",
 ) -> dict[str, str] | None:
     title = "Provider Details"
-    subtitle = (
+    field_style = "bg:#1f2937 fg:#f9fafb"
+    subtitle_lines = [
         f"Compatibility mode: {provider_type}\n"
         "Models must be comma-separated.\n"
         "Example: gpt-5, gpt-4.1-mini"
-    )
+    ]
+    if api_key_hint:
+        subtitle_lines.append(api_key_hint)
+    subtitle = "\n".join(subtitle_lines)
     try:
-        provider_name_field = TextArea(text=default_provider_name, multiline=False)
-        base_url_field = TextArea(text=default_base_url, multiline=False)
-        api_key_field = TextArea(text="", multiline=False, password=True)
-        models_field = TextArea(text="", multiline=False)
+        provider_name_field = TextArea(text=default_provider_name, multiline=False, style=field_style)
+        base_url_field = TextArea(text=default_base_url, multiline=False, style=field_style)
+        api_key_field = TextArea(text="", multiline=False, password=True, style=field_style)
+        models_field = TextArea(text=default_models, multiline=False, style=field_style)
 
         def ok_handler() -> None:
             get_app().exit(
@@ -549,16 +560,19 @@ def prompt_provider_details_interactively(
     except Exception:
         print(title)
         print(subtitle)
-        provider_name = input("Provider Name (blank to cancel): ").strip()
+        provider_name_prompt = f"Provider Name [{default_provider_name}]: " if default_provider_name else "Provider Name (blank to cancel): "
+        provider_name = input(provider_name_prompt).strip() or default_provider_name.strip()
         if not provider_name:
             return None
-        base_url = input("Base URL (blank to cancel): ").strip()
+        base_url_prompt = f"Base URL [{default_base_url}]: " if default_base_url else "Base URL (blank to cancel): "
+        base_url = input(base_url_prompt).strip() or default_base_url.strip()
         if not base_url:
             return None
-        api_key = input("API Key (blank to cancel): ").strip()
-        if not api_key:
-            return None
-        models = input("Models, comma-separated (example: gpt-5, gpt-4.1-mini): ").strip()
+        api_key = input("API Key (blank to keep existing / cancel if none): ").strip()
+        models_prompt = "Models, comma-separated"
+        if default_models:
+            models_prompt += f" [{default_models}]"
+        models = input(f"{models_prompt}: ").strip() or default_models.strip()
         if not models:
             return None
         return {

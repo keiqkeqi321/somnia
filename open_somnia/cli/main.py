@@ -4,15 +4,19 @@ import argparse
 import sys
 
 from open_somnia import __version__
-from open_somnia.cli.prompting import (
-    choose_item_interactively,
-    prompt_provider_details_interactively,
+from open_somnia.cli.provider_management import (
+    choose_provider_target_interactively,
+    collect_provider_profile_interactively,
+    default_base_url,
+    parse_model_ids,
 )
 from open_somnia.config.settings import (
     NoConfiguredProvidersError,
+    NoUsableProvidersError,
     global_config_path,
     load_settings,
     persist_initial_provider_setup,
+    persist_provider_profile,
 )
 from open_somnia.runtime.agent import OpenAgentRuntime
 
@@ -93,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_provider_overrides(compact_parser)
     doctor_parser = subparsers.add_parser("doctor", help="Validate runtime configuration.")
     _add_provider_overrides(doctor_parser)
+    subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
     return parser
 
 
@@ -103,94 +108,68 @@ def _can_prompt_interactively() -> bool:
 
 
 def _parse_model_ids(raw_value: str) -> list[str]:
-    models: list[str] = []
-    for chunk in raw_value.split(","):
-        model = chunk.strip()
-        if model and model not in models:
-            models.append(model)
-    return models
+    return parse_model_ids(raw_value)
 
 
 def _default_base_url(provider_type: str) -> str:
-    if provider_type == "openai":
-        return "https://api.openai.com/v1"
-    return "https://api.anthropic.com"
+    return default_base_url(provider_type)
 
 
 def _bootstrap_first_provider() -> bool:
-    provider_type = choose_item_interactively(
-        "First Provider Setup",
-        "No providers are configured yet.\nChoose the compatibility mode for your first shared profile.",
-        [
-            ("anthropic", "anthropic"),
-            ("openai", "openai"),
-        ],
-    )
-    if provider_type is None:
+    submission = collect_provider_profile_interactively({})
+    if submission is None:
         return False
-
-    details = prompt_provider_details_interactively(
-        provider_type=provider_type,
-        default_provider_name=provider_type,
-        default_base_url=_default_base_url(provider_type),
-    )
-    if details is None:
-        return False
-    while True:
-        provider_name = details["provider_name"].strip()
-        base_url = details["base_url"].strip()
-        api_key = details["api_key"].strip()
-        models = _parse_model_ids(details["models"])
-        if not provider_name:
-            print("Provider Name is required.", file=sys.stderr)
-        elif not base_url:
-            print("Base URL is required.", file=sys.stderr)
-        elif not api_key:
-            print("API Key is required.", file=sys.stderr)
-        elif not models:
-            print("At least one model id is required. Use commas to separate models.", file=sys.stderr)
-        else:
-            break
-        details = prompt_provider_details_interactively(
-            provider_type=provider_type,
-            default_provider_name=provider_name or provider_type,
-            default_base_url=base_url or _default_base_url(provider_type),
-        )
-        if details is None:
-            return False
-
-    confirmation = choose_item_interactively(
-        "Confirm Provider Setup",
-        (
-            f"Provider name: {provider_name}\n"
-            f"Provider type: {provider_type}\n"
-            f"Base URL: {base_url}\n"
-            f"API key: {'*' * min(len(api_key), 8) if api_key else '(empty)'}\n"
-            f"Models: {', '.join(models)}\n"
-            f"Config file: {global_config_path()}\n"
-            "Save this as the first shared provider profile?"
-        ),
-        [
-            ("save", "Save and continue"),
-            ("cancel", "Cancel"),
-        ],
-    )
-    if confirmation != "save":
-        return False
-
     persist_initial_provider_setup(
-        provider_name,
-        provider_type,
-        models,
-        api_key=api_key,
-        base_url=base_url,
+        submission.provider_name,
+        submission.provider_type,
+        submission.models,
+        api_key=submission.api_key,
+        base_url=submission.base_url,
     )
     return True
+
+
+def _manage_providers(workspace: str) -> int:
+    if not _can_prompt_interactively():
+        print(
+            f"Provider management is interactive. Edit {global_config_path()} manually or run this command in a TTY.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        settings = load_settings(workspace)
+        profiles = settings.provider_profiles
+    except (NoConfiguredProvidersError, NoUsableProvidersError):
+        profiles = {}
+
+    selected = choose_provider_target_interactively(profiles)
+    if not selected:
+        print("Provider setup cancelled.", file=sys.stderr)
+        return 1
+    submission = collect_provider_profile_interactively(
+        profiles,
+        previous_provider_name=None if selected == "__add__" else selected,
+    )
+    if submission is None:
+        print("Provider setup cancelled.", file=sys.stderr)
+        return 1
+    path = persist_provider_profile(
+        submission.provider_name,
+        submission.provider_type,
+        submission.models,
+        api_key=submission.api_key,
+        base_url=submission.base_url,
+        previous_provider_name=submission.previous_provider_name,
+    )
+    print(f"Saved provider '{submission.provider_name}' to {path}.")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "providers":
+        return _manage_providers(args.workspace)
     try:
         settings = load_settings(
             args.workspace,

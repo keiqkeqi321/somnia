@@ -20,7 +20,7 @@ from typing import Any
 from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.config.models import AppSettings, ProviderProfileSettings, ProviderSettings
-from open_somnia.config.settings import _materialize_provider, persist_provider_selection
+from open_somnia.config.settings import _materialize_provider, load_settings, persist_provider_selection
 from open_somnia.mcp.registry import MCPRegistry
 from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.base import LLMProvider, ProviderError
@@ -323,6 +323,22 @@ class OpenAgentRuntime:
             f"Switched to provider '{self.settings.provider.name}' with model "
             f"'{self.settings.provider.model}' and saved it to .open_somnia/open_somnia.toml."
         )
+
+    def reload_provider_configuration(self, *, provider_name: str | None = None, model: str | None = None) -> None:
+        provider_override = provider_name or self.settings.provider.name
+        model_override = model or self.settings.provider.model
+        reloaded = load_settings(
+            self.settings.workspace_root,
+            provider_override=provider_override,
+            model_override=model_override,
+        )
+        self.settings.provider_profiles = reloaded.provider_profiles
+        self.settings.provider = reloaded.provider
+        self.settings.raw_config = reloaded.raw_config
+        self.provider = self._instantiate_provider(self.settings.provider)
+        self.compact_manager.provider = self.provider
+        self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
+        self._context_usage_cache = {}
 
     def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
