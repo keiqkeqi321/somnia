@@ -68,14 +68,29 @@ if (-not $Dry) {
     & powershell -File "scripts\sync-version.ps1"
 }
 
-# ─── 5. 更新 CHANGELOG.md ────────────────────────────────────
+# ─── 5. 更新 CHANGELOG.md (根据 git 自动生成) ───────────────
 $today = Get-Date -Format "yyyy-MM-dd"
 if (-not $Dry) {
-    $changelog = Get-Content "CHANGELOG.md" -Raw
-    $newEntry = "# Changelog`n`n## $Version ($today)`n`n- (请手动补充 changelog 条目)`n"
-    $changelog = $changelog -replace "^# Changelog", $newEntry
-    Set-Content "CHANGELOG.md" $changelog -NoNewline
-    Write-Host "✓ CHANGELOG.md 已添加 $Version 条目" -ForegroundColor Green
+    $previousTagRaw = git describe --tags --match "v*" --abbrev=0 2>$null
+    $previousTag = if ($previousTagRaw) { "$previousTagRaw".Trim() } else { "" }
+    $logRange = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
+    $logLines = git log $logRange --no-merges --pretty=format:"- %s (%h)"
+    $logLines = @($logLines | Where-Object { $_.Trim() -ne "" })
+    if (-not $logLines) {
+        $logLines = @("- Maintenance release.")
+    }
+    $changes = ($logLines -join "`n")
+
+    $existing = Get-Content "CHANGELOG.md" -Raw
+    $body = $existing -replace "^# Changelog\s*", ""
+    $newEntry = "# Changelog`n`n## $Version ($today)`n`n$changes`n`n"
+    Set-Content "CHANGELOG.md" ($newEntry + $body.TrimStart()) -NoNewline
+
+    if ($previousTag) {
+        Write-Host "✓ CHANGELOG.md 已根据 $previousTag..HEAD 自动更新" -ForegroundColor Green
+    } else {
+        Write-Host "✓ CHANGELOG.md 已根据历史提交自动更新" -ForegroundColor Green
+    }
 }
 
 # ─── 6. Git commit + tag ─────────────────────────────────────

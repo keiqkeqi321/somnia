@@ -72,12 +72,36 @@ if [ "$DRY_RUN" = false ]; then
   bash scripts/sync-version.sh
 fi
 
-# ─── 4. 更新 CHANGELOG ──────────────────────────────────────
+# ─── 4. 更新 CHANGELOG (根据 git 自动生成) ──────────────────
 TODAY=$(date +%Y-%m-%d)
 if [ "$DRY_RUN" = false ]; then
-  sed -i.bak "s|# Changelog|# Changelog\n\n## $NEW_VERSION ($TODAY)\n\n- (请手动补充 changelog)\n|" CHANGELOG.md
-  rm -f CHANGELOG.md.bak
-  echo -e "${GREEN}✓${RESET} CHANGELOG.md"
+  PREV_TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || true)
+  if [ -n "$PREV_TAG" ]; then
+    CHANGE_LINES=$(git log "${PREV_TAG}..HEAD" --no-merges --pretty=format:'- %s (%h)' || true)
+  else
+    CHANGE_LINES=$(git log HEAD --no-merges --pretty=format:'- %s (%h)' || true)
+  fi
+  if [ -z "$CHANGE_LINES" ]; then
+    CHANGE_LINES="- Maintenance release."
+  fi
+
+  EXISTING_BODY=$(sed '1{/^# Changelog$/d;}' CHANGELOG.md)
+  {
+    echo "# Changelog"
+    echo
+    echo "## $NEW_VERSION ($TODAY)"
+    echo
+    printf "%s\n" "$CHANGE_LINES"
+    echo
+    printf "%s\n" "$EXISTING_BODY"
+  } > CHANGELOG.md.tmp
+  mv CHANGELOG.md.tmp CHANGELOG.md
+
+  if [ -n "$PREV_TAG" ]; then
+    echo -e "${GREEN}✓${RESET} CHANGELOG.md (from $PREV_TAG..HEAD)"
+  else
+    echo -e "${GREEN}✓${RESET} CHANGELOG.md (from full history)"
+  fi
 fi
 
 # ─── 5. Git commit + tag ─────────────────────────────────────
