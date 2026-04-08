@@ -82,7 +82,7 @@ fi
 
 # ─── 5. Git commit + tag ─────────────────────────────────────
 if [ "$DRY_RUN" = false ]; then
-  git add VERSION openagent/__init__.py npm/package.json CHANGELOG.md
+  git add VERSION open_somnia/__init__.py npm/package.json CHANGELOG.md
   git commit -m "release: v$NEW_VERSION"
   git tag "v$NEW_VERSION"
   echo -e "${GREEN}✓${RESET} git commit + tag v$NEW_VERSION"

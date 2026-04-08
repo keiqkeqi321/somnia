@@ -4,9 +4,9 @@
 # =============================================================
 #  用法: bash scripts/sync-version.sh
 #
-#  版本号单点维护: OpenAgent/VERSION
+#  版本号单点维护: somnia/VERSION
 #  同步到:
-#    1. openagent/__init__.py  (__version__)
+#    1. open_somnia/__init__.py  (__version__)
 #    2. npm/package.json       (version)
 # =============================================================
 
@@ -18,7 +18,7 @@ VERSION=$(cat VERSION | tr -d '[:space:]')
 echo "📌 版本号: $VERSION"
 
 # ─── 1. sync __init__.py ─────────────────────────────────────
-INIT_FILE="openagent/__init__.py"
+INIT_FILE="open_somnia/__init__.py"
 if [ -f "$INIT_FILE" ]; then
   sed -i.bak "s/__version__ = \".*\"/__version__ = \"$VERSION\"/" "$INIT_FILE"
   rm -f "${INIT_FILE}.bak"

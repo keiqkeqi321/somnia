@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-#  OpenAgent — build & publish to PyPI
+#  Somnia — build & publish to PyPI
 # =============================================================
 #  Usage:
 #    # Test publish (TestPyPI)

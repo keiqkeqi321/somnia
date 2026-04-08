@@ -2,7 +2,7 @@
 #  Somnia — 一键安装脚本 (Windows PowerShell)
 # =============================================================
 #  用法:
-#    irm https://raw.githubusercontent.com/your-org/openagent/main/scripts/install.ps1 | iex
+#    irm https://raw.githubusercontent.com/your-org/somnia/main/scripts/install.ps1 | iex
 # =============================================================
 
 $ErrorActionPreference = "Stop"
@@ -59,5 +59,5 @@ try {
     Write-Host ""
 } catch {
     Write-Host "⚠  Installation completed but command not in PATH." -ForegroundColor Yellow
-    Write-Host "  Try: " -NoNewline; Write-Host "python -m openagent" -ForegroundColor Cyan
+    Write-Host "  Try: " -NoNewline; Write-Host "python -m open_somnia" -ForegroundColor Cyan
 }

@@ -10,12 +10,12 @@ Write-Host ""
 Write-Host "📌 版本号: $version" -ForegroundColor Cyan
 
 # ─── 1. sync __init__.py ─────────────────────────────────────
-$initFile = Join-Path $root "openagent\__init__.py"
+$initFile = Join-Path $root "open_somnia\__init__.py"
 if (Test-Path $initFile) {
     $content = Get-Content $initFile -Raw
     $content = $content -replace '__version__ = ".*"', "__version__ = `"$version`""
     Set-Content $initFile $content -NoNewline
-    Write-Host "  ✅ openagent\__init__.py" -ForegroundColor Green
+    Write-Host "  ✅ open_somnia\__init__.py" -ForegroundColor Green
 } else {
     Write-Host "  ⚠️  $initFile not found" -ForegroundColor Yellow
 }

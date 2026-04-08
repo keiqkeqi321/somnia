@@ -3,7 +3,7 @@
 #  Somnia — 一键安装脚本 (macOS / Linux)
 # =============================================================
 #  用法:
-#    curl -fsSL https://raw.githubusercontent.com/your-org/openagent/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/your-org/somnia/main/scripts/install.sh | bash
 # =============================================================
 
 set -euo pipefail
@@ -79,5 +79,5 @@ if command -v somnia &>/dev/null; then
   echo ""
 else
   echo -e "${YELLOW}⚠  Installation completed but command not in PATH.${RESET}"
-  echo "  Try: ${CYAN}python -m openagent${RESET}"
+  echo "  Try: ${CYAN}python -m open_somnia${RESET}"
 fi

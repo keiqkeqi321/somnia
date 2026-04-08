@@ -87,7 +87,7 @@ if (-not $Dry) {
         Write-Host "⚠ 删除已有本地 tag v$Version" -ForegroundColor Yellow
     }
 
-    git add VERSION openagent/__init__.py npm/package.json CHANGELOG.md
+    git add VERSION open_somnia/__init__.py npm/package.json CHANGELOG.md
     git commit -m "release: v$Version"
     git tag "v$Version"
     Write-Host "✓ git commit + tag v$Version" -ForegroundColor Green

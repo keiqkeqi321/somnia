@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-#  OpenAgent — publish npm wrapper package
+#  Somnia — publish npm wrapper package
 # =============================================================
 #  Usage:
 #    # Dry run
@@ -37,8 +37,8 @@ else
   npm publish --access public
   echo ""
   echo "✅ Done! Users can now run:"
-  echo "   npx openagent"
+  echo "   npx somnia"
   echo ""
   echo "   # or install globally:"
-  echo "   npm install -g openagent"
+  echo "   npm install -g somnia"
 fi
