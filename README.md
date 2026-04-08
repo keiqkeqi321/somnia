@@ -159,6 +159,8 @@ somnia
 
 首次启动如果还没有配置 provider，Somnia 会弹出交互引导，先选择兼容模式 `anthropic` 或 `openai`，再填写 `provider_name`，并在同一页填写 `base_url`、`api_key` 和逗号分隔的模型 ID 列表，最后自动写入全局配置 `~/.open_somnia/open_somnia.toml`。
 
+如果当前配置里已经没有任何带 `api_key` 的 provider，Somnia 会先清理残留的无效 `[providers]` 配置，再重新拉起这套引导流程。
+
 常用命令：
 
 ```bash

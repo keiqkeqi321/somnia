@@ -8,7 +8,7 @@ from unittest.mock import patch
 from open_somnia.cli.commands import _build_session_choices, cmd_chat, print_user_message
 from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
 from open_somnia.cli.prompting import PROMPT_BORDER
-from open_somnia.config.settings import NoConfiguredProvidersError
+from open_somnia.config.settings import NoConfiguredProvidersError, NoUsableProvidersError
 from open_somnia.cli.repl import _print_resumed_history
 
 
@@ -95,6 +95,43 @@ class CliResumeTests(unittest.TestCase):
             ["gpt-5", "gpt-4.1-mini"],
             api_key="sk-test",
             base_url="https://openrouter.ai/api/v1",
+        )
+        mock_chat.assert_called_once_with(runtime, resume=False)
+
+    def test_main_bootstraps_first_provider_when_stale_provider_config_was_cleared(self) -> None:
+        settings = SimpleNamespace()
+        runtime = SimpleNamespace(close=lambda: None)
+
+        with patch("open_somnia.cli.main.load_settings", side_effect=[NoUsableProvidersError("stale"), settings]), patch(
+            "open_somnia.cli.main._can_prompt_interactively", return_value=True
+        ), patch(
+            "open_somnia.cli.main.choose_item_interactively", side_effect=["anthropic", "save"]
+        ), patch(
+            "open_somnia.cli.main.prompt_text_interactively",
+            side_effect=["anthropic"],
+        ), patch(
+            "open_somnia.cli.main.prompt_provider_details_interactively",
+            return_value={
+                "base_url": "https://api.anthropic.com",
+                "api_key": "sk-ant-test",
+                "models": "claude-sonnet-4-5, claude-3-5-haiku-latest",
+            },
+        ), patch(
+            "open_somnia.cli.main.persist_initial_provider_setup"
+        ) as mock_persist, patch(
+            "open_somnia.cli.main.OpenAgentRuntime", return_value=runtime
+        ), patch(
+            "open_somnia.cli.commands.cmd_chat", return_value=0
+        ) as mock_chat:
+            result = main([])
+
+        self.assertEqual(result, 0)
+        mock_persist.assert_called_once_with(
+            "anthropic",
+            "anthropic",
+            ["claude-sonnet-4-5", "claude-3-5-haiku-latest"],
+            api_key="sk-ant-test",
+            base_url="https://api.anthropic.com",
         )
         mock_chat.assert_called_once_with(runtime, resume=False)
 

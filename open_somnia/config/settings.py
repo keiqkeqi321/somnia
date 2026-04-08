@@ -23,6 +23,10 @@ class NoConfiguredProvidersError(RuntimeError):
     """Raised when neither global nor workspace config defines any providers."""
 
 
+class NoUsableProvidersError(NoConfiguredProvidersError):
+    """Raised when providers exist but none has an API key configured."""
+
+
 def _read_toml(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -67,6 +71,13 @@ def _section_header(name: str) -> str:
     return f"[{name}]"
 
 
+def _section_name(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1].strip()
+    return None
+
+
 def _find_section_bounds(lines: list[str], section_name: str) -> tuple[int | None, int | None]:
     header = _section_header(section_name)
     start: int | None = None
@@ -104,6 +115,52 @@ def _upsert_section_value(lines: list[str], section_name: str, key: str, value: 
     while insert_at < end and not lines[insert_at].strip():
         insert_at += 1
     lines.insert(insert_at, assignment)
+
+
+def _remove_provider_sections(lines: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    skip_section = False
+    for line in lines:
+        current_section = _section_name(line)
+        if current_section is not None:
+            skip_section = current_section == "providers" or current_section.startswith("providers.")
+        if skip_section:
+            continue
+        cleaned.append(line)
+
+    while cleaned and not cleaned[0].strip():
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1].strip():
+        cleaned.pop()
+
+    normalized: list[str] = []
+    previous_blank = False
+    for line in cleaned:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        normalized.append(line)
+        previous_blank = is_blank
+    return normalized
+
+
+def _clear_provider_config(path: Path) -> bool:
+    if not path.exists():
+        return False
+    original_lines = path.read_text(encoding="utf-8").splitlines()
+    cleaned_lines = _remove_provider_sections(original_lines)
+    if cleaned_lines == original_lines:
+        return False
+    if cleaned_lines:
+        path.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+    else:
+        path.unlink()
+    return True
+
+
+def clear_stale_provider_config(workspace_root: Path) -> None:
+    _clear_provider_config(global_config_path())
+    _clear_provider_config(workspace_config_path(workspace_root))
 
 
 def persist_provider_selection(settings: AppSettings, provider_name: str, model: str) -> None:
@@ -384,6 +441,10 @@ def _load_provider_profiles(raw: dict) -> tuple[dict[str, ProviderProfileSetting
     return profiles, next(iter(profiles))
 
 
+def _has_configured_api_key(profiles: dict[str, ProviderProfileSettings]) -> bool:
+    return any(profile.api_key.strip() for profile in profiles.values())
+
+
 def _materialize_provider(profile: ProviderProfileSettings, model: str | None = None) -> ProviderSettings:
     selected_model = (model or profile.default_model).strip()
     if selected_model not in profile.models:
@@ -421,6 +482,11 @@ def load_settings(
     )
 
     provider_profiles, configured_provider_name = _load_provider_profiles(raw)
+    if not _has_configured_api_key(provider_profiles):
+        clear_stale_provider_config(root)
+        raise NoUsableProvidersError(
+            "No providers with API keys are configured. Cleared stale provider configuration and need first-run setup."
+        )
     provider_name = (provider_override or configured_provider_name).strip().lower()
     if provider_name not in provider_profiles:
         raise ValueError(f"Provider '{provider_name}' is not configured in [providers].")

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from open_somnia.config.settings import (
     NoConfiguredProvidersError,
+    NoUsableProvidersError,
     load_settings,
     persist_initial_provider_setup,
     persist_provider_selection,
@@ -30,6 +31,7 @@ class SettingsOverrideTests(unittest.TestCase):
                 [providers.anthropic]
                 models = ["glm-5", "claude-sonnet-4-5"]
                 default_model = "glm-5"
+                api_key = "anthropic-test-key"
                 """,
             )
 
@@ -87,6 +89,7 @@ class SettingsOverrideTests(unittest.TestCase):
                 provider_type = "openai"
                 models = ["qwen/qwen3.6-plus-preview:free"]
                 default_model = "qwen/qwen3.6-plus-preview:free"
+                api_key = "openrouter-test-key"
 
                 [model_traits."qwen/qwen3.6-plus-preview:free"]
                 cwt = 262144
@@ -116,11 +119,13 @@ class SettingsOverrideTests(unittest.TestCase):
                 provider_type = "openai"
                 models = ["glm-5"]
                 default_model = "glm-5"
+                api_key = "openrouter-test-key"
 
                 [providers.glm]
                 provider_type = "anthropic"
                 models = ["glm-5"]
                 default_model = "glm-5"
+                api_key = "glm-test-key"
 
                 [model_traits."glm-5"]
                 cwt = 131072
@@ -171,6 +176,35 @@ class SettingsOverrideTests(unittest.TestCase):
             with self._patched_home(home):
                 with self.assertRaises(NoConfiguredProvidersError):
                     load_settings(root)
+
+    def test_load_settings_clears_stale_provider_config_when_no_api_keys_exist(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            workspace_config = root / ".open_somnia" / "open_somnia.toml"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "glm-me"
+
+                [providers.glm-me]
+                default_model = "glm-4.7"
+
+                [runtime]
+                max_agent_rounds = 80
+                """,
+            )
+
+            with self._patched_home(home):
+                with self.assertRaises(NoUsableProvidersError):
+                    load_settings(root)
+
+            self.assertTrue(workspace_config.exists())
+            written = workspace_config.read_text(encoding="utf-8")
+            self.assertNotIn("[providers]", written)
+            self.assertNotIn("[providers.glm-me]", written)
+            self.assertIn("[runtime]", written)
 
     def test_load_settings_merges_global_and_workspace_configs_with_workspace_override(self) -> None:
         with self._tempdir() as tmpdir:
@@ -234,10 +268,12 @@ class SettingsOverrideTests(unittest.TestCase):
                 [providers.anthropic]
                 models = ["glm-5", "kimi-k2.5"]
                 default_model = "glm-5"
+                api_key = "anthropic-test-key"
 
                 [providers.openai]
                 models = ["gpt-4.1", "kimi-k2.5"]
                 default_model = "gpt-4.1"
+                api_key = "openai-test-key"
                 """,
             )
             with self._patched_home(home):
