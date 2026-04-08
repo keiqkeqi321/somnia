@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.9 (2026-04-08)
+
+- Browse MCP servers from interactive picker (0f415c0)
+- Add shared provider management dialog (b4c9702)
+- Document stdio MCP configuration (fb5503e)
+- Add minimal stdio MCP server smoke coverage (423d84c)
+
 ## 0.3.8 (2026-04-08)
 
 - Add -c continue-session flag and refresh release flow docs (86da771)
