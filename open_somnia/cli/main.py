@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
-from open_somnia.config.settings import load_settings
+from open_somnia.cli.prompting import (
+    choose_item_interactively,
+    prompt_provider_details_interactively,
+    prompt_text_interactively,
+)
+from open_somnia.config.settings import (
+    NoConfiguredProvidersError,
+    global_config_path,
+    load_settings,
+    persist_initial_provider_setup,
+)
 from open_somnia.runtime.agent import OpenAgentRuntime
 
 
@@ -62,14 +73,138 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _can_prompt_interactively() -> bool:
+    stdin = getattr(sys.stdin, "isatty", None)
+    stdout = getattr(sys.stdout, "isatty", None)
+    return bool(callable(stdin) and stdin() and callable(stdout) and stdout())
+
+
+def _parse_model_ids(raw_value: str) -> list[str]:
+    models: list[str] = []
+    for chunk in raw_value.split(","):
+        model = chunk.strip()
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
+def _default_base_url(provider_type: str) -> str:
+    if provider_type == "openai":
+        return "https://api.openai.com/v1"
+    return "https://api.anthropic.com"
+
+
+def _prompt_required_text(title: str, subtitle: str, *, default: str = "", password: bool = False) -> str | None:
+    while True:
+        value = prompt_text_interactively(title, subtitle, default=default, password=password)
+        if value is None:
+            return None
+        normalized = value.strip()
+        if normalized:
+            return normalized
+        print(f"{title} is required.", file=sys.stderr)
+
+
+def _bootstrap_first_provider() -> bool:
+    provider_type = choose_item_interactively(
+        "First Provider Setup",
+        "No providers are configured yet.\nChoose the compatibility mode for your first shared profile.",
+        [
+            ("anthropic", "anthropic"),
+            ("openai", "openai"),
+        ],
+    )
+    if provider_type is None:
+        return False
+
+    provider_name = _prompt_required_text(
+        "Provider Name",
+        "Enter the provider profile name.\nExamples: anthropic, openai, openrouter, kimi.",
+        default=provider_type,
+    )
+    if provider_name is None:
+        return False
+
+    details = prompt_provider_details_interactively(
+        provider_name=provider_name,
+        provider_type=provider_type,
+        default_base_url=_default_base_url(provider_type),
+    )
+    if details is None:
+        return False
+    while True:
+        base_url = details["base_url"].strip()
+        api_key = details["api_key"].strip()
+        models = _parse_model_ids(details["models"])
+        if not base_url:
+            print("Base URL is required.", file=sys.stderr)
+        elif not api_key:
+            print("API Key is required.", file=sys.stderr)
+        elif not models:
+            print("At least one model id is required. Use commas to separate models.", file=sys.stderr)
+        else:
+            break
+        details = prompt_provider_details_interactively(
+            provider_name=provider_name,
+            provider_type=provider_type,
+            default_base_url=base_url or _default_base_url(provider_type),
+        )
+        if details is None:
+            return False
+
+    confirmation = choose_item_interactively(
+        "Confirm Provider Setup",
+        (
+            f"Provider name: {provider_name}\n"
+            f"Provider type: {provider_type}\n"
+            f"Base URL: {base_url}\n"
+            f"API key: {'*' * min(len(api_key), 8) if api_key else '(empty)'}\n"
+            f"Models: {', '.join(models)}\n"
+            f"Config file: {global_config_path()}\n"
+            "Save this as the first shared provider profile?"
+        ),
+        [
+            ("save", "Save and continue"),
+            ("cancel", "Cancel"),
+        ],
+    )
+    if confirmation != "save":
+        return False
+
+    persist_initial_provider_setup(
+        provider_name,
+        provider_type,
+        models,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    settings = load_settings(
-        args.workspace,
-        provider_override=getattr(args, "provider", None),
-        model_override=getattr(args, "model", None),
-    )
+    try:
+        settings = load_settings(
+            args.workspace,
+            provider_override=getattr(args, "provider", None),
+            model_override=getattr(args, "model", None),
+        )
+    except NoConfiguredProvidersError as exc:
+        if not _can_prompt_interactively():
+            print(
+                f"{exc}\nCreate your first provider in {global_config_path()} and run the command again.",
+                file=sys.stderr,
+            )
+            return 2
+        if not _bootstrap_first_provider():
+            print("Provider setup cancelled.", file=sys.stderr)
+            return 1
+        settings = load_settings(
+            args.workspace,
+            provider_override=getattr(args, "provider", None),
+            model_override=getattr(args, "model", None),
+        )
     runtime = OpenAgentRuntime(settings)
     try:
         from open_somnia.cli.commands import (

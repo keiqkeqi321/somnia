@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-import tempfile
+import contextlib
+import shutil
 import textwrap
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from open_somnia.config.settings import load_settings, persist_provider_selection
+from open_somnia.config.settings import (
+    NoConfiguredProvidersError,
+    load_settings,
+    persist_initial_provider_setup,
+    persist_provider_selection,
+)
 
 
 class SettingsOverrideTests(unittest.TestCase):
     def test_load_settings_reads_provider_profiles_and_default_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_workspace_config(
@@ -34,7 +41,7 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider_profiles["anthropic"].models, ["glm-5", "claude-sonnet-4-5"])
 
     def test_load_settings_can_override_provider_and_model_from_configured_profiles(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_workspace_config(
@@ -67,7 +74,7 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.provider_type, "openai")
 
     def test_load_settings_reads_global_model_traits(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_workspace_config(
@@ -96,7 +103,7 @@ class SettingsOverrideTests(unittest.TestCase):
         )
 
     def test_load_settings_provider_model_traits_override_global_model_traits(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_workspace_config(
@@ -131,7 +138,7 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(glm_settings.provider.context_window_tokens, 262144)
 
     def test_load_settings_allows_custom_provider_name_to_map_to_openai_adapter(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_workspace_config(
@@ -157,20 +164,16 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.base_url, "https://openrouter.ai/api/v1")
         self.assertEqual(settings.provider_profiles["openrouter"].provider_type, "openai")
 
-    def test_load_settings_falls_back_to_builtin_default_when_profiles_not_configured(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+    def test_load_settings_raises_when_profiles_are_not_configured(self) -> None:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             with self._patched_home(home):
-                settings = load_settings(root)
-
-        self.assertEqual(settings.provider.name, "anthropic")
-        self.assertEqual(settings.provider.provider_type, "anthropic")
-        self.assertEqual(settings.provider.model, "claude-sonnet-4-5")
-        self.assertEqual(settings.provider_profiles["anthropic"].models, ["claude-sonnet-4-5"])
+                with self.assertRaises(NoConfiguredProvidersError):
+                    load_settings(root)
 
     def test_load_settings_merges_global_and_workspace_configs_with_workspace_override(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             self._write_global_config(
@@ -218,7 +221,7 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider_profiles["openai"].models, ["gpt-4.1", "gpt-4.1-mini"])
 
     def test_persist_provider_selection_updates_openagent_toml_and_roundtrips(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
             config_path = root / ".open_somnia" / "open_somnia.toml"
@@ -248,6 +251,31 @@ class SettingsOverrideTests(unittest.TestCase):
                 self.assertEqual(reloaded.provider_profiles["openai"].default_model, "kimi-k2.5")
                 self.assertTrue(config_path.exists())
 
+    def test_persist_initial_provider_setup_writes_global_config_and_roundtrips(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            global_config = home / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                written_path = persist_initial_provider_setup(
+                    "openrouter",
+                    "openai",
+                    ["gpt-5", "gpt-4.1-mini"],
+                    api_key="sk-test",
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                settings = load_settings(root)
+
+            self.assertEqual(written_path, global_config)
+            self.assertTrue(global_config.exists())
+            self.assertEqual(settings.provider.name, "openrouter")
+            self.assertEqual(settings.provider.provider_type, "openai")
+            self.assertEqual(settings.provider.model, "gpt-5")
+            self.assertEqual(settings.provider.api_key, "sk-test")
+            self.assertEqual(settings.provider.base_url, "https://openrouter.ai/api/v1")
+            self.assertEqual(settings.provider_profiles["openrouter"].models, ["gpt-5", "gpt-4.1-mini"])
+
     def _write_workspace_config(self, root: Path, content: str) -> None:
         config_path = root / ".open_somnia" / "open_somnia.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +285,17 @@ class SettingsOverrideTests(unittest.TestCase):
         config_path = home / ".open_somnia" / "open_somnia.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
+
+    @contextlib.contextmanager
+    def _tempdir(self):
+        temp_root = Path(__file__).resolve().parents[1] / ".tmp-tests"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        path = temp_root / f"settings-{uuid.uuid4().hex}"
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            yield str(path)
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
 
     def _patched_home(self, home: Path):
         home.mkdir(parents=True, exist_ok=True)

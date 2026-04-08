@@ -19,8 +19,9 @@ from prompt_toolkit.key_binding.defaults import load_key_bindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
 from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.shortcuts.dialogs import input_dialog
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Button, Dialog, Label, RadioList
+from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 
 COMMAND_SPECS = [
     ("/model", "Choose the active provider and model"),
@@ -416,6 +417,123 @@ def choose_item_interactively(title: str, subtitle: str, items: list[tuple[str, 
 
 def choose_session_interactively(items: list[tuple[str, str]]) -> str | None:
     return choose_item_interactively("Resume Session", "Choose a previous session to resume.", items)
+
+
+def prompt_text_interactively(
+    title: str,
+    subtitle: str,
+    *,
+    default: str = "",
+    password: bool = False,
+) -> str | None:
+    try:
+        return input_dialog(
+            title=title,
+            text=subtitle,
+            ok_text="OK (Enter)",
+            cancel_text="Cancel (Esc)",
+            style=SESSION_PICKER_STYLE,
+            default=default,
+            password=password,
+        ).run()
+    except Exception:
+        print(title)
+        print(subtitle)
+        value = input("Input (blank to cancel): ")
+        if not value.strip():
+            return None
+        return value
+
+
+def prompt_provider_details_interactively(
+    *,
+    provider_name: str,
+    provider_type: str,
+    default_base_url: str,
+) -> dict[str, str] | None:
+    title = "Provider Details"
+    subtitle = (
+        f"Provider: {provider_name}\n"
+        f"Compatibility mode: {provider_type}\n"
+        "Models must be comma-separated.\n"
+        "Example: gpt-5, gpt-4.1-mini"
+    )
+    try:
+        base_url_field = TextArea(text=default_base_url, multiline=False)
+        api_key_field = TextArea(text="", multiline=False, password=True)
+        models_field = TextArea(text="", multiline=False)
+
+        def ok_handler() -> None:
+            get_app().exit(
+                result={
+                    "base_url": base_url_field.text.strip(),
+                    "api_key": api_key_field.text.strip(),
+                    "models": models_field.text.strip(),
+                }
+            )
+
+        def cancel_handler() -> None:
+            get_app().exit(result=None)
+
+        dialog = Dialog(
+            title=title,
+            body=HSplit(
+                [
+                    Label(text=subtitle, style="class:session-picker.subtitle", dont_extend_height=True),
+                    Label(text="Base URL", dont_extend_height=True),
+                    base_url_field,
+                    Label(text="API Key", dont_extend_height=True),
+                    api_key_field,
+                    Label(text="Models (comma-separated)", dont_extend_height=True),
+                    models_field,
+                    Label(
+                        text="Switch focus: Tab | Save after moving to buttons with Tab | Cancel: Esc",
+                        style="class:session-picker.help",
+                        dont_extend_height=True,
+                    ),
+                ],
+                padding=1,
+            ),
+            buttons=[
+                Button(text="Save", handler=ok_handler, width=12),
+                Button(text="Cancel (Esc)", handler=cancel_handler, width=18),
+            ],
+            with_background=True,
+        )
+
+        bindings = KeyBindings()
+        bindings.add("tab")(focus_next)
+        bindings.add("s-tab")(focus_previous)
+
+        @bindings.add("escape", eager=True)
+        def _cancel(event) -> None:
+            cancel_handler()
+
+        app: Application[dict[str, str] | None] = Application(
+            layout=Layout(dialog),
+            key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
+            mouse_support=True,
+            full_screen=True,
+            style=SESSION_PICKER_STYLE,
+        )
+        return app.run()
+    except Exception:
+        print(title)
+        print(subtitle)
+        base_url = input("Base URL (blank to cancel): ").strip()
+        if not base_url:
+            return None
+        api_key = input("API Key (blank to cancel): ").strip()
+        if not api_key:
+            return None
+        models = input("Models, comma-separated (example: gpt-5, gpt-4.1-mini): ").strip()
+        if not models:
+            return None
+        return {
+            "base_url": base_url,
+            "api_key": api_key,
+            "models": models,
+        }
 
 
 def choose_authorization_interactively(

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import io
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia.cli.commands import _build_session_choices, cmd_chat, print_user_message
-from open_somnia.cli.main import build_parser
+from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
 from open_somnia.cli.prompting import PROMPT_BORDER
+from open_somnia.config.settings import NoConfiguredProvidersError
 from open_somnia.cli.repl import _print_resumed_history
 
 
@@ -47,6 +49,62 @@ class CliResumeTests(unittest.TestCase):
 
         self.assertEqual(args.provider, "openrouter")
         self.assertEqual(args.model, "stepfun/step-3.5-flash")
+
+    def test_parse_model_ids_accepts_commas_only(self) -> None:
+        self.assertEqual(
+            _parse_model_ids("gpt-5, gpt-4.1-mini, claude-sonnet-4-5"),
+            ["gpt-5", "gpt-4.1-mini", "claude-sonnet-4-5"],
+        )
+        self.assertEqual(_parse_model_ids("gpt-5\ngpt-4.1-mini"), ["gpt-5\ngpt-4.1-mini"])
+
+    def test_default_base_url_matches_provider_type(self) -> None:
+        self.assertEqual(_default_base_url("openai"), "https://api.openai.com/v1")
+        self.assertEqual(_default_base_url("anthropic"), "https://api.anthropic.com")
+
+    def test_main_bootstraps_first_provider_when_missing(self) -> None:
+        settings = SimpleNamespace()
+        runtime = SimpleNamespace(close=lambda: None)
+
+        with patch("open_somnia.cli.main.load_settings", side_effect=[NoConfiguredProvidersError("missing"), settings]), patch(
+            "open_somnia.cli.main._can_prompt_interactively", return_value=True
+        ), patch(
+            "open_somnia.cli.main.choose_item_interactively", side_effect=["openai", "save"]
+        ), patch(
+            "open_somnia.cli.main.prompt_text_interactively",
+            side_effect=["openrouter"],
+        ), patch(
+            "open_somnia.cli.main.prompt_provider_details_interactively",
+            return_value={
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-test",
+                "models": "gpt-5, gpt-4.1-mini",
+            },
+        ), patch(
+            "open_somnia.cli.main.persist_initial_provider_setup"
+        ) as mock_persist, patch(
+            "open_somnia.cli.main.OpenAgentRuntime", return_value=runtime
+        ), patch(
+            "open_somnia.cli.commands.cmd_chat", return_value=0
+        ) as mock_chat:
+            result = main([])
+
+        self.assertEqual(result, 0)
+        mock_persist.assert_called_once_with(
+            "openrouter",
+            "openai",
+            ["gpt-5", "gpt-4.1-mini"],
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api/v1",
+        )
+        mock_chat.assert_called_once_with(runtime, resume=False)
+
+    def test_main_reports_missing_provider_in_noninteractive_mode(self) -> None:
+        with patch("open_somnia.cli.main.load_settings", side_effect=NoConfiguredProvidersError("missing")), patch(
+            "open_somnia.cli.main._can_prompt_interactively", return_value=False
+        ), patch("sys.stderr", new_callable=io.StringIO):
+            result = main([])
+
+        self.assertEqual(result, 2)
 
     def test_cmd_chat_starts_new_session_by_default(self) -> None:
         runtime = SimpleNamespace(

@@ -19,6 +19,10 @@ CONFIG_FILENAME = "open_somnia.toml"
 DEFAULT_AGENT_NAME = "Somnia"
 
 
+class NoConfiguredProvidersError(RuntimeError):
+    """Raised when neither global nor workspace config defines any providers."""
+
+
 def _read_toml(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -53,6 +57,10 @@ def load_raw_config(workspace_root: Path) -> dict:
 def _toml_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _toml_array(values: list[str]) -> str:
+    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
 
 
 def _section_header(name: str) -> str:
@@ -116,6 +124,46 @@ def persist_provider_selection(settings: AppSettings, provider_name: str, model:
         provider_raw = {}
         providers_raw[provider_name] = provider_raw
     provider_raw["default_model"] = model
+
+
+def persist_initial_provider_setup(
+    provider_name: str,
+    provider_type: str,
+    models: list[str],
+    *,
+    api_key: str,
+    base_url: str,
+) -> Path:
+    normalized_provider_name = str(provider_name).strip().lower()
+    if not normalized_provider_name:
+        raise ValueError("A provider name is required to configure the first provider.")
+    normalized_provider_type = _normalize_provider_type(provider_type, profile_name=normalized_provider_name)
+    normalized_models: list[str] = []
+    for model in models:
+        normalized_model = str(model).strip()
+        if normalized_model and normalized_model not in normalized_models:
+            normalized_models.append(normalized_model)
+    if not normalized_models:
+        raise ValueError("At least one model id is required to configure the first provider.")
+    normalized_api_key = str(api_key).strip()
+    if not normalized_api_key:
+        raise ValueError("An API key is required to configure the first provider.")
+    normalized_base_url = str(base_url).strip()
+    if not normalized_base_url:
+        raise ValueError("A base URL is required to configure the first provider.")
+
+    config_path = global_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    provider_section = f"providers.{normalized_provider_name}"
+    _upsert_section_value(lines, "providers", "default", _toml_string(normalized_provider_name))
+    _upsert_section_value(lines, provider_section, "provider_type", _toml_string(normalized_provider_type))
+    _upsert_section_value(lines, provider_section, "models", _toml_array(normalized_models))
+    _upsert_section_value(lines, provider_section, "default_model", _toml_string(normalized_models[0]))
+    _upsert_section_value(lines, provider_section, "api_key", _toml_string(normalized_api_key))
+    _upsert_section_value(lines, provider_section, "base_url", _toml_string(normalized_base_url))
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config_path
 
 
 def _resolve_optional_path(root: Path, value: str | None) -> Path | None:
@@ -326,9 +374,9 @@ def _load_provider_profiles(raw: dict) -> tuple[dict[str, ProviderProfileSetting
                 continue
             profiles[str(name).strip().lower()] = _build_provider_profile(str(name), item, raw)
     if not profiles:
-        fallback_name = "anthropic"
-        profiles[fallback_name] = _default_provider_profile(fallback_name)
-        return profiles, fallback_name
+        raise NoConfiguredProvidersError(
+            "No providers are configured. Add a provider to open_somnia.toml or complete first-run setup."
+        )
     if configured_default:
         if configured_default not in profiles:
             raise ValueError(f"Configured default provider '{configured_default}' is not defined in [providers].")

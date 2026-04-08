@@ -90,7 +90,7 @@ Primary config files:
 
 - `.env`
 - `open_somnia.toml`
-- `open_somnia.toml.example`
+- global shared config at `~/.open_somnia/open_somnia.toml`
 
 Key config sections in `open_somnia.toml`:
 
@@ -99,6 +99,8 @@ Key config sections in `open_somnia.toml`:
 - `[providers.<name>]`
 - `[runtime]`
 - `[mcp_servers.<name>]` or `[[mcp_servers]]`
+
+If no providers are configured at startup, the CLI should guide the user through creating the first provider profile interactively and save it into the global shared config. The bootstrap flow should collect compatibility mode, provider name, base URL, API key, and model ids, while staying minimal: no default MCP entries and no extra sample clutter.
 
 The runtime appends execution-environment guidance to the system prompt, so changes to prompt construction should preserve that.
 
