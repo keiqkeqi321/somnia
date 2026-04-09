@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from open_somnia.tools.filesystem import (
     edit_file,
@@ -291,29 +292,65 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result, "第一行\n第二行")
 
     def test_find_symbol_locates_csharp_types_and_methods_by_substring(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            target = root / "Runtime" / "Core"
-            target.mkdir(parents=True)
-            (target / "PaperComponent.cs").write_text(
-                "public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
-                encoding="utf-8",
-            )
-            ctx = SimpleNamespace(
-                runtime=SimpleNamespace(
-                    settings=SimpleNamespace(
-                        workspace_root=root,
-                        runtime=SimpleNamespace(max_tool_output_chars=50000),
-                    )
-                ),
-                session=None,
-            )
+        root = Path.cwd()
+        candidate = root / "Runtime" / "Core" / "PaperComponent.cs"
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
 
+        with patch("open_somnia.tools.filesystem._filtered_walk", return_value=[(candidate.parent, [], [candidate.name])]), patch(
+            "open_somnia.tools.filesystem._read_text_with_fallback",
+            return_value="public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
+        ):
             type_result = find_symbol(ctx, {"query": "PaperComp"})
             method_result = find_symbol(ctx, {"query": "BuildMesh"})
 
         self.assertIn("Runtime/Core/PaperComponent.cs:1:class PaperComponent", type_result)
         self.assertIn("Runtime/Core/PaperComponent.cs:2:method BuildMesh", method_result)
+
+    def test_find_symbol_supports_pipe_separated_broad_search_terms(self) -> None:
+        root = Path.cwd()
+        candidate = root / "Runtime" / "Core" / "PaperComponent.cs"
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+        with patch("open_somnia.tools.filesystem._filtered_walk", return_value=[(candidate.parent, [], [candidate.name])]), patch(
+            "open_somnia.tools.filesystem._read_text_with_fallback",
+            return_value="public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
+        ):
+            result = find_symbol(ctx, {"query": "PaperComp|BuildMesh"})
+
+        self.assertIn("Runtime/Core/PaperComponent.cs:1:class PaperComponent", result)
+        self.assertIn("Runtime/Core/PaperComponent.cs:2:method BuildMesh", result)
+
+    def test_find_symbol_rejects_more_than_ten_pipe_separated_terms(self) -> None:
+        root = Path.cwd()
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+        result = find_symbol(ctx, {"query": "a|b|c|d|e|f|g|h|i|j|k"})
+
+        self.assertEqual(result, "Error: query supports at most 10 terms separated by '|'.")
 
     def test_project_scan_summarizes_guidance_source_roots_and_languages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

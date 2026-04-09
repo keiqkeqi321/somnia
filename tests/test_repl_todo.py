@@ -284,8 +284,10 @@ class ReplTodoTests(unittest.TestCase):
             {"path": "src/app.py", "line": 12, "kind": "function", "name": "build_app"},
             {"path": "src/lib.py", "line": 4, "kind": "class", "name": "Builder"},
         ]
+        invoked: list[dict[str, object]] = []
 
         def _invoke_tool(session, name, payload):
+            invoked.append(payload)
             return "src/app.py:12:function build_app\nsrc/lib.py:4:class Builder"
 
         runtime = SimpleNamespace(
@@ -298,7 +300,27 @@ class ReplTodoTests(unittest.TestCase):
         with patch("open_somnia.cli.repl.choose_item_interactively", return_value="1"), patch("builtins.print") as mock_print:
             _handle_symbols_command(runtime, session, "/symbols build")
 
+        self.assertEqual(invoked, [{"query": "build", "path": ".", "limit": 50}])
         mock_print.assert_called_with("src/app.py:12\n>   12 | def build_app():")
+
+    def test_symbols_command_passes_pipe_separated_query_through_to_tool(self) -> None:
+        invoked: list[dict[str, object]] = []
+
+        def _invoke_tool(session, name, payload):
+            invoked.append(payload)
+            return "(no matches)"
+
+        runtime = SimpleNamespace(
+            invoke_tool=_invoke_tool,
+            parse_symbol_output=lambda output: [],
+            render_symbol_preview=lambda relative_path, line_number: "",
+        )
+        session = SimpleNamespace()
+
+        with patch("builtins.print"):
+            _handle_symbols_command(runtime, session, "/symbols build|builder|factory")
+
+        self.assertEqual(invoked, [{"query": "build|builder|factory", "path": ".", "limit": 50}])
 
     def test_providers_command_updates_existing_active_provider_and_reloads_runtime(self) -> None:
         reloaded: list[tuple[str, str]] = []

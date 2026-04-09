@@ -717,7 +717,13 @@ def _handle_scan_command(runtime, session, command: str) -> None:
 def _handle_symbols_command(runtime, session, command: str) -> None:
     query = command.split(maxsplit=1)[1].strip() if " " in command else ""
     if not query:
-        query = (prompt_text_interactively("Find Symbols", "Enter a symbol name substring to search for.") or "").strip()
+        query = (
+            prompt_text_interactively(
+                "Find Symbols",
+                "Enter one or more symbol substrings. Use `|` to search alternatives in one pass, up to 10 terms.",
+            )
+            or ""
+        ).strip()
     if not query:
         print("[symbol search cancelled]")
         return

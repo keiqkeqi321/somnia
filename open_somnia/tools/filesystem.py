@@ -142,6 +142,7 @@ SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
         (re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function", 1),
     ],
 }
+MAX_SYMBOL_QUERY_TERMS = 10
 
 
 def safe_path(workspace_root: Path, relative_path: str) -> Path:
@@ -390,7 +391,14 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     query = str(payload.get("query", "")).strip()
     if not query:
         return "Error: query is required."
-    normalized_query = query if bool(payload.get("case_sensitive", False)) else query.lower()
+    case_sensitive = bool(payload.get("case_sensitive", False))
+    query_terms = [item.strip() for item in query.split("|")]
+    query_terms = [item for item in query_terms if item]
+    if not query_terms:
+        return "Error: query is required."
+    if len(query_terms) > MAX_SYMBOL_QUERY_TERMS:
+        return f"Error: query supports at most {MAX_SYMBOL_QUERY_TERMS} terms separated by '|'."
+    normalized_terms = query_terms if case_sensitive else [item.lower() for item in query_terms]
     limit = max(1, int(payload.get("limit", 50)))
     include_hidden = bool(payload.get("include_hidden", False))
     kind_filter = str(payload.get("kind", "")).strip().lower()
@@ -418,8 +426,8 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
                     detected_kind = match.group(1).lower() if default_kind == "type" and match.lastindex and match.lastindex >= 2 else default_kind
                     if kind_filter and detected_kind != kind_filter:
                         continue
-                    haystack = symbol_name if bool(payload.get("case_sensitive", False)) else symbol_name.lower()
-                    if normalized_query not in haystack:
+                    haystack = symbol_name if case_sensitive else symbol_name.lower()
+                    if not any(term in haystack for term in normalized_terms):
                         continue
                     results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
                     break
@@ -798,7 +806,7 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="find_symbol",
-            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. Prefer this before guessing code paths from docs or filenames alone.",
+            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. `query` also supports up to 10 alternative substrings joined by `|` for one broad pass before narrowing down.",
             input_schema={
                 "type": "object",
                 "properties": {
