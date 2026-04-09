@@ -10,7 +10,6 @@ from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     TurnQueueRunner,
     _expand_skill_command,
-    _handle_investigation_command,
     _handle_scan_command,
     _handle_symbols_command,
     _is_exit_command,
@@ -262,41 +261,36 @@ class ReplTodoTests(unittest.TestCase):
 
         mock_print.assert_called_with("switched anthropic:glm-5")
 
-    def test_scan_command_scans_and_persists_repo_summary(self) -> None:
-        recorded: list[tuple[str, str]] = []
+    def test_scan_command_scans_current_target_path(self) -> None:
+        invoked: list[dict[str, object]] = []
+
         def _invoke_tool(session, name, payload):
-            output = "Project root: .\nCounts: 2 files, 1 dirs"
-            runtime.record_project_scan(session, path=payload["path"], summary_text=output)
-            return output
+            invoked.append(payload)
+            return "Project root: .\nCounts: 2 files, 1 dirs"
+
         runtime = SimpleNamespace(
-            cached_project_scan=lambda session, path: None,
             invoke_tool=_invoke_tool,
-            record_project_scan=lambda session, path, summary_text: recorded.append((path, summary_text)),
-            repo_summary_store=SimpleNamespace(path="D:/workspace/.open_somnia/repo_summary.json"),
         )
         session = SimpleNamespace()
 
         with patch("builtins.print") as mock_print:
             _handle_scan_command(runtime, session, "/scan src")
 
-        self.assertEqual(recorded, [("src", "Project root: .\nCounts: 2 files, 1 dirs")])
+        self.assertEqual(invoked, [{"path": "src", "depth": 2, "limit": 8}])
         mock_print.assert_any_call("Project root: .\nCounts: 2 files, 1 dirs")
-        mock_print.assert_any_call("[saved repo summary] D:/workspace/.open_somnia/repo_summary.json")
 
     def test_symbols_command_chooses_match_and_previews_source(self) -> None:
-        recorded: list[tuple[str, list[dict[str, object]]]] = []
         parsed_matches = [
             {"path": "src/app.py", "line": 12, "kind": "function", "name": "build_app"},
             {"path": "src/lib.py", "line": 4, "kind": "class", "name": "Builder"},
         ]
+
         def _invoke_tool(session, name, payload):
-            output = "src/app.py:12:function build_app\nsrc/lib.py:4:class Builder"
-            runtime.record_symbol_lookup(session, query=payload["query"], path=payload["path"], kind="", matches=parsed_matches)
-            return output
+            return "src/app.py:12:function build_app\nsrc/lib.py:4:class Builder"
+
         runtime = SimpleNamespace(
             invoke_tool=_invoke_tool,
             parse_symbol_output=lambda output: parsed_matches,
-            record_symbol_lookup=lambda session, query, path, kind, matches: recorded.append((query, matches)),
             render_symbol_preview=lambda relative_path, line_number: f"{relative_path}:{line_number}\n>   12 | def build_app():",
         )
         session = SimpleNamespace()
@@ -304,18 +298,7 @@ class ReplTodoTests(unittest.TestCase):
         with patch("open_somnia.cli.repl.choose_item_interactively", return_value="1"), patch("builtins.print") as mock_print:
             _handle_symbols_command(runtime, session, "/symbols build")
 
-        self.assertEqual(recorded[0][0], "build")
-        self.assertEqual(len(recorded[0][1]), 2)
         mock_print.assert_called_with("src/app.py:12\n>   12 | def build_app():")
-
-    def test_investigation_command_prints_runtime_report(self) -> None:
-        runtime = SimpleNamespace(render_investigation_report=lambda session: "Investigation State\nFacts: 1")
-        session = SimpleNamespace()
-
-        with patch("builtins.print") as mock_print:
-            _handle_investigation_command(runtime, session)
-
-        mock_print.assert_called_once_with("Investigation State\nFacts: 1")
 
     def test_providers_command_updates_existing_active_provider_and_reloads_runtime(self) -> None:
         reloaded: list[tuple[str, str]] = []

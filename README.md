@@ -169,7 +169,6 @@ somnia compact
 ```text
 /scan
 /symbols
-/investigation
 /compact
 /model
 /tasks
@@ -184,9 +183,8 @@ somnia compact
 
 这些命令分别用于：
 
-- `/scan`：扫描当前仓库或子目录，并缓存项目摘要
+- `/scan`：扫描当前仓库或子目录
 - `/symbols`：查找符号并预览匹配位置附近源码
-- `/investigation`：查看当前探索状态、事实与告警
 - `/compact`：压缩当前上下文
 - `/model`：查看或切换模型信息
 - `/tasks`：查看任务状态

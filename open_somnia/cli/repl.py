@@ -45,7 +45,6 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 READ_ONLY_COMMAND_PREFIXES = (
     "/scan",
     "/symbols",
-    "/investigation",
     "/providers",
     "/skills",
     "/tasks",
@@ -700,16 +699,9 @@ def _is_exit_command(command: str) -> bool:
 
 def _handle_scan_command(runtime, session, command: str) -> None:
     args = command.split()[1:]
-    refresh = False
     if args and args[0] == "--refresh":
-        refresh = True
         args = args[1:]
     target_path = " ".join(args).strip() or "."
-    cached = None if refresh else runtime.cached_project_scan(session, path=target_path)
-    if cached is not None:
-        print(f"[cached /scan for {target_path}]")
-        print(cached.get("summary_text", ""))
-        return
     output = runtime.invoke_tool(
         session,
         "project_scan",
@@ -720,9 +712,6 @@ def _handle_scan_command(runtime, session, command: str) -> None:
         },
     )
     print(output)
-    repo_summary_path = getattr(getattr(runtime, "repo_summary_store", None), "path", None)
-    if repo_summary_path is not None and isinstance(output, str) and not output.startswith("Error:"):
-        print(f"[saved repo summary] {repo_summary_path}")
 
 
 def _handle_symbols_command(runtime, session, command: str) -> None:
@@ -762,11 +751,6 @@ def _handle_symbols_command(runtime, session, command: str) -> None:
         return
     match = matches[int(selection) - 1]
     print(runtime.render_symbol_preview(match["path"], int(match["line"])))
-
-
-def _handle_investigation_command(runtime, session) -> None:
-    print(runtime.render_investigation_report(session))
-
 
 def _handle_model_command(runtime) -> None:
     profiles = runtime.configured_provider_profiles()
@@ -1116,17 +1100,11 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         continue
                     _handle_symbols_command(runtime, session, stripped)
                     continue
-                if stripped == "/investigation":
-                    if runner.has_inflight_work():
-                        print("[busy; wait for queued responses before /investigation]")
-                        continue
-                    _handle_investigation_command(runtime, session)
-                    continue
                 if stripped == "/skills":
                     skill_prefix = _handle_skills_command(runtime)
                     if skill_prefix is not None:
                         pending_query_prefix = skill_prefix
-                    continue
+                        continue
                 if stripped == "/undo":
                     if runner.has_inflight_work():
                         print("[busy; wait for queued responses before /undo]")

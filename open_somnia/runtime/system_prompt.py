@@ -36,12 +36,6 @@ class SystemPromptBuilder:
         base_prompt = self.base_system_prompt()
         environment_guidance = self.environment_guidance()
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
-        repo_summary = self.runtime.repo_summary_prompt() if callable(getattr(self.runtime, "repo_summary_prompt", None)) else ""
-        session_exploration = (
-            self.runtime.session_exploration_prompt(session)
-            if callable(getattr(self.runtime, "session_exploration_prompt", None))
-            else ""
-        )
         identity_guidance = (
             "Identity rules:\n"
             f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
@@ -77,19 +71,6 @@ class SystemPromptBuilder:
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
             "- Treat repository exploration as an investigation: gather evidence, update hypotheses, then conclude."
         )
-        exploration_memory = ""
-        if repo_summary:
-            exploration_memory += (
-                "Repository memory:\n"
-                "Use this persisted summary as a starting hint, then verify it with tools before making strong assumptions.\n"
-                f"<repo_summary>\n{repo_summary}\n</repo_summary>\n"
-            )
-        if session_exploration:
-            exploration_memory += (
-                "Session exploration memory:\n"
-                "This reflects the current session's recent scans and symbol lookups. Reuse it when helpful, but still verify details before editing.\n"
-                f"<session_exploration>\n{session_exploration}\n</session_exploration>\n"
-            )
         if actor == "lead":
             return (
                 f"{base_prompt}\n\n"
@@ -101,7 +82,6 @@ class SystemPromptBuilder:
                 f"{mode_guidance}\n"
                 f"{tool_selection_guidance}\n"
                 f"{workflow_guidance}\n"
-                f"{exploration_memory}"
                 f"{environment_guidance}\n"
                 f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
             )
@@ -115,7 +95,6 @@ class SystemPromptBuilder:
             f"{mode_guidance}\n"
             f"{tool_selection_guidance}\n"
             f"{workflow_guidance}\n"
-            f"{exploration_memory}"
             f"{environment_guidance}\n"
             f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
         )

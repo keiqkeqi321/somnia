@@ -211,8 +211,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.execution_mode = "plan"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
-        runtime.repo_summary_prompt = lambda: ""
-        runtime.session_exploration_prompt = lambda session: ""
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
@@ -238,7 +236,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Use subagent for isolated subagent work.", prompt)
         self.assertIn("Do not claim to be Claude", prompt)
 
-    def test_build_system_prompt_includes_repo_and_session_exploration_memory(self) -> None:
+    def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             workspace_root=Path("D:/workspace"),
@@ -247,100 +245,25 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.execution_mode = "accept_edits"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
-        runtime.repo_summary_prompt = lambda: "Project root: .\nLikely stack: Python"
-        runtime.session_exploration_prompt = lambda session: "Last /scan path: src\nRecent symbol lookups:\n- build_app | path=. | kind=any | matches=2"
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime, session=AgentSession(id="session-1"))
 
-        self.assertIn("Repository memory:", prompt)
-        self.assertIn("<repo_summary>", prompt)
-        self.assertIn("Likely stack: Python", prompt)
-        self.assertIn("Session exploration memory:", prompt)
-        self.assertIn("Last /scan path: src", prompt)
-        self.assertIn("Recent symbol lookups:", prompt)
+        self.assertNotIn("Repository memory:", prompt)
+        self.assertNotIn("Session exploration memory:", prompt)
 
-    def test_record_file_read_generates_duplicate_read_warning(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.EXPLORATION_CACHE_LIMIT = 10
-        runtime.DUPLICATE_FILE_READ_THRESHOLD = 3
-        runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        session = AgentSession(id="session-1")
-
-        OpenAgentRuntime.record_file_read(runtime, session, path="src/app.py", limit=None, output="class Builder {}", source="agent")
-        OpenAgentRuntime.record_file_read(runtime, session, path="src/app.py", limit=None, output="class Builder {}", source="agent")
-        OpenAgentRuntime.record_file_read(runtime, session, path="src/app.py", limit=None, output="class Builder {}", source="agent")
-
-        cache = session.exploration_cache
-        self.assertEqual(cache["files_read"][0]["path"], "src/app.py")
-        self.assertIn("Repeatedly read 'src/app.py' 3 times", cache["active_warning"]["message"])
-        self.assertEqual(cache["warnings"][0]["kind"], "duplicate_read")
-
-    def test_session_exploration_prompt_includes_warning_and_facts(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.EXPLORATION_PROMPT_CHAR_LIMIT = 2_000
-        session = AgentSession(
-            id="session-1",
-            exploration_cache={
-                "facts": [
-                    {
-                        "subject": "likely_stack",
-                        "claim": "Python",
-                        "evidence": "project_scan(.)",
-                    }
-                ],
-                "symbol_queries": [{"query": "build", "path": ".", "kind": "", "match_count": 2}],
-                "active_warning": {"message": "Repeatedly read 'src/app.py' 3 times without recording new facts."},
-            },
+    def test_agent_session_ignores_legacy_exploration_cache_payload(self) -> None:
+        restored = AgentSession.from_payload(
+            {
+                "id": "session-1",
+                "messages": [],
+                "exploration_cache": {
+                    "last_project_scan": {"path": "."},
+                },
+            }
         )
 
-        prompt = OpenAgentRuntime.session_exploration_prompt(runtime, session)
-
-        self.assertIn("Recorded facts:", prompt)
-        self.assertIn("likely_stack: Python", prompt)
-        self.assertIn("Active investigation warning:", prompt)
-        self.assertIn("Repeatedly read 'src/app.py' 3 times", prompt)
-
-    def test_render_investigation_report_lists_focus_facts_and_warning(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.INVESTIGATION_REPORT_LIMIT = 6
-        session = AgentSession(
-            id="session-1",
-            exploration_cache={
-                "investigation_focus": "Inspecting shader assignment",
-                "facts": [
-                    {
-                        "subject": "symbol:SetBackFace",
-                        "claim": "method found at Runtime/Mesh/PaperMeshBuilder.cs:555",
-                        "evidence": "find_symbol(SetBackFace)",
-                    }
-                ],
-                "files_read": [{"path": "Runtime/Mesh/PaperMeshBuilder.cs", "preview": "public static void SetBackFace(..."}],
-                "warnings": [{"kind": "duplicate_read", "message": "Repeatedly read the same file"}],
-                "active_warning": {"message": "Repeatedly read the same file"},
-            },
-        )
-
-        rendered = OpenAgentRuntime.render_investigation_report(runtime, session)
-
-        self.assertIn("Investigation State", rendered)
-        self.assertIn("Focus: Inspecting shader assignment", rendered)
-        self.assertIn("Warning:", rendered)
-        self.assertIn("Facts: 1", rendered)
-        self.assertIn("Recent file reads: 1", rendered)
-
-    def test_session_exploration_cache_roundtrips_in_payload(self) -> None:
-        session = AgentSession(
-            id="session-1",
-            exploration_cache={
-                "last_project_scan": {"path": ".", "summary_text": "Project root: ."},
-                "symbol_queries": [{"query": "build", "match_count": 2}],
-            },
-        )
-
-        restored = AgentSession.from_payload(session.to_payload())
-
-        self.assertEqual(restored.exploration_cache["last_project_scan"]["path"], ".")
-        self.assertEqual(restored.exploration_cache["symbol_queries"][0]["query"], "build")
+        self.assertEqual(restored.id, "session-1")
+        self.assertFalse(hasattr(restored, "exploration_cache"))
 
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
