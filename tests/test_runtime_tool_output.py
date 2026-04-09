@@ -964,7 +964,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
         runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
-        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages: messages)
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
         runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
@@ -1033,7 +1033,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
         runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
-        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages: messages)
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
         runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
@@ -1087,6 +1087,60 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result, "Done.")
         self.assertLess(order.index(("text", "I will inspect the workspace.")), order.index(("flush", "")))
         self.assertLess(order.index(("flush", "")), order.index(("tool", "bash")))
+
+    def test_agent_loop_auto_compact_preserves_last_conversation_and_active_task_window(self) -> None:
+        captured: dict[str, object] = {}
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=90_000, max_tokens=100_000)
+        runtime.compact_manager = SimpleNamespace(
+            auto_compact=lambda session_id, messages, preserve_from_index=None: captured.update(
+                {
+                    "session_id": session_id,
+                    "preserve_from_index": preserve_from_index,
+                    "messages_before": list(messages),
+                }
+            )
+            or [
+                {"role": "user", "content": "[compressed older history]"},
+                {"role": "assistant", "content": "continuing"},
+                *messages[preserve_from_index or 0 :],
+            ]
+        )
+        runtime.complete = lambda *args, **kwargs: AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "previous question"},
+                {"role": "assistant", "content": "previous answer"},
+            ],
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "current request")
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(captured["session_id"], "session-1")
+        self.assertEqual(captured["preserve_from_index"], 2)
+        self.assertEqual(session.messages[0]["content"], "[compressed older history]")
+        self.assertEqual(session.messages[2]["content"], "previous question")
+        self.assertEqual(session.messages[3]["content"], "previous answer")
+        self.assertEqual(session.messages[4]["content"], "current request")
+        self.assertEqual(session.messages[5]["content"], "Done.")
 
 
 if __name__ == "__main__":

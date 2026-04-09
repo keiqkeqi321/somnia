@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.compact import (
+    CompactManager,
     ContextWindowUsage,
     build_payload_messages,
     should_auto_compact,
@@ -112,6 +113,29 @@ class CompactTests(unittest.TestCase):
                 hard_threshold=100_000,
             )
         )
+
+    def test_auto_compact_can_preserve_recent_task_window_while_summarizing_older_history(self) -> None:
+        snapshots: list[list[dict]] = []
+        provider = SimpleNamespace(complete=lambda **kwargs: SimpleNamespace(text_blocks=["Older history summary"]))
+        manager = CompactManager(
+            provider=provider,
+            transcript_store=SimpleNamespace(save_snapshot=lambda session_id, messages: snapshots.append(list(messages))),
+            model_max_tokens=16_000,
+        )
+        messages = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+            {"role": "user", "content": "current question"},
+        ]
+
+        compacted = manager.auto_compact("session-1", messages, preserve_from_index=2)
+
+        self.assertEqual(snapshots[0], messages)
+        self.assertEqual(compacted[0]["role"], "user")
+        self.assertIn("Older history summary", compacted[0]["content"])
+        self.assertEqual(compacted[2:], messages[2:])
 
     def test_context_window_usage_counts_full_payload_messages_without_tool_microcompact(self) -> None:
         captured_messages: list[dict] = []

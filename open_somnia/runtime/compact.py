@@ -100,8 +100,7 @@ class CompactManager:
         self.transcript_store = transcript_store
         self.model_max_tokens = model_max_tokens
 
-    def auto_compact(self, session_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        self.transcript_store.save_snapshot(session_id, messages)
+    def _summarize_messages(self, messages: list[dict[str, Any]]) -> str:
         try:
             summary_turn = self.provider.complete(
                 system_prompt=(
@@ -129,9 +128,32 @@ class CompactManager:
                 tools=[],
                 max_tokens=min(2_000, self.model_max_tokens),
             )
-            summary = "\n".join(summary_turn.text_blocks).strip() or "Conversation compacted."
+            return "\n".join(summary_turn.text_blocks).strip() or "Conversation compacted."
         except ProviderError as exc:
-            summary = f"Conversation compacted without model summary due to error: {exc}"
+            return f"Conversation compacted without model summary due to error: {exc}"
+
+    def auto_compact(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        preserve_from_index: int | None = None,
+    ) -> list[dict[str, Any]]:
+        self.transcript_store.save_snapshot(session_id, messages)
+        if preserve_from_index is not None:
+            preserve_from_index = max(0, min(preserve_from_index, len(messages)))
+            older_messages = messages[:preserve_from_index]
+            preserved_messages = messages[preserve_from_index:]
+            if not older_messages:
+                return messages
+            summary = self._summarize_messages(older_messages)
+            return [
+                {"role": "user", "content": f"[Compressed earlier history for session {session_id}]\n{summary}"},
+                {"role": "assistant", "content": "Understood. Continuing with the preserved active task window."},
+                *preserved_messages,
+            ]
+
+        summary = self._summarize_messages(messages)
         return [
             {"role": "user", "content": f"[Compressed. Full transcript saved for session {session_id}]\n{summary}"},
             {"role": "assistant", "content": "Understood. Continuing from compacted context."},

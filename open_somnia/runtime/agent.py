@@ -746,6 +746,49 @@ class OpenAgentRuntime:
         session.messages = self.compact_manager.auto_compact(session.id, session.messages)
         self.session_manager.save(session)
 
+    def _is_visible_conversation_message(self, message: dict[str, Any]) -> bool:
+        role = message.get("role")
+        content = message.get("content")
+        if role == "assistant":
+            return True
+        if role != "user" or not isinstance(content, str):
+            return False
+        return not (content.startswith("<background-results>") or content.startswith("<inbox>"))
+
+    def _active_task_preserve_index(
+        self,
+        messages: list[dict[str, Any]],
+        task_anchor_message: dict[str, Any] | None,
+    ) -> int | None:
+        if task_anchor_message is None:
+            return None
+        anchor_index = None
+        for index, message in enumerate(messages):
+            if message is task_anchor_message:
+                anchor_index = index
+                break
+        if anchor_index is None:
+            return None
+
+        preserve_index = anchor_index
+        previous_visible_index = None
+        for index in range(anchor_index - 1, -1, -1):
+            if self._is_visible_conversation_message(messages[index]):
+                previous_visible_index = index
+                break
+        if previous_visible_index is None:
+            return preserve_index
+        preserve_index = previous_visible_index
+
+        if messages[previous_visible_index].get("role") == "assistant":
+            for index in range(previous_visible_index - 1, -1, -1):
+                if not self._is_visible_conversation_message(messages[index]):
+                    continue
+                if messages[index].get("role") == "user":
+                    preserve_index = index
+                break
+        return preserve_index
+
     def _raise_if_interrupted(self, should_interrupt) -> None:
         if should_interrupt is not None and should_interrupt():
             raise TurnInterrupted("Interrupted by user.")
@@ -753,11 +796,17 @@ class OpenAgentRuntime:
     def run_turn(self, session: AgentSession, user_input: str, text_callback=None, should_interrupt=None) -> str:
         session.pending_file_changes = []
         session.last_turn_file_changes = []
-        session.messages.append(make_user_text_message(user_input))
+        task_anchor_message = make_user_text_message(user_input)
+        session.messages.append(task_anchor_message)
         self.transcript_store.append(session.id, {"role": "user", "content": user_input})
-        return self._agent_loop(session, text_callback=text_callback, should_interrupt=should_interrupt)
+        return self._agent_loop(
+            session,
+            text_callback=text_callback,
+            should_interrupt=should_interrupt,
+            task_anchor_message=task_anchor_message,
+        )
 
-    def _agent_loop(self, session: AgentSession, text_callback=None, should_interrupt=None) -> str:
+    def _agent_loop(self, session: AgentSession, text_callback=None, should_interrupt=None, task_anchor_message=None) -> str:
         final_text = ""
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
@@ -775,7 +824,12 @@ class OpenAgentRuntime:
                     self.context_window_usage(session),
                     hard_threshold=self.settings.runtime.token_threshold,
                 ):
-                    session.messages = self.compact_manager.auto_compact(session.id, session.messages)
+                    preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
+                    session.messages = self.compact_manager.auto_compact(
+                        session.id,
+                        session.messages,
+                        preserve_from_index=preserve_from_index,
+                    )
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 payload_messages = self._messages_for_model(session.messages)
@@ -857,7 +911,12 @@ class OpenAgentRuntime:
                     tool_results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
                 session.messages.append(make_tool_result_message(tool_results))
                 if manual_compact:
-                    session.messages = self.compact_manager.auto_compact(session.id, session.messages)
+                    preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
+                    session.messages = self.compact_manager.auto_compact(
+                        session.id,
+                        session.messages,
+                        preserve_from_index=preserve_from_index,
+                    )
                 self.session_manager.save(session)
                 if end_turn_after_tool:
                     continue
