@@ -19,6 +19,7 @@ from open_somnia.cli.prompting import (
     choose_mode_switch_interactively,
     create_prompt_session,
     fallback_prompt_message,
+    prompt_text_interactively,
     styled_prompt_message,
 )
 from open_somnia.cli.provider_management import collect_provider_profile_interactively, choose_provider_target_interactively
@@ -42,6 +43,8 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 
 
 READ_ONLY_COMMAND_PREFIXES = (
+    "/scan",
+    "/symbols",
     "/providers",
     "/skills",
     "/tasks",
@@ -694,6 +697,75 @@ def _is_exit_command(command: str) -> bool:
     return stripped in {"q", "exit", "/exit"}
 
 
+def _handle_scan_command(runtime, session, command: str) -> None:
+    args = command.split()[1:]
+    refresh = False
+    if args and args[0] == "--refresh":
+        refresh = True
+        args = args[1:]
+    target_path = " ".join(args).strip() or "."
+    cached = None if refresh else runtime.cached_project_scan(session, path=target_path)
+    if cached is not None:
+        print(f"[cached /scan for {target_path}]")
+        print(cached.get("summary_text", ""))
+        return
+    output = runtime.invoke_tool(
+        session,
+        "project_scan",
+        {
+            "path": target_path,
+            "depth": 2,
+            "limit": 8,
+        },
+    )
+    if isinstance(output, str) and not output.startswith("Error:"):
+        runtime.record_project_scan(session, path=target_path, summary_text=output)
+    print(output)
+    repo_summary_path = getattr(getattr(runtime, "repo_summary_store", None), "path", None)
+    if repo_summary_path is not None and isinstance(output, str) and not output.startswith("Error:"):
+        print(f"[saved repo summary] {repo_summary_path}")
+
+
+def _handle_symbols_command(runtime, session, command: str) -> None:
+    query = command.split(maxsplit=1)[1].strip() if " " in command else ""
+    if not query:
+        query = (prompt_text_interactively("Find Symbols", "Enter a symbol name substring to search for.") or "").strip()
+    if not query:
+        print("[symbol search cancelled]")
+        return
+    output = runtime.invoke_tool(
+        session,
+        "find_symbol",
+        {
+            "query": query,
+            "path": ".",
+            "limit": 50,
+        },
+    )
+    matches = runtime.parse_symbol_output(output)
+    runtime.record_symbol_lookup(session, query=query, path=".", kind="", matches=matches)
+    if not matches:
+        print(output)
+        return
+    items = [
+        (
+            str(index),
+            f"{match['name']} | {match['kind']} | {match['path']}:{match['line']}",
+        )
+        for index, match in enumerate(matches, start=1)
+    ]
+    selection = choose_item_interactively(
+        "Symbols",
+        f"Found {len(matches)} match(es) for '{query}'. Choose one to preview the source location.",
+        items,
+    )
+    if not selection:
+        print(output)
+        return
+    match = matches[int(selection) - 1]
+    print(runtime.render_symbol_preview(match["path"], int(match["line"])))
+
+
 def _handle_model_command(runtime) -> None:
     profiles = runtime.configured_provider_profiles()
     if not profiles:
@@ -1029,6 +1101,18 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                     if (was_active or queued_before) and not runner.stable_prompt:
                         ahead = queued_before + (1 if was_active else 0)
                         print(f"[queued compact; {ahead} item(s) ahead]")
+                    continue
+                if stripped == "/scan" or stripped.startswith("/scan "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /scan]")
+                        continue
+                    _handle_scan_command(runtime, session, stripped)
+                    continue
+                if stripped == "/symbols" or stripped.startswith("/symbols "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /symbols]")
+                        continue
+                    _handle_symbols_command(runtime, session, stripped)
                     continue
                 if stripped == "/skills":
                     skill_prefix = _handle_skills_command(runtime)

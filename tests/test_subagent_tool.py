@@ -33,7 +33,10 @@ class SubagentToolTests(unittest.TestCase):
 
             runtime.run_subagent("Inspect the repo", "Explore")
 
-            self.assertEqual(seen["tool_names"], ["bash", "glob", "grep", "read_file", "load_skill"])
+            self.assertEqual(
+                seen["tool_names"],
+                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "load_skill"],
+            )
 
     def test_general_purpose_subagent_exposes_edit_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -50,7 +53,7 @@ class SubagentToolTests(unittest.TestCase):
 
             self.assertEqual(
                 seen["tool_names"],
-                ["bash", "glob", "grep", "read_file", "write_file", "edit_file", "load_skill"],
+                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "write_file", "edit_file", "load_skill"],
             )
 
     def test_explore_subagent_can_use_bash_in_accept_edits_mode(self) -> None:

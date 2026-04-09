@@ -13,6 +13,7 @@ class AgentSession:
     created_at: float | None = None
     updated_at: float | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
+    exploration_cache: dict[str, Any] = field(default_factory=dict)
     todo_items: list[dict[str, Any]] = field(default_factory=list)
     rounds_without_todo: int = 0
     latest_turn_id: str | None = None
@@ -27,6 +28,7 @@ class AgentSession:
             created_at=payload.get("created_at"),
             updated_at=payload.get("updated_at"),
             messages=list(payload.get("messages", [])),
+            exploration_cache=dict(payload.get("exploration_cache", {})),
             todo_items=list(payload.get("todo_items", [])),
             rounds_without_todo=int(payload.get("rounds_without_todo", 0)),
             latest_turn_id=payload.get("latest_turn_id"),
@@ -40,6 +42,7 @@ class AgentSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "messages": self.messages,
+            "exploration_cache": self.exploration_cache,
             "todo_items": self.todo_items,
             "rounds_without_todo": self.rounds_without_todo,
             "latest_turn_id": self.latest_turn_id,

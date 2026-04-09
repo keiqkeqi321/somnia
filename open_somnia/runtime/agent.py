@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from queue import Empty, Queue
@@ -52,11 +53,14 @@ from open_somnia.storage.inbox import InboxStore
 from open_somnia.storage.jobs import JobStore
 from open_somnia.storage.sessions import SessionStore
 from open_somnia.storage.common import atomic_write_text
+from open_somnia.storage.common import now_ts
+from open_somnia.storage.repo_summary import RepoSummaryStore
 from open_somnia.storage.tasks import TaskStore
 from open_somnia.storage.team import TeamStore
 from open_somnia.storage.tool_logs import ToolLogStore
 from open_somnia.storage.transcripts import TranscriptStore
 from open_somnia.tools.background import BackgroundManager, register_background_tools
+from open_somnia.tools.filesystem import _read_text_with_fallback, safe_path
 from open_somnia.tools.filesystem import register_filesystem_tools
 from open_somnia.tools.mcp import register_mcp_tools
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
@@ -75,6 +79,9 @@ class OpenAgentRuntime:
     TURN_BOUNDARY_TOOL_NAMES = {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
+    EXPLORATION_CACHE_LIMIT = 10
+    EXPLORATION_PROMPT_CHAR_LIMIT = 2_000
+    REPO_SUMMARY_PROMPT_CHAR_LIMIT = 2_500
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -127,6 +134,7 @@ class OpenAgentRuntime:
         self.provider = self._make_provider()
         self.transcript_store = TranscriptStore(settings.storage.transcripts_dir)
         self.session_manager = SessionManager(SessionStore(settings.storage.sessions_dir), self.transcript_store)
+        self.repo_summary_store = RepoSummaryStore(settings.storage.data_dir)
         self.task_store = TaskStore(settings.storage.tasks_dir)
         self.job_store = JobStore(settings.storage.jobs_dir)
         self.tool_log_store = ToolLogStore(settings.storage.logs_dir)
@@ -392,7 +400,7 @@ class OpenAgentRuntime:
             messages = []
         payload_messages = self._messages_for_model(messages)
         try:
-            system_prompt = self.build_system_prompt(actor=actor, role=role)
+            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
         tools = self._context_usage_tools(actor)
@@ -562,8 +570,13 @@ class OpenAgentRuntime:
     def _environment_guidance(self) -> str:
         return self._system_prompt_builder().environment_guidance()
 
-    def build_system_prompt(self, actor: str = "lead", role: str = "lead coding agent") -> str:
-        return self._system_prompt_builder().build_system_prompt(actor=actor, role=role)
+    def build_system_prompt(
+        self,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+        session: AgentSession | None = None,
+    ) -> str:
+        return self._system_prompt_builder().build_system_prompt(actor=actor, role=role, session=session)
 
     def _base_system_prompt(self) -> str:
         return self._system_prompt_builder().base_system_prompt()
@@ -579,6 +592,157 @@ class OpenAgentRuntime:
 
     def list_sessions(self) -> list[AgentSession]:
         return self.session_manager.list_all()
+
+    def _ensure_exploration_cache(self, session: AgentSession) -> dict[str, Any]:
+        cache = getattr(session, "exploration_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            session.exploration_cache = cache
+        return cache
+
+    def _push_exploration_entry(self, session: AgentSession, key: str, entry: dict[str, Any]) -> None:
+        cache = self._ensure_exploration_cache(session)
+        items = list(cache.get(key, []))
+        items.insert(0, entry)
+        cache[key] = items[: self.EXPLORATION_CACHE_LIMIT]
+
+    def record_project_scan(self, session: AgentSession, *, path: str, summary_text: str, source: str = "command") -> None:
+        timestamp = now_ts()
+        entry = {
+            "path": path,
+            "summary_text": summary_text,
+            "source": source,
+            "updated_at": timestamp,
+        }
+        cache = self._ensure_exploration_cache(session)
+        cache["last_project_scan"] = entry
+        self._push_exploration_entry(session, "project_scans", entry)
+        self.repo_summary_store.update_scan(path=path, summary_text=summary_text)
+        self.session_manager.save(session)
+
+    def record_symbol_lookup(
+        self,
+        session: AgentSession,
+        *,
+        query: str,
+        path: str,
+        kind: str,
+        matches: list[dict[str, Any]],
+        source: str = "command",
+    ) -> None:
+        timestamp = now_ts()
+        entry = {
+            "query": query,
+            "path": path,
+            "kind": kind,
+            "match_count": len(matches),
+            "matches": matches[:10],
+            "source": source,
+            "updated_at": timestamp,
+        }
+        cache = self._ensure_exploration_cache(session)
+        cache["last_symbol_lookup"] = entry
+        self._push_exploration_entry(session, "symbol_queries", entry)
+        self.repo_summary_store.record_symbol_query(
+            query=query,
+            path=path,
+            kind=kind,
+            match_count=len(matches),
+        )
+        self.session_manager.save(session)
+
+    def cached_project_scan(self, session: AgentSession, *, path: str) -> dict[str, Any] | None:
+        cache = self._ensure_exploration_cache(session)
+        for item in list(cache.get("project_scans", [])):
+            if str(item.get("path", "")).strip() == path:
+                return item
+        return None
+
+    def repo_summary_prompt(self) -> str:
+        store = getattr(self, "repo_summary_store", None)
+        if store is None:
+            return ""
+        try:
+            payload = store.load()
+        except Exception:
+            return ""
+        summary_text = str(payload.get("summary_text", "")).strip()
+        if not summary_text:
+            return ""
+        if len(summary_text) > self.REPO_SUMMARY_PROMPT_CHAR_LIMIT:
+            summary_text = summary_text[: self.REPO_SUMMARY_PROMPT_CHAR_LIMIT].rstrip() + "\n..."
+        return summary_text
+
+    def session_exploration_prompt(self, session: AgentSession | None) -> str:
+        if session is None:
+            return ""
+        cache = getattr(session, "exploration_cache", None)
+        if not isinstance(cache, dict):
+            return ""
+        lines: list[str] = []
+        last_scan = cache.get("last_project_scan")
+        if isinstance(last_scan, dict):
+            path = str(last_scan.get("path", ".")).strip() or "."
+            summary_text = str(last_scan.get("summary_text", "")).strip()
+            if summary_text:
+                lines.append(f"Last /scan path: {path}")
+                lines.append(summary_text)
+        recent_symbols = list(cache.get("symbol_queries", []))[:3]
+        if recent_symbols:
+            if lines:
+                lines.append("")
+            lines.append("Recent symbol lookups:")
+            for item in recent_symbols:
+                query = str(item.get("query", "")).strip()
+                path = str(item.get("path", ".")).strip() or "."
+                kind = str(item.get("kind", "")).strip() or "any"
+                count = int(item.get("match_count", 0))
+                lines.append(f"- {query} | path={path} | kind={kind} | matches={count}")
+        text = "\n".join(line for line in lines if line is not None).strip()
+        if len(text) > self.EXPLORATION_PROMPT_CHAR_LIMIT:
+            text = text[: self.EXPLORATION_PROMPT_CHAR_LIMIT].rstrip() + "\n..."
+        return text
+
+    def parse_symbol_output(self, output: object) -> list[dict[str, Any]]:
+        if not isinstance(output, str):
+            return []
+        matches: list[dict[str, Any]] = []
+        for line in output.splitlines():
+            parsed = re.match(r"^(.*?):(\d+):([A-Za-z_]+) (.+)$", line.strip())
+            if parsed is None:
+                continue
+            matches.append(
+                {
+                    "path": parsed.group(1),
+                    "line": int(parsed.group(2)),
+                    "kind": parsed.group(3),
+                    "name": parsed.group(4),
+                }
+            )
+        return matches
+
+    def render_symbol_preview(self, relative_path: str, line_number: int, *, context_lines: int = 6) -> str:
+        path = safe_path(self.settings.workspace_root, relative_path)
+        lines = _read_text_with_fallback(path).splitlines()
+        if not lines:
+            return f"{relative_path}:1\n(empty file)"
+        center = max(1, line_number)
+        start = max(1, center - context_lines)
+        end = min(len(lines), center + context_lines)
+        rendered = [f"{relative_path}:{center}"]
+        for current in range(start, end + 1):
+            marker = ">" if current == center else " "
+            rendered.append(f"{marker} {current:4d} | {lines[current - 1]}")
+        return "\n".join(rendered)
+
+    def invoke_tool(self, session: AgentSession, name: str, payload: dict[str, Any], *, actor: str = "lead") -> Any:
+        ctx = ToolExecutionContext(
+            runtime=self,
+            session=session,
+            actor=actor,
+            trace_id=f"{session.id}-interactive-{uuid.uuid4().hex[:8]}",
+        )
+        return self.registry.execute(ctx, name, payload)
 
     def complete(
         self,
@@ -732,8 +896,13 @@ class OpenAgentRuntime:
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 payload_messages = self._messages_for_model(session.messages)
 
+                try:
+                    system_prompt = self.build_system_prompt(session=session)
+                except TypeError:
+                    system_prompt = self.build_system_prompt()
+
                 turn = self.complete(
-                    self.build_system_prompt(),
+                    system_prompt,
                     payload_messages,
                     self.registry.schemas(),
                     text_callback=text_callback,

@@ -71,6 +71,15 @@ class ToolEventRenderer:
         if tool_name == "read_file":
             path = str(tool_input.get("path", "")).strip() or "(unknown path)"
             return f"Read({path})"
+        if tool_name == "tree":
+            path = str(tool_input.get("path", ".")).strip() or "."
+            return f"Tree({path})"
+        if tool_name == "project_scan":
+            path = str(tool_input.get("path", ".")).strip() or "."
+            return f"ProjectScan({path})"
+        if tool_name == "find_symbol":
+            query = str(tool_input.get("query", "")).strip() or "(missing query)"
+            return f"FindSymbol({query})"
         if tool_name == AUTHORIZATION_TOOL_NAME:
             target = str(tool_input.get("tool_name", "")).strip() or "tool"
             return f"Authorize({target})"

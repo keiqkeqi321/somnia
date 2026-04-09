@@ -5,7 +5,17 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from open_somnia.tools.filesystem import edit_file, glob_search, grep_search, read_file, safe_path, write_file
+from open_somnia.tools.filesystem import (
+    edit_file,
+    find_symbol,
+    glob_search,
+    grep_search,
+    project_scan,
+    read_file,
+    safe_path,
+    tree_view,
+    write_file,
+)
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 
 
@@ -121,6 +131,30 @@ class FilesystemToolTests(unittest.TestCase):
             result = glob_search(ctx, {"pattern": "*.py", "recursive": True})
 
         self.assertEqual(result, "src/app.py")
+
+    def test_tree_view_renders_shallow_project_map_and_skips_noise_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "Runtime" / "Core").mkdir(parents=True)
+            (root / "Library").mkdir()
+            (root / "Runtime" / "Core" / "PaperComponent.cs").write_text("class PaperComponent {}\n", encoding="utf-8")
+            (root / "README.md").write_text("hello\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = tree_view(ctx, {"path": ".", "depth": 2})
+
+        self.assertIn("./", result)
+        self.assertIn("Runtime/", result)
+        self.assertIn("README.md", result)
+        self.assertNotIn("Library/", result)
 
     def test_glob_search_allows_explicit_subdirectory_patterns_without_recursive_walk(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -255,6 +289,61 @@ class FilesystemToolTests(unittest.TestCase):
             result = read_file(ctx, {"path": "demo.cs"})
 
         self.assertEqual(result, "第一行\n第二行")
+
+    def test_find_symbol_locates_csharp_types_and_methods_by_substring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "Runtime" / "Core"
+            target.mkdir(parents=True)
+            (target / "PaperComponent.cs").write_text(
+                "public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            type_result = find_symbol(ctx, {"query": "PaperComp"})
+            method_result = find_symbol(ctx, {"query": "BuildMesh"})
+
+        self.assertIn("Runtime/Core/PaperComponent.cs:1:class PaperComponent", type_result)
+        self.assertIn("Runtime/Core/PaperComponent.cs:2:method BuildMesh", method_result)
+
+    def test_project_scan_summarizes_guidance_source_roots_and_languages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "Assets" / "Scripts").mkdir(parents=True)
+            (root / "Packages").mkdir()
+            (root / "Assets" / "Scripts" / "PaperComponent.cs").write_text("public class PaperComponent {}\n", encoding="utf-8")
+            (root / "AGENTS.md").write_text("rules\n", encoding="utf-8")
+            (root / "README.md").write_text("intro\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = project_scan(ctx, {"path": ".", "depth": 2})
+
+        self.assertIn("Guidance files:", result)
+        self.assertIn("AGENTS.md", result)
+        self.assertIn("Manifests:", result)
+        self.assertIn("pyproject.toml", result)
+        self.assertIn("Likely source roots:", result)
+        self.assertIn("Assets/", result)
+        self.assertIn("Languages/files:", result)
+        self.assertIn(".cs: 1", result)
 
     def test_read_file_auto_resolves_unique_missing_filename_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

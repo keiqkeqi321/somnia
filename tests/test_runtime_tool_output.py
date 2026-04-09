@@ -211,6 +211,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.execution_mode = "plan"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.repo_summary_prompt = lambda: ""
+        runtime.session_exploration_prompt = lambda session: ""
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
@@ -219,6 +221,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Workspace:", prompt)
         self.assertIn("bash", prompt)
         self.assertIn("Prefer dedicated tools over `bash`", prompt)
+        self.assertIn("prefer `project_scan` or a focused `tree`", prompt)
+        self.assertIn("Use `find_symbol` to locate classes", prompt)
         self.assertIn("Use `glob` instead of shell file discovery commands", prompt)
         self.assertIn("Use `grep` instead of shell content search commands", prompt)
         self.assertIn("Do not start with broad `glob` patterns such as `**/*`", prompt)
@@ -231,6 +235,41 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("request_mode_switch", prompt)
         self.assertIn("Use subagent for isolated subagent work.", prompt)
         self.assertIn("Do not claim to be Claude", prompt)
+
+    def test_build_system_prompt_includes_repo_and_session_exploration_memory(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.repo_summary_prompt = lambda: "Project root: .\nLikely stack: Python"
+        runtime.session_exploration_prompt = lambda session: "Last /scan path: src\nRecent symbol lookups:\n- build_app | path=. | kind=any | matches=2"
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime, session=AgentSession(id="session-1"))
+
+        self.assertIn("Repository memory:", prompt)
+        self.assertIn("<repo_summary>", prompt)
+        self.assertIn("Likely stack: Python", prompt)
+        self.assertIn("Session exploration memory:", prompt)
+        self.assertIn("Last /scan path: src", prompt)
+        self.assertIn("Recent symbol lookups:", prompt)
+
+    def test_session_exploration_cache_roundtrips_in_payload(self) -> None:
+        session = AgentSession(
+            id="session-1",
+            exploration_cache={
+                "last_project_scan": {"path": ".", "summary_text": "Project root: ."},
+                "symbol_queries": [{"query": "build", "match_count": 2}],
+            },
+        )
+
+        restored = AgentSession.from_payload(session.to_payload())
+
+        self.assertEqual(restored.exploration_cache["last_project_scan"]["path"], ".")
+        self.assertEqual(restored.exploration_cache["symbol_queries"][0]["query"], "build")
 
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

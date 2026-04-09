@@ -167,6 +167,8 @@ somnia compact
 进入交互式模式后，可使用：
 
 ```text
+/scan
+/symbols
 /compact
 /model
 /tasks
@@ -181,6 +183,8 @@ somnia compact
 
 这些命令分别用于：
 
+- `/scan`：扫描当前仓库或子目录，并缓存项目摘要
+- `/symbols`：查找符号并预览匹配位置附近源码
 - `/compact`：压缩当前上下文
 - `/model`：查看或切换模型信息
 - `/tasks`：查看任务状态
@@ -326,6 +330,7 @@ pip install --upgrade somnia
 - [07-Docker部署](./Docs/07-Docker部署.md)
 - [08-用户安装方式](./Docs/08-用户安装方式.md)
 - [09-常见问题排查](./Docs/09-常见问题排查.md)
+- [10-探索能力](./Docs/10-探索能力.md)
 
 ## 版本与发布
 

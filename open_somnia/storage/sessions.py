@@ -24,6 +24,7 @@ class SessionStore:
             "created_at": now_ts(),
             "updated_at": now_ts(),
             "messages": [],
+            "exploration_cache": {},
             "todo_items": [],
             "rounds_without_todo": 0,
             "latest_turn_id": None,

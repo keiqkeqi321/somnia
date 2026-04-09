@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+from collections import Counter
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -14,6 +16,132 @@ from typing import Any
 from open_somnia.tools.registry import ToolDefinition
 
 READ_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "cp936")
+EXPLORATION_IGNORED_DIR_NAMES = {
+    ".git",
+    ".open_somnia",
+    "__pycache__",
+    ".venv",
+    "node_modules",
+    "Library",
+    "Temp",
+    "Logs",
+    "obj",
+    "bin",
+    "dist",
+}
+CODE_FILE_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".swift",
+    ".ts",
+    ".tsx",
+}
+GUIDANCE_FILENAMES = {"AGENTS.md", "CLAUDE.md", "README.md", "README"}
+MANIFEST_FILENAMES = {
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "ProjectSettings.asset",
+    "Packages/manifest.json",
+}
+ENTRY_FILE_NAMES = {
+    "app.py",
+    "main.py",
+    "Program.cs",
+    "Main.cs",
+    "cli.py",
+    "index.ts",
+    "index.tsx",
+    "main.ts",
+    "main.tsx",
+    "server.ts",
+    "server.js",
+}
+SOURCE_ROOT_HINTS = {
+    "assets",
+    "editor",
+    "lib",
+    "package",
+    "packages",
+    "runtime",
+    "scripts",
+    "src",
+    "test",
+    "tests",
+}
+SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
+    ".py": [
+        (re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class", 1),
+        (re.compile(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function", 1),
+    ],
+    ".cs": [
+        (
+            re.compile(
+                r"^\s*(?:\[[^\]]+\]\s*)*(?:(?:public|private|protected|internal|static|abstract|sealed|partial|new)\s+)*(class|interface|enum|struct|record)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+            ),
+            "type",
+            2,
+        ),
+        (
+            re.compile(
+                r"^\s*(?:(?:public|private|protected|internal|static|virtual|override|async|sealed|partial|new)\s+)+[A-Za-z_<>\[\],?.]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+            ),
+            "method",
+            1,
+        ),
+    ],
+    ".ts": [
+        (re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class", 1),
+        (re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "interface", 1),
+        (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function", 1),
+        (re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\("), "function", 1),
+    ],
+    ".tsx": [
+        (re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class", 1),
+        (re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "interface", 1),
+        (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function", 1),
+        (re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\("), "function", 1),
+    ],
+    ".js": [
+        (re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class", 1),
+        (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function", 1),
+        (re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\("), "function", 1),
+    ],
+    ".jsx": [
+        (re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class", 1),
+        (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function", 1),
+        (re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\("), "function", 1),
+    ],
+    ".java": [
+        (re.compile(r"^\s*(?:(?:public|private|protected|abstract|final|static)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type", 2),
+    ],
+    ".go": [
+        (re.compile(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)\b"), "type", 1),
+        (re.compile(r"^\s*func\s+(?:\([^)]+\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function", 1),
+    ],
+    ".rs": [
+        (re.compile(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "type", 1),
+        (re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function", 1),
+    ],
+}
 
 
 def safe_path(workspace_root: Path, relative_path: str) -> Path:
@@ -46,6 +174,38 @@ def _read_text_with_fallback(path: Path) -> str:
             continue
     text = raw.decode("utf-8", errors="replace")
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _should_skip_name(name: str, *, include_hidden: bool) -> bool:
+    if not include_hidden and name.startswith("."):
+        return True
+    return name in EXPLORATION_IGNORED_DIR_NAMES
+
+
+def _filtered_walk(base_path: Path, *, include_hidden: bool = False):
+    for current_root, dir_names, file_names in os.walk(base_path):
+        dir_names[:] = sorted(
+            [
+                name
+                for name in dir_names
+                if not _should_skip_name(name, include_hidden=include_hidden)
+            ]
+        )
+        filtered_files = sorted(
+            [
+                name
+                for name in file_names
+                if include_hidden or not name.startswith(".")
+            ]
+        )
+        yield Path(current_root), dir_names, filtered_files
+
+
+def _relative_label(workspace_root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(workspace_root).as_posix() or "."
+    except ValueError:
+        return str(path)
 
 
 def _nearest_existing_parent(path: Path, workspace_root: Path) -> Path:
@@ -166,6 +326,216 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
         lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
     content = "\n".join(lines)
     return f"{prefix}{content}"[: ctx.runtime.settings.runtime.max_tool_output_chars]
+
+
+def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
+    workspace_root = ctx.runtime.settings.workspace_root
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    if not base_path.exists():
+        return f"Error: Path not found: {payload.get('path', '.')}"
+    if not base_path.is_dir():
+        return f"Error: Path is not a directory: {payload.get('path', '.')}"
+
+    depth = max(0, int(payload.get("depth", 2)))
+    limit = max(1, int(payload.get("limit", 200)))
+    include_hidden = bool(payload.get("include_hidden", False))
+    dirs_first = bool(payload.get("dirs_first", True))
+    lines = [_relative_label(workspace_root, base_path) + "/"]
+    shown = 0
+    truncated = False
+
+    def walk(current: Path, prefix: str, current_depth: int) -> None:
+        nonlocal shown, truncated
+        if current_depth >= depth or truncated:
+            return
+        try:
+            entries = [entry for entry in current.iterdir() if not _should_skip_name(entry.name, include_hidden=include_hidden)]
+        except OSError as exc:
+            lines.append(f"{prefix}└── [error: {exc}]")
+            return
+        if dirs_first:
+            entries.sort(key=lambda item: (0 if item.is_dir() else 1, item.name.lower()))
+        else:
+            entries.sort(key=lambda item: item.name.lower())
+        for index, entry in enumerate(entries):
+            connector = "└── " if index == len(entries) - 1 else "├── "
+            child_prefix = prefix + ("    " if index == len(entries) - 1 else "│   ")
+            label = entry.name + ("/" if entry.is_dir() else "")
+            lines.append(prefix + connector + label)
+            shown += 1
+            if shown >= limit:
+                truncated = True
+                return
+            if entry.is_dir():
+                walk(entry, child_prefix, current_depth + 1)
+                if truncated:
+                    return
+
+    walk(base_path, "", 0)
+    if truncated:
+        lines.append(f"... ({limit} entries shown)")
+    if len(lines) == 1:
+        lines.append("(empty directory)")
+    return "\n".join(lines)[: ctx.runtime.settings.runtime.max_tool_output_chars]
+
+
+def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
+    workspace_root = ctx.runtime.settings.workspace_root
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    if not base_path.exists():
+        return f"Error: Path not found: {payload.get('path', '.')}"
+    if not base_path.is_dir():
+        return f"Error: Path is not a directory: {payload.get('path', '.')}"
+
+    query = str(payload.get("query", "")).strip()
+    if not query:
+        return "Error: query is required."
+    normalized_query = query if bool(payload.get("case_sensitive", False)) else query.lower()
+    limit = max(1, int(payload.get("limit", 50)))
+    include_hidden = bool(payload.get("include_hidden", False))
+    kind_filter = str(payload.get("kind", "")).strip().lower()
+    results: list[str] = []
+    truncated = False
+
+    for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden):
+        for file_name in file_names:
+            candidate = current_root / file_name
+            extension = candidate.suffix.lower()
+            patterns = SYMBOL_PATTERNS.get(extension, [])
+            if not patterns:
+                continue
+            try:
+                lines = _read_text_with_fallback(candidate).splitlines()
+            except Exception:
+                continue
+            relative = candidate.relative_to(workspace_root).as_posix()
+            for line_number, line in enumerate(lines, start=1):
+                for pattern, default_kind, name_group in patterns:
+                    match = pattern.search(line)
+                    if not match:
+                        continue
+                    symbol_name = match.group(name_group)
+                    detected_kind = match.group(1).lower() if default_kind == "type" and match.lastindex and match.lastindex >= 2 else default_kind
+                    if kind_filter and detected_kind != kind_filter:
+                        continue
+                    haystack = symbol_name if bool(payload.get("case_sensitive", False)) else symbol_name.lower()
+                    if normalized_query not in haystack:
+                        continue
+                    results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
+                    break
+                if len(results) >= limit:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+
+    if not results:
+        return "(no matches)"
+    if truncated:
+        results.append(f"... ({limit} matches shown)")
+    return "\n".join(results)[: ctx.runtime.settings.runtime.max_tool_output_chars]
+
+
+def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
+    workspace_root = ctx.runtime.settings.workspace_root
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    if not base_path.exists():
+        return f"Error: Path not found: {payload.get('path', '.')}"
+    if not base_path.is_dir():
+        return f"Error: Path is not a directory: {payload.get('path', '.')}"
+
+    include_hidden = bool(payload.get("include_hidden", False))
+    depth = max(1, int(payload.get("depth", 2)))
+    max_results = max(1, int(payload.get("limit", 8)))
+    ext_counts: Counter[str] = Counter()
+    guidance_files: list[str] = []
+    manifest_files: list[str] = []
+    entry_candidates: list[str] = []
+    file_count = 0
+    dir_count = 0
+
+    for current_root, dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden):
+        current_path = Path(current_root)
+        rel_parts = current_path.relative_to(base_path).parts if current_path != base_path else ()
+        dir_count += len(dir_names)
+        for file_name in file_names:
+            file_count += 1
+            relative = (current_path / file_name).relative_to(workspace_root).as_posix()
+            suffix = Path(file_name).suffix.lower()
+            if suffix:
+                ext_counts[suffix] += 1
+            if file_name in GUIDANCE_FILENAMES and len(guidance_files) < max_results:
+                guidance_files.append(relative)
+            manifest_key = relative if relative in MANIFEST_FILENAMES else file_name
+            if manifest_key in MANIFEST_FILENAMES and len(manifest_files) < max_results:
+                manifest_files.append(relative)
+            if file_name in ENTRY_FILE_NAMES and len(entry_candidates) < max_results:
+                entry_candidates.append(relative)
+
+    top_level_dirs: list[str] = []
+    top_level_files: list[str] = []
+    for entry in sorted(base_path.iterdir(), key=lambda item: (0 if item.is_dir() else 1, item.name.lower())):
+        if _should_skip_name(entry.name, include_hidden=include_hidden):
+            continue
+        relative = entry.relative_to(workspace_root).as_posix()
+        if entry.is_dir():
+            top_level_dirs.append(relative + "/")
+        else:
+            top_level_files.append(relative)
+
+    source_roots = [
+        item
+        for item in top_level_dirs
+        if item.rstrip("/").split("/")[-1].lower() in SOURCE_ROOT_HINTS
+    ][:max_results]
+
+    stack_hints: list[str] = []
+    if any(item.endswith(".cs") for item in ext_counts):
+        stack_hints.append("C#")
+    if any(item.endswith(".py") for item in ext_counts):
+        stack_hints.append("Python")
+    if any(item.endswith(".ts") or item.endswith(".tsx") or item.endswith(".js") for item in ext_counts):
+        stack_hints.append("JavaScript/TypeScript")
+    if any(path.endswith("Assets/") for path in top_level_dirs) and any(path.endswith("Packages/") for path in top_level_dirs):
+        stack_hints.append("Unity")
+
+    lines = [
+        f"Project root: {_relative_label(workspace_root, base_path)}",
+        f"Counts: {file_count} files, {dir_count} dirs",
+    ]
+    if stack_hints:
+        lines.append(f"Likely stack: {', '.join(stack_hints)}")
+    if guidance_files:
+        lines.append("Guidance files:")
+        lines.extend(f"- {item}" for item in guidance_files)
+    if manifest_files:
+        lines.append("Manifests:")
+        lines.extend(f"- {item}" for item in manifest_files)
+    if source_roots:
+        lines.append("Likely source roots:")
+        lines.extend(f"- {item}" for item in source_roots)
+    if entry_candidates:
+        lines.append("Entry candidates:")
+        lines.extend(f"- {item}" for item in entry_candidates)
+    if ext_counts:
+        lines.append("Languages/files:")
+        for extension, count in ext_counts.most_common(max_results):
+            lines.append(f"- {extension}: {count}")
+    lines.append("Tree:")
+    lines.append(
+        tree_view(
+            ctx,
+            {
+                "path": str(payload.get("path", ".")),
+                "depth": depth,
+                "limit": max(20, max_results * 12),
+                "include_hidden": include_hidden,
+            },
+        )
+    )
+    return "\n".join(lines)[: ctx.runtime.settings.runtime.max_tool_output_chars]
 
 
 def _format_glob_no_matches(
@@ -392,6 +762,58 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
 
 
 def register_filesystem_tools(registry) -> None:
+    registry.register(
+        ToolDefinition(
+            name="project_scan",
+            description="Build a concise project map: likely stacks, guidance files, manifests, source roots, entry candidates, language/file counts, and a shallow tree. Prefer this at the start of repository exploration.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "depth": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "include_hidden": {"type": "boolean"},
+                },
+            },
+            handler=project_scan,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="tree",
+            description="Render a shallow directory tree for a focused path. Use this to build a mental map before reading files or falling back to broad glob patterns.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "depth": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "dirs_first": {"type": "boolean"},
+                    "include_hidden": {"type": "boolean"},
+                },
+            },
+            handler=tree_view,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="find_symbol",
+            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. Prefer this before guessing code paths from docs or filenames alone.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "case_sensitive": {"type": "boolean"},
+                    "limit": {"type": "integer"},
+                    "include_hidden": {"type": "boolean"},
+                },
+                "required": ["query"],
+            },
+            handler=find_symbol,
+        )
+    )
     registry.register(
         ToolDefinition(
             name="glob",

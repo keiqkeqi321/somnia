@@ -5,7 +5,7 @@ from typing import Any
 
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message
-from open_somnia.tools.filesystem import edit_file, glob_search, grep_search, read_file, write_file
+from open_somnia.tools.filesystem import edit_file, find_symbol, glob_search, grep_search, project_scan, read_file, tree_view, write_file
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 from open_somnia.tools.shell import register_shell_tool
 
@@ -17,7 +17,7 @@ class SubagentRunner:
     def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         registry = self._build_registry(agent_type)
         capability_guidance = (
-            "You are in Explore mode. Use read-only tools only: `bash`, `glob`, `grep`, `read_file`, and `load_skill`. "
+            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, and `load_skill`. "
             "Do not attempt workspace edits."
             if agent_type == "Explore"
             else "You are in general-purpose mode. In addition to read-only tools, you may use `write_file` and `edit_file` when needed."
@@ -62,6 +62,53 @@ class SubagentRunner:
     def _build_registry(self, agent_type: str) -> ToolRegistry:
         registry = ToolRegistry()
         register_shell_tool(registry)
+        registry.register(
+            ToolDefinition(
+                name="project_scan",
+                description="Build a concise project map before diving into files.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "depth": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                    },
+                },
+                handler=project_scan,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="tree",
+                description="Render a shallow directory tree for a focused path.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "depth": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                    },
+                },
+                handler=tree_view,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="find_symbol",
+                description="Locate classes, functions, methods, or interfaces by symbol name substring.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "path": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["query"],
+                },
+                handler=find_symbol,
+            )
+        )
         registry.register(
             ToolDefinition(
                 name="glob",

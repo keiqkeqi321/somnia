@@ -32,10 +32,16 @@ class SystemPromptBuilder:
             f"- {bash_hint}"
         )
 
-    def build_system_prompt(self, actor: str = "lead", role: str = "lead coding agent") -> str:
+    def build_system_prompt(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> str:
         base_prompt = self.base_system_prompt()
         environment_guidance = self.environment_guidance()
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
+        repo_summary = self.runtime.repo_summary_prompt() if callable(getattr(self.runtime, "repo_summary_prompt", None)) else ""
+        session_exploration = (
+            self.runtime.session_exploration_prompt(session)
+            if callable(getattr(self.runtime, "session_exploration_prompt", None))
+            else ""
+        )
         identity_guidance = (
             "Identity rules:\n"
             f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
@@ -46,12 +52,16 @@ class SystemPromptBuilder:
         tool_selection_guidance = (
             "Tool selection rules:\n"
             "- Prefer dedicated tools over `bash` whenever a relevant tool exists.\n"
+            "- At the start of repository exploration, prefer `project_scan` or a focused `tree` to build a project map.\n"
+            "- Use `find_symbol` to locate classes, functions, methods, or interfaces before guessing code paths from docs or memory.\n"
             "- Use `read_file` instead of shell commands such as `cat`, `head`, `tail`, or `sed` for reading files.\n"
             "- Use `edit_file` instead of shell text replacement via `sed` or `awk`.\n"
             "- Use `write_file` instead of shell redirection or heredocs for file creation.\n"
+            "- Use `tree` for shallow structure inspection instead of broad file enumeration.\n"
             "- Use `glob` instead of shell file discovery commands such as `find`, `ls`, or recursive directory listings.\n"
             "- Use `grep` instead of shell content search commands such as `grep` or `rg`.\n"
             "- Do not start with broad `glob` patterns such as `**/*` unless the user explicitly wants a full tree dump.\n"
+            "- After reading project guidance files such as AGENTS.md or CLAUDE.md, use `project_scan`, `tree`, or `find_symbol` to validate the documented structure against the actual repository.\n"
             "- Prefer precise `glob` patterns such as an exact filename, a suffix filter like `**/*.cs`, or a narrowed directory such as `Runtime/UI/**/*.cs`.\n"
             "- Before `read_file` or `edit_file`, confirm the exact path with a focused `glob`; do not guess file paths from broad directory listings.\n"
             "- Reserve `bash` for system commands and terminal operations that truly require shell execution.\n"
@@ -64,6 +74,19 @@ class SystemPromptBuilder:
             "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
             "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results."
         )
+        exploration_memory = ""
+        if repo_summary:
+            exploration_memory += (
+                "Repository memory:\n"
+                "Use this persisted summary as a starting hint, then verify it with tools before making strong assumptions.\n"
+                f"<repo_summary>\n{repo_summary}\n</repo_summary>\n"
+            )
+        if session_exploration:
+            exploration_memory += (
+                "Session exploration memory:\n"
+                "This reflects the current session's recent scans and symbol lookups. Reuse it when helpful, but still verify details before editing.\n"
+                f"<session_exploration>\n{session_exploration}\n</session_exploration>\n"
+            )
         if actor == "lead":
             return (
                 f"{base_prompt}\n\n"
@@ -75,6 +98,7 @@ class SystemPromptBuilder:
                 f"{mode_guidance}\n"
                 f"{tool_selection_guidance}\n"
                 f"{workflow_guidance}\n"
+                f"{exploration_memory}"
                 f"{environment_guidance}\n"
                 f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
             )
@@ -88,6 +112,7 @@ class SystemPromptBuilder:
             f"{mode_guidance}\n"
             f"{tool_selection_guidance}\n"
             f"{workflow_guidance}\n"
+            f"{exploration_memory}"
             f"{environment_guidance}\n"
             f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
         )
