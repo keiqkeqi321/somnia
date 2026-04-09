@@ -72,7 +72,10 @@ class SystemPromptBuilder:
             "- Use `TodoWrite` to break down meaningful work and keep progress visible to the user.\n"
             "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
             "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
-            "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results."
+            "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
+            "- Do not claim a root cause until your evidence materially narrows the main alternatives.\n"
+            "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
+            "- Treat repository exploration as an investigation: gather evidence, update hypotheses, then conclude."
         )
         exploration_memory = ""
         if repo_summary:

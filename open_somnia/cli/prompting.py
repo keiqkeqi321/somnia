@@ -27,6 +27,7 @@ from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory and cache a project summary"),
     ("/symbols", "Find symbols and inspect matching source locations"),
+    ("/investigation", "Show the current exploration state, facts, and warnings"),
     ("/model", "Choose the active provider and model"),
     ("/providers", "Add or edit shared provider profiles"),
     ("/undo", "Undo the most recent file change set"),

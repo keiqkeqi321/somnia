@@ -27,6 +27,20 @@ def _tool_call(call_id: str, name: str) -> dict:
     }
 
 
+def _tool_call_with_input(call_id: str, name: str, input_payload: dict) -> dict:
+    return {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_call",
+                "id": call_id,
+                "name": name,
+                "input": input_payload,
+            }
+        ],
+    }
+
+
 def _tool_result(call_id: str, content: str) -> dict:
     return {
         "role": "user",
@@ -51,6 +65,8 @@ class CompactTests(unittest.TestCase):
             _tool_result("call-2", "b" * 300),
             _tool_call("call-3", "read_file"),
             _tool_result("call-3", "c" * 300),
+            _tool_call("call-4", "tree"),
+            _tool_result("call-4", "d" * 300),
         ]
 
         payload_messages = build_payload_messages(messages)
@@ -62,6 +78,7 @@ class CompactTests(unittest.TestCase):
         self.assertNotIn("log_id", oldest_payload_result)
         self.assertEqual(payload_messages[3]["content"][0]["content"], "b" * 300)
         self.assertEqual(payload_messages[5]["content"][0]["content"], "c" * 300)
+        self.assertEqual(payload_messages[7]["content"][0]["content"], "d" * 300)
 
     def test_build_payload_messages_shrinks_large_recent_tool_rounds_to_budget(self) -> None:
         messages = [
@@ -93,6 +110,53 @@ class CompactTests(unittest.TestCase):
         self.assertLess(compacted_total, original_total)
         self.assertLessEqual(compacted_total, MICROCOMPACT_RECENT_TOOL_BUDGET_CHARS)
         self.assertTrue(any(str(item["content"]).startswith("[tool:") for item in payload_results))
+
+    def test_build_payload_messages_preserves_read_file_path_and_multiline_preview_when_compacted(self) -> None:
+        read_content = "\n".join(f"{index}: public static Material CreateTileMaterialMulti(...)" for index in range(1, 40))
+        messages = [
+            _tool_call("call-1", "bash"),
+            _tool_result("call-1", "a" * 200),
+            _tool_call_with_input("call-2", "read_file", {"path": "Runtime/Mesh/PaperMeshBuilder.cs"}),
+            _tool_result("call-2", read_content),
+            _tool_call("call-3", "grep"),
+            _tool_result("call-3", "b" * 200),
+            _tool_call("call-4", "tree"),
+            _tool_result("call-4", "c" * 200),
+            _tool_call("call-5", "find_symbol"),
+            _tool_result("call-5", "d" * 200),
+        ]
+
+        payload_messages = build_payload_messages(messages)
+        compacted = str(payload_messages[3]["content"][0]["content"])
+
+        self.assertIn("tool:read_file path=Runtime/Mesh/PaperMeshBuilder.cs", compacted)
+        self.assertIn("CreateTileMaterialMulti", compacted)
+        self.assertIn("\n", compacted)
+
+    def test_build_payload_messages_compacts_bash_before_read_file_when_recent_budget_is_tight(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "git diff"}},
+                    {"type": "tool_call", "id": "call-2", "name": "read_file", "input": {"path": "Runtime/Mesh/PaperMeshBuilder.cs"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 12_500, "raw_output": "x" * 12_500},
+                    {"type": "tool_result", "tool_call_id": "call-2", "content": "y" * 9_000, "raw_output": "y" * 9_000},
+                ],
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+        bash_result = str(payload_messages[1]["content"][0]["content"])
+        read_result = str(payload_messages[1]["content"][1]["content"])
+
+        self.assertTrue(bash_result.startswith("[tool:bash]"))
+        self.assertEqual(read_result, "y" * 9_000)
 
     def test_should_auto_compact_uses_ratio_or_hard_threshold(self) -> None:
         self.assertTrue(
@@ -146,6 +210,8 @@ class CompactTests(unittest.TestCase):
                 _tool_result("call-2", "b" * 300),
                 _tool_call("call-3", "read_file"),
                 _tool_result("call-3", "c" * 300),
+                _tool_call("call-4", "tree"),
+                _tool_result("call-4", "d" * 300),
             ],
         )
 

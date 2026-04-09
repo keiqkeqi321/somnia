@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 READ_ONLY_COMMAND_PREFIXES = (
     "/scan",
     "/symbols",
+    "/investigation",
     "/providers",
     "/skills",
     "/tasks",
@@ -718,8 +719,6 @@ def _handle_scan_command(runtime, session, command: str) -> None:
             "limit": 8,
         },
     )
-    if isinstance(output, str) and not output.startswith("Error:"):
-        runtime.record_project_scan(session, path=target_path, summary_text=output)
     print(output)
     repo_summary_path = getattr(getattr(runtime, "repo_summary_store", None), "path", None)
     if repo_summary_path is not None and isinstance(output, str) and not output.startswith("Error:"):
@@ -743,7 +742,6 @@ def _handle_symbols_command(runtime, session, command: str) -> None:
         },
     )
     matches = runtime.parse_symbol_output(output)
-    runtime.record_symbol_lookup(session, query=query, path=".", kind="", matches=matches)
     if not matches:
         print(output)
         return
@@ -764,6 +762,10 @@ def _handle_symbols_command(runtime, session, command: str) -> None:
         return
     match = matches[int(selection) - 1]
     print(runtime.render_symbol_preview(match["path"], int(match["line"])))
+
+
+def _handle_investigation_command(runtime, session) -> None:
+    print(runtime.render_investigation_report(session))
 
 
 def _handle_model_command(runtime) -> None:
@@ -1113,6 +1115,12 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /symbols]")
                         continue
                     _handle_symbols_command(runtime, session, stripped)
+                    continue
+                if stripped == "/investigation":
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /investigation]")
+                        continue
+                    _handle_investigation_command(runtime, session)
                     continue
                 if stripped == "/skills":
                     skill_prefix = _handle_skills_command(runtime)

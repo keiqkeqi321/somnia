@@ -82,6 +82,8 @@ class OpenAgentRuntime:
     EXPLORATION_CACHE_LIMIT = 10
     EXPLORATION_PROMPT_CHAR_LIMIT = 2_000
     REPO_SUMMARY_PROMPT_CHAR_LIMIT = 2_500
+    DUPLICATE_FILE_READ_THRESHOLD = 3
+    INVESTIGATION_REPORT_LIMIT = 6
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -598,6 +600,24 @@ class OpenAgentRuntime:
         if not isinstance(cache, dict):
             cache = {}
             session.exploration_cache = cache
+        if not isinstance(cache.get("facts"), list):
+            cache["facts"] = []
+        if not isinstance(cache.get("hypotheses_open"), list):
+            cache["hypotheses_open"] = []
+        if not isinstance(cache.get("hypotheses_rejected"), list):
+            cache["hypotheses_rejected"] = []
+        if not isinstance(cache.get("files_read"), list):
+            cache["files_read"] = []
+        if not isinstance(cache.get("trees_viewed"), list):
+            cache["trees_viewed"] = []
+        if not isinstance(cache.get("search_queries"), list):
+            cache["search_queries"] = []
+        if not isinstance(cache.get("warnings"), list):
+            cache["warnings"] = []
+        if not isinstance(cache.get("investigation_focus"), str):
+            cache["investigation_focus"] = ""
+        if not isinstance(cache.get("active_warning"), dict):
+            cache["active_warning"] = {}
         return cache
 
     def _push_exploration_entry(self, session: AgentSession, key: str, entry: dict[str, Any]) -> None:
@@ -605,6 +625,140 @@ class OpenAgentRuntime:
         items = list(cache.get(key, []))
         items.insert(0, entry)
         cache[key] = items[: self.EXPLORATION_CACHE_LIMIT]
+
+    def _exploration_preview(self, text: object, *, limit: int = 140) -> str:
+        normalized = " ".join(str(text or "").split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[: limit - 3].rstrip() + "..."
+
+    def _fact_count(self, session: AgentSession) -> int:
+        cache = self._ensure_exploration_cache(session)
+        return len(list(cache.get("facts", [])))
+
+    def _append_fact(
+        self,
+        session: AgentSession,
+        *,
+        subject: str,
+        claim: str,
+        evidence: str,
+        kind: str = "code_fact",
+        source: str = "runtime",
+    ) -> None:
+        cache = self._ensure_exploration_cache(session)
+        entry = {
+            "kind": kind,
+            "subject": subject,
+            "claim": claim,
+            "evidence": evidence,
+            "source": source,
+            "updated_at": now_ts(),
+        }
+        existing = list(cache.get("facts", []))
+        signature = (subject.strip(), claim.strip(), evidence.strip())
+        for item in existing:
+            if (
+                str(item.get("subject", "")).strip(),
+                str(item.get("claim", "")).strip(),
+                str(item.get("evidence", "")).strip(),
+            ) == signature:
+                return
+        existing.insert(0, entry)
+        cache["facts"] = existing[: self.EXPLORATION_CACHE_LIMIT]
+
+    def _set_investigation_focus(self, session: AgentSession, focus: str) -> None:
+        cache = self._ensure_exploration_cache(session)
+        cache["investigation_focus"] = focus.strip()
+
+    def _record_duplicate_read_warning(self, session: AgentSession, *, path: str, count: int) -> None:
+        cache = self._ensure_exploration_cache(session)
+        warning = {
+            "kind": "duplicate_read",
+            "path": path,
+            "count": count,
+            "message": (
+                f"Repeatedly read '{path}' {count} times without recording new facts. "
+                "Summarize current evidence before reading it again."
+            ),
+            "updated_at": now_ts(),
+        }
+        cache["active_warning"] = warning
+        warnings = list(cache.get("warnings", []))
+        if not warnings or str(warnings[0].get("message", "")).strip() != warning["message"]:
+            warnings.insert(0, warning)
+        cache["warnings"] = warnings[: self.EXPLORATION_CACHE_LIMIT]
+
+    def _update_duplicate_read_signal(self, session: AgentSession) -> None:
+        cache = self._ensure_exploration_cache(session)
+        reads = list(cache.get("files_read", []))
+        if len(reads) < self.DUPLICATE_FILE_READ_THRESHOLD:
+            return
+        recent = reads[: self.DUPLICATE_FILE_READ_THRESHOLD]
+        first_path = str(recent[0].get("path", "")).strip()
+        if not first_path:
+            return
+        if any(str(item.get("path", "")).strip() != first_path for item in recent):
+            return
+        fact_snapshots = {int(item.get("fact_count_snapshot", -1)) for item in recent}
+        if len(fact_snapshots) != 1:
+            return
+        self._record_duplicate_read_warning(session, path=first_path, count=self.DUPLICATE_FILE_READ_THRESHOLD)
+
+    def record_file_read(
+        self,
+        session: AgentSession,
+        *,
+        path: str,
+        limit: int | None,
+        output: object,
+        source: str = "agent",
+    ) -> None:
+        cache = self._ensure_exploration_cache(session)
+        entry = {
+            "path": path,
+            "limit": limit,
+            "preview": self._exploration_preview(output),
+            "source": source,
+            "fact_count_snapshot": self._fact_count(session),
+            "updated_at": now_ts(),
+        }
+        self._push_exploration_entry(session, "files_read", entry)
+        if not cache.get("investigation_focus"):
+            self._set_investigation_focus(session, f"Inspecting file: {path}")
+        self._update_duplicate_read_signal(session)
+        self.session_manager.save(session)
+
+    def record_tree_view(self, session: AgentSession, *, path: str, depth: int | None, source: str = "agent") -> None:
+        entry = {
+            "path": path,
+            "depth": depth,
+            "source": source,
+            "updated_at": now_ts(),
+        }
+        self._push_exploration_entry(session, "trees_viewed", entry)
+        self._set_investigation_focus(session, f"Mapping directory: {path}")
+        self.session_manager.save(session)
+
+    def record_search_query(
+        self,
+        session: AgentSession,
+        *,
+        tool_name: str,
+        query: str,
+        path: str,
+        source: str = "agent",
+    ) -> None:
+        entry = {
+            "tool": tool_name,
+            "query": query,
+            "path": path,
+            "source": source,
+            "updated_at": now_ts(),
+        }
+        self._push_exploration_entry(session, "search_queries", entry)
+        self._set_investigation_focus(session, f"Searching for '{query}' under {path}")
+        self.session_manager.save(session)
 
     def record_project_scan(self, session: AgentSession, *, path: str, summary_text: str, source: str = "command") -> None:
         timestamp = now_ts()
@@ -617,6 +771,26 @@ class OpenAgentRuntime:
         cache = self._ensure_exploration_cache(session)
         cache["last_project_scan"] = entry
         self._push_exploration_entry(session, "project_scans", entry)
+        self._set_investigation_focus(session, f"Scanning repository area: {path}")
+        for line in summary_text.splitlines():
+            if line.startswith("Project root: "):
+                self._append_fact(
+                    session,
+                    subject="project_root",
+                    claim=line.split(":", 1)[1].strip(),
+                    evidence=f"project_scan({path})",
+                    kind="repo_fact",
+                    source=source,
+                )
+            elif line.startswith("Likely stack: "):
+                self._append_fact(
+                    session,
+                    subject="likely_stack",
+                    claim=line.split(":", 1)[1].strip(),
+                    evidence=f"project_scan({path})",
+                    kind="repo_fact",
+                    source=source,
+                )
         self.repo_summary_store.update_scan(path=path, summary_text=summary_text)
         self.session_manager.save(session)
 
@@ -643,6 +817,18 @@ class OpenAgentRuntime:
         cache = self._ensure_exploration_cache(session)
         cache["last_symbol_lookup"] = entry
         self._push_exploration_entry(session, "symbol_queries", entry)
+        self.record_search_query(session, tool_name="find_symbol", query=query, path=path, source=source)
+        if matches:
+            top = matches[0]
+            self._append_fact(
+                session,
+                subject=f"symbol:{top['name']}",
+                claim=f"{top['kind']} found at {top['path']}:{top['line']}",
+                evidence=f"find_symbol({query})",
+                kind="symbol_fact",
+                source=source,
+            )
+            self._set_investigation_focus(session, f"Inspecting symbol '{query}'")
         self.repo_summary_store.record_symbol_query(
             query=query,
             path=path,
@@ -650,6 +836,65 @@ class OpenAgentRuntime:
             match_count=len(matches),
         )
         self.session_manager.save(session)
+
+    def record_exploration_tool_result(
+        self,
+        session: AgentSession | None,
+        tool_name: str,
+        payload: dict[str, Any],
+        output: object,
+        *,
+        source: str = "agent",
+    ) -> None:
+        if session is None:
+            return
+        if isinstance(output, str) and output.startswith("Error:"):
+            return
+        if tool_name == "project_scan" and isinstance(output, str):
+            self.record_project_scan(
+                session,
+                path=str(payload.get("path", ".")).strip() or ".",
+                summary_text=output,
+                source=source,
+            )
+            return
+        if tool_name == "find_symbol" and isinstance(output, str):
+            self.record_symbol_lookup(
+                session,
+                query=str(payload.get("query", "")).strip(),
+                path=str(payload.get("path", ".")).strip() or ".",
+                kind=str(payload.get("kind", "")).strip(),
+                matches=self.parse_symbol_output(output),
+                source=source,
+            )
+            return
+        if tool_name == "read_file":
+            self.record_file_read(
+                session,
+                path=str(payload.get("path", "")).strip(),
+                limit=payload.get("limit"),
+                output=output,
+                source=source,
+            )
+            return
+        if tool_name == "tree":
+            self.record_tree_view(
+                session,
+                path=str(payload.get("path", ".")).strip() or ".",
+                depth=payload.get("depth"),
+                source=source,
+            )
+            return
+        if tool_name in {"glob", "grep"}:
+            query = str(payload.get("pattern", "")).strip()
+            if query:
+                self.record_search_query(
+                    session,
+                    tool_name=tool_name,
+                    query=query,
+                    path=str(payload.get("path", ".")).strip() or ".",
+                    source=source,
+                )
 
     def cached_project_scan(self, session: AgentSession, *, path: str) -> dict[str, Any] | None:
         cache = self._ensure_exploration_cache(session)
@@ -680,6 +925,9 @@ class OpenAgentRuntime:
         if not isinstance(cache, dict):
             return ""
         lines: list[str] = []
+        focus = str(cache.get("investigation_focus", "")).strip()
+        if focus:
+            lines.append(f"Investigation focus: {focus}")
         last_scan = cache.get("last_project_scan")
         if isinstance(last_scan, dict):
             path = str(last_scan.get("path", ".")).strip() or "."
@@ -698,10 +946,91 @@ class OpenAgentRuntime:
                 kind = str(item.get("kind", "")).strip() or "any"
                 count = int(item.get("match_count", 0))
                 lines.append(f"- {query} | path={path} | kind={kind} | matches={count}")
+        facts = list(cache.get("facts", []))[:3]
+        if facts:
+            if lines:
+                lines.append("")
+            lines.append("Recorded facts:")
+            for item in facts:
+                lines.append(
+                    f"- {item.get('subject', '')}: {item.get('claim', '')} [{item.get('evidence', '')}]"
+                )
+        active_warning = cache.get("active_warning")
+        if isinstance(active_warning, dict) and active_warning.get("message"):
+            if lines:
+                lines.append("")
+            lines.append("Active investigation warning:")
+            lines.append(f"- {active_warning['message']}")
         text = "\n".join(line for line in lines if line is not None).strip()
         if len(text) > self.EXPLORATION_PROMPT_CHAR_LIMIT:
             text = text[: self.EXPLORATION_PROMPT_CHAR_LIMIT].rstrip() + "\n..."
         return text
+
+    def render_investigation_report(self, session: AgentSession) -> str:
+        cache = self._ensure_exploration_cache(session)
+        lines = ["Investigation State"]
+        focus = str(cache.get("investigation_focus", "")).strip()
+        lines.append(f"Focus: {focus or '(not set)'}")
+
+        active_warning = cache.get("active_warning")
+        if isinstance(active_warning, dict) and active_warning.get("message"):
+            lines.append("Warning:")
+            lines.append(f"- {active_warning['message']}")
+
+        facts = list(cache.get("facts", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Facts: {len(list(cache.get('facts', [])))}")
+        if facts:
+            for item in facts:
+                lines.append(
+                    f"- {item.get('subject', '')}: {item.get('claim', '')} [{item.get('evidence', '')}]"
+                )
+
+        open_hypotheses = list(cache.get("hypotheses_open", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Open hypotheses: {len(list(cache.get('hypotheses_open', [])))}")
+        if open_hypotheses:
+            for item in open_hypotheses:
+                lines.append(f"- {item.get('claim', '')}")
+
+        rejected_hypotheses = list(cache.get("hypotheses_rejected", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Rejected hypotheses: {len(list(cache.get('hypotheses_rejected', [])))}")
+        if rejected_hypotheses:
+            for item in rejected_hypotheses:
+                lines.append(f"- {item.get('claim', '')}")
+
+        recent_reads = list(cache.get("files_read", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Recent file reads: {len(list(cache.get('files_read', [])))}")
+        if recent_reads:
+            for item in recent_reads:
+                lines.append(f"- {item.get('path', '')} | {item.get('preview', '')}")
+
+        recent_trees = list(cache.get("trees_viewed", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Recent trees: {len(list(cache.get('trees_viewed', [])))}")
+        if recent_trees:
+            for item in recent_trees:
+                lines.append(f"- {item.get('path', '')} | depth={item.get('depth', '')}")
+
+        recent_searches = list(cache.get("search_queries", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Recent searches: {len(list(cache.get('search_queries', [])))}")
+        if recent_searches:
+            for item in recent_searches:
+                lines.append(
+                    f"- {item.get('tool', '')}: {item.get('query', '')} | path={item.get('path', '')}"
+                )
+
+        recent_symbols = list(cache.get("symbol_queries", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Recent symbol lookups: {len(list(cache.get('symbol_queries', [])))}")
+        if recent_symbols:
+            for item in recent_symbols:
+                lines.append(
+                    f"- {item.get('query', '')} | matches={item.get('match_count', 0)} | path={item.get('path', '')}"
+                )
+
+        recent_scans = list(cache.get("project_scans", []))[: self.INVESTIGATION_REPORT_LIMIT]
+        lines.append(f"Recent scans: {len(list(cache.get('project_scans', [])))}")
+        if recent_scans:
+            for item in recent_scans:
+                lines.append(f"- {item.get('path', '')}")
+        return "\n".join(lines)
 
     def parse_symbol_output(self, output: object) -> list[dict[str, Any]]:
         if not isinstance(output, str):
@@ -742,7 +1071,9 @@ class OpenAgentRuntime:
             actor=actor,
             trace_id=f"{session.id}-interactive-{uuid.uuid4().hex[:8]}",
         )
-        return self.registry.execute(ctx, name, payload)
+        output = self.registry.execute(ctx, name, payload)
+        self.record_exploration_tool_result(session, name, payload, output, source="command")
+        return output
 
     def complete(
         self,
@@ -940,6 +1271,7 @@ class OpenAgentRuntime:
                         output = self.registry.execute(ctx, tool_call.name, tool_call.input)
                     except Exception as exc:
                         output = f"Error: {exc}"
+                    self.record_exploration_tool_result(session, tool_call.name, tool_call.input, output, source="agent")
                     log_id = self.print_tool_event("lead", tool_call.name, tool_call.input, output)
                     executed_tool_calls.append(tool_call)
                     result = {

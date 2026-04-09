@@ -169,6 +169,7 @@ somnia compact
 ```text
 /scan
 /symbols
+/investigation
 /compact
 /model
 /tasks
@@ -185,6 +186,7 @@ somnia compact
 
 - `/scan`：扫描当前仓库或子目录，并缓存项目摘要
 - `/symbols`：查找符号并预览匹配位置附近源码
+- `/investigation`：查看当前探索状态、事实与告警
 - `/compact`：压缩当前上下文
 - `/model`：查看或切换模型信息
 - `/tasks`：查看任务状态
@@ -331,6 +333,8 @@ pip install --upgrade somnia
 - [08-用户安装方式](./Docs/08-用户安装方式.md)
 - [09-常见问题排查](./Docs/09-常见问题排查.md)
 - [10-探索能力](./Docs/10-探索能力.md)
+- [11-探索能力优化计划](./Docs/11-探索能力优化计划.md)
+- [12-压缩策略](./Docs/12-压缩策略.md)
 
 ## 版本与发布
 
