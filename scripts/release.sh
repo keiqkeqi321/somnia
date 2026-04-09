@@ -5,6 +5,8 @@
 #  用法:
 #    bash scripts/release.sh 0.2.0              # 正式发布
 #    bash scripts/release.sh 0.2.0 --dry        # 预览
+#    bash scripts/release.sh                    # 自动推断版本后正式发布
+#    bash scripts/release.sh --dry              # 自动推断版本后预览
 #
 #  流程 (本地):
 #    1. 检查工作区干净
@@ -22,15 +24,124 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [ $# -lt 1 ]; then
-  echo "用法: bash scripts/release.sh <version> [--dry]"
-  echo "示例: bash scripts/release.sh 0.2.0"
-  exit 1
-fi
+parse_semver() {
+  local input="${1#v}"
+  if [[ "$input" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    printf '%s %s %s %s\n' "$input" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
 
-NEW_VERSION="$1"
+compare_semver() {
+  local left_major="$1"
+  local left_minor="$2"
+  local left_patch="$3"
+  local right_major="$4"
+  local right_minor="$5"
+  local right_patch="$6"
+  if (( left_major != right_major )); then
+    (( left_major > right_major )) && return 0 || return 1
+  fi
+  if (( left_minor != right_minor )); then
+    (( left_minor > right_minor )) && return 0 || return 1
+  fi
+  (( left_patch > right_patch ))
+}
+
+get_latest_semver() {
+  local latest_version=""
+  local latest_major=0
+  local latest_minor=0
+  local latest_patch=0
+  local found=false
+  local parsed version major minor patch
+
+  if [ -f "VERSION" ]; then
+    parsed=$(parse_semver "$(tr -d '[:space:]' < VERSION)" || true)
+    if [ -n "$parsed" ]; then
+      read -r version major minor patch <<<"$parsed"
+      latest_version="$version"
+      latest_major="$major"
+      latest_minor="$minor"
+      latest_patch="$patch"
+      found=true
+    fi
+  fi
+
+  while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    parsed=$(parse_semver "$tag" || true)
+    if [ -z "$parsed" ]; then
+      continue
+    fi
+    read -r version major minor patch <<<"$parsed"
+    if [ "$found" = false ] || compare_semver "$major" "$minor" "$patch" "$latest_major" "$latest_minor" "$latest_patch"; then
+      latest_version="$version"
+      latest_major="$major"
+      latest_minor="$minor"
+      latest_patch="$patch"
+      found=true
+    fi
+  done < <(git tag -l "v*" 2>/dev/null || true)
+
+  if [ -f "CHANGELOG.md" ]; then
+    while IFS= read -r version; do
+      parsed=$(parse_semver "$version" || true)
+      if [ -z "$parsed" ]; then
+        continue
+      fi
+      read -r version major minor patch <<<"$parsed"
+      if [ "$found" = false ] || compare_semver "$major" "$minor" "$patch" "$latest_major" "$latest_minor" "$latest_patch"; then
+        latest_version="$version"
+        latest_major="$major"
+        latest_minor="$minor"
+        latest_patch="$patch"
+        found=true
+      fi
+    done < <(sed -nE 's/^##[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)\b.*/\1/p' CHANGELOG.md)
+  fi
+
+  if [ "$found" = true ]; then
+    printf '%s %s %s %s\n' "$latest_version" "$latest_major" "$latest_minor" "$latest_patch"
+  fi
+}
+
+get_next_version() {
+  local major="$1"
+  local minor="$2"
+  local patch="$3"
+  if (( patch >= 9 )); then
+    minor=$((minor + 1))
+    patch=0
+  else
+    patch=$((patch + 1))
+  fi
+  printf '%s.%s.%s\n' "$major" "$minor" "$patch"
+}
+
+NEW_VERSION=""
 DRY_RUN=false
-if [ "${2:-}" = "--dry" ]; then DRY_RUN=true; fi
+for arg in "$@"; do
+  case "$arg" in
+    --dry)
+      DRY_RUN=true
+      ;;
+    "")
+      ;;
+    *)
+      if [ -z "${NEW_VERSION:-}" ]; then
+        NEW_VERSION="$arg"
+      else
+        echo "用法: bash scripts/release.sh [version] [--dry]"
+        echo "示例: bash scripts/release.sh 0.2.0"
+        echo "示例: bash scripts/release.sh --dry"
+        exit 1
+      fi
+      ;;
+  esac
+done
+NEW_VERSION="${NEW_VERSION:-}"
 
 BOLD='\033[1m'
 GREEN='\033[32m'
@@ -52,12 +163,24 @@ fi
 echo -e "${GREEN}✓${RESET} 工作区干净"
 
 # ─── 2. 验证版本号 ───────────────────────────────────────────
+CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
+if [ -z "$NEW_VERSION" ]; then
+  LATEST_INFO=$(get_latest_semver)
+  if [ -n "$LATEST_INFO" ]; then
+    read -r latest_version latest_major latest_minor latest_patch <<<"$LATEST_INFO"
+    NEW_VERSION=$(get_next_version "$latest_major" "$latest_minor" "$latest_patch")
+    echo -e "  未传版本号，自动推断: ${YELLOW}$latest_version${RESET}  →  ${GREEN}$NEW_VERSION${RESET}"
+  else
+    NEW_VERSION="0.1.0"
+    echo -e "  未检测到历史版本，默认使用: ${GREEN}$NEW_VERSION${RESET}"
+  fi
+fi
+
 if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
   echo -e "${RED}✗ 版本号格式错误: $NEW_VERSION (需要 semver: x.y.z)${RESET}"
   exit 1
 fi
 
-CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
 echo -e "  当前: ${YELLOW}$CURRENT_VERSION${RESET}  →  目标: ${GREEN}$NEW_VERSION${RESET}"
 echo ""
 
