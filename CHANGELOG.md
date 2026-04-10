@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 (2026-04-10)
+
+- 更新文档 (e0c15d8)
+- feat: support multi-term symbol search (1f3fc4d)
+- fix: preserve active task window during auto compact (2bf85f7)
+- refactor: remove exploration memory and tool microcompact (b47530c)
+- feat: improve investigation state and payload compaction (25105b3)
+- feat: add repository exploration commands and memory (21d130a)
+- Infer release version in release.sh (f156bac)
+
 ## 0.3.9 (2026-04-08)
 
 - Browse MCP servers from interactive picker (0f415c0)
