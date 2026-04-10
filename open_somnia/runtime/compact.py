@@ -99,6 +99,7 @@ class CompactManager:
         self.provider = provider
         self.transcript_store = transcript_store
         self.model_max_tokens = model_max_tokens
+        self.last_usage: dict[str, Any] | None = None
 
     def _summarize_messages(self, messages: list[dict[str, Any]]) -> str:
         try:
@@ -128,8 +129,10 @@ class CompactManager:
                 tools=[],
                 max_tokens=min(2_000, self.model_max_tokens),
             )
+            self.last_usage = getattr(summary_turn, "usage", None)
             return "\n".join(summary_turn.text_blocks).strip() or "Conversation compacted."
         except ProviderError as exc:
+            self.last_usage = None
             return f"Conversation compacted without model summary due to error: {exc}"
 
     def auto_compact(

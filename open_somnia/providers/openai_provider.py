@@ -150,6 +150,20 @@ class OpenAIProvider(LLMProvider):
     def token_counter_name(self) -> str:
         return "tiktoken"
 
+    def _extract_usage(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        usage = body.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        input_tokens = int(usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "source": "provider",
+        }
+
     def complete(
         self,
         system_prompt: str,
@@ -224,6 +238,7 @@ class OpenAIProvider(LLMProvider):
             stop_reason=stop_reason,
             text_blocks=text_blocks,
             tool_calls=tool_calls,
+            usage=self._extract_usage(body),
             raw_response=body,
         )
 

@@ -551,21 +551,34 @@ class TurnQueueRunner:
             return self.CONTEXT_REDUCING_STYLE
         return self.CONTEXT_CRITICAL_STYLE
 
+    def current_token_sum_label(self) -> str:
+        usage = getattr(self.session, "token_usage", None)
+        if not isinstance(usage, dict):
+            return ""
+        total_tokens = int(usage.get("total_tokens") or 0)
+        if total_tokens <= 0:
+            return ""
+        return f"sum: {self._format_token_count(total_tokens)}"
+
     def current_status_label(self) -> str:
         context_label = self.current_context_label()
-        if not context_label:
-            return self.current_model_label()
-        return f"{self.current_model_label()} | {context_label}"
+        token_sum_label = self.current_token_sum_label()
+        parts = [self.current_model_label()]
+        if context_label:
+            parts.append(context_label)
+        if token_sum_label:
+            parts.append(token_sum_label)
+        return " | ".join(parts)
 
     def bottom_toolbar(self):
         context_label = self.current_context_label()
-        if not context_label:
-            return [("fg:#94a3b8", self.current_model_label())]
-        return [
-            ("fg:#94a3b8", self.current_model_label()),
-            ("fg:#64748b", " | "),
-            (self.current_context_style(), context_label),
-        ]
+        token_sum_label = self.current_token_sum_label()
+        fragments = [("fg:#94a3b8", self.current_model_label())]
+        if context_label:
+            fragments.extend([("fg:#64748b", " | "), (self.current_context_style(), context_label)])
+        if token_sum_label:
+            fragments.extend([("fg:#64748b", " | "), ("fg:#7dd3fc", token_sum_label)])
+        return fragments
 
     def current_execution_mode(self):
         return execution_mode_spec(self._execution_mode)

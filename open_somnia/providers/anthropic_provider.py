@@ -72,6 +72,20 @@ class AnthropicProvider(LLMProvider):
     def token_counter_name(self) -> str:
         return "anthropic_native"
 
+    def _extract_usage(self, response: Any) -> dict[str, Any] | None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        total_tokens = input_tokens + output_tokens
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "source": "provider",
+        }
+
     def complete(
         self,
         system_prompt: str,
@@ -116,5 +130,6 @@ class AnthropicProvider(LLMProvider):
             stop_reason=stop_reason,
             text_blocks=text_blocks,
             tool_calls=tool_calls,
+            usage=self._extract_usage(response),
             raw_response=response,
         )

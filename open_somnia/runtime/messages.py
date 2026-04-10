@@ -39,6 +39,7 @@ class AssistantTurn:
     stop_reason: str
     text_blocks: list[str] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict[str, Any] | None = None
     raw_response: Any = None
 
     def has_tool_calls(self) -> bool:

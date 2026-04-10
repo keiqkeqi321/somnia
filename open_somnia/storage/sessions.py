@@ -24,6 +24,11 @@ class SessionStore:
             "created_at": now_ts(),
             "updated_at": now_ts(),
             "messages": [],
+            "token_usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
             "todo_items": [],
             "rounds_without_todo": 0,
             "latest_turn_id": None,

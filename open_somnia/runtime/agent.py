@@ -382,6 +382,69 @@ class OpenAgentRuntime:
     def _messages_for_model(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return build_payload_messages(messages)
 
+    def _estimate_completion_output_tokens(self, turn) -> int:
+        try:
+            assistant_message = turn.as_message()
+        except Exception:
+            text = "\n".join(getattr(turn, "text_blocks", []) or [])
+            return max(0, estimate_payload_tokens("", [{"role": "assistant", "content": text}], []))
+        return max(0, estimate_payload_tokens("", [assistant_message], []))
+
+    def _normalize_turn_usage(
+        self,
+        turn,
+        *,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, int | str]:
+        usage = getattr(turn, "usage", None)
+        if isinstance(usage, dict):
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+            source = str(usage.get("source", "provider"))
+            if total_tokens > 0:
+                return {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "source": source,
+                }
+
+        provider = getattr(self, "provider", None)
+        try:
+            if provider is not None and callable(getattr(provider, "count_tokens", None)):
+                input_tokens = int(provider.count_tokens(system_prompt, messages, tools))
+            else:
+                raise RuntimeError("Provider token counting unavailable.")
+        except Exception:
+            input_tokens = estimate_payload_tokens(system_prompt, messages, tools)
+        output_tokens = self._estimate_completion_output_tokens(turn)
+        return {
+            "input_tokens": max(0, input_tokens),
+            "output_tokens": max(0, output_tokens),
+            "total_tokens": max(0, input_tokens + output_tokens),
+            "source": "estimate",
+        }
+
+    def _ensure_session_token_usage(self, session: AgentSession) -> dict[str, int]:
+        usage = getattr(session, "token_usage", None)
+        if not isinstance(usage, dict):
+            usage = {}
+            session.token_usage = usage
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            usage[key] = int(usage.get(key) or 0)
+        return usage
+
+    def _record_session_token_usage(self, session: AgentSession, usage: dict[str, Any] | None) -> None:
+        if not isinstance(usage, dict):
+            return
+        totals = self._ensure_session_token_usage(session)
+        totals["input_tokens"] += int(usage.get("input_tokens") or 0)
+        totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+        totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+
     def context_window_usage(
         self,
         session: AgentSession,
@@ -744,6 +807,7 @@ class OpenAgentRuntime:
 
     def compact_session(self, session: AgentSession) -> None:
         session.messages = self.compact_manager.auto_compact(session.id, session.messages)
+        self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
         self.session_manager.save(session)
 
     def _is_visible_conversation_message(self, message: dict[str, Any]) -> bool:
@@ -830,9 +894,11 @@ class OpenAgentRuntime:
                         session.messages,
                         preserve_from_index=preserve_from_index,
                     )
+                    self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 payload_messages = self._messages_for_model(session.messages)
+                tool_schemas = self.registry.schemas()
 
                 try:
                     system_prompt = self.build_system_prompt(session=session)
@@ -842,9 +908,18 @@ class OpenAgentRuntime:
                 turn = self.complete(
                     system_prompt,
                     payload_messages,
-                    self.registry.schemas(),
+                    tool_schemas,
                     text_callback=text_callback,
                     should_interrupt=should_interrupt,
+                )
+                self._record_session_token_usage(
+                    session,
+                    self._normalize_turn_usage(
+                        turn,
+                        system_prompt=system_prompt,
+                        messages=payload_messages,
+                        tools=tool_schemas,
+                    ),
                 )
                 self._raise_if_interrupted(should_interrupt)
                 if callable(stream_flush_callback):
@@ -917,6 +992,7 @@ class OpenAgentRuntime:
                         session.messages,
                         preserve_from_index=preserve_from_index,
                     )
+                    self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
                 self.session_manager.save(session)
                 if end_turn_after_tool:
                     continue

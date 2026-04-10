@@ -265,6 +265,18 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(restored.id, "session-1")
         self.assertFalse(hasattr(restored, "exploration_cache"))
 
+    def test_agent_session_roundtrips_token_usage(self) -> None:
+        session = AgentSession(
+            id="session-1",
+            token_usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+
+        restored = AgentSession.from_payload(session.to_payload())
+
+        self.assertEqual(restored.token_usage["input_tokens"], 10)
+        self.assertEqual(restored.token_usage["output_tokens"], 5)
+        self.assertEqual(restored.token_usage["total_tokens"], 15)
+
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "accept_edits"
@@ -1141,6 +1153,38 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.messages[3]["content"], "previous answer")
         self.assertEqual(session.messages[4]["content"], "current request")
         self.assertEqual(session.messages[5]["content"], "Done.")
+
+    def test_agent_loop_accumulates_token_usage_sum(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages, last_usage=None)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.complete = lambda *args, **kwargs: AssistantTurn(
+            stop_reason="end_turn",
+            text_blocks=["Done."],
+            usage={"input_tokens": 120, "output_tokens": 30, "total_tokens": 150, "source": "provider"},
+        )
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "hello")
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(session.token_usage["input_tokens"], 120)
+        self.assertEqual(session.token_usage["output_tokens"], 30)
+        self.assertEqual(session.token_usage["total_tokens"], 150)
 
 
 if __name__ == "__main__":
