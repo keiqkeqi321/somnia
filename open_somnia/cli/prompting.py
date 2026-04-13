@@ -30,6 +30,8 @@ COMMAND_SPECS = [
     ("/model", "Choose the active provider and model"),
     ("/providers", "Add or edit shared provider profiles"),
     ("/undo", "Undo the most recent file change set"),
+    ("/checkpoint", "Save a named checkpoint of the current session state"),
+    ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),
     ("/compact", "Compact the current session context"),
     ("/skills", "Choose a skill to apply to the next prompt"),
     ("/tasks", "Show persistent tasks"),

@@ -705,6 +705,22 @@ def _is_read_only_command(command: str) -> bool:
     return any(command == prefix or command.startswith(f"{prefix} ") for prefix in READ_ONLY_COMMAND_PREFIXES)
 
 
+def _ensure_accept_edits_for_command(runner: TurnQueueRunner, command_name: str, reason: str) -> bool:
+    current_mode = runner.current_execution_mode()
+    if current_mode.key in {"accept_edits", "yolo"}:
+        return True
+    selection = choose_mode_switch_interactively(
+        execution_mode_spec("accept_edits").title,
+        current_mode.title,
+        reason,
+    )
+    if selection == "switch":
+        runner.set_execution_mode("accept_edits")
+        return True
+    print(f"[blocked in {current_mode.title}: {command_name} requires {execution_mode_spec('accept_edits').title}]")
+    return False
+
+
 def _is_exit_command(command: str) -> bool:
     stripped = command.strip()
     return stripped in {"q", "exit", "/exit"}
@@ -935,6 +951,112 @@ def _handle_undo_command(runtime, session) -> None:
     print(runtime.undo_last_turn(session))
 
 
+def _handle_checkpoint_command(runtime, session, command: str) -> None:
+    args = command.split()
+    tag = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    result = runtime.checkpoint_session(session, tag)
+    tag_display = result["tag"]
+    msg_count = result["message_count"]
+    file_count = result["file_count"]
+    print(f"[checkpoint] tag={tag_display} messages={msg_count} tracked_files={file_count}")
+
+
+def _handle_rollback_command(runtime, session, command: str) -> None:
+    args = command.split()
+    explicit_tag = " ".join(args[1:]).strip() if len(args) > 1 else ""
+
+    checkpoints = runtime.list_checkpoints(session)
+    if not checkpoints:
+        print("No checkpoints available. Use /checkpoint <tag> to create one.")
+        return
+
+    if explicit_tag:
+        matching = [cp for cp in checkpoints if cp["tag"] == explicit_tag]
+        if not matching:
+            print(f"[rollback] Checkpoint '{explicit_tag}' not found.")
+            available_labels = []
+            for cp in checkpoints:
+                preview = cp.get("last_user_message", "").replace("\n", " ").strip()
+                if preview and len(preview) > 40:
+                    preview = preview[:37] + "..."
+                if preview:
+                    available_labels.append(f"  {cp['tag']} ({preview})")
+                else:
+                    available_labels.append(f"  {cp['tag']}")
+            print(f"Available:\n" + "\n".join(available_labels))
+            return
+        selected_tag = explicit_tag
+    else:
+        from datetime import datetime as _dt
+        items = []
+        for cp in checkpoints:
+            ts = cp.get("timestamp", 0)
+            time_label = "unknown time"
+            if ts:
+                try:
+                    time_label = _dt.fromtimestamp(ts).astimezone().strftime("%H:%M:%S")
+                except (OSError, OverflowError, ValueError):
+                    pass
+            preview = cp.get("last_user_message", "")
+            if preview:
+                # Truncate long messages for display
+                preview = preview.replace("\n", " ").strip()
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
+                preview_label = f" | {preview}"
+            else:
+                preview_label = ""
+            label = f"{cp['tag']} | {time_label} | {cp['message_count']} msgs | {cp.get('file_count', 0)} files{preview_label}"
+            items.append((cp["tag"], label))
+        items.append(("cancel", "Cancel (default)"))
+        selected_tag = choose_item_interactively(
+            "Rollback to Checkpoint",
+            "Choose a checkpoint to roll back to. This will revert messages and file changes.",
+            items,
+        )
+        if not selected_tag or selected_tag == "cancel":
+            print("[rollback cancelled]")
+            return
+
+    # Pre-check for external modifications
+    ext_mods = runtime.detect_external_modifications(session, selected_tag)
+    skip_ext = False
+    if ext_mods:
+        print(f"\n[warning] {len(ext_mods)} file(s) were modified externally since the checkpoint:")
+        for em in ext_mods:
+            print(f"  - {em['path']} ({em['reason']}: {em['detail']})")
+        print()
+        choice = choose_item_interactively(
+            "External Modifications Detected",
+            "These files were changed outside the agent. How do you want to proceed?",
+            [
+                ("skip", "Skip these files (revert only agent-verified files + messages)"),
+                ("overwrite", "Overwrite them (revert everything to checkpoint state)"),
+                ("cancel", "Cancel rollback (default)"),
+            ],
+        )
+        if not choice or choice == "cancel":
+            print("[rollback cancelled]")
+            return
+        skip_ext = choice == "skip"
+        if skip_ext:
+            print(f"[rollback] Will skip {len(ext_mods)} externally modified file(s)")
+
+    result = runtime.rollback_session(session, selected_tag, skip_externally_modified=skip_ext)
+    if result.get("status") == "error":
+        print(f"[rollback failed] {result.get('message', 'unknown error')}")
+        return
+    print(
+        f"[rollback complete] tag={result['tag']} "
+        f"messages_restored={result['messages_restored']} "
+        f"files_reverted={result['files_reverted']} "
+        f"files_skipped={result.get('files_skipped', 0)} "
+        f"undo_entries_removed={result['undo_entries_removed']}"
+    )
+    if result.get("orphaned_checkpoints_deleted", 0):
+        print(f"[rollback] {result['orphaned_checkpoints_deleted']} later checkpoint(s) deleted")
+
+
 def _handle_skills_command(runtime) -> str | None:
     entries = list(runtime.skill_loader.list_entries())
     if not entries:
@@ -1129,6 +1251,30 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /undo]")
                         continue
                     _handle_undo_command(runtime, session)
+                    continue
+                if stripped == "/checkpoint" or stripped.startswith("/checkpoint "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /checkpoint]")
+                        continue
+                    if not _ensure_accept_edits_for_command(
+                        runner,
+                        "/checkpoint",
+                        "Saving a checkpoint updates the persisted session state.",
+                    ):
+                        continue
+                    _handle_checkpoint_command(runtime, session, stripped)
+                    continue
+                if stripped == "/rollback" or stripped.startswith("/rollback "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /rollback]")
+                        continue
+                    if not _ensure_accept_edits_for_command(
+                        runner,
+                        "/rollback",
+                        "Rollback reverts workspace files and restores session state.",
+                    ):
+                        continue
+                    _handle_rollback_command(runtime, session, stripped)
                     continue
                 if stripped == "/model":
                     if runner.has_inflight_work():

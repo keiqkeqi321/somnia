@@ -9,6 +9,7 @@ from unittest.mock import patch
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     TurnQueueRunner,
+    _ensure_accept_edits_for_command,
     _expand_skill_command,
     _handle_scan_command,
     _handle_symbols_command,
@@ -572,6 +573,37 @@ class ReplTodoTests(unittest.TestCase):
             _handle_undo_command(runtime, session)
 
         mock_print.assert_not_called()
+
+    def test_mutating_command_requires_accept_edits_mode(self) -> None:
+        runtime = SimpleNamespace(execution_mode="plan")
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        with patch("open_somnia.cli.repl.choose_mode_switch_interactively", return_value="stay"), patch(
+            "builtins.print"
+        ) as mock_print:
+            allowed = _ensure_accept_edits_for_command(
+                runner,
+                "/rollback",
+                "Rollback reverts workspace files and restores session state.",
+            )
+
+        self.assertFalse(allowed)
+        self.assertEqual(runner.current_execution_mode().key, "plan")
+        self.assertIn("/rollback requires", mock_print.call_args[0][0])
+
+    def test_mutating_command_can_switch_into_accept_edits_mode(self) -> None:
+        runtime = SimpleNamespace(execution_mode="shortcuts")
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        with patch("open_somnia.cli.repl.choose_mode_switch_interactively", return_value="switch"):
+            allowed = _ensure_accept_edits_for_command(
+                runner,
+                "/checkpoint",
+                "Saving a checkpoint updates the persisted session state.",
+            )
+
+        self.assertTrue(allowed)
+        self.assertEqual(runner.current_execution_mode().key, "accept_edits")
 
 
 if __name__ == "__main__":

@@ -810,6 +810,53 @@ class OpenAgentRuntime:
         self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
         self.session_manager.save(session)
 
+    def checkpoint_session(self, session: AgentSession, tag: str) -> dict[str, Any]:
+        """Create a named checkpoint of the session for later rollback.
+
+        Args:
+            session: The session to checkpoint.
+            tag: A human-readable tag. If empty, auto-generates one.
+
+        Returns:
+            Checkpoint metadata dict.
+        """
+        if not tag.strip():
+            existing = self.session_manager.list_checkpoints(session)
+            index = len(existing) + 1
+            tag = f"checkpoint_{index}"
+        return self.session_manager.create_checkpoint(session, tag)
+
+    def rollback_session(self, session: AgentSession, tag: str, *, skip_externally_modified: bool = False) -> dict[str, Any]:
+        """Roll back a session to a previously created checkpoint.
+
+        Reverts file changes, truncates messages, restores session state.
+
+        Args:
+            session: The session to roll back.
+            tag: The checkpoint tag to roll back to.
+            skip_externally_modified: If True, skip reverting files that were
+                modified externally after the agent's last write.
+
+        Returns:
+            Rollback result dict with statistics.
+        """
+        return self.session_manager.rollback_to_checkpoint(
+            session,
+            tag,
+            workspace_root=self.settings.workspace_root,
+            skip_externally_modified=skip_externally_modified,
+        )
+
+    def detect_external_modifications(self, session: AgentSession, tag: str) -> list[dict[str, str]]:
+        """Detect files modified externally since a checkpoint."""
+        return self.session_manager.detect_external_modifications(
+            session, tag, self.settings.workspace_root,
+        )
+
+    def list_checkpoints(self, session: AgentSession) -> list[dict[str, Any]]:
+        """List all checkpoints for a session."""
+        return self.session_manager.list_checkpoints(session)
+
     def _is_visible_conversation_message(self, message: dict[str, Any]) -> bool:
         role = message.get("role")
         content = message.get("content")
