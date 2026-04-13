@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 (2026-04-13)
+
+- Add checkpoint rollback support (a8c59b6)
+- feat: track session token usage totals (da9873f)
+
 ## 0.4.0 (2026-04-10)
 
 - 更新文档 (e0c15d8)
