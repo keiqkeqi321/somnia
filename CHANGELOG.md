@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 (2026-04-14)
+
+- Improve grep regex compatibility heuristics (b0a4096)
+- 面板里单独显示治理提示，以及非稳定状态栏/toolbar 里也能看到 (eafda68)
+- Add semantic context janitor and coverage (191b534)
+
 ## 0.4.1 (2026-04-13)
 
 - Add checkpoint rollback support (a8c59b6)
