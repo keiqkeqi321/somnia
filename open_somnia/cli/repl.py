@@ -478,6 +478,7 @@ class TurnQueueRunner:
         mode_line = self._execution_mode_fragments()
         status_line = self._status_line()
         context_line = self.current_context_label()
+        governance_line = self.current_context_governance_label()
         todo_lines = self._todo_lines()
         team_lines = self._team_lines()
         queue_lines = self._queue_preview_lines()
@@ -493,6 +494,8 @@ class TurnQueueRunner:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             if context_line:
                 fragments.extend([panel_prefix, (self.current_context_style(), context_line), ("", "\n")])
+            if governance_line:
+                fragments.extend([panel_prefix, ("fg:#67e8f9", governance_line), ("", "\n")])
             for index, queue_line in enumerate(queue_lines, start=1):
                 fragments.extend([panel_prefix, ("fg:#94a3b8", f"queued {index}: {queue_line}"), ("", "\n")])
         fragments.append(panel_prefix)
@@ -560,12 +563,24 @@ class TurnQueueRunner:
             return ""
         return f"sum: {self._format_token_count(total_tokens)}"
 
+    def current_context_governance_label(self) -> str:
+        label_getter = getattr(self.runtime, "recent_context_governance_label", None)
+        if not callable(label_getter):
+            return ""
+        try:
+            return str(label_getter(self.session) or "").strip()
+        except Exception:
+            return ""
+
     def current_status_label(self) -> str:
         context_label = self.current_context_label()
         token_sum_label = self.current_token_sum_label()
+        governance_label = self.current_context_governance_label()
         parts = [self.current_model_label()]
         if context_label:
             parts.append(context_label)
+        if governance_label:
+            parts.append(governance_label)
         if token_sum_label:
             parts.append(token_sum_label)
         return " | ".join(parts)
@@ -573,9 +588,12 @@ class TurnQueueRunner:
     def bottom_toolbar(self):
         context_label = self.current_context_label()
         token_sum_label = self.current_token_sum_label()
+        governance_label = self.current_context_governance_label()
         fragments = [("fg:#94a3b8", self.current_model_label())]
         if context_label:
             fragments.extend([("fg:#64748b", " | "), (self.current_context_style(), context_label)])
+        if governance_label:
+            fragments.extend([("fg:#64748b", " | "), ("fg:#67e8f9", governance_label)])
         if token_sum_label:
             fragments.extend([("fg:#64748b", " | "), ("fg:#7dd3fc", token_sum_label)])
         return fragments

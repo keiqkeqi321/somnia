@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from queue import Empty, Queue
@@ -151,6 +152,7 @@ class OpenAgentRuntime:
         self.compact_manager = CompactManager(self.provider, self.transcript_store, settings.provider.max_tokens)
         self._context_usage_cache: dict[str, tuple[tuple[Any, ...], ContextWindowUsage]] = {}
         self._payload_message_cache: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
+        self._context_governance_events: dict[str, dict[str, Any]] = {}
         self.mcp_registry = MCPRegistry(settings.mcp_servers)
         self.team_manager = TeammateRuntimeManager(
             runtime=self,
@@ -433,6 +435,33 @@ class OpenAgentRuntime:
             tools=tools,
         )
 
+    def _note_context_governance(self, session_id: str, kind: str, label: str) -> None:
+        events = getattr(self, "_context_governance_events", None)
+        if events is None:
+            events = {}
+            self._context_governance_events = events
+        events[str(session_id)] = {
+            "kind": str(kind).strip().lower(),
+            "label": str(label).strip(),
+            "changed_at": time.monotonic(),
+        }
+
+    def recent_context_governance_label(self, session, *, max_age_seconds: float = 15.0) -> str:
+        session_id = str(getattr(session, "id", "")).strip()
+        if not session_id:
+            return ""
+        events = getattr(self, "_context_governance_events", None) or {}
+        entry = events.get(session_id)
+        if not isinstance(entry, dict):
+            return ""
+        label = str(entry.get("label", "")).strip()
+        changed_at = float(entry.get("changed_at", 0.0) or 0.0)
+        if not label:
+            return ""
+        if max_age_seconds > 0 and changed_at > 0 and (time.monotonic() - changed_at) > max_age_seconds:
+            return ""
+        return label
+
     def _messages_for_model(
         self,
         messages: list[dict[str, Any]],
@@ -478,7 +507,14 @@ class OpenAgentRuntime:
                 tools=tools,
             )
             if decisions:
+                changed_results = sum(1 for decision in decisions if decision.state != "original")
                 payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+                if changed_results > 0:
+                    self._note_context_governance(
+                        session.id,
+                        "janitor",
+                        f"janitor reduced {changed_results} tool result(s)",
+                    )
         cache[session.id] = (cache_key, payload_messages)
         return payload_messages
 
@@ -1278,6 +1314,7 @@ class OpenAgentRuntime:
     def compact_session(self, session: AgentSession) -> None:
         session.messages = self.compact_manager.auto_compact(session.id, session.messages)
         self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
+        self._note_context_governance(session.id, "manual_compact", "auto-compacted session history")
         self.session_manager.save(session)
 
     def checkpoint_session(self, session: AgentSession, tag: str) -> dict[str, Any]:
@@ -1412,6 +1449,7 @@ class OpenAgentRuntime:
                         preserve_from_index=preserve_from_index,
                     )
                     self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
+                    self._note_context_governance(session.id, "auto_compact", "auto-compacted older history")
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 try:
@@ -1514,6 +1552,7 @@ class OpenAgentRuntime:
                         preserve_from_index=preserve_from_index,
                     )
                     self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
+                    self._note_context_governance(session.id, "manual_compact", "auto-compacted session history")
                 self.session_manager.save(session)
                 if end_turn_after_tool:
                     continue

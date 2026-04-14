@@ -88,6 +88,29 @@ class ReplTodoTests(unittest.TestCase):
             ],
         )
 
+    def test_bottom_toolbar_includes_recent_context_governance_label(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),
+            context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=40_000,
+                max_tokens=200_000,
+                counter_name="tiktoken",
+            ),
+            recent_context_governance_label=lambda session: "janitor reduced 1 tool result(s)",
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(
+            runner.bottom_toolbar(),
+            [
+                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#64748b", " | "),
+                ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
+                ("fg:#64748b", " | "),
+                ("fg:#67e8f9", "janitor reduced 1 tool result(s)"),
+            ],
+        )
+
     def test_context_health_gradient_styles_follow_thresholds(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
 
@@ -153,6 +176,28 @@ class ReplTodoTests(unittest.TestCase):
         rendered = _render_prompt_text(runner.prompt_message())
 
         self.assertIn("compacting context", rendered)
+
+    def test_prompt_message_shows_recent_janitor_hint_before_mode_and_prompt(self) -> None:
+        runtime = SimpleNamespace(
+            recent_context_governance_label=lambda session: "janitor reduced 2 tool result(s)",
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("janitor reduced 2 tool result(s)", rendered)
+        self.assertLess(rendered.index("janitor reduced 2 tool result(s)"), rendered.index("accept edits on"))
+
+    def test_prompt_message_shows_recent_auto_compact_hint_before_mode_and_prompt(self) -> None:
+        runtime = SimpleNamespace(
+            recent_context_governance_label=lambda session: "auto-compacted older history",
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("auto-compacted older history", rendered)
+        self.assertLess(rendered.index("auto-compacted older history"), rendered.index("accept edits on"))
 
     def test_prompt_message_shows_active_teammates_before_mode_and_prompt(self) -> None:
         runtime = SimpleNamespace(
