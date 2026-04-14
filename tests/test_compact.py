@@ -7,8 +7,10 @@ from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.compact import (
     CompactManager,
     ContextWindowUsage,
+    SemanticCompressionDecision,
     build_payload_messages,
     should_auto_compact,
+    should_run_semantic_janitor,
 )
 from open_somnia.runtime.session import AgentSession
 
@@ -94,6 +96,32 @@ class CompactTests(unittest.TestCase):
         self.assertIn("raw_output", messages[1]["content"][0])
         self.assertIn("log_id", messages[1]["content"][0])
 
+    def test_build_payload_messages_can_apply_semantic_compression_without_mutating_history(self) -> None:
+        messages = [
+            _tool_call("call-1", "grep"),
+            _tool_result("call-1", "needle found in main.py:12"),
+        ]
+
+        payload_messages = build_payload_messages(
+            messages,
+            semantic_decisions=[
+                SemanticCompressionDecision(
+                    message_index=1,
+                    item_index=0,
+                    state="condensed",
+                    summary="[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
+                )
+            ],
+        )
+
+        self.assertEqual(messages[1]["content"][0]["content"], "needle found in main.py:12")
+        self.assertEqual(
+            payload_messages[1]["content"][0]["content"],
+            "[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
+        )
+        self.assertNotIn("raw_output", payload_messages[1]["content"][0])
+        self.assertNotIn("log_id", payload_messages[1]["content"][0])
+
     def test_should_auto_compact_uses_ratio_or_hard_threshold(self) -> None:
         self.assertTrue(
             should_auto_compact(
@@ -111,6 +139,32 @@ class CompactTests(unittest.TestCase):
             should_auto_compact(
                 ContextWindowUsage(used_tokens=70_000, max_tokens=100_000),
                 hard_threshold=100_000,
+            )
+        )
+
+    def test_should_run_semantic_janitor_uses_half_window_or_half_hard_threshold(self) -> None:
+        self.assertTrue(
+            should_run_semantic_janitor(
+                ContextWindowUsage(used_tokens=50_000, max_tokens=100_000),
+                hard_threshold=200_000,
+            )
+        )
+        self.assertFalse(
+            should_run_semantic_janitor(
+                ContextWindowUsage(used_tokens=49_000, max_tokens=100_000),
+                hard_threshold=200_000,
+            )
+        )
+        self.assertTrue(
+            should_run_semantic_janitor(
+                ContextWindowUsage(used_tokens=40_000, max_tokens=None),
+                hard_threshold=80_000,
+            )
+        )
+        self.assertFalse(
+            should_run_semantic_janitor(
+                ContextWindowUsage(used_tokens=39_999, max_tokens=None),
+                hard_threshold=80_000,
             )
         )
 

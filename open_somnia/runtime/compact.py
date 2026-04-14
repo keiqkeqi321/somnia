@@ -8,6 +8,7 @@ from typing import Any
 from open_somnia.providers.base import ProviderError
 
 
+SEMANTIC_JANITOR_TRIGGER_RATIO = 0.50
 AUTO_COMPACT_TRIGGER_RATIO = 0.72
 
 
@@ -29,6 +30,38 @@ class ContextWindowUsage:
         if ratio is None:
             return None
         return ratio * 100.0
+
+
+@dataclass(slots=True, frozen=True)
+class ToolResultLocator:
+    message_index: int
+    item_index: int
+
+
+@dataclass(slots=True)
+class ToolResultCandidate:
+    locator: ToolResultLocator
+    tool_call_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    content: str
+    log_id: str | None
+    age: int
+    output_length: int
+    output_preview: str
+    has_error: bool = False
+
+
+@dataclass(slots=True)
+class SemanticCompressionDecision:
+    message_index: int
+    item_index: int
+    state: str
+    summary: str | None = None
+
+    @property
+    def locator(self) -> ToolResultLocator:
+        return ToolResultLocator(self.message_index, self.item_index)
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -78,13 +111,129 @@ def _strip_tool_result_metadata(item: dict[str, Any]) -> None:
     item.pop("log_id", None)
 
 
-def build_payload_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
+    lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "tool_call":
+                continue
+            call_id = str(item.get("id", "")).strip()
+            if not call_id:
+                continue
+            lookup[call_id] = (
+                str(item.get("name", "")).strip() or "tool",
+                dict(item.get("input") or {}),
+            )
+    return lookup
+
+
+def _compact_text(text: str, *, limit: int = 220) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)] + "..."
+
+
+def _looks_like_error(text: str) -> bool:
+    lowered = str(text).lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "traceback",
+            "exception",
+            "error",
+            "failed",
+            "failure",
+            "assertionerror",
+            "syntaxerror",
+        )
+    )
+
+
+def extract_tool_result_candidates(
+    messages: list[dict[str, Any]],
+    *,
+    preserve_recent_rounds: int = 2,
+    preview_chars: int = 220,
+) -> list[ToolResultCandidate]:
+    rounds = _tool_result_rounds(messages)
+    if not rounds:
+        return []
+    protected_indexes = {
+        message_index for message_index, _ in rounds[-max(0, preserve_recent_rounds) :]
+    }
+    lookup = _tool_call_lookup(messages)
+    candidates: list[ToolResultCandidate] = []
+    total_rounds = len(rounds)
+    for round_position, (message_index, tool_results) in enumerate(rounds):
+        if message_index in protected_indexes:
+            continue
+        for item_index, item in enumerate(tool_results):
+            call_id = str(item.get("tool_call_id", "")).strip()
+            tool_name, tool_input = lookup.get(call_id, ("tool", {}))
+            content = str(item.get("content", ""))
+            candidates.append(
+                ToolResultCandidate(
+                    locator=ToolResultLocator(message_index=message_index, item_index=item_index),
+                    tool_call_id=call_id,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    content=content,
+                    log_id=str(item.get("log_id", "")).strip() or None,
+                    age=total_rounds - round_position,
+                    output_length=len(content),
+                    output_preview=_compact_text(content, limit=preview_chars),
+                    has_error=_looks_like_error(content),
+                )
+            )
+    return candidates
+
+
+def apply_semantic_compression(
+    payload_messages: list[dict[str, Any]],
+    semantic_decisions: list[SemanticCompressionDecision] | None,
+) -> list[dict[str, Any]]:
+    if not semantic_decisions:
+        return payload_messages
+    decisions = {decision.locator: decision for decision in semantic_decisions}
+    rounds = _tool_result_rounds(payload_messages)
+    for message_index, tool_results in rounds:
+        for item_index, item in enumerate(tool_results):
+            decision = decisions.get(ToolResultLocator(message_index=message_index, item_index=item_index))
+            if decision is None:
+                continue
+            if decision.state == "original":
+                continue
+            if decision.state in {"condensed", "evicted"} and decision.summary:
+                item["content"] = decision.summary
+    return payload_messages
+
+
+def build_payload_messages(
+    messages: list[dict[str, Any]],
+    semantic_decisions: list[SemanticCompressionDecision] | None = None,
+) -> list[dict[str, Any]]:
     payload_messages = _clone_messages_for_payload(messages)
+    apply_semantic_compression(payload_messages, semantic_decisions)
     rounds = _tool_result_rounds(payload_messages)
     for _, tool_results in rounds:
         for item in tool_results:
             _strip_tool_result_metadata(item)
     return payload_messages
+
+
+def should_run_semantic_janitor(usage: ContextWindowUsage, *, hard_threshold: int) -> bool:
+    ratio = usage.usage_ratio
+    if ratio is not None and ratio >= SEMANTIC_JANITOR_TRIGGER_RATIO:
+        return True
+    if hard_threshold <= 0:
+        return False
+    return usage.used_tokens >= max(1, hard_threshold // 2)
 
 
 def should_auto_compact(usage: ContextWindowUsage, *, hard_threshold: int) -> bool:

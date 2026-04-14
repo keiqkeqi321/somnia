@@ -14,12 +14,44 @@ from open_somnia.config.models import ModelTraits, ProviderProfileSettings, Prov
 from open_somnia.providers.base import ProviderError
 from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.agent import OpenAgentRuntime, TurnInterrupted
-from open_somnia.runtime.compact import ContextWindowUsage
+from open_somnia.runtime.compact import (
+    ContextWindowUsage,
+    SemanticCompressionDecision,
+    ToolResultCandidate,
+    ToolResultLocator,
+    build_payload_messages,
+)
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.runtime.session import AgentSession
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
+    def _candidate(
+        self,
+        *,
+        message_index: int,
+        item_index: int,
+        tool_name: str,
+        content: str,
+        tool_input: dict | None = None,
+        log_id: str = "log-1",
+        age: int = 4,
+        output_preview: str | None = None,
+        has_error: bool = False,
+    ) -> ToolResultCandidate:
+        return ToolResultCandidate(
+            locator=ToolResultLocator(message_index=message_index, item_index=item_index),
+            tool_call_id=f"call-{message_index}-{item_index}",
+            tool_name=tool_name,
+            tool_input=tool_input or {},
+            content=content,
+            log_id=log_id,
+            age=age,
+            output_length=len(content),
+            output_preview=output_preview or content[:220],
+            has_error=has_error,
+        )
+
     def test_todowrite_is_logged_but_not_printed(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "todo-log"})
@@ -276,6 +308,191 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(restored.token_usage["input_tokens"], 10)
         self.assertEqual(restored.token_usage["output_tokens"], 5)
         self.assertEqual(restored.token_usage["total_tokens"], 15)
+
+    def test_request_original_context_returns_tool_log_output(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.tool_log_store = SimpleNamespace(
+            get=lambda log_id: {
+                "tool_name": "bash",
+                "output": "full original output",
+            }
+            if log_id == "log-1"
+            else None
+        )
+
+        restored = OpenAgentRuntime.request_original_context(runtime, "log-1")
+        missing = OpenAgentRuntime.request_original_context(runtime, "missing")
+
+        self.assertIn("[Restored tool output | bash | log log-1]", restored)
+        self.assertIn("full original output", restored)
+        self.assertIn("No tool log found", missing)
+
+    def test_extract_recent_topic_context_collects_recent_files_symbols_and_keywords(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        messages = [
+            {"role": "user", "content": "Please inspect open_somnia/runtime/agent.py and the request_original_context tool."},
+            {"role": "assistant", "content": "I will compare context_window_usage with build_payload_messages."},
+            {"role": "user", "content": "<background-results>\nignore this\n</background-results>"},
+            {"role": "user", "content": "Also check tests/test_compact.py for SemanticCompressionDecision coverage."},
+        ]
+
+        topic = OpenAgentRuntime._extract_recent_topic_context(runtime, messages)
+
+        self.assertIn("open_somnia/runtime/agent.py", topic["active_files"])
+        self.assertIn("tests/test_compact.py", topic["active_files"])
+        self.assertIn("request_original_context", topic["active_symbols"])
+        self.assertIn("context_window_usage", topic["active_symbols"])
+        self.assertIn("semanticcompressiondecision", {value.lower() for value in topic["keywords"]})
+
+    def test_fallback_context_relevance_decisions_respects_error_pwd_and_relevant_read_file(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        session = AgentSession(
+            id="session-1",
+            todo_items=[
+                {"content": "inspect agent runtime", "status": "in_progress", "activeForm": "inspecting agent runtime"},
+                {"content": "old directory walk", "status": "completed", "activeForm": "completed old walk"},
+            ],
+        )
+        topic_context = {
+            "active_files": ["open_somnia/runtime/agent.py"],
+            "active_symbols": ["request_original_context"],
+            "keywords": ["agent", "runtime", "request_original_context"],
+        }
+        candidates = [
+            self._candidate(
+                message_index=1,
+                item_index=0,
+                tool_name="bash",
+                content="Traceback: RuntimeError connection failed in open_somnia/runtime/agent.py",
+                tool_input={"command": "pytest tests/test_runtime_tool_output.py"},
+                log_id="err-log",
+                has_error=True,
+            ),
+            self._candidate(
+                message_index=3,
+                item_index=0,
+                tool_name="pwd",
+                content="D:/Project/Git/somnia",
+                tool_input={"command": "pwd"},
+                log_id="pwd-log",
+                age=5,
+            ),
+            self._candidate(
+                message_index=5,
+                item_index=0,
+                tool_name="read_file",
+                content="def request_original_context(self, log_id: str) -> str:\n    ...",
+                tool_input={"path": "open_somnia/runtime/agent.py"},
+                log_id="read-log",
+            ),
+        ]
+
+        decisions = OpenAgentRuntime._fallback_context_relevance_decisions(runtime, session, candidates, topic_context)
+        by_locator = {(item.message_index, item.item_index): item for item in decisions}
+
+        self.assertEqual(by_locator[(1, 0)].state, "original")
+        self.assertEqual(by_locator[(3, 0)].state, "evicted")
+        self.assertIn("[Context Evicted | pwd | log pwd-log]", by_locator[(3, 0)].summary)
+        self.assertEqual(by_locator[(5, 0)].state, "original")
+
+    def test_parse_semantic_janitor_response_accepts_valid_json_and_ignores_extra_fields(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        candidates = [
+            self._candidate(
+                message_index=1,
+                item_index=0,
+                tool_name="grep",
+                content="needle found",
+                tool_input={"pattern": "needle"},
+                log_id="grep-log",
+            ),
+            self._candidate(
+                message_index=3,
+                item_index=0,
+                tool_name="pwd",
+                content="D:/Project/Git/somnia",
+                tool_input={"command": "pwd"},
+                log_id="pwd-log",
+            ),
+        ]
+
+        parsed = OpenAgentRuntime._parse_semantic_janitor_response(
+            runtime,
+            """```json
+[
+  {"message_index": 1, "item_index": 0, "state": "condensed", "summary": "Confirmed needle location.", "extra": "ignored"},
+  {"message_index": 3, "item_index": 0, "state": "evicted", "why": "old pwd"},
+  {"message_index": 999, "item_index": 0, "state": "original"}
+]
+```""",
+            candidates,
+        )
+
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0].state, "condensed")
+        self.assertIn("[Semantic Summary | grep | log grep-log]", parsed[0].summary)
+        self.assertEqual(parsed[1].state, "evicted")
+        self.assertIn("[Context Evicted | pwd | log pwd-log]", parsed[1].summary)
+
+    def test_parse_semantic_janitor_response_rejects_invalid_json_and_missing_fields(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        candidates = [self._candidate(message_index=1, item_index=0, tool_name="grep", content="needle found")]
+
+        with self.assertRaises(Exception):
+            OpenAgentRuntime._parse_semantic_janitor_response(runtime, "{not json", candidates)
+
+        with self.assertRaises(Exception):
+            OpenAgentRuntime._parse_semantic_janitor_response(
+                runtime,
+                '[{"message_index": 1, "state": "condensed", "summary": "missing item index"}]',
+                candidates,
+            )
+
+    def test_evicted_restore_end_to_end_returns_original_tool_output(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.tool_log_store = SimpleNamespace(
+            get=lambda log_id: {
+                "tool_name": "pwd",
+                "output": "D:/Project/Git/somnia",
+            }
+            if log_id == "pwd-log"
+            else None
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-1", "name": "pwd", "input": {"command": "pwd"}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": "D:/Project/Git/somnia",
+                        "raw_output": "D:/Project/Git/somnia",
+                        "log_id": "pwd-log",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_payload_messages(
+            messages,
+            semantic_decisions=[
+                SemanticCompressionDecision(
+                    message_index=1,
+                    item_index=0,
+                    state="evicted",
+                    summary="[Context Evicted | pwd | log pwd-log] Output removed from payload. Use request_original_context if needed.",
+                )
+            ],
+        )
+        restored = OpenAgentRuntime.request_original_context(runtime, "pwd-log")
+
+        self.assertIn("[Context Evicted | pwd | log pwd-log]", payload[1]["content"][0]["content"])
+        self.assertIn("[Restored tool output | pwd | log pwd-log]", restored)
+        self.assertIn("D:/Project/Git/somnia", restored)
 
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -625,6 +842,105 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(usage.max_tokens, 200_000)
         self.assertEqual(usage.counter_name, "anthropic_native")
         self.assertEqual(usage.usage_percent, 25.0)
+
+    def test_context_window_usage_applies_semantic_janitor_payload_when_threshold_crossed(self) -> None:
+        captured_messages: list[dict] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+
+        def _count_tokens(system_prompt, messages, tools):
+            captured_messages.clear()
+            captured_messages.extend(messages)
+            return 70_000
+
+        runtime.provider = SimpleNamespace(
+            count_tokens=_count_tokens,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime._analyze_context_relevance = lambda **kwargs: [
+            SemanticCompressionDecision(
+                message_index=1,
+                item_index=0,
+                state="condensed",
+                summary="[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
+            )
+        ]
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "ls -R"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "a" * 1000, "raw_output": "a" * 1000, "log_id": "log-call-1"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "needle", "raw_output": "needle", "log_id": "log-call-2"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-call-3"}]},
+            ],
+        )
+
+        usage = OpenAgentRuntime.context_window_usage(runtime, session)
+
+        self.assertEqual(usage.used_tokens, 70_000)
+        self.assertEqual(
+            captured_messages[1]["content"][0]["content"],
+            "[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
+        )
+        self.assertEqual(session.messages[1]["content"][0]["content"], "a" * 1000)
+
+    def test_context_window_usage_cache_invalidates_after_session_messages_change(self) -> None:
+        provider_calls: list[int] = []
+        analyzer_calls: list[int] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+
+        def _count_tokens(system_prompt, messages, tools):
+            provider_calls.append(len(messages))
+            return 70_000
+
+        runtime.provider = SimpleNamespace(
+            count_tokens=_count_tokens,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+
+        def _analyze(**kwargs):
+            analyzer_calls.append(len(kwargs["messages"]))
+            return []
+
+        runtime._analyze_context_relevance = _analyze
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+        first = OpenAgentRuntime.context_window_usage(runtime, session)
+        second = OpenAgentRuntime.context_window_usage(runtime, session)
+        session.messages.append({"role": "assistant", "content": "new reply"})
+        third = OpenAgentRuntime.context_window_usage(runtime, session)
+
+        self.assertEqual(first.used_tokens, 70_000)
+        self.assertEqual(second.used_tokens, 70_000)
+        self.assertEqual(third.used_tokens, 70_000)
+        self.assertEqual(len(analyzer_calls), 2)
+        self.assertEqual(analyzer_calls, [1, 2])
+        self.assertEqual(len(provider_calls), 4)
+        self.assertEqual(provider_calls[:2], [1, 1])
+        self.assertEqual(provider_calls[2:], [2, 2])
 
     def test_context_window_usage_falls_back_to_payload_estimate(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

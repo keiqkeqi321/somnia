@@ -29,9 +29,13 @@ from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.compact import (
     CompactManager,
     ContextWindowUsage,
+    SemanticCompressionDecision,
+    ToolResultCandidate,
     build_payload_messages,
     estimate_payload_tokens,
+    extract_tool_result_candidates,
     should_auto_compact,
+    should_run_semantic_janitor,
 )
 from open_somnia.runtime.execution_mode import (
     AUTHORIZATION_TOOL_NAME,
@@ -41,7 +45,7 @@ from open_somnia.runtime.execution_mode import (
 )
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message
+from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message, render_text_content
 from open_somnia.runtime.permissions import PermissionManager
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
@@ -146,6 +150,7 @@ class OpenAgentRuntime:
         )
         self.compact_manager = CompactManager(self.provider, self.transcript_store, settings.provider.max_tokens)
         self._context_usage_cache: dict[str, tuple[tuple[Any, ...], ContextWindowUsage]] = {}
+        self._payload_message_cache: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
         self.mcp_registry = MCPRegistry(settings.mcp_servers)
         self.team_manager = TeammateRuntimeManager(
             runtime=self,
@@ -320,6 +325,7 @@ class OpenAgentRuntime:
         self.compact_manager.provider = self.provider
         self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
         self._context_usage_cache = {}
+        self._payload_message_cache = {}
         persist_provider_selection(self.settings, normalized_provider, normalized_model)
         return (
             f"Switched to provider '{self.settings.provider.name}' with model "
@@ -341,6 +347,7 @@ class OpenAgentRuntime:
         self.compact_manager.provider = self.provider
         self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
         self._context_usage_cache = {}
+        self._payload_message_cache = {}
 
     def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
@@ -379,8 +386,101 @@ class OpenAgentRuntime:
             getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
         )
 
-    def _messages_for_model(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return build_payload_messages(messages)
+    def _count_payload_usage(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> ContextWindowUsage:
+        provider = getattr(self, "provider", None)
+        counter_name = "estimate"
+        try:
+            if provider is not None and callable(getattr(provider, "count_tokens", None)):
+                used_tokens = int(provider.count_tokens(system_prompt, messages, tools))
+                if used_tokens <= 0 and (system_prompt.strip() or messages or tools):
+                    raise ValueError("Provider token counter returned a non-positive token count for a non-empty payload.")
+                counter_name = str(provider.token_counter_name())
+            else:
+                raise RuntimeError("Provider token counting unavailable.")
+        except Exception:
+            used_tokens = estimate_payload_tokens(system_prompt, messages, tools)
+
+        context_window_tokens = None
+        if provider is not None and callable(getattr(provider, "context_window_tokens", None)):
+            context_window_tokens = provider.context_window_tokens()
+        if context_window_tokens is None:
+            context_window_tokens = getattr(getattr(self.settings, "provider", None), "context_window_tokens", None)
+        return ContextWindowUsage(
+            used_tokens=used_tokens,
+            max_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
+            counter_name=counter_name,
+        )
+
+    def _payload_message_cache_key(
+        self,
+        session: AgentSession,
+        *,
+        actor: str,
+        role: str,
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> tuple[Any, ...]:
+        return self._context_usage_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+
+    def _messages_for_model(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session: AgentSession | None = None,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if session is None:
+            return build_payload_messages(messages)
+        if system_prompt is None:
+            try:
+                system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
+            except TypeError:
+                system_prompt = self.build_system_prompt()
+        if tools is None:
+            tools = self._context_usage_tools(actor)
+
+        cache_key = self._payload_message_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        cache = getattr(self, "_payload_message_cache", None)
+        if cache is None:
+            cache = {}
+            self._payload_message_cache = cache
+        cached = cache.get(session.id)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
+        payload_messages = build_payload_messages(messages)
+        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        if self._should_run_context_janitor(baseline_usage):
+            decisions = self._analyze_context_relevance(
+                session=session,
+                messages=messages,
+                system_prompt=system_prompt,
+                tools=tools,
+            )
+            if decisions:
+                payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+        cache[session.id] = (cache_key, payload_messages)
+        return payload_messages
 
     def _estimate_completion_output_tokens(self, turn) -> int:
         try:
@@ -455,12 +555,19 @@ class OpenAgentRuntime:
         messages = getattr(session, "messages", None)
         if not isinstance(messages, list):
             messages = []
-        payload_messages = self._messages_for_model(messages)
         try:
             system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
         tools = self._context_usage_tools(actor)
+        payload_messages = self._messages_for_model(
+            messages,
+            session=session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
         cache_key = self._context_usage_cache_key(
             session,
             actor=actor,
@@ -475,33 +582,384 @@ class OpenAgentRuntime:
         cached = cache.get(session.id)
         if cached is not None and cached[0] == cache_key:
             return cached[1]
-
-        provider = getattr(self, "provider", None)
-        counter_name = "estimate"
-        try:
-            if provider is not None and callable(getattr(provider, "count_tokens", None)):
-                used_tokens = int(provider.count_tokens(system_prompt, payload_messages, tools))
-                if used_tokens <= 0 and (system_prompt.strip() or payload_messages or tools):
-                    raise ValueError("Provider token counter returned a non-positive token count for a non-empty payload.")
-                counter_name = str(provider.token_counter_name())
-            else:
-                raise RuntimeError("Provider token counting unavailable.")
-        except Exception:
-            used_tokens = estimate_payload_tokens(system_prompt, payload_messages, tools)
-
-        context_window_tokens = None
-        if provider is not None and callable(getattr(provider, "context_window_tokens", None)):
-            context_window_tokens = provider.context_window_tokens()
-        if context_window_tokens is None:
-            context_window_tokens = getattr(getattr(self.settings, "provider", None), "context_window_tokens", None)
-
-        usage = ContextWindowUsage(
-            used_tokens=used_tokens,
-            max_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
-            counter_name=counter_name,
-        )
+        usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         cache[session.id] = (cache_key, usage)
         return usage
+
+    def _should_run_context_janitor(self, usage: ContextWindowUsage) -> bool:
+        runtime_settings = getattr(self.settings, "runtime", None)
+        threshold = int(getattr(runtime_settings, "token_threshold", 0) or 0)
+        return should_run_semantic_janitor(usage, hard_threshold=threshold)
+
+    def _context_compact_text(self, text: str, *, limit: int = 220) -> str:
+        compact = " ".join(str(text).split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: max(0, limit - 3)] + "..."
+
+    def _extract_topic_tokens(self, text: str) -> set[str]:
+        stopwords = {
+            "the",
+            "and",
+            "that",
+            "with",
+            "from",
+            "this",
+            "into",
+            "have",
+            "need",
+            "when",
+            "then",
+            "than",
+            "were",
+            "been",
+            "about",
+            "after",
+            "before",
+            "using",
+            "used",
+            "user",
+            "assistant",
+            "tool",
+            "result",
+            "output",
+            "current",
+            "should",
+            "would",
+            "could",
+            "there",
+            "their",
+            "them",
+            "file",
+            "files",
+            "line",
+            "lines",
+        }
+        return {
+            token.lower()
+            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text)
+            if token.lower() not in stopwords
+        }
+
+    def _extract_recent_topic_context(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        visible: list[dict[str, str]] = []
+        for message in reversed(messages):
+            if len(visible) >= 4:
+                break
+            if not self._is_visible_conversation_message(message):
+                continue
+            text = render_text_content(message.get("content", ""))
+            compact = self._context_compact_text(text, limit=400)
+            if not compact:
+                continue
+            visible.append({"role": str(message.get("role", "user")), "text": compact})
+        visible.reverse()
+        combined = "\n".join(f"{item['role']}: {item['text']}" for item in visible)
+        active_files = sorted(
+            {
+                match
+                for match in re.findall(r"[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+", combined)
+                if "." in match and len(match) > 2
+            }
+        )[:8]
+        symbol_candidates = {
+            token
+            for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", combined)
+            if token.lower()
+            not in {
+                "user",
+                "assistant",
+                "error",
+                "output",
+                "current",
+                "context",
+                "please",
+                "also",
+                "check",
+                "compare",
+                "inspect",
+            }
+        }
+        active_symbols = sorted(
+            symbol_candidates,
+            key=lambda token: (
+                0 if ("_" in token or any(char.isupper() for char in token[1:])) else 1,
+                token.lower(),
+            ),
+        )[:12]
+        keywords = sorted(self._extract_topic_tokens(combined))[:18]
+        return {
+            "conversation_excerpt": combined,
+            "active_files": active_files,
+            "active_symbols": active_symbols,
+            "keywords": keywords,
+        }
+
+    def _todo_hint_context(self, session: AgentSession) -> dict[str, Any]:
+        open_items: list[str] = []
+        completed_items: list[str] = []
+        open_tokens: set[str] = set()
+        completed_tokens: set[str] = set()
+        for item in getattr(session, "todo_items", []) or []:
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            status = str(item.get("status", "pending")).lower()
+            if status in {"pending", "in_progress"}:
+                open_items.append(content)
+                open_tokens.update(self._extract_topic_tokens(content))
+            elif status == "completed":
+                completed_items.append(content)
+                completed_tokens.update(self._extract_topic_tokens(content))
+        return {
+            "open_items": open_items[:6],
+            "completed_items": completed_items[:6],
+            "open_tokens": open_tokens,
+            "completed_tokens": completed_tokens,
+        }
+
+    def _tool_candidate_haystack(self, candidate: ToolResultCandidate) -> str:
+        tool_input = json.dumps(candidate.tool_input, ensure_ascii=False, default=str)
+        return " ".join(
+            part for part in (candidate.tool_name, tool_input, candidate.content, candidate.output_preview) if part
+        ).lower()
+
+    def _render_condensed_context(self, candidate: ToolResultCandidate, summary: str | None) -> str:
+        prefix = f"[Semantic Summary | {candidate.tool_name}"
+        if candidate.log_id:
+            prefix += f" | log {candidate.log_id}"
+        prefix += "]"
+        body = self._context_compact_text(summary or candidate.output_preview or "Relevant prior tool output reviewed earlier.", limit=260)
+        return f"{prefix} {body}".strip()
+
+    def _render_evicted_context(self, candidate: ToolResultCandidate) -> str:
+        prefix = f"[Context Evicted | {candidate.tool_name}"
+        if candidate.log_id:
+            prefix += f" | log {candidate.log_id}"
+        prefix += "]"
+        return f"{prefix} Output removed from payload. Use request_original_context if needed."
+
+    def _candidate_relevance_score(
+        self,
+        candidate: ToolResultCandidate,
+        *,
+        active_files: set[str],
+        active_symbols: set[str],
+        topic_tokens: set[str],
+        open_todo_tokens: set[str],
+        completed_todo_tokens: set[str],
+    ) -> int:
+        haystack = self._tool_candidate_haystack(candidate)
+        score = 0
+        if candidate.has_error:
+            score += 5
+        if any(file_name.lower() in haystack for file_name in active_files):
+            score += 3
+        symbol_hits = sum(1 for symbol in active_symbols if symbol.lower() in haystack)
+        score += min(symbol_hits, 3) * 2
+        topic_hits = sum(1 for token in topic_tokens if token in haystack)
+        score += min(topic_hits, 3)
+        open_hits = sum(1 for token in open_todo_tokens if token in haystack)
+        score += min(open_hits, 2)
+        completed_hits = sum(1 for token in completed_todo_tokens if token in haystack)
+        if completed_hits and topic_hits == 0 and symbol_hits == 0:
+            score -= 1
+        if candidate.tool_name in {"read_file", "find_symbol", "read_text"}:
+            score += 2
+        if candidate.tool_name in {"pwd", "cd", "ls", "tree", "glob"}:
+            score -= 3
+        if candidate.age >= 6:
+            score -= 1
+        if candidate.age >= 10:
+            score -= 1
+        return score
+
+    def _fallback_context_relevance_decisions(
+        self,
+        session: AgentSession,
+        candidates: list[ToolResultCandidate],
+        topic_context: dict[str, Any],
+    ) -> list[SemanticCompressionDecision]:
+        todo_context = self._todo_hint_context(session)
+        active_files = {value.lower() for value in topic_context.get("active_files", [])}
+        active_symbols = {value.lower() for value in topic_context.get("active_symbols", [])}
+        topic_tokens = {value.lower() for value in topic_context.get("keywords", [])}
+        decisions: list[SemanticCompressionDecision] = []
+        for candidate in candidates:
+            score = self._candidate_relevance_score(
+                candidate,
+                active_files=active_files,
+                active_symbols=active_symbols,
+                topic_tokens=topic_tokens,
+                open_todo_tokens={value.lower() for value in todo_context["open_tokens"]},
+                completed_todo_tokens={value.lower() for value in todo_context["completed_tokens"]},
+            )
+            if candidate.has_error or score >= 5:
+                state = "original"
+                summary = None
+            elif score >= 2 or candidate.output_length >= 900 or candidate.tool_name in {"grep", "bash"}:
+                state = "condensed"
+                summary = self._render_condensed_context(candidate, None)
+            elif candidate.tool_name in {"pwd", "cd", "ls", "tree", "glob"} and candidate.age >= 2:
+                state = "evicted"
+                summary = self._render_evicted_context(candidate)
+            else:
+                state = "condensed"
+                summary = self._render_condensed_context(candidate, None)
+            decisions.append(
+                SemanticCompressionDecision(
+                    message_index=candidate.locator.message_index,
+                    item_index=candidate.locator.item_index,
+                    state=state,
+                    summary=summary,
+                )
+            )
+        return decisions
+
+    def _strip_json_fence(self, text: str) -> str:
+        stripped = text.strip()
+        if not stripped.startswith("```"):
+            return stripped
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+        return stripped.strip()
+
+    def _parse_semantic_janitor_response(
+        self,
+        text: str,
+        candidates: list[ToolResultCandidate],
+    ) -> list[SemanticCompressionDecision]:
+        cleaned = self._strip_json_fence(text)
+        payload = json.loads(cleaned)
+        if not isinstance(payload, list):
+            raise ValueError("Semantic janitor response must be a JSON list.")
+        candidates_by_locator = {candidate.locator: candidate for candidate in candidates}
+        decisions: list[SemanticCompressionDecision] = []
+        seen: set[tuple[int, int]] = set()
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            message_index = int(item.get("message_index"))
+            item_index = int(item.get("item_index"))
+            locator = (message_index, item_index)
+            if locator in seen:
+                continue
+            candidate = candidates_by_locator.get(
+                SemanticCompressionDecision(
+                    message_index=message_index,
+                    item_index=item_index,
+                    state="original",
+                ).locator
+            )
+            if candidate is None:
+                continue
+            state = str(item.get("state", "original")).strip().lower()
+            if state not in {"original", "condensed", "evicted"}:
+                continue
+            summary_text = str(item.get("summary", "")).strip()
+            summary: str | None = None
+            if state == "condensed":
+                summary = self._render_condensed_context(candidate, summary_text or None)
+            elif state == "evicted":
+                summary = self._render_evicted_context(candidate)
+            decisions.append(
+                SemanticCompressionDecision(
+                    message_index=message_index,
+                    item_index=item_index,
+                    state=state,
+                    summary=summary,
+                )
+            )
+            seen.add(locator)
+        return decisions
+
+    def _build_semantic_janitor_prompt(
+        self,
+        topic_context: dict[str, Any],
+        todo_context: dict[str, Any],
+        candidates: list[ToolResultCandidate],
+    ) -> str:
+        topic_lines = [
+            "Current recent topic:",
+            f"- Conversation excerpt: {topic_context.get('conversation_excerpt', '(none)') or '(none)'}",
+            f"- Active files: {', '.join(topic_context.get('active_files', [])) or '(none)'}",
+            f"- Active symbols: {', '.join(topic_context.get('active_symbols', [])) or '(none)'}",
+            f"- Keywords: {', '.join(topic_context.get('keywords', [])) or '(none)'}",
+            "",
+            "Todo hints:",
+            f"- Open items: {', '.join(todo_context.get('open_items', [])) or '(none)'}",
+            f"- Completed items: {', '.join(todo_context.get('completed_items', [])) or '(none)'}",
+            "",
+            "Candidate tool results:",
+        ]
+        for candidate in candidates:
+            topic_lines.extend(
+                [
+                    f"- message_index={candidate.locator.message_index} item_index={candidate.locator.item_index} tool={candidate.tool_name} age={candidate.age}",
+                    f"  log_id={candidate.log_id or '(none)'}",
+                    f"  input={self._context_compact_text(json.dumps(candidate.tool_input, ensure_ascii=False, default=str), limit=180)}",
+                    f"  output_preview={candidate.output_preview or '(no output)'}",
+                    f"  output_length={candidate.output_length}",
+                ]
+            )
+        topic_lines.extend(
+            [
+                "",
+                "Return strict JSON only.",
+                "Each item must contain message_index, item_index, state.",
+                "Allowed states: original, condensed, evicted.",
+                "Include summary only when state is condensed.",
+            ]
+        )
+        return "\n".join(topic_lines)
+
+    def _analyze_context_relevance(
+        self,
+        *,
+        session: AgentSession,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+    ) -> list[SemanticCompressionDecision]:
+        del system_prompt, tools
+        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=2)
+        if not candidates:
+            return []
+        selected = sorted(candidates, key=lambda item: (item.output_length, item.age), reverse=True)[:12]
+        selected.sort(key=lambda item: (item.locator.message_index, item.locator.item_index))
+        topic_context = self._extract_recent_topic_context(messages)
+        todo_context = self._todo_hint_context(session)
+        fallback = self._fallback_context_relevance_decisions(session, selected, topic_context)
+        try:
+            turn = self.provider.complete(
+                system_prompt=(
+                    "You are a context janitor for a coding agent.\n"
+                    "Prioritize the current recent topic. Todo items are only weak hints.\n"
+                    "Decide whether each old tool result should remain original, be condensed into one factual sentence, or be evicted.\n"
+                    "Return strict JSON only."
+                ),
+                messages=[{"role": "user", "content": self._build_semantic_janitor_prompt(topic_context, todo_context, selected)}],
+                tools=[],
+                max_tokens=min(900, self.settings.provider.max_tokens),
+            )
+            text = "\n".join(getattr(turn, "text_blocks", []) or []).strip()
+            if not text:
+                return fallback
+            parsed = self._parse_semantic_janitor_response(text, selected)
+            return parsed or fallback
+        except Exception:
+            return fallback
+
+    def request_original_context(self, log_id: str) -> str:
+        normalized_log_id = str(log_id).strip()
+        if not normalized_log_id:
+            return "log_id is required."
+        entry = self.tool_log_store.get(normalized_log_id)
+        if not entry:
+            return f"No tool log found for '{normalized_log_id}'."
+        tool_name = str(entry.get("tool_name", "tool")).strip() or "tool"
+        output = str(entry.get("output", ""))
+        return f"[Restored tool output | {tool_name} | log {normalized_log_id}]\n{output or '(no output)'}"
 
     def _register_core_tools(self, registry: ToolRegistry) -> None:
         register_shell_tool(registry)
@@ -579,6 +1037,18 @@ class OpenAgentRuntime:
                 description="Manually compact the current conversation context.",
                 input_schema={"type": "object", "properties": {}},
                 handler=lambda ctx, payload: "Compressing...",
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="request_original_context",
+                description="Reload the full original output for a prior tool result by log id.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"log_id": {"type": "string"}},
+                    "required": ["log_id"],
+                },
+                handler=lambda ctx, payload: self.request_original_context(payload["log_id"]),
             )
         )
 
@@ -944,13 +1414,17 @@ class OpenAgentRuntime:
                     self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
-                payload_messages = self._messages_for_model(session.messages)
-                tool_schemas = self.registry.schemas()
-
                 try:
                     system_prompt = self.build_system_prompt(session=session)
                 except TypeError:
                     system_prompt = self.build_system_prompt()
+                tool_schemas = self.registry.schemas()
+                payload_messages = self._messages_for_model(
+                    session.messages,
+                    session=session,
+                    system_prompt=system_prompt,
+                    tools=tool_schemas,
+                )
 
                 turn = self.complete(
                     system_prompt,
