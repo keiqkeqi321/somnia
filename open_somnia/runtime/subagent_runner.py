@@ -5,7 +5,17 @@ from typing import Any
 
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message
-from open_somnia.tools.filesystem import edit_file, find_symbol, glob_search, grep_search, project_scan, read_file, tree_view, write_file
+from open_somnia.tools.filesystem import (
+    GREP_TOOL_DESCRIPTION,
+    edit_file,
+    find_symbol,
+    glob_search,
+    grep_search,
+    project_scan,
+    read_file,
+    tree_view,
+    write_file,
+)
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 from open_somnia.tools.shell import register_shell_tool
 
@@ -130,7 +140,7 @@ class SubagentRunner:
         registry.register(
             ToolDefinition(
                 name="grep",
-                description="Search file contents inside the workspace and return matching lines.",
+                description=GREP_TOOL_DESCRIPTION,
                 input_schema={
                     "type": "object",
                     "properties": {

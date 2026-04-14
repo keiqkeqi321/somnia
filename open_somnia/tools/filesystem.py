@@ -577,6 +577,57 @@ def _format_glob_no_matches(
     return "\n".join(lines)
 
 
+_GREP_REGEX_CHAR_CLASS_PATTERN = re.compile(r"(?<!\\)\[[^\]]+\]")
+_GREP_REGEX_GROUP_PATTERN = re.compile(r"(?<!\\)\([^)]*\)")
+_GREP_REGEX_ESCAPED_CLASS_WITH_QUANTIFIER_PATTERN = re.compile(r"\\[dDsSwW](?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})")
+_GREP_REGEX_WORD_BOUNDARY_PATTERN = re.compile(r"\\b[^\\]+\\b")
+_GREP_REGEX_ANCHOR_ESCAPE_PATTERN = re.compile(r"^(?:\\A.*|.*\\Z)$")
+_GREP_REGEX_QUANTIFIER_PATTERN = re.compile(r"(?<!\\)(?:\.\*|\.\+|\.\?|(?<![A-Za-z0-9_])\{[0-9]+(?:,[0-9]*)?\})")
+
+GREP_TOOL_DESCRIPTION = (
+    "Search file contents inside the workspace and return matching lines. "
+    "Obvious regex patterns such as `foo|bar`, `^name$`, `\\berror\\b`, or `\\d+` "
+    "are auto-detected; set `use_regex=false` to force literal substring matching."
+)
+
+
+def _grep_pattern_looks_regex_like(pattern: str) -> bool:
+    if "|" in pattern:
+        return True
+    if pattern.startswith("^") or pattern.endswith("$"):
+        return True
+    if _GREP_REGEX_CHAR_CLASS_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_GROUP_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_ESCAPED_CLASS_WITH_QUANTIFIER_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_WORD_BOUNDARY_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_ANCHOR_ESCAPE_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_QUANTIFIER_PATTERN.search(pattern):
+        return True
+    return False
+
+
+def _compile_grep_matcher(
+    pattern: str,
+    *,
+    flags: int,
+    use_regex: bool,
+    explicit_use_regex: bool,
+) -> tuple[re.Pattern[str] | None, str | None]:
+    if not use_regex:
+        return None, None
+    try:
+        return re.compile(pattern, flags), None
+    except re.error as exc:
+        if explicit_use_regex:
+            return None, f"Error: invalid regex pattern: {exc}"
+        return None, None
+
+
 def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
     base_path = safe_path(workspace_root, str(payload.get("path", ".")))
@@ -646,11 +697,21 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     glob_pattern = str(payload.get("glob", "*"))
     recursive = bool(payload.get("recursive", True))
     case_sensitive = bool(payload.get("case_sensitive", False))
+    explicit_use_regex = "use_regex" in payload
     use_regex = bool(payload.get("use_regex", False))
+    if not explicit_use_regex and _grep_pattern_looks_regex_like(pattern):
+        use_regex = True
     limit = max(1, int(payload.get("limit", 50)))
 
     flags = 0 if case_sensitive else re.IGNORECASE
-    matcher = re.compile(pattern, flags) if use_regex else None
+    matcher, compile_error = _compile_grep_matcher(
+        pattern,
+        flags=flags,
+        use_regex=use_regex,
+        explicit_use_regex=explicit_use_regex,
+    )
+    if compile_error is not None:
+        return compile_error
     needle = pattern if case_sensitive else pattern.lower()
 
     iterator = base_path.rglob("*") if recursive else base_path.glob("*")
@@ -843,7 +904,7 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="grep",
-            description="Search file contents inside the workspace and return matching lines.",
+            description=GREP_TOOL_DESCRIPTION,
             input_schema={
                 "type": "object",
                 "properties": {

@@ -490,6 +490,130 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "demo.cs:2:对象池")
 
+    def test_grep_search_auto_enables_regex_for_alternation_patterns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("auto_compact\ncompact_manager\n_messages_for_payload\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "auto_compact|compact_manager|_messages_for_payload", "glob": "*.py"})
+
+        self.assertEqual(
+            result,
+            "src/app.py:1:auto_compact\nsrc/app.py:2:compact_manager\nsrc/app.py:3:_messages_for_payload",
+        )
+
+    def test_grep_search_auto_enables_regex_for_word_boundary_pattern(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("error\nterror\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": r"\berror\b", "glob": "*.py"})
+
+        self.assertEqual(result, "src/app.py:1:error")
+
+    def test_grep_search_keeps_plain_text_quantifier_characters_literal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("hell\nhello\nhello?\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "hello?", "glob": "*.py"})
+
+        self.assertEqual(result, "src/app.py:3:hello?")
+
+    def test_grep_search_keeps_windows_like_paths_literal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text(r"path\bin\file" + "\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": r"path\bin\file", "glob": "*.py"})
+
+        self.assertEqual(result, r"src/app.py:1:path\bin\file")
+
+    def test_grep_search_explicit_false_keeps_literal_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("literal auto_compact|compact_manager\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(
+                ctx,
+                {
+                    "pattern": "auto_compact|compact_manager",
+                    "glob": "*.py",
+                    "use_regex": False,
+                },
+            )
+
+        self.assertEqual(result, "src/app.py:1:literal auto_compact|compact_manager")
+
+    def test_grep_search_invalid_explicit_regex_returns_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("beta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "(", "glob": "*.py", "use_regex": True})
+
+        self.assertIn("Error: invalid regex pattern:", result)
+
     def test_tool_registry_applies_execution_mode_guard_before_write_handler(self) -> None:
         registry = ToolRegistry()
         called: list[dict[str, str]] = []
