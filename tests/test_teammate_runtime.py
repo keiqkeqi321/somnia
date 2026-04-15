@@ -101,6 +101,57 @@ class TeammateRuntimeTests(unittest.TestCase):
         self.assertIn("assistant: I will inspect crease generation.", log_output)
         self.assertIn("Tool log: /toollog abc123", log_output)
 
+    def test_team_ui_displays_update_for_edit_file_tool(self) -> None:
+        class _MemoryTeamStore:
+            def __init__(self) -> None:
+                self.payload = {"team_name": "default", "members": []}
+                self.logs: dict[str, list[dict]] = {}
+
+            def load(self) -> dict:
+                return self.payload
+
+            def save(self, payload: dict) -> None:
+                self.payload = payload
+
+            def reset_log(self, name: str, payload: dict) -> None:
+                self.logs[name] = [payload]
+
+            def append_log(self, name: str, payload: dict) -> None:
+                self.logs.setdefault(name, []).append(payload)
+
+            def read_log(self, name: str) -> list[dict]:
+                return list(self.logs.get(name, []))
+
+        team_store = _MemoryTeamStore()
+        manager = TeammateRuntimeManager(
+            runtime=SimpleNamespace(),
+            team_store=team_store,
+            bus=SimpleNamespace(),
+            task_store=SimpleNamespace(),
+            request_tracker=SimpleNamespace(),
+        )
+
+        manager._upsert_member("Builder", "frontend builder", "working", "running_tool:edit_file")
+        manager._update_member("Builder", current_tool_name="edit_file", current_tool_log_id="edit-log")
+        manager._append_log(
+            "Builder",
+            "tool_call",
+            {
+                "tool_name": "edit_file",
+                "tool_input": {"path": "frontend/src/App.tsx"},
+                "output_preview": "Added 3 lines",
+                "tool_log_id": "edit-log",
+            },
+        )
+
+        roster = manager.list_all()
+        log_output = manager.render_log("Builder")
+
+        self.assertIn("tool Update", roster)
+        self.assertNotIn("tool edit_file", roster)
+        self.assertIn("- tool Update:", log_output)
+        self.assertNotIn("- tool edit_file:", log_output)
+
     def test_interrupt_active_stops_teammate_before_tool_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

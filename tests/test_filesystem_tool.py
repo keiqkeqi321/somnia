@@ -158,6 +158,76 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertIn("3: render new", result["updated_content_snippet"])
         self.assertEqual(final_content, "alpha updated\nbeta\nrender new\n")
 
+    def test_edit_file_accepts_per_edit_path_without_top_level_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "frontend" / "src" / "ChatSidebar.tsx"
+            target.parent.mkdir(parents=True)
+            target.write_text("alpha\nbeta\n", encoding="utf-8")
+            session = SimpleNamespace(pending_file_changes=[])
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=session,
+            )
+
+            result = edit_file(
+                ctx,
+                {
+                    "edits": [
+                        {
+                            "path": "frontend/src/ChatSidebar.tsx",
+                            "old_text": "beta",
+                            "new_text": "beta updated",
+                        }
+                    ]
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["path"], "frontend/src/ChatSidebar.tsx")
+        self.assertEqual(result["applied_edits"], 1)
+        self.assertEqual(final_content, "alpha\nbeta updated\n")
+
+    def test_edit_file_accepts_absolute_workspace_path_in_edit_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "frontend" / "src" / "ChatSidebar.tsx"
+            target.parent.mkdir(parents=True)
+            target.write_text("one\ntwo\n", encoding="utf-8")
+            session = SimpleNamespace(pending_file_changes=[])
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=session,
+            )
+
+            result = edit_file(
+                ctx,
+                {
+                    "edits": [
+                        {
+                            "path": str(target),
+                            "old_text": "two",
+                            "new_text": "two updated",
+                        }
+                    ]
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["path"], str(target))
+        self.assertEqual(result["applied_edits"], 1)
+        self.assertEqual(final_content, "one\ntwo updated\n")
+
     def test_read_file_updates_active_file_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

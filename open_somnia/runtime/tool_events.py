@@ -68,6 +68,9 @@ class ToolEventRenderer:
         if tool_name == "bash":
             command = self.runtime._compact_preview(str(tool_input.get("command", "")).strip(), limit=140)
             return f"Bash({command or '(no command)'})"
+        if tool_name == "edit_file":
+            path = str(tool_input.get("path", "")).strip() or str(getattr(output, "get", lambda *_: "")("path", "")).strip()
+            return f"{self._display_tool_name(tool_name)}({path or '(unknown path)'})"
         if tool_name == "read_file":
             path = str(tool_input.get("path", "")).strip() or "(unknown path)"
             return f"Read({path})"
@@ -106,10 +109,19 @@ class ToolEventRenderer:
         return tool_name
 
     def _prettify_tool_name(self, tool_name: str) -> str:
+        display_name = self._display_tool_name(tool_name)
+        if display_name != str(tool_name):
+            return display_name
         words = [part for part in str(tool_name).replace("__", "_").split("_") if part]
         if not words:
             return tool_name
         return "".join(word.capitalize() for word in words)
+
+    def _display_tool_name(self, tool_name: str) -> str:
+        normalized = str(tool_name).strip()
+        if normalized == "edit_file":
+            return "Update"
+        return normalized
 
     def _format_tool_args_preview(self, tool_input: dict[str, Any], *, limit: int = 96) -> str:
         if not isinstance(tool_input, dict) or not tool_input:
@@ -389,7 +401,9 @@ class ToolEventRenderer:
             return "No tool logs yet."
         lines: list[str] = []
         for entry in entries:
-            lines.append(f"- {entry['id']} [{entry['category']}] {entry['actor']} -> {entry['tool_name']}")
+            lines.append(
+                f"- {entry['id']} [{entry['category']}] {entry['actor']} -> {self._display_tool_name(entry['tool_name'])}"
+            )
         return "\n".join(lines)
 
     def render_tool_log(self, log_id: str) -> str:
@@ -402,7 +416,7 @@ class ToolEventRenderer:
                 f"[tool log {entry['id']}]",
                 f"Category: {entry['category']}",
                 f"Actor: {entry['actor']}",
-                f"Tool: {entry['tool_name']}",
+                f"Tool: {self._display_tool_name(entry['tool_name'])}",
                 "Args:",
                 args_text,
                 "Result:",

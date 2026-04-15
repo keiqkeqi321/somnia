@@ -572,8 +572,9 @@ class TeammateRuntimeManager:
         if event_type == "assistant_message":
             return [f"- assistant: {self._compact_text(self._render_log_content(entry.get('content')))}"]
         if event_type == "tool_call":
+            display_tool_name = self._display_tool_name(entry.get("tool_name", "unknown"))
             lines = [
-                f"- tool {entry.get('tool_name', 'unknown')}: {self._compact_text(json.dumps(entry.get('tool_input', {}), ensure_ascii=False))}",
+                f"- tool {display_tool_name}: {self._compact_text(json.dumps(entry.get('tool_input', {}), ensure_ascii=False))}",
                 f"  result: {self._compact_text(str(entry.get('output_preview', '(no output)')))}",
             ]
             tool_log_id = str(entry.get("tool_log_id", "")).strip()
@@ -598,12 +599,12 @@ class TeammateRuntimeManager:
     def _format_activity(self, activity: str) -> str:
         raw = str(activity or "unknown").strip()
         if raw.startswith("running_tool:"):
-            return f"tool {raw.split(':', 1)[1]}"
+            return f"tool {self._display_tool_name(raw.split(':', 1)[1])}"
         return raw.replace("_", " ")
 
     def _format_member_summary(self, member: dict) -> str:
         extras: list[str] = [self._format_activity(member.get("activity", "unknown"))]
-        current_tool = str(member.get("current_tool_name", "")).strip()
+        current_tool = self._display_tool_name(member.get("current_tool_name", ""))
         if current_tool and f"tool {current_tool}" not in extras:
             extras.append(f"tool {current_tool}")
         if member.get("current_task_id") is not None:
@@ -615,3 +616,9 @@ class TeammateRuntimeManager:
             f"{member['name']} ({member['role']}): {member['status']} "
             f"[{', '.join(extras)}] last_seen={last_seen} View team logs: /teamlog {member['name']}"
         )
+
+    def _display_tool_name(self, tool_name) -> str:
+        normalized = str(tool_name or "").strip()
+        if normalized == "edit_file":
+            return "Update"
+        return normalized

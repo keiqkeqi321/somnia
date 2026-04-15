@@ -140,6 +140,33 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("error: command failed", rendered)
         self.assertNotIn("TOOL lead", rendered)
 
+    def test_recent_tool_logs_and_render_tool_log_show_update_for_edit_file(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.tool_log_store = SimpleNamespace(
+            list_recent=lambda limit=10: [
+                {"id": "edit-log", "category": "TOOL", "actor": "lead", "tool_name": "edit_file"}
+            ],
+            get=lambda log_id: {
+                "id": "edit-log",
+                "category": "TOOL",
+                "actor": "lead",
+                "tool_name": "edit_file",
+                "tool_input": {"path": "demo.txt", "old_text": "a", "new_text": "b"},
+                "output": {"status": "ok", "path": "demo.txt"},
+            }
+            if log_id == "edit-log"
+            else None,
+        )
+        runtime.settings = SimpleNamespace(workspace_root=Path("D:/workspace"))
+
+        recent = OpenAgentRuntime.recent_tool_logs(runtime, limit=5)
+        rendered_log = OpenAgentRuntime.render_tool_log(runtime, "edit-log")
+
+        self.assertIn("-> Update", recent)
+        self.assertNotIn("-> edit_file", recent)
+        self.assertIn("Tool: Update", rendered_log)
+        self.assertNotIn("Tool: edit_file", rendered_log)
+
     def test_bash_tool_event_uses_compact_heading_and_result_preview(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "bash-log"})

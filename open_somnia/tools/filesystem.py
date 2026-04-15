@@ -919,14 +919,18 @@ def write_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
-    path = safe_path(ctx.runtime.settings.workspace_root, payload["path"])
-    content = _read_text_with_fallback(path)
+    workspace_root = ctx.runtime.settings.workspace_root
+    default_path = str(payload.get("path", "")).strip()
     replacements_payload = payload.get("edits")
     if replacements_payload is None:
+        if not default_path:
+            return "Error: path is required."
         replacements = [
             {
+                "path": default_path,
                 "old_text": str(payload["old_text"]),
                 "new_text": str(payload["new_text"]),
+                "source_index": 1,
             }
         ]
     else:
@@ -938,56 +942,104 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
                 return f"Error: edits[{index}] must be an object."
             if "old_text" not in item or "new_text" not in item:
                 return f"Error: edits[{index}] must contain old_text and new_text."
+            item_path = str(item.get("path", default_path)).strip()
+            if not item_path:
+                return f"Error: edits[{index}] must contain path, or provide a top-level path."
             replacements.append(
                 {
+                    "path": item_path,
                     "old_text": str(item["old_text"]),
                     "new_text": str(item["new_text"]),
+                    "source_index": index,
                 }
             )
 
-    updated = content
-    snippet_anchors: list[str] = []
-    for index, replacement in enumerate(replacements, start=1):
-        old_text = replacement["old_text"]
-        new_text = replacement["new_text"]
-        if old_text not in updated:
-            if len(replacements) == 1:
-                return f"Error: Text not found in {payload['path']}"
-            return f"Error: Text not found for edits[{index}] in {payload['path']}"
-        updated = updated.replace(old_text, new_text, 1)
-        snippet_anchors.extend(_snippet_anchor_candidates(new_text))
+    replacements_by_path: dict[str, list[dict[str, Any]]] = {}
+    path_order: list[str] = []
+    for replacement in replacements:
+        target_path = str(replacement["path"])
+        if target_path not in replacements_by_path:
+            replacements_by_path[target_path] = []
+            path_order.append(target_path)
+        replacements_by_path[target_path].append(replacement)
 
-    path.write_text(updated, encoding="utf-8")
-    added, removed = _line_diff_stats(content, updated)
-    snippet = _render_updated_content_snippet(updated, anchors=snippet_anchors)
-    _update_runtime_active_file(
-        ctx,
-        path=path,
-        content=updated,
-        source="edit_file",
-        snippet=snippet,
-    )
-    _record_file_change(
-        ctx,
-        {
-            "tool_name": "edit_file",
-            "path": payload["path"],
-            "absolute_path": str(path),
-            "added_lines": added,
-            "removed_lines": removed,
-            "existed_before": True,
-            "previous_content": content,
-        },
-    )
+    file_results: list[dict[str, Any]] = []
+    for target_path in path_order:
+        path = safe_path(workspace_root, target_path)
+        content = _read_text_with_fallback(path)
+        updated = content
+        snippet_anchors: list[str] = []
+        path_replacements = replacements_by_path[target_path]
+        for replacement in path_replacements:
+            old_text = replacement["old_text"]
+            new_text = replacement["new_text"]
+            source_index = int(replacement["source_index"])
+            if old_text not in updated:
+                if replacements_payload is None:
+                    return f"Error: Text not found in {target_path}"
+                return f"Error: Text not found for edits[{source_index}] in {target_path}"
+            updated = updated.replace(old_text, new_text, 1)
+            snippet_anchors.extend(_snippet_anchor_candidates(new_text))
+
+        path.write_text(updated, encoding="utf-8")
+        added, removed = _line_diff_stats(content, updated)
+        snippet = _render_updated_content_snippet(updated, anchors=snippet_anchors)
+        _update_runtime_active_file(
+            ctx,
+            path=path,
+            content=updated,
+            source="edit_file",
+            snippet=snippet,
+        )
+        _record_file_change(
+            ctx,
+            {
+                "tool_name": "edit_file",
+                "path": target_path,
+                "absolute_path": str(path),
+                "added_lines": added,
+                "removed_lines": removed,
+                "existed_before": True,
+                "previous_content": content,
+            },
+        )
+        file_results.append(
+            {
+                "path": target_path,
+                "absolute_path": str(path),
+                "added_lines": added,
+                "removed_lines": removed,
+                "applied_edits": len(path_replacements),
+                "updated_content_snippet": snippet,
+            }
+        )
+
+    if len(file_results) == 1:
+        result = file_results[0]
+        return {
+            "status": "ok",
+            "action": "edit_file",
+            "path": result["path"],
+            "absolute_path": result["absolute_path"],
+            "added_lines": result["added_lines"],
+            "removed_lines": result["removed_lines"],
+            "applied_edits": result["applied_edits"],
+            "updated_content_snippet": result["updated_content_snippet"],
+        }
+
+    total_added = sum(int(item["added_lines"]) for item in file_results)
+    total_removed = sum(int(item["removed_lines"]) for item in file_results)
+    total_edits = sum(int(item["applied_edits"]) for item in file_results)
     return {
         "status": "ok",
         "action": "edit_file",
-        "path": payload["path"],
-        "absolute_path": str(path),
-        "added_lines": added,
-        "removed_lines": removed,
-        "applied_edits": len(replacements),
-        "updated_content_snippet": snippet,
+        "path": "(multiple files)",
+        "absolute_path": "",
+        "added_lines": total_added,
+        "removed_lines": total_removed,
+        "applied_edits": total_edits,
+        "edited_files": file_results,
+        "updated_content_snippet": f"Updated {len(file_results)} files.",
     }
 
 
@@ -1118,6 +1170,7 @@ def register_filesystem_tools(registry) -> None:
             description=(
                 "Replace exact text in a file. Use `old_text`/`new_text` for a single replacement, or pass "
                 "`edits=[{old_text,new_text}, ...]` to apply multiple exact replacements in one call. "
+                "Each edit may also provide its own `path`; if omitted, the top-level `path` is used. "
                 "Successful edits return an updated snippet around the changed region. Confirm the exact path "
                 "with a focused `glob` before editing; do not guess paths from broad directory listings."
             ),
@@ -1132,6 +1185,7 @@ def register_filesystem_tools(registry) -> None:
                         "items": {
                             "type": "object",
                             "properties": {
+                                "path": {"type": "string"},
                                 "old_text": {"type": "string"},
                                 "new_text": {"type": "string"},
                             },
@@ -1139,7 +1193,6 @@ def register_filesystem_tools(registry) -> None:
                         },
                     },
                 },
-                "required": ["path"],
             },
             handler=edit_file,
         )
