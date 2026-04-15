@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 (2026-04-15)
+
+- 为 janitor 增加低收益自动熔断 (a3e870f)
+- 调整 janitor 手动触发与上下文阈值 (009d7ff)
+- 统一 Update 显示并兼容 edit_file 路径格式 (12e3ab7)
+- 优化上下文治理与 janitor 性能 (0a1ebd1)
+- 优化文件编辑上下文治理与手动 janitor (5dd7afb)
+- docs: 删除根目录下已迁移的项目概述文件 (6e741e6)
+- docs: 将项目概述移入运维目录，整理运维文档序号 (c0ea985)
+- Reorganize project documentation (af06705)
+- Support single-file grep paths (7e36200)
+- Make semantic janitor ratio-based only (66d665a)
+
 ## 0.4.2 (2026-04-14)
 
 - Improve grep regex compatibility heuristics (b0a4096)
