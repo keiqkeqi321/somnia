@@ -9,6 +9,8 @@ from open_somnia.runtime.compact import (
     ContextWindowUsage,
     SemanticCompressionDecision,
     build_payload_messages,
+    extract_tool_result_candidates,
+    persist_semantic_compression,
     should_auto_compact,
     should_run_semantic_janitor,
 )
@@ -121,6 +123,59 @@ class CompactTests(unittest.TestCase):
         )
         self.assertNotIn("raw_output", payload_messages[1]["content"][0])
         self.assertNotIn("log_id", payload_messages[1]["content"][0])
+
+    def test_persist_semantic_compression_updates_history_and_drops_raw_output(self) -> None:
+        messages = [
+            _tool_call("call-1", "grep"),
+            _tool_result("call-1", "needle found in main.py:12"),
+        ]
+
+        changed = persist_semantic_compression(
+            messages,
+            semantic_decisions=[
+                SemanticCompressionDecision(
+                    message_index=1,
+                    item_index=0,
+                    state="condensed",
+                    summary="[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
+                )
+            ],
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            messages[1]["content"][0]["content"],
+            "[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
+        )
+        self.assertEqual(messages[1]["content"][0]["semantic_state"], "condensed")
+        self.assertNotIn("raw_output", messages[1]["content"][0])
+        self.assertIn("log_id", messages[1]["content"][0])
+
+    def test_extract_tool_result_candidates_skips_already_compacted_items(self) -> None:
+        messages = [
+            _tool_call("call-1", "grep"),
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": "[Semantic Summary | grep | log log-call-1] compacted",
+                        "log_id": "log-call-1",
+                        "semantic_state": "condensed",
+                    }
+                ],
+            },
+            _tool_call("call-2", "read_file"),
+            _tool_result("call-2", "fresh content"),
+            _tool_call("call-3", "grep"),
+            _tool_result("call-3", "recent content"),
+        ]
+
+        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=1)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].tool_call_id, "call-2")
 
     def test_should_auto_compact_uses_ratio_or_hard_threshold(self) -> None:
         self.assertTrue(

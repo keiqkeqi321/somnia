@@ -174,6 +174,9 @@ def extract_tool_result_candidates(
         if message_index in protected_indexes:
             continue
         for item_index, item in enumerate(tool_results):
+            semantic_state = str(item.get("semantic_state", "")).strip().lower()
+            if semantic_state in {"condensed", "evicted"}:
+                continue
             call_id = str(item.get("tool_call_id", "")).strip()
             tool_name, tool_input = lookup.get(call_id, ("tool", {}))
             content = str(item.get("content", ""))
@@ -212,6 +215,39 @@ def apply_semantic_compression(
             if decision.state in {"condensed", "evicted"} and decision.summary:
                 item["content"] = decision.summary
     return payload_messages
+
+
+def persist_semantic_compression(
+    messages: list[dict[str, Any]],
+    semantic_decisions: list[SemanticCompressionDecision] | None,
+) -> bool:
+    if not semantic_decisions:
+        return False
+    decisions = {decision.locator: decision for decision in semantic_decisions}
+    rounds = _tool_result_rounds(messages)
+    changed = False
+    for message_index, tool_results in rounds:
+        for item_index, item in enumerate(tool_results):
+            decision = decisions.get(ToolResultLocator(message_index=message_index, item_index=item_index))
+            if decision is None:
+                continue
+            state = str(decision.state).strip().lower()
+            if state == "original":
+                if item.pop("semantic_state", None) is not None:
+                    changed = True
+                continue
+            if state not in {"condensed", "evicted"}:
+                continue
+            if decision.summary and item.get("content") != decision.summary:
+                item["content"] = decision.summary
+                changed = True
+            if item.get("semantic_state") != state:
+                item["semantic_state"] = state
+                changed = True
+            if "raw_output" in item:
+                item.pop("raw_output", None)
+                changed = True
+    return changed
 
 
 def build_payload_messages(

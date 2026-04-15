@@ -489,6 +489,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsInstance(cache_key, tuple)
         self.assertIn("[Semantic Summary | read_file | log log-1]", cached_payload[1]["content"][0]["content"])
         self.assertEqual(cached_usage.used_tokens, 55_000)
+        self.assertIn("[Semantic Summary | read_file | log log-1]", session.messages[1]["content"][0]["content"])
+        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
+        self.assertNotIn("raw_output", session.messages[1]["content"][0])
 
     def test_parse_semantic_janitor_response_accepts_valid_json_and_ignores_extra_fields(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -989,7 +992,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
             captured_messages[1]["content"][0]["content"],
             "[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
         )
-        self.assertEqual(session.messages[1]["content"][0]["content"], "a" * 1000)
+        self.assertEqual(
+            session.messages[1]["content"][0]["content"],
+            "[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
+        )
+        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
+        self.assertNotIn("raw_output", session.messages[1]["content"][0])
+        self.assertEqual(session.messages[1]["content"][0]["log_id"], "log-call-1")
 
     def test_context_window_usage_cache_invalidates_after_session_messages_change(self) -> None:
         provider_calls: list[int] = []
@@ -1033,9 +1042,86 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(third.used_tokens, 70_000)
         self.assertEqual(len(analyzer_calls), 2)
         self.assertEqual(analyzer_calls, [1, 2])
-        self.assertEqual(len(provider_calls), 4)
-        self.assertEqual(provider_calls[:2], [1, 1])
-        self.assertEqual(provider_calls[2:], [2, 2])
+        self.assertEqual(len(provider_calls), 2)
+        self.assertEqual(provider_calls, [1, 2])
+
+    def test_recent_context_window_usage_returns_cached_snapshot_without_recount(self) -> None:
+        provider_calls: list[int] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+
+        def _count_tokens(system_prompt, messages, tools):
+            provider_calls.append(len(messages))
+            return 30_000
+
+        runtime.provider = SimpleNamespace(
+            count_tokens=_count_tokens,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime.execution_mode = "accept_edits"
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+        usage = OpenAgentRuntime.context_window_usage(runtime, session)
+        recent = OpenAgentRuntime.recent_context_window_usage(runtime, session)
+
+        self.assertEqual(usage.used_tokens, 30_000)
+        self.assertIs(recent, usage)
+        self.assertEqual(provider_calls, [1])
+
+    def test_context_janitor_uses_cooldown_until_usage_grows_meaningfully(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.JANITOR_REARM_RATIO = OpenAgentRuntime.JANITOR_REARM_RATIO
+        runtime.JANITOR_FORCE_RATIO = OpenAgentRuntime.JANITOR_FORCE_RATIO
+        runtime.JANITOR_MIN_TOKEN_DELTA = OpenAgentRuntime.JANITOR_MIN_TOKEN_DELTA
+        runtime.JANITOR_MIN_MESSAGE_DELTA = OpenAgentRuntime.JANITOR_MIN_MESSAGE_DELTA
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
+        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}] * 10)
+
+        first = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=50_000, max_tokens=100_000),
+            session=session,
+            message_count=10,
+        )
+        OpenAgentRuntime._record_context_janitor_run(
+            runtime,
+            session,
+            ContextWindowUsage(used_tokens=44_000, max_tokens=100_000),
+            message_count=10,
+        )
+        second = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=51_000, max_tokens=100_000),
+            session=session,
+            message_count=12,
+        )
+        rearm = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=43_000, max_tokens=100_000),
+            session=session,
+            message_count=12,
+        )
+        third = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=51_000, max_tokens=100_000),
+            session=session,
+            message_count=13,
+        )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertFalse(rearm)
+        self.assertTrue(third)
 
     def test_context_window_usage_falls_back_to_payload_estimate(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

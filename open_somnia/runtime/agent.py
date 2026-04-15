@@ -35,6 +35,7 @@ from open_somnia.runtime.compact import (
     build_payload_messages,
     estimate_payload_tokens,
     extract_tool_result_candidates,
+    persist_semantic_compression,
     should_auto_compact,
     should_run_semantic_janitor,
 )
@@ -82,6 +83,10 @@ class OpenAgentRuntime:
     TURN_BOUNDARY_TOOL_NAMES = {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
+    JANITOR_REARM_RATIO = 0.45
+    JANITOR_FORCE_RATIO = 0.60
+    JANITOR_MIN_TOKEN_DELTA = 8_000
+    JANITOR_MIN_MESSAGE_DELTA = 6
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -152,7 +157,9 @@ class OpenAgentRuntime:
         self.compact_manager = CompactManager(self.provider, self.transcript_store, settings.provider.max_tokens)
         self._context_usage_cache: dict[str, tuple[tuple[Any, ...], ContextWindowUsage]] = {}
         self._payload_message_cache: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
+        self._recent_context_usage: dict[str, ContextWindowUsage] = {}
         self._context_governance_events: dict[str, dict[str, Any]] = {}
+        self._janitor_state: dict[str, dict[str, Any]] = {}
         self._current_working_file: dict[str, Any] | None = None
         self.mcp_registry = MCPRegistry(settings.mcp_servers)
         self.team_manager = TeammateRuntimeManager(
@@ -376,6 +383,8 @@ class OpenAgentRuntime:
         self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
         self._context_usage_cache = {}
         self._payload_message_cache = {}
+        self._recent_context_usage = {}
+        self._janitor_state = {}
         persist_provider_selection(self.settings, normalized_provider, normalized_model)
         return (
             f"Switched to provider '{self.settings.provider.name}' with model "
@@ -398,6 +407,8 @@ class OpenAgentRuntime:
         self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
         self._context_usage_cache = {}
         self._payload_message_cache = {}
+        self._recent_context_usage = {}
+        self._janitor_state = {}
 
     def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
@@ -510,6 +521,64 @@ class OpenAgentRuntime:
             return ""
         return label
 
+    def _remember_context_usage(self, session_id: str, usage: ContextWindowUsage | None) -> None:
+        if not session_id or not isinstance(usage, ContextWindowUsage):
+            return
+        cache = getattr(self, "_recent_context_usage", None)
+        if cache is None:
+            cache = {}
+            self._recent_context_usage = cache
+        cache[str(session_id)] = usage
+
+    def recent_context_window_usage(self, session: AgentSession) -> ContextWindowUsage | None:
+        session_id = str(getattr(session, "id", "")).strip()
+        if not session_id:
+            return None
+        cache = getattr(self, "_recent_context_usage", None) or {}
+        usage = cache.get(session_id)
+        if isinstance(usage, ContextWindowUsage):
+            return usage
+        cached_usage = (getattr(self, "_context_usage_cache", None) or {}).get(session_id)
+        if isinstance(cached_usage, tuple) and len(cached_usage) == 2 and isinstance(cached_usage[1], ContextWindowUsage):
+            self._remember_context_usage(session_id, cached_usage[1])
+            return cached_usage[1]
+        return None
+
+    def _janitor_state_for(self, session: AgentSession | None) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        session_id = str(getattr(session, "id", "")).strip()
+        if not session_id:
+            return None
+        states = getattr(self, "_janitor_state", None)
+        if states is None:
+            states = {}
+            self._janitor_state = states
+        return states.setdefault(
+            session_id,
+            {
+                "armed": True,
+                "last_run_used_tokens": 0,
+                "last_run_message_count": 0,
+                "last_run_ratio": 0.0,
+            },
+        )
+
+    def _record_context_janitor_run(
+        self,
+        session: AgentSession | None,
+        usage: ContextWindowUsage,
+        *,
+        message_count: int,
+    ) -> None:
+        state = self._janitor_state_for(session)
+        if state is None:
+            return
+        state["armed"] = False
+        state["last_run_used_tokens"] = int(usage.used_tokens or 0)
+        state["last_run_message_count"] = max(0, int(message_count))
+        state["last_run_ratio"] = float(usage.usage_ratio or 0.0)
+
     def _messages_for_model(
         self,
         messages: list[dict[str, Any]],
@@ -541,13 +610,23 @@ class OpenAgentRuntime:
         if cache is None:
             cache = {}
             self._payload_message_cache = cache
+        usage_cache = getattr(self, "_context_usage_cache", None)
+        if usage_cache is None:
+            usage_cache = {}
+            self._context_usage_cache = usage_cache
         cached = cache.get(session.id)
         if cached is not None and cached[0] == cache_key:
             return cached[1]
 
         payload_messages = build_payload_messages(messages)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        if self._should_run_context_janitor(baseline_usage):
+        message_count = len(messages)
+        final_usage = baseline_usage
+        if self._should_run_context_janitor(
+            baseline_usage,
+            session=session,
+            message_count=message_count,
+        ):
             decisions = self._analyze_context_relevance(
                 session=session,
                 messages=messages,
@@ -556,13 +635,18 @@ class OpenAgentRuntime:
             )
             if decisions:
                 changed_results = sum(1 for decision in decisions if decision.state != "original")
+                persist_semantic_compression(messages, decisions)
                 payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+                final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
                 if changed_results > 0:
                     self._note_context_governance(
                         session.id,
                         "janitor",
                         f"janitor reduced {changed_results} tool result(s)",
                     )
+            self._record_context_janitor_run(session, final_usage, message_count=message_count)
+        usage_cache[session.id] = (cache_key, final_usage)
+        self._remember_context_usage(session.id, final_usage)
         cache[session.id] = (cache_key, payload_messages)
         return payload_messages
 
@@ -665,13 +749,45 @@ class OpenAgentRuntime:
             self._context_usage_cache = cache
         cached = cache.get(session.id)
         if cached is not None and cached[0] == cache_key:
+            self._remember_context_usage(session.id, cached[1])
             return cached[1]
         usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         cache[session.id] = (cache_key, usage)
+        self._remember_context_usage(session.id, usage)
         return usage
 
-    def _should_run_context_janitor(self, usage: ContextWindowUsage) -> bool:
-        return should_run_semantic_janitor(usage)
+    def _should_run_context_janitor(
+        self,
+        usage: ContextWindowUsage,
+        *,
+        session: AgentSession | None = None,
+        message_count: int | None = None,
+        force: bool = False,
+    ) -> bool:
+        ratio = usage.usage_ratio
+        if ratio is None:
+            return False
+        if not should_run_semantic_janitor(usage):
+            state = self._janitor_state_for(session)
+            if state is not None and ratio <= self.JANITOR_REARM_RATIO:
+                state["armed"] = True
+            return False
+        if force or session is None:
+            return True
+        state = self._janitor_state_for(session)
+        if state is None:
+            return True
+        if bool(state.get("armed", True)):
+            return True
+        if ratio >= self.JANITOR_FORCE_RATIO:
+            return True
+        last_used_tokens = int(state.get("last_run_used_tokens") or 0)
+        last_message_count = int(state.get("last_run_message_count") or 0)
+        if max(0, usage.used_tokens - last_used_tokens) >= self.JANITOR_MIN_TOKEN_DELTA:
+            return True
+        if max(0, int(message_count or 0) - last_message_count) >= self.JANITOR_MIN_MESSAGE_DELTA:
+            return True
+        return False
 
     def _context_compact_text(self, text: str, *, limit: int = 220) -> str:
         compact = " ".join(str(text).split())
@@ -1397,6 +1513,10 @@ class OpenAgentRuntime:
         session.messages = self.compact_manager.auto_compact(session.id, session.messages)
         self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
         self._note_context_governance(session.id, "manual_compact", "auto-compacted session history")
+        try:
+            self.context_window_usage(session)
+        except Exception:
+            pass
         self.session_manager.save(session)
 
     def run_semantic_janitor(
@@ -1423,9 +1543,15 @@ class OpenAgentRuntime:
         )
         payload_messages = build_payload_messages(messages)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        if not self._should_run_context_janitor(baseline_usage):
+        if not self._should_run_context_janitor(
+            baseline_usage,
+            session=session,
+            message_count=len(messages),
+            force=True,
+        ):
             self._payload_message_cache[session.id] = (cache_key, payload_messages)
             self._context_usage_cache[session.id] = (cache_key, baseline_usage)
+            self._remember_context_usage(session.id, baseline_usage)
             usage_label = (
                 f"{baseline_usage.usage_percent:.1f}%"
                 if baseline_usage.usage_percent is not None
@@ -1441,12 +1567,18 @@ class OpenAgentRuntime:
         )
         changed_results = sum(1 for decision in decisions if decision.state != "original")
         if decisions:
+            persist_semantic_compression(messages, decisions)
             payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
         reduced_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         self._payload_message_cache[session.id] = (cache_key, payload_messages)
         self._context_usage_cache[session.id] = (cache_key, reduced_usage)
+        self._remember_context_usage(session.id, reduced_usage)
+        self._record_context_janitor_run(session, reduced_usage, message_count=len(messages))
         if changed_results > 0:
             self._note_context_governance(session.id, "janitor", f"janitor reduced {changed_results} tool result(s)")
+        saver = getattr(getattr(self, "session_manager", None), "save", None)
+        if callable(saver) and decisions:
+            saver(session)
         before_label = (
             f"{baseline_usage.usage_percent:.1f}%"
             if baseline_usage.usage_percent is not None
@@ -1595,6 +1727,10 @@ class OpenAgentRuntime:
                     )
                     self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
                     self._note_context_governance(session.id, "auto_compact", "auto-compacted older history")
+                    try:
+                        self.context_window_usage(session)
+                    except Exception:
+                        pass
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 try:
@@ -1698,6 +1834,10 @@ class OpenAgentRuntime:
                     )
                     self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
                     self._note_context_governance(session.id, "manual_compact", "auto-compacted session history")
+                    try:
+                        self.context_window_usage(session)
+                    except Exception:
+                        pass
                 self.session_manager.save(session)
                 if end_turn_after_tool:
                     continue

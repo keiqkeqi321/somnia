@@ -111,6 +111,27 @@ class ReplTodoTests(unittest.TestCase):
             ],
         )
 
+    def test_bottom_toolbar_prefers_recent_context_cache_over_live_recount(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),
+            recent_context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=40_000,
+                max_tokens=200_000,
+                counter_name="tiktoken",
+            ),
+            context_window_usage=lambda session: (_ for _ in ()).throw(AssertionError("live recount should not run")),
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(
+            runner.bottom_toolbar(),
+            [
+                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#64748b", " | "),
+                ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
+            ],
+        )
+
     def test_context_health_gradient_styles_follow_thresholds(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
 

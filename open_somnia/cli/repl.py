@@ -522,7 +522,9 @@ class TurnQueueRunner:
         return str(token_count)
 
     def current_context_usage(self) -> ContextWindowUsage | None:
-        usage_getter = getattr(self.runtime, "context_window_usage", None)
+        usage_getter = getattr(self.runtime, "recent_context_window_usage", None)
+        if not callable(usage_getter):
+            usage_getter = getattr(self.runtime, "context_window_usage", None)
         if not callable(usage_getter):
             return None
         try:
