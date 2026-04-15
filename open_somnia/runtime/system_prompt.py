@@ -36,6 +36,8 @@ class SystemPromptBuilder:
         base_prompt = self.base_system_prompt()
         environment_guidance = self.environment_guidance()
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
+        working_file_context_getter = getattr(self.runtime, "current_working_file_context", None)
+        working_file_context = working_file_context_getter() if callable(working_file_context_getter) else ""
         identity_guidance = (
             "Identity rules:\n"
             f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
@@ -67,10 +69,13 @@ class SystemPromptBuilder:
             "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
             "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
             "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
+            "- When editing one file in several nearby places, prefer a single `edit_file` call with `edits=[...]` over many tiny follow-up patches.\n"
+            "- After `write_file` or `edit_file`, use the returned updated snippet or active working file cache before rereading the same file.\n"
             "- Do not claim a root cause until your evidence materially narrows the main alternatives.\n"
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
             "- Treat repository exploration as an investigation: gather evidence, update hypotheses, then conclude."
         )
+        working_file_guidance = f"\n{working_file_context}" if working_file_context else ""
         if actor == "lead":
             return (
                 f"{base_prompt}\n\n"
@@ -83,6 +88,7 @@ class SystemPromptBuilder:
                 f"{tool_selection_guidance}\n"
                 f"{workflow_guidance}\n"
                 f"{environment_guidance}\n"
+                f"{working_file_guidance}\n"
                 f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
             )
         return (
@@ -96,6 +102,7 @@ class SystemPromptBuilder:
             f"{tool_selection_guidance}\n"
             f"{workflow_guidance}\n"
             f"{environment_guidance}\n"
+            f"{working_file_guidance}\n"
             f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
         )
 

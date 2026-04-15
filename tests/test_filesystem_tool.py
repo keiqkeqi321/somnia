@@ -73,12 +73,14 @@ class FilesystemToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             session = SimpleNamespace(pending_file_changes=[])
+            active_files: list[dict[str, str]] = []
             ctx = SimpleNamespace(
                 runtime=SimpleNamespace(
                     settings=SimpleNamespace(
                         workspace_root=root,
                         runtime=SimpleNamespace(max_tool_output_chars=50000),
-                    )
+                    ),
+                    note_active_file=lambda **kwargs: active_files.append(kwargs),
                 ),
                 session=session,
             )
@@ -88,13 +90,46 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertTrue(result["absolute_path"].endswith("demo.txt"))
         self.assertEqual(result["added_lines"], 2)
         self.assertEqual(result["removed_lines"], 0)
+        self.assertIn("1: a", result["updated_content_snippet"])
         self.assertEqual(len(session.pending_file_changes), 1)
+        self.assertEqual(active_files[0]["path"], "demo.txt")
+        self.assertEqual(active_files[0]["source"], "write_file")
 
     def test_edit_file_returns_diff_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             target = root / "demo.txt"
             target.write_text("a\nb\n", encoding="utf-8")
+            session = SimpleNamespace(pending_file_changes=[])
+            active_files: list[dict[str, str]] = []
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    ),
+                    note_active_file=lambda **kwargs: active_files.append(kwargs),
+                ),
+                session=session,
+            )
+            result = edit_file(ctx, {"path": "demo.txt", "old_text": "b\n", "new_text": "b\nc\n"})
+
+        self.assertEqual(result["path"], "demo.txt")
+        self.assertTrue(result["absolute_path"].endswith("demo.txt"))
+        self.assertEqual(result["added_lines"], 1)
+        self.assertEqual(result["removed_lines"], 0)
+        self.assertEqual(result["applied_edits"], 1)
+        self.assertIn("2: b", result["updated_content_snippet"])
+        self.assertIn("3: c", result["updated_content_snippet"])
+        self.assertEqual(len(session.pending_file_changes), 1)
+        self.assertEqual(active_files[0]["path"], "demo.txt")
+        self.assertEqual(active_files[0]["source"], "edit_file")
+
+    def test_edit_file_supports_multiple_replacements_in_one_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            target.write_text("alpha\nbeta\nrender old\n", encoding="utf-8")
             session = SimpleNamespace(pending_file_changes=[])
             ctx = SimpleNamespace(
                 runtime=SimpleNamespace(
@@ -105,13 +140,47 @@ class FilesystemToolTests(unittest.TestCase):
                 ),
                 session=session,
             )
-            result = edit_file(ctx, {"path": "demo.txt", "old_text": "b\n", "new_text": "b\nc\n"})
 
-        self.assertEqual(result["path"], "demo.txt")
-        self.assertTrue(result["absolute_path"].endswith("demo.txt"))
-        self.assertEqual(result["added_lines"], 1)
-        self.assertEqual(result["removed_lines"], 0)
-        self.assertEqual(len(session.pending_file_changes), 1)
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.txt",
+                    "edits": [
+                        {"old_text": "alpha", "new_text": "alpha updated"},
+                        {"old_text": "render old", "new_text": "render new"},
+                    ],
+                },
+            )
+            final_content = (root / "demo.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result["applied_edits"], 2)
+        self.assertIn("1: alpha updated", result["updated_content_snippet"])
+        self.assertIn("3: render new", result["updated_content_snippet"])
+        self.assertEqual(final_content, "alpha updated\nbeta\nrender new\n")
+
+    def test_read_file_updates_active_file_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            target.write_text("line 1\nline 2\n", encoding="utf-8")
+            active_files: list[dict[str, str]] = []
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    ),
+                    note_active_file=lambda **kwargs: active_files.append(kwargs),
+                ),
+                session=None,
+            )
+
+            result = read_file(ctx, {"path": "demo.txt"})
+
+        self.assertEqual(result, "line 1\nline 2")
+        self.assertEqual(active_files[0]["path"], "demo.txt")
+        self.assertEqual(active_files[0]["source"], "read_file")
+        self.assertEqual(active_files[0]["content"], "line 1\nline 2\n")
 
     def test_glob_search_returns_matching_workspace_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

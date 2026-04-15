@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 READ_ONLY_COMMAND_PREFIXES = (
     "/scan",
     "/symbols",
+    "/janitor",
     "/providers",
     "/skills",
     "/tasks",
@@ -1246,6 +1247,12 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                     if (was_active or queued_before) and not runner.stable_prompt:
                         ahead = queued_before + (1 if was_active else 0)
                         print(f"[queued compact; {ahead} item(s) ahead]")
+                    continue
+                if stripped == "/janitor":
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /janitor]")
+                        continue
+                    print(runtime.run_semantic_janitor(session))
                     continue
                 if stripped == "/scan" or stripped.startswith("/scan "):
                     if runner.has_inflight_work():

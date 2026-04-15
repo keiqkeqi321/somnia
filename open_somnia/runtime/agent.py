@@ -153,6 +153,7 @@ class OpenAgentRuntime:
         self._context_usage_cache: dict[str, tuple[tuple[Any, ...], ContextWindowUsage]] = {}
         self._payload_message_cache: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
         self._context_governance_events: dict[str, dict[str, Any]] = {}
+        self._current_working_file: dict[str, Any] | None = None
         self.mcp_registry = MCPRegistry(settings.mcp_servers)
         self.team_manager = TeammateRuntimeManager(
             runtime=self,
@@ -223,6 +224,53 @@ class OpenAgentRuntime:
         )
         if len(session.undo_stack) > self.MAX_UNDO_TURNS:
             session.undo_stack = session.undo_stack[-self.MAX_UNDO_TURNS :]
+
+    def note_active_file(
+        self,
+        *,
+        path: str,
+        content: str,
+        source: str,
+        snippet: str | None = None,
+    ) -> None:
+        normalized_path = str(path).strip().replace("\\", "/")
+        if not normalized_path:
+            return
+        preview = str(snippet if snippet is not None else content).strip()
+        if len(preview) > 1600:
+            preview = preview[:1597] + "..."
+        self._current_working_file = {
+            "path": normalized_path,
+            "content": str(content),
+            "source": str(source).strip() or "tool",
+            "snippet": preview,
+            "line_count": len(str(content).splitlines()),
+            "updated_at": time.monotonic(),
+        }
+
+    def current_working_file_context(self) -> str:
+        entry = getattr(self, "_current_working_file", None)
+        if not isinstance(entry, dict):
+            return ""
+        path = str(entry.get("path", "")).strip()
+        if not path:
+            return ""
+        source = str(entry.get("source", "tool")).strip() or "tool"
+        line_count = int(entry.get("line_count", 0) or 0)
+        snippet = str(entry.get("snippet", "")).strip()
+        if not snippet:
+            snippet = self._context_compact_text(str(entry.get("content", "")), limit=900)
+        if not snippet:
+            return ""
+        return (
+            "Active working file cache:\n"
+            f"- Path: {path}\n"
+            f"- Source: {source}\n"
+            f"- Lines: {line_count}\n"
+            "- Prefer this cached snapshot over rereading the same file when you are still editing the same area.\n"
+            "Cached snapshot:\n"
+            f"{snippet}"
+        )
 
     def print_last_turn_file_summary(self, session: AgentSession) -> bool:
         return self._tool_event_renderer().print_last_turn_file_summary(session)
@@ -758,6 +806,12 @@ class OpenAgentRuntime:
             part for part in (candidate.tool_name, tool_input, candidate.content, candidate.output_preview) if part
         ).lower()
 
+    def _candidate_target_path(self, candidate: ToolResultCandidate) -> str:
+        path = candidate.tool_input.get("path")
+        if path is None:
+            return ""
+        return str(path).strip().replace("\\", "/").lower()
+
     def _render_condensed_context(self, candidate: ToolResultCandidate, summary: str | None) -> str:
         prefix = f"[Semantic Summary | {candidate.tool_name}"
         if candidate.log_id:
@@ -818,8 +872,35 @@ class OpenAgentRuntime:
         active_files = {value.lower() for value in topic_context.get("active_files", [])}
         active_symbols = {value.lower() for value in topic_context.get("active_symbols", [])}
         topic_tokens = {value.lower() for value in topic_context.get("keywords", [])}
+        latest_snapshot_by_path: dict[str, ToolResultCandidate] = {}
+        for candidate in sorted(candidates, key=lambda item: (item.locator.message_index, item.locator.item_index)):
+            candidate_path = self._candidate_target_path(candidate)
+            if candidate_path and candidate.tool_name in {"read_file", "write_file", "edit_file"}:
+                latest_snapshot_by_path[candidate_path] = candidate
         decisions: list[SemanticCompressionDecision] = []
         for candidate in candidates:
+            candidate_path = self._candidate_target_path(candidate)
+            latest_snapshot = latest_snapshot_by_path.get(candidate_path) if candidate_path else None
+            if candidate.tool_name == "read_file" and latest_snapshot is not None and latest_snapshot.locator != candidate.locator:
+                decisions.append(
+                    SemanticCompressionDecision(
+                        message_index=candidate.locator.message_index,
+                        item_index=candidate.locator.item_index,
+                        state="evicted",
+                        summary=self._render_evicted_context(candidate),
+                    )
+                )
+                continue
+            if latest_snapshot is not None and latest_snapshot.locator == candidate.locator and candidate.tool_name in {"read_file", "write_file", "edit_file"}:
+                decisions.append(
+                    SemanticCompressionDecision(
+                        message_index=candidate.locator.message_index,
+                        item_index=candidate.locator.item_index,
+                        state="original",
+                        summary=None,
+                    )
+                )
+                continue
             score = self._candidate_relevance_score(
                 candidate,
                 active_files=active_files,
@@ -1143,12 +1224,15 @@ class OpenAgentRuntime:
         return self._system_prompt_builder().base_system_prompt()
 
     def create_session(self) -> AgentSession:
+        self._current_working_file = None
         return self.session_manager.create()
 
     def latest_session(self) -> AgentSession:
+        self._current_working_file = None
         return self.session_manager.latest_or_create()
 
     def load_session(self, session_id: str) -> AgentSession:
+        self._current_working_file = None
         return self.session_manager.load(session_id)
 
     def list_sessions(self) -> list[AgentSession]:
@@ -1314,6 +1398,69 @@ class OpenAgentRuntime:
         self._record_session_token_usage(session, getattr(self.compact_manager, "last_usage", None))
         self._note_context_governance(session.id, "manual_compact", "auto-compacted session history")
         self.session_manager.save(session)
+
+    def run_semantic_janitor(
+        self,
+        session: AgentSession,
+        *,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+    ) -> str:
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list) or not messages:
+            return "Janitor skipped: no conversation history."
+        try:
+            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
+        except TypeError:
+            system_prompt = self.build_system_prompt()
+        tools = self._context_usage_tools(actor)
+        cache_key = self._payload_message_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        payload_messages = build_payload_messages(messages)
+        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        if not self._should_run_context_janitor(baseline_usage):
+            self._payload_message_cache[session.id] = (cache_key, payload_messages)
+            self._context_usage_cache[session.id] = (cache_key, baseline_usage)
+            usage_label = (
+                f"{baseline_usage.usage_percent:.1f}%"
+                if baseline_usage.usage_percent is not None
+                else f"{baseline_usage.used_tokens} tokens"
+            )
+            return f"Janitor skipped: current payload usage is {usage_label}, below the 50% trigger."
+
+        decisions = self._analyze_context_relevance(
+            session=session,
+            messages=messages,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        changed_results = sum(1 for decision in decisions if decision.state != "original")
+        if decisions:
+            payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+        reduced_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        self._payload_message_cache[session.id] = (cache_key, payload_messages)
+        self._context_usage_cache[session.id] = (cache_key, reduced_usage)
+        if changed_results > 0:
+            self._note_context_governance(session.id, "janitor", f"janitor reduced {changed_results} tool result(s)")
+        before_label = (
+            f"{baseline_usage.usage_percent:.1f}%"
+            if baseline_usage.usage_percent is not None
+            else f"{baseline_usage.used_tokens} tokens"
+        )
+        after_label = (
+            f"{reduced_usage.usage_percent:.1f}%"
+            if reduced_usage.usage_percent is not None
+            else f"{reduced_usage.used_tokens} tokens"
+        )
+        return (
+            f"Janitor reviewed {len(decisions)} candidate tool result(s), reduced {changed_results}, "
+            f"and lowered payload usage from {before_label} to {after_label}."
+        )
 
     def checkpoint_session(self, session: AgentSession, tag: str) -> dict[str, Any]:
         """Create a named checkpoint of the session for later rollback.

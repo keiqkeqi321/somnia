@@ -243,6 +243,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime.execution_mode = "plan"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.current_working_file_context = lambda: (
+            "Active working file cache:\n"
+            "- Path: frontend/src/App.tsx\n"
+            "- Source: edit_file\n"
+            "Cached snapshot:\n1: const App = () => null"
+        )
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
@@ -258,10 +264,14 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Do not start with broad `glob` patterns such as `**/*`", prompt)
         self.assertIn("Before `read_file` or `edit_file`, confirm the exact path", prompt)
         self.assertIn("Use `TodoWrite` to break down meaningful work", prompt)
+        self.assertIn("prefer a single `edit_file` call with `edits=[...]`", prompt)
+        self.assertIn("use the returned updated snippet or active working file cache", prompt)
         self.assertIn("Do not claim a root cause", prompt)
         self.assertIn("If you keep rereading the same file or area", prompt)
         self.assertIn("Active provider: openai", prompt)
         self.assertIn("Active model: kimi-k2.5", prompt)
+        self.assertIn("Active working file cache:", prompt)
+        self.assertIn("frontend/src/App.tsx", prompt)
         self.assertIn("Current mode: ⏸ plan mode on.", prompt)
         self.assertIn("Return a concrete implementation plan", prompt)
         self.assertIn("request_mode_switch", prompt)
@@ -394,6 +404,91 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(by_locator[(3, 0)].state, "evicted")
         self.assertIn("[Context Evicted | pwd | log pwd-log]", by_locator[(3, 0)].summary)
         self.assertEqual(by_locator[(5, 0)].state, "original")
+
+    def test_fallback_context_relevance_decisions_evicts_stale_read_for_same_path(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        session = AgentSession(id="session-1")
+        topic_context = {
+            "active_files": ["frontend/src/App.tsx"],
+            "active_symbols": ["renderSidebar"],
+            "keywords": ["sidebar", "selection"],
+        }
+        candidates = [
+            self._candidate(
+                message_index=1,
+                item_index=0,
+                tool_name="read_file",
+                content="old file snapshot",
+                tool_input={"path": "frontend/src/App.tsx"},
+                log_id="read-old",
+                age=6,
+            ),
+            self._candidate(
+                message_index=3,
+                item_index=0,
+                tool_name="edit_file",
+                content='{"status":"ok"}',
+                tool_input={"path": "frontend/src/App.tsx", "old_text": "old", "new_text": "new"},
+                log_id="edit-new",
+                age=4,
+            ),
+        ]
+
+        decisions = OpenAgentRuntime._fallback_context_relevance_decisions(runtime, session, candidates, topic_context)
+        by_locator = {(item.message_index, item.item_index): item for item in decisions}
+
+        self.assertEqual(by_locator[(1, 0)].state, "evicted")
+        self.assertIn("[Context Evicted | read_file | log read-old]", by_locator[(1, 0)].summary)
+        self.assertEqual(by_locator[(3, 0)].state, "original")
+
+    def test_run_semantic_janitor_primes_cached_payload(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 70_000 if "Semantic Summary" not in str(messages) else 55_000,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime._context_governance_events = {}
+        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime._payload_message_cache_key = OpenAgentRuntime._payload_message_cache_key.__get__(runtime, OpenAgentRuntime)
+        runtime._context_usage_tools = OpenAgentRuntime._context_usage_tools.__get__(runtime, OpenAgentRuntime)
+        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
+        runtime._note_context_governance = OpenAgentRuntime._note_context_governance.__get__(runtime, OpenAgentRuntime)
+        runtime._context_usage_cache_key = OpenAgentRuntime._context_usage_cache_key.__get__(runtime, OpenAgentRuntime)
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime._analyze_context_relevance = lambda **kwargs: [
+            SemanticCompressionDecision(
+                message_index=1,
+                item_index=0,
+                state="condensed",
+                summary="[Semantic Summary | read_file | log log-1] Latest file snapshot already captured.",
+            )
+        ]
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
+            ],
+        )
+
+        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
+        cache_key, cached_payload = runtime._payload_message_cache["session-1"]
+        _, cached_usage = runtime._context_usage_cache["session-1"]
+
+        self.assertIn("Janitor reviewed", message)
+        self.assertIsInstance(cache_key, tuple)
+        self.assertIn("[Semantic Summary | read_file | log log-1]", cached_payload[1]["content"][0]["content"])
+        self.assertEqual(cached_usage.used_tokens, 55_000)
 
     def test_parse_semantic_janitor_response_accepts_valid_json_and_ignores_extra_fields(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

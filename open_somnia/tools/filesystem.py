@@ -326,6 +326,13 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
     if limit and limit < len(lines):
         lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
     content = "\n".join(lines)
+    _update_runtime_active_file(
+        ctx,
+        path=path,
+        content=text,
+        source="read_file",
+        snippet=content,
+    )
     return f"{prefix}{content}"[: ctx.runtime.settings.runtime.max_tool_output_chars]
 
 
@@ -764,6 +771,102 @@ def _line_diff_stats(before: str, after: str) -> tuple[int, int]:
     return added, removed
 
 
+def _workspace_relative_path(workspace_root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(workspace_root).as_posix()
+    except Exception:
+        return str(path)
+
+
+def _snippet_anchor_candidates(text: str, *, limit: int = 3) -> list[str]:
+    candidates: list[str] = []
+    for line in str(text).splitlines():
+        compact = " ".join(line.split()).strip()
+        if not compact:
+            continue
+        if len(compact) > 120:
+            compact = compact[:120]
+        if compact not in candidates:
+            candidates.append(compact)
+        if len(candidates) >= limit:
+            break
+    if candidates:
+        return candidates
+    compact = " ".join(str(text).split()).strip()
+    if not compact:
+        return []
+    return [compact[:120]]
+
+
+def _render_updated_content_snippet(
+    text: str,
+    *,
+    anchors: list[str] | None = None,
+    context_lines: int = 4,
+    default_lines: int = 14,
+    max_chars: int = 1200,
+) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return "(empty file)"
+
+    windows: list[tuple[int, int]] = []
+    for anchor in anchors or []:
+        if not anchor:
+            continue
+        index = text.find(anchor)
+        if index < 0:
+            continue
+        start_line = text[:index].count("\n")
+        end_line = start_line + max(0, anchor.count("\n"))
+        windows.append((max(0, start_line - context_lines), min(len(lines) - 1, end_line + context_lines)))
+
+    if not windows:
+        windows = [(0, min(len(lines) - 1, default_lines - 1))]
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(windows):
+        if not merged or start > merged[-1][1] + 1:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+
+    rendered: list[str] = []
+    for index, (start, end) in enumerate(merged):
+        if index > 0:
+            rendered.append("...")
+        for line_number in range(start, end + 1):
+            rendered.append(f"{line_number + 1}: {lines[line_number]}")
+
+    snippet = "\n".join(rendered)
+    if len(snippet) <= max_chars:
+        return snippet
+    return snippet[: max(0, max_chars - 3)] + "..."
+
+
+def _update_runtime_active_file(
+    ctx: Any,
+    *,
+    path: Path,
+    content: str,
+    source: str,
+    snippet: str | None = None,
+) -> None:
+    runtime = getattr(ctx, "runtime", None)
+    updater = getattr(runtime, "note_active_file", None)
+    if not callable(updater):
+        return
+    try:
+        updater(
+            path=_workspace_relative_path(runtime.settings.workspace_root, path),
+            content=str(content),
+            source=source,
+            snippet=snippet,
+        )
+    except Exception:
+        return
+
+
 def _record_file_change(ctx: Any, record: dict[str, Any]) -> None:
     session = getattr(ctx, "session", None)
     if session is None:
@@ -782,6 +885,14 @@ def write_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
     previous = _read_text_with_fallback(path) if existed_before else ""
     path.write_text(content, encoding="utf-8")
     added, removed = _line_diff_stats(previous, content)
+    snippet = _render_updated_content_snippet(content, anchors=_snippet_anchor_candidates(content))
+    _update_runtime_active_file(
+        ctx,
+        path=path,
+        content=content,
+        source="write_file",
+        snippet=snippet,
+    )
     _record_file_change(
         ctx,
         {
@@ -803,19 +914,59 @@ def write_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
         "added_lines": added,
         "removed_lines": removed,
         "bytes_written": len(content),
+        "updated_content_snippet": snippet,
     }
 
 
 def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
     path = safe_path(ctx.runtime.settings.workspace_root, payload["path"])
-    old_text = str(payload["old_text"])
-    new_text = str(payload["new_text"])
     content = _read_text_with_fallback(path)
-    if old_text not in content:
-        return f"Error: Text not found in {payload['path']}"
-    updated = content.replace(old_text, new_text, 1)
+    replacements_payload = payload.get("edits")
+    if replacements_payload is None:
+        replacements = [
+            {
+                "old_text": str(payload["old_text"]),
+                "new_text": str(payload["new_text"]),
+            }
+        ]
+    else:
+        if not isinstance(replacements_payload, list) or not replacements_payload:
+            return "Error: edits must be a non-empty list."
+        replacements = []
+        for index, item in enumerate(replacements_payload, start=1):
+            if not isinstance(item, dict):
+                return f"Error: edits[{index}] must be an object."
+            if "old_text" not in item or "new_text" not in item:
+                return f"Error: edits[{index}] must contain old_text and new_text."
+            replacements.append(
+                {
+                    "old_text": str(item["old_text"]),
+                    "new_text": str(item["new_text"]),
+                }
+            )
+
+    updated = content
+    snippet_anchors: list[str] = []
+    for index, replacement in enumerate(replacements, start=1):
+        old_text = replacement["old_text"]
+        new_text = replacement["new_text"]
+        if old_text not in updated:
+            if len(replacements) == 1:
+                return f"Error: Text not found in {payload['path']}"
+            return f"Error: Text not found for edits[{index}] in {payload['path']}"
+        updated = updated.replace(old_text, new_text, 1)
+        snippet_anchors.extend(_snippet_anchor_candidates(new_text))
+
     path.write_text(updated, encoding="utf-8")
     added, removed = _line_diff_stats(content, updated)
+    snippet = _render_updated_content_snippet(updated, anchors=snippet_anchors)
+    _update_runtime_active_file(
+        ctx,
+        path=path,
+        content=updated,
+        source="edit_file",
+        snippet=snippet,
+    )
     _record_file_change(
         ctx,
         {
@@ -835,6 +986,8 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
         "absolute_path": str(path),
         "added_lines": added,
         "removed_lines": removed,
+        "applied_edits": len(replacements),
+        "updated_content_snippet": snippet,
     }
 
 
@@ -962,15 +1115,31 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="edit_file",
-            description="Replace exact text in a file once. Confirm the exact path with a focused `glob` before editing; do not guess paths from broad directory listings.",
+            description=(
+                "Replace exact text in a file. Use `old_text`/`new_text` for a single replacement, or pass "
+                "`edits=[{old_text,new_text}, ...]` to apply multiple exact replacements in one call. "
+                "Successful edits return an updated snippet around the changed region. Confirm the exact path "
+                "with a focused `glob` before editing; do not guess paths from broad directory listings."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "old_text": {"type": "string"},
                     "new_text": {"type": "string"},
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_text": {"type": "string"},
+                                "new_text": {"type": "string"},
+                            },
+                            "required": ["old_text", "new_text"],
+                        },
+                    },
                 },
-                "required": ["path", "old_text", "new_text"],
+                "required": ["path"],
             },
             handler=edit_file,
         )

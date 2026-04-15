@@ -33,6 +33,7 @@ COMMAND_SPECS = [
     ("/checkpoint", "Save a named checkpoint of the current session state"),
     ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),
     ("/compact", "Compact the current session context"),
+    ("/janitor", "Run semantic janitor on the current payload"),
     ("/skills", "Choose a skill to apply to the next prompt"),
     ("/tasks", "Show persistent tasks"),
     ("/team", "Show teammate roster and states"),
