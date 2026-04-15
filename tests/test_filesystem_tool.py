@@ -471,6 +471,44 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "src/app.py:2:beta")
 
+    def test_grep_search_accepts_single_file_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("alpha\nbeta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta", "path": "src/app.py"})
+
+        self.assertEqual(result, "src/app.py:2:beta")
+
+    def test_grep_search_single_file_path_ignores_glob_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("alpha\nbeta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta", "path": "src/app.py", "glob": "*.md"})
+
+        self.assertEqual(result, "src/app.py:2:beta")
+
     def test_grep_search_reads_gbk_encoded_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

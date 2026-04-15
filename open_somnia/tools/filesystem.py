@@ -586,6 +586,8 @@ _GREP_REGEX_QUANTIFIER_PATTERN = re.compile(r"(?<!\\)(?:\.\*|\.\+|\.\?|(?<![A-Za
 
 GREP_TOOL_DESCRIPTION = (
     "Search file contents inside the workspace and return matching lines. "
+    "The `path` may point to a directory or a single file; when it is a directory, "
+    "use `glob` to narrow which files are searched. "
     "Obvious regex patterns such as `foo|bar`, `^name$`, `\\berror\\b`, or `\\d+` "
     "are auto-detected; set `use_regex=false` to force literal substring matching."
 )
@@ -690,8 +692,6 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     base_path = safe_path(workspace_root, str(payload.get("path", ".")))
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
-    if not base_path.is_dir():
-        return f"Error: Path is not a directory: {payload.get('path', '.')}"
 
     pattern = str(payload["pattern"])
     glob_pattern = str(payload.get("glob", "*"))
@@ -714,14 +714,22 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
         return compile_error
     needle = pattern if case_sensitive else pattern.lower()
 
-    iterator = base_path.rglob("*") if recursive else base_path.glob("*")
+    if base_path.is_file():
+        iterator = [base_path]
+    elif base_path.is_dir():
+        iterator = base_path.rglob("*") if recursive else base_path.glob("*")
+    else:
+        return f"Error: Unsupported path type: {payload.get('path', '.')}"
+
     matches: list[str] = []
     truncated = False
     for candidate in iterator:
         if not candidate.is_file():
             continue
         relative = candidate.relative_to(workspace_root).as_posix()
-        if not (fnmatch.fnmatch(relative, glob_pattern) or fnmatch.fnmatch(candidate.name, glob_pattern)):
+        if base_path.is_dir() and not (
+            fnmatch.fnmatch(relative, glob_pattern) or fnmatch.fnmatch(candidate.name, glob_pattern)
+        ):
             continue
         try:
             lines = _read_text_with_fallback(candidate).splitlines()
