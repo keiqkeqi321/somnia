@@ -55,6 +55,26 @@ class MCPServerSettings:
 
 
 @dataclass(slots=True)
+class HookMatcherSettings:
+    tool_name: str | None = None
+    actor: str | None = None
+
+
+@dataclass(slots=True)
+class HookSettings:
+    event: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    cwd: Path | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int = 10
+    on_error: str = "continue"
+    enabled: bool = True
+    managed_by: str | None = None
+    matcher: HookMatcherSettings = field(default_factory=HookMatcherSettings)
+
+
+@dataclass(slots=True)
 class RuntimeSettings:
     token_threshold: int = 100_000
     command_timeout_seconds: int = 120
@@ -94,4 +114,5 @@ class AppSettings:
     storage: StorageSettings
     provider_profiles: dict[str, ProviderProfileSettings] = field(default_factory=dict)
     mcp_servers: list[MCPServerSettings] = field(default_factory=list)
+    hooks: list[HookSettings] = field(default_factory=list)
     raw_config: dict[str, Any] = field(default_factory=dict)

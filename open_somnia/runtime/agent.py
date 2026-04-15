@@ -23,6 +23,7 @@ from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.config.models import AppSettings, ProviderProfileSettings, ProviderSettings
 from open_somnia.config.settings import _materialize_provider, load_settings, persist_provider_selection
+from open_somnia.hooks.manager import HookManager
 from open_somnia.mcp.registry import MCPRegistry
 from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.base import LLMProvider, ProviderError
@@ -158,6 +159,7 @@ class OpenAgentRuntime:
         self.request_tracker = RequestTracker(settings.storage.requests_dir)
         self.skill_loader = SkillLoader.for_workspace(settings.workspace_root)
         self.todo_manager = TodoManager()
+        self.hook_manager = HookManager(settings)
         self.background_manager = BackgroundManager(
             self.job_store,
             settings.workspace_root,
@@ -191,6 +193,13 @@ class OpenAgentRuntime:
             renderer = ToolEventRenderer(self)
             self.tool_event_renderer = renderer
         return renderer
+
+    def _hook_manager(self) -> HookManager:
+        manager = getattr(self, "hook_manager", None)
+        if manager is None:
+            manager = HookManager(self.settings)
+            self.hook_manager = manager
+        return manager
 
     def _permission_manager(self) -> PermissionManager:
         manager = getattr(self, "permission_manager", None)
@@ -1416,7 +1425,9 @@ class OpenAgentRuntime:
 
     def create_session(self) -> AgentSession:
         self._current_working_file = None
-        return self.session_manager.create()
+        session = self.session_manager.create()
+        self._hook_manager().on_session_start(session)
+        return session
 
     def latest_session(self) -> AgentSession:
         self._current_working_file = None
@@ -1851,6 +1862,14 @@ class OpenAgentRuntime:
                     final_text = "\n\n".join(turn.text_blocks).strip()
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
+                    self._hook_manager().on_assistant_response(
+                        session,
+                        actor="lead",
+                        trace_id=f"{session.id}-{session.latest_turn_id}",
+                        assistant_message=assistant_message,
+                        text=final_text,
+                        execution_mode=getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
+                    )
                     return final_text
 
                 tool_results: list[dict[str, Any]] = []

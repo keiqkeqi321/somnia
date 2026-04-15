@@ -13,6 +13,17 @@ ASSISTANT_BULLET = "\u25cf"
 USER_BULLET = "\u276f"
 
 
+def _supports_output_text(text: str) -> bool:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    except LookupError:
+        return True
+    return True
+
+
 def _prefix_first_line(text: str, prefix: str) -> str:
     if not text:
         return prefix.rstrip()
@@ -26,13 +37,15 @@ def _prefix_first_line(text: str, prefix: str) -> str:
 def _assistant_prefix(*, ansi: bool) -> str:
     if ansi:
         return "\x1b[37m\u25cf\x1b[0m "
-    return f"{ASSISTANT_BULLET} "
+    bullet = ASSISTANT_BULLET if _supports_output_text(ASSISTANT_BULLET) else "*"
+    return f"{bullet} "
 
 
 def _user_prefix(*, ansi: bool) -> str:
     if ansi:
         return "\x1b[38;5;45m\u276f\x1b[0m "
-    return f"{USER_BULLET} "
+    bullet = USER_BULLET if _supports_output_text(USER_BULLET) else ">"
+    return f"{bullet} "
 
 
 def print_user_message(text: str, *, ansi: bool | None = None) -> None:

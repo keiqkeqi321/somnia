@@ -42,7 +42,27 @@ class ToolRegistry:
             blocked = authorizer(name, payload, ctx=ctx)
             if blocked is not None:
                 return blocked
-        return tool.handler(ctx, payload)
+        hook_manager = getattr(runtime, "hook_manager", None)
+        if hook_manager is not None:
+            decision = hook_manager.before_tool_use(ctx, name, payload)
+            if decision.action == "deny":
+                return {
+                    "status": "denied",
+                    "tool_name": name,
+                    "message": decision.message or f"Blocked by PreToolUse hook for '{name}'.",
+                }
+            if decision.replacement_input is not None:
+                payload.clear()
+                payload.update(decision.replacement_input)
+        try:
+            output = tool.handler(ctx, payload)
+        except Exception as exc:
+            if hook_manager is not None:
+                hook_manager.after_tool_use(ctx, name, payload, error=exc)
+            raise
+        if hook_manager is not None:
+            hook_manager.after_tool_use(ctx, name, payload, result=output)
+        return output
 
     def names(self) -> list[str]:
         return list(self._tools)

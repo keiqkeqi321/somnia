@@ -22,6 +22,15 @@ class PermissionManager:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
+    def _hook_manager(self):
+        getter = getattr(self.runtime, "_hook_manager", None)
+        if callable(getter):
+            try:
+                return getter()
+            except Exception:
+                return None
+        return getattr(self.runtime, "hook_manager", None)
+
     def workspace_authorizations_path(self) -> Path | None:
         settings = getattr(self.runtime, "settings", None)
         storage = getattr(settings, "storage", None)
@@ -106,6 +115,21 @@ class PermissionManager:
         handler = self.runtime.authorization_request_handler
         if not callable(handler):
             return "Authorization request failed: interactive approvals are unavailable in this session."
+        hook_manager = self._hook_manager()
+        if hook_manager is not None:
+            hook_manager.on_user_choice_requested(
+                session=None,
+                trace_id=None,
+                actor="lead",
+                execution_mode=getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE),
+                choice_type="authorization",
+                choice_payload={
+                    "tool_name": normalized_tool,
+                    "reason": str(reason).strip(),
+                    "argument_summary": str(argument_summary).strip(),
+                },
+                options=["allow_once", "allow_workspace", "deny"],
+            )
         result = handler(
             tool_name=normalized_tool,
             reason=str(reason).strip(),
@@ -164,6 +188,21 @@ class PermissionManager:
         handler = self.runtime.mode_switch_request_handler
         if not callable(handler):
             return "Mode switch request failed: interactive mode switching is unavailable in this session."
+        hook_manager = self._hook_manager()
+        if hook_manager is not None:
+            hook_manager.on_user_choice_requested(
+                session=None,
+                trace_id=None,
+                actor="lead",
+                execution_mode=current_mode,
+                choice_type="mode_switch",
+                choice_payload={
+                    "current_mode": current_mode,
+                    "target_mode": normalized_target,
+                    "reason": str(reason).strip(),
+                },
+                options=[normalized_target, current_mode],
+            )
         result = handler(target_mode=normalized_target, reason=str(reason).strip(), current_mode=current_mode)
         if not isinstance(result, dict):
             return "Mode switch request failed: invalid mode switch response."

@@ -334,6 +334,7 @@ class SettingsOverrideTests(unittest.TestCase):
             root = Path(tmpdir)
             home = root / "home"
             global_config = home / ".open_somnia" / "open_somnia.toml"
+            builtin_script = home / ".open_somnia" / "Hooks" / "builtin_notify" / "notify_user.py"
 
             with self._patched_home(home):
                 written_path = persist_initial_provider_setup(
@@ -353,6 +354,9 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertEqual(settings.provider.api_key, "sk-test")
             self.assertEqual(settings.provider.base_url, "https://openrouter.ai/api/v1")
             self.assertEqual(settings.provider_profiles["openrouter"].models, ["gpt-5", "gpt-4.1-mini"])
+            self.assertIn('[[hooks]]', global_config.read_text(encoding="utf-8"))
+            self.assertIn('managed_by = "somnia_builtin_notify"', global_config.read_text(encoding="utf-8"))
+            self.assertTrue(builtin_script.exists())
 
     def test_persist_provider_profile_renames_existing_default_profile(self) -> None:
         with self._tempdir() as tmpdir:

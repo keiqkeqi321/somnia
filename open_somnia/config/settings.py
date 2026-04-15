@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
 from open_somnia.config.models import (
     AgentSettings,
     AppSettings,
+    HookMatcherSettings,
+    HookSettings,
     MCPServerSettings,
     ModelTraits,
     ProviderProfileSettings,
@@ -13,10 +16,17 @@ from open_somnia.config.models import (
     RuntimeSettings,
     StorageSettings,
 )
+from open_somnia.hooks.models import normalize_hook_event
+from open_somnia.storage.common import atomic_write_text
 
 APP_DIRNAME = ".open_somnia"
 CONFIG_FILENAME = "open_somnia.toml"
 DEFAULT_AGENT_NAME = "Somnia"
+HOOKS_DIRNAME = "Hooks"
+BUILTIN_NOTIFY_FOLDER = "builtin_notify"
+BUILTIN_NOTIFY_MANAGER = "somnia_builtin_notify"
+BUILTIN_HOOKS_BEGIN = "# BEGIN SOMNIA BUILTIN HOOKS"
+BUILTIN_HOOKS_END = "# END SOMNIA BUILTIN HOOKS"
 
 
 class NoConfiguredProvidersError(RuntimeError):
@@ -37,6 +47,9 @@ def _merge_config(base: dict, override: dict) -> dict:
     merged = dict(base)
     for key, value in override.items():
         existing = merged.get(key)
+        if key == "hooks" and isinstance(existing, list) and isinstance(value, list):
+            merged[key] = list(existing) + list(value)
+            continue
         if isinstance(existing, dict) and isinstance(value, dict):
             merged[key] = _merge_config(existing, value)
         else:
@@ -48,11 +61,16 @@ def global_config_path() -> Path:
     return Path.home() / APP_DIRNAME / CONFIG_FILENAME
 
 
+def global_hooks_root() -> Path:
+    return Path.home() / APP_DIRNAME / HOOKS_DIRNAME
+
+
 def workspace_config_path(workspace_root: Path) -> Path:
     return workspace_root / APP_DIRNAME / CONFIG_FILENAME
 
 
 def load_raw_config(workspace_root: Path) -> dict:
+    _ensure_global_builtin_notify_hooks()
     global_raw = _read_toml(global_config_path())
     workspace_raw = _read_toml(workspace_config_path(workspace_root))
     return _merge_config(global_raw, workspace_raw)
@@ -276,6 +294,7 @@ def persist_provider_profile(
     _upsert_section_value(lines, provider_section, "api_key", _toml_string(normalized_api_key))
     _upsert_section_value(lines, provider_section, "base_url", _toml_string(normalized_base_url))
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _ensure_global_builtin_notify_hooks(config_path=config_path)
     return config_path
 
 
@@ -310,6 +329,157 @@ def _build_mcp_server(root: Path, name: str, item: dict) -> MCPServerSettings:
         startup_timeout_seconds=int(item.get("startup_timeout_sec", item.get("timeout_seconds", 30))),
         protocol_version=str(item.get("protocol_version", "2025-11-25")),
     )
+
+
+def _build_hook(root: Path, item: dict) -> HookSettings:
+    matcher_raw = item.get("matcher", {})
+    if not isinstance(matcher_raw, dict):
+        matcher_raw = {}
+    return HookSettings(
+        event=str(item.get("event", "")).strip(),
+        command=str(item.get("command", "")).strip(),
+        args=[str(arg) for arg in item.get("args", [])],
+        cwd=_resolve_optional_path(root, item.get("cwd")),
+        env={str(k): str(v) for k, v in item.get("env", {}).items()},
+        timeout_seconds=int(item.get("timeout_seconds", 10)),
+        on_error=str(item.get("on_error", "continue")).strip().lower() or "continue",
+        enabled=bool(item.get("enabled", True)),
+        managed_by=str(item.get("managed_by", "")).strip() or None,
+        matcher=HookMatcherSettings(
+            tool_name=str(matcher_raw.get("tool_name", "")).strip() or None,
+            actor=str(matcher_raw.get("actor", "")).strip() or None,
+        ),
+    )
+
+
+def _load_hooks(root: Path, raw: dict) -> list[HookSettings]:
+    hooks_raw = raw.get("hooks", [])
+    if not isinstance(hooks_raw, list):
+        return []
+    hooks: list[HookSettings] = []
+    for item in hooks_raw:
+        if not isinstance(item, dict):
+            continue
+        if not str(item.get("event", "")).strip() or not str(item.get("command", "")).strip():
+            continue
+        hooks.append(_build_hook(root, item))
+    custom_events = {
+        normalize_hook_event(hook.event)
+        for hook in hooks
+        if str(hook.event).strip() and hook.managed_by != BUILTIN_NOTIFY_MANAGER
+    }
+    filtered: list[HookSettings] = []
+    for hook in hooks:
+        event = normalize_hook_event(hook.event)
+        if hook.managed_by == BUILTIN_NOTIFY_MANAGER and event in custom_events:
+            continue
+        filtered.append(hook)
+    return filtered
+
+
+def _builtin_notify_source_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "hooks" / "notify_user.py"
+
+
+def _builtin_notify_install_dir() -> Path:
+    return global_hooks_root() / BUILTIN_NOTIFY_FOLDER
+
+
+def _builtin_notify_target_script() -> Path:
+    return _builtin_notify_install_dir() / "notify_user.py"
+
+
+def _install_builtin_notify_assets() -> Path:
+    source = _builtin_notify_source_path()
+    target = _builtin_notify_target_script()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(target, source.read_text(encoding="utf-8"))
+    return target
+
+
+def _strip_builtin_hook_block(lines: list[str]) -> list[str]:
+    stripped: list[str] = []
+    in_block = False
+    for line in lines:
+        marker = line.strip()
+        if marker == BUILTIN_HOOKS_BEGIN:
+            in_block = True
+            continue
+        if marker == BUILTIN_HOOKS_END:
+            in_block = False
+            continue
+        if not in_block:
+            stripped.append(line)
+    while stripped and not stripped[-1].strip():
+        stripped.pop()
+    return stripped
+
+
+def _render_builtin_hook_block(script_path: Path, events: list[str]) -> list[str]:
+    block = [BUILTIN_HOOKS_BEGIN]
+    command = str(Path(sys.executable).resolve())
+    script_value = str(script_path.resolve())
+    for event in events:
+        block.extend(
+            [
+                "[[hooks]]",
+                f'event = {_toml_string(event)}',
+                f'command = {_toml_string(command)}',
+                f"args = {_toml_array([script_value])}",
+                'managed_by = "somnia_builtin_notify"',
+                "timeout_seconds = 10",
+                'on_error = "continue"',
+                "",
+            ]
+        )
+    if block[-1] == "":
+        block.pop()
+    block.append(BUILTIN_HOOKS_END)
+    return block
+
+
+def _configured_hook_events(raw: dict) -> set[str]:
+    hooks_raw = raw.get("hooks", [])
+    if not isinstance(hooks_raw, list):
+        return set()
+    events: set[str] = set()
+    for item in hooks_raw:
+        if not isinstance(item, dict):
+            continue
+        event = str(item.get("event", "")).strip()
+        if not event:
+            continue
+        if str(item.get("managed_by", "")).strip() == BUILTIN_NOTIFY_MANAGER:
+            continue
+        events.add(normalize_hook_event(event))
+    return events
+
+
+def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> None:
+    config_path = config_path or global_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    base_lines = _strip_builtin_hook_block(lines)
+    base_text = "\n".join(base_lines).strip()
+    raw = tomllib.loads(base_text) if base_text else {}
+    existing_events = _configured_hook_events(raw)
+    missing_events = [
+        event
+        for event in ("AssistantResponse", "UserChoiceRequested")
+        if normalize_hook_event(event) not in existing_events
+    ]
+    if not missing_events and base_lines == lines:
+        return
+    updated = list(base_lines)
+    if missing_events:
+        target_script = _install_builtin_notify_assets()
+        if updated and updated[-1].strip():
+            updated.append("")
+        updated.extend(_render_builtin_hook_block(target_script, missing_events))
+    if updated:
+        config_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    elif config_path.exists():
+        config_path.unlink()
 
 
 def _load_mcp_servers(root: Path, raw: dict) -> list[MCPServerSettings]:
@@ -567,6 +737,7 @@ def load_settings(
     )
 
     mcp_servers = _load_mcp_servers(root, raw)
+    hooks = _load_hooks(root, raw)
 
     settings = AppSettings(
         workspace_root=root,
@@ -576,6 +747,7 @@ def load_settings(
         storage=_storage_settings(root),
         provider_profiles=provider_profiles,
         mcp_servers=mcp_servers,
+        hooks=hooks,
         raw_config=raw,
     )
     ensure_storage_dirs(settings)
