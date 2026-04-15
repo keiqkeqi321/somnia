@@ -136,10 +136,10 @@ class ReplTodoTests(unittest.TestCase):
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
 
         cases = [
-            (ContextWindowUsage(used_tokens=40, max_tokens=100), "fg:#22c55e"),
+            (ContextWindowUsage(used_tokens=30, max_tokens=100), "fg:#22c55e"),
             (ContextWindowUsage(used_tokens=60, max_tokens=100), "fg:#84cc16"),
-            (ContextWindowUsage(used_tokens=75, max_tokens=100), "fg:#f59e0b"),
-            (ContextWindowUsage(used_tokens=76, max_tokens=100), "fg:#ef4444"),
+            (ContextWindowUsage(used_tokens=80, max_tokens=100), "fg:#f59e0b"),
+            (ContextWindowUsage(used_tokens=81, max_tokens=100), "fg:#ef4444"),
         ]
 
         for usage, expected_style in cases:
@@ -281,7 +281,7 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertIn("ctx: 32.0% (64.0k / 200.0k tokens)", rendered)
         self.assertLess(rendered.index("ctx: 32.0% (64.0k / 200.0k tokens)"), rendered.index("accept edits on"))
-        self.assertEqual(context_fragments, [("fg:#22c55e", "ctx: 32.0% (64.0k / 200.0k tokens)")])
+        self.assertEqual(context_fragments, [("fg:#84cc16", "ctx: 32.0% (64.0k / 200.0k tokens)")])
 
     def test_todo_manager_treats_cancelled_items_as_closed_and_hidden(self) -> None:
         session = SimpleNamespace(todo_items=[])

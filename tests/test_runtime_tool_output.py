@@ -520,6 +520,73 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
         self.assertNotIn("raw_output", session.messages[1]["content"][0])
 
+    def test_run_semantic_janitor_manual_command_runs_above_manual_threshold(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 30_000 if "Semantic Summary" not in str(messages) else 24_000,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime._context_governance_events = {}
+        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime._payload_message_cache_key = OpenAgentRuntime._payload_message_cache_key.__get__(runtime, OpenAgentRuntime)
+        runtime._context_usage_tools = OpenAgentRuntime._context_usage_tools.__get__(runtime, OpenAgentRuntime)
+        runtime._note_context_governance = OpenAgentRuntime._note_context_governance.__get__(runtime, OpenAgentRuntime)
+        runtime._context_usage_cache_key = OpenAgentRuntime._context_usage_cache_key.__get__(runtime, OpenAgentRuntime)
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime._analyze_context_relevance = lambda **kwargs: [
+            SemanticCompressionDecision(
+                message_index=1,
+                item_index=0,
+                state="condensed",
+                summary="[Semantic Summary | read_file | log log-1] Manual janitor reduced older snapshot.",
+            )
+        ]
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
+            ],
+        )
+
+        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
+
+        self.assertIn("Janitor reviewed", message)
+        self.assertIn("[Semantic Summary | read_file | log log-1]", session.messages[1]["content"][0]["content"])
+
+    def test_run_semantic_janitor_manual_command_skips_below_manual_threshold(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(token_threshold=90_000),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 19_000,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
+
+        self.assertIn("below the manual 20% trigger", message)
+
     def test_parse_semantic_janitor_response_accepts_valid_json_and_ignores_extra_fields(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         candidates = [

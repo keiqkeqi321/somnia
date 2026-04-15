@@ -9,7 +9,7 @@ from open_somnia.providers.base import ProviderError
 
 
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.50
-AUTO_COMPACT_TRIGGER_RATIO = 0.72
+AUTO_COMPACT_TRIGGER_RATIO = 0.82
 
 
 @dataclass(slots=True)

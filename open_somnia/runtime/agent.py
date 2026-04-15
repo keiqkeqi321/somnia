@@ -87,6 +87,7 @@ class OpenAgentRuntime:
     JANITOR_FORCE_RATIO = 0.60
     JANITOR_MIN_TOKEN_DELTA = 8_000
     JANITOR_MIN_MESSAGE_DELTA = 6
+    MANUAL_JANITOR_MIN_RATIO = 0.20
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -578,6 +579,10 @@ class OpenAgentRuntime:
         state["last_run_used_tokens"] = int(usage.used_tokens or 0)
         state["last_run_message_count"] = max(0, int(message_count))
         state["last_run_ratio"] = float(usage.usage_ratio or 0.0)
+
+    def _should_run_manual_context_janitor(self, usage: ContextWindowUsage) -> bool:
+        ratio = usage.usage_ratio
+        return ratio is not None and ratio >= self.MANUAL_JANITOR_MIN_RATIO
 
     def _messages_for_model(
         self,
@@ -1543,12 +1548,7 @@ class OpenAgentRuntime:
         )
         payload_messages = build_payload_messages(messages)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        if not self._should_run_context_janitor(
-            baseline_usage,
-            session=session,
-            message_count=len(messages),
-            force=True,
-        ):
+        if not self._should_run_manual_context_janitor(baseline_usage):
             self._payload_message_cache[session.id] = (cache_key, payload_messages)
             self._context_usage_cache[session.id] = (cache_key, baseline_usage)
             self._remember_context_usage(session.id, baseline_usage)
@@ -1557,7 +1557,10 @@ class OpenAgentRuntime:
                 if baseline_usage.usage_percent is not None
                 else f"{baseline_usage.used_tokens} tokens"
             )
-            return f"Janitor skipped: current payload usage is {usage_label}, below the 50% trigger."
+            return (
+                f"Janitor skipped: current payload usage is {usage_label}, "
+                f"below the manual {self.MANUAL_JANITOR_MIN_RATIO * 100:.0f}% trigger."
+            )
 
         decisions = self._analyze_context_relevance(
             session=session,

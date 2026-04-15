@@ -180,7 +180,7 @@ class CompactTests(unittest.TestCase):
     def test_should_auto_compact_uses_ratio_or_hard_threshold(self) -> None:
         self.assertTrue(
             should_auto_compact(
-                ContextWindowUsage(used_tokens=72_000, max_tokens=100_000),
+                ContextWindowUsage(used_tokens=82_000, max_tokens=100_000),
                 hard_threshold=200_000,
             )
         )
@@ -192,7 +192,7 @@ class CompactTests(unittest.TestCase):
         )
         self.assertFalse(
             should_auto_compact(
-                ContextWindowUsage(used_tokens=70_000, max_tokens=100_000),
+                ContextWindowUsage(used_tokens=81_000, max_tokens=100_000),
                 hard_threshold=100_000,
             )
         )

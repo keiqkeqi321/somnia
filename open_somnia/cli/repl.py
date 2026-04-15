@@ -549,11 +549,11 @@ class TurnQueueRunner:
         percent = usage.usage_percent if usage is not None else None
         if percent is None:
             return "fg:#7dd3fc"
-        if percent <= 40.0:
+        if percent <= 30.0:
             return self.CONTEXT_HEALTHY_STYLE
         if percent <= 60.0:
             return self.CONTEXT_WARNING_STYLE
-        if percent <= 75.0:
+        if percent <= 80.0:
             return self.CONTEXT_REDUCING_STYLE
         return self.CONTEXT_CRITICAL_STYLE
 
@@ -1254,7 +1254,9 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                     if runner.has_inflight_work():
                         print("[busy; wait for queued responses before /janitor]")
                         continue
+                    print("[janitor started]")
                     print(runtime.run_semantic_janitor(session))
+                    print("[janitor complete]")
                     continue
                 if stripped == "/scan" or stripped.startswith("/scan "):
                     if runner.has_inflight_work():
