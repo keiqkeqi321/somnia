@@ -142,30 +142,15 @@ class CompactTests(unittest.TestCase):
             )
         )
 
-    def test_should_run_semantic_janitor_uses_half_window_or_half_hard_threshold(self) -> None:
+    def test_should_run_semantic_janitor_uses_ratio_only(self) -> None:
         self.assertTrue(
-            should_run_semantic_janitor(
-                ContextWindowUsage(used_tokens=50_000, max_tokens=100_000),
-                hard_threshold=200_000,
-            )
+            should_run_semantic_janitor(ContextWindowUsage(used_tokens=50_000, max_tokens=100_000))
         )
         self.assertFalse(
-            should_run_semantic_janitor(
-                ContextWindowUsage(used_tokens=49_000, max_tokens=100_000),
-                hard_threshold=200_000,
-            )
-        )
-        self.assertTrue(
-            should_run_semantic_janitor(
-                ContextWindowUsage(used_tokens=40_000, max_tokens=None),
-                hard_threshold=80_000,
-            )
+            should_run_semantic_janitor(ContextWindowUsage(used_tokens=49_000, max_tokens=100_000))
         )
         self.assertFalse(
-            should_run_semantic_janitor(
-                ContextWindowUsage(used_tokens=39_999, max_tokens=None),
-                hard_threshold=80_000,
-            )
+            should_run_semantic_janitor(ContextWindowUsage(used_tokens=40_000, max_tokens=None))
         )
 
     def test_auto_compact_can_preserve_recent_task_window_while_summarizing_older_history(self) -> None:

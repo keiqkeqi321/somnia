@@ -623,9 +623,7 @@ class OpenAgentRuntime:
         return usage
 
     def _should_run_context_janitor(self, usage: ContextWindowUsage) -> bool:
-        runtime_settings = getattr(self.settings, "runtime", None)
-        threshold = int(getattr(runtime_settings, "token_threshold", 0) or 0)
-        return should_run_semantic_janitor(usage, hard_threshold=threshold)
+        return should_run_semantic_janitor(usage)
 
     def _context_compact_text(self, text: str, *, limit: int = 220) -> str:
         compact = " ".join(str(text).split())
