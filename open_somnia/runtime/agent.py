@@ -28,8 +28,10 @@ from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.base import LLMProvider, ProviderError
 from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.compact import (
+    AUTO_COMPACT_TRIGGER_RATIO,
     CompactManager,
     ContextWindowUsage,
+    SEMANTIC_JANITOR_TRIGGER_RATIO,
     SemanticCompressionDecision,
     ToolResultCandidate,
     build_payload_messages,
@@ -88,6 +90,13 @@ class OpenAgentRuntime:
     JANITOR_MIN_TOKEN_DELTA = 8_000
     JANITOR_MIN_MESSAGE_DELTA = 6
     MANUAL_JANITOR_MIN_RATIO = 0.20
+    JANITOR_MIN_USAGE_DELTA_RATIO = 0.05
+    JANITOR_MIN_USAGE_DELTA_TOKENS = 1_000
+    JANITOR_MIN_PRUNABLE_CANDIDATES = 1
+    JANITOR_PRUNABLE_OUTPUT_CHARS = 240
+    JANITOR_LOW_YIELD_RATIO = 0.05
+    JANITOR_LOW_YIELD_MAX_AUTO_RUNS = 2
+    JANITOR_PREEMPTIVE_COMPACT_GAP = 0.02
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -562,27 +571,67 @@ class OpenAgentRuntime:
                 "last_run_used_tokens": 0,
                 "last_run_message_count": 0,
                 "last_run_ratio": 0.0,
+                "last_reduction_ratio": 0.0,
+                "saturated": False,
+                "auto_low_yield_streak": 0,
+                "disabled": False,
             },
         )
 
     def _record_context_janitor_run(
         self,
         session: AgentSession | None,
-        usage: ContextWindowUsage,
+        before_usage: ContextWindowUsage,
+        after_usage: ContextWindowUsage,
         *,
         message_count: int,
+        automatic: bool,
     ) -> None:
         state = self._janitor_state_for(session)
         if state is None:
             return
+        before_tokens = max(0, int(before_usage.used_tokens or 0))
+        after_tokens = max(0, int(after_usage.used_tokens or 0))
+        reduction_ratio = 0.0
+        if before_tokens > 0 and after_tokens <= before_tokens:
+            reduction_ratio = max(0.0, (before_tokens - after_tokens) / before_tokens)
         state["armed"] = False
-        state["last_run_used_tokens"] = int(usage.used_tokens or 0)
+        state["last_run_used_tokens"] = after_tokens
         state["last_run_message_count"] = max(0, int(message_count))
-        state["last_run_ratio"] = float(usage.usage_ratio or 0.0)
+        state["last_run_ratio"] = float(after_usage.usage_ratio or 0.0)
+        state["last_reduction_ratio"] = reduction_ratio
+        state["saturated"] = False
+        if automatic:
+            if reduction_ratio < self.JANITOR_LOW_YIELD_RATIO:
+                state["auto_low_yield_streak"] = int(state.get("auto_low_yield_streak") or 0) + 1
+                if state["auto_low_yield_streak"] >= self.JANITOR_LOW_YIELD_MAX_AUTO_RUNS:
+                    state["disabled"] = True
+            else:
+                state["auto_low_yield_streak"] = 0
 
     def _should_run_manual_context_janitor(self, usage: ContextWindowUsage) -> bool:
         ratio = usage.usage_ratio
         return ratio is not None and ratio >= self.MANUAL_JANITOR_MIN_RATIO
+
+    def _semantic_janitor_trigger_ratio(self) -> float:
+        return float(SEMANTIC_JANITOR_TRIGGER_RATIO)
+
+    def _janitor_preemptive_compact_ratio(self) -> float:
+        return max(self._semantic_janitor_trigger_ratio(), AUTO_COMPACT_TRIGGER_RATIO - self.JANITOR_PREEMPTIVE_COMPACT_GAP)
+
+    def _janitor_candidates(self, messages: list[dict[str, Any]]) -> list[ToolResultCandidate]:
+        return extract_tool_result_candidates(messages, preserve_recent_rounds=2)
+
+    def _selected_janitor_candidates(self, messages: list[dict[str, Any]]) -> list[ToolResultCandidate]:
+        candidates = self._janitor_candidates(messages)
+        if not candidates:
+            return []
+        selected = sorted(candidates, key=lambda item: (item.output_length, item.age), reverse=True)[:12]
+        selected.sort(key=lambda item: (item.locator.message_index, item.locator.item_index))
+        return selected
+
+    def _count_prunable_janitor_candidates(self, messages: list[dict[str, Any]]) -> int:
+        return sum(1 for candidate in self._janitor_candidates(messages) if candidate.output_length >= self.JANITOR_PRUNABLE_OUTPUT_CHARS)
 
     def _messages_for_model(
         self,
@@ -631,6 +680,7 @@ class OpenAgentRuntime:
             baseline_usage,
             session=session,
             message_count=message_count,
+            messages=messages,
         ):
             decisions = self._analyze_context_relevance(
                 session=session,
@@ -649,7 +699,13 @@ class OpenAgentRuntime:
                         "janitor",
                         f"janitor reduced {changed_results} tool result(s)",
                     )
-            self._record_context_janitor_run(session, final_usage, message_count=message_count)
+            self._record_context_janitor_run(
+                session,
+                baseline_usage,
+                final_usage,
+                message_count=message_count,
+                automatic=True,
+            )
         usage_cache[session.id] = (cache_key, final_usage)
         self._remember_context_usage(session.id, final_usage)
         cache[session.id] = (cache_key, payload_messages)
@@ -767,28 +823,44 @@ class OpenAgentRuntime:
         *,
         session: AgentSession | None = None,
         message_count: int | None = None,
+        messages: list[dict[str, Any]] | None = None,
         force: bool = False,
     ) -> bool:
         ratio = usage.usage_ratio
         if ratio is None:
             return False
+        state = self._janitor_state_for(session)
         if not should_run_semantic_janitor(usage):
-            state = self._janitor_state_for(session)
             if state is not None and ratio <= self.JANITOR_REARM_RATIO:
                 state["armed"] = True
+                state["saturated"] = False
             return False
-        if force or session is None:
+        if state is not None and bool(state.get("disabled")):
+            return False
+        if not force and ratio >= self._janitor_preemptive_compact_ratio():
+            if state is not None:
+                state["saturated"] = False
+            return False
+        if messages is not None:
+            prunable_count = self._count_prunable_janitor_candidates(messages)
+            if state is not None:
+                state["saturated"] = prunable_count == 0
+            if prunable_count < self.JANITOR_MIN_PRUNABLE_CANDIDATES:
+                return False
+        if force or session is None or state is None:
             return True
-        state = self._janitor_state_for(session)
-        if state is None:
-            return True
+        last_used_tokens = int(state.get("last_run_used_tokens") or 0)
+        last_ratio = float(state.get("last_run_ratio") or 0.0)
+        token_delta = max(0, usage.used_tokens - last_used_tokens)
+        ratio_delta = max(0.0, ratio - last_ratio)
+        if last_used_tokens > 0 and token_delta < self.JANITOR_MIN_USAGE_DELTA_TOKENS and ratio_delta < self.JANITOR_MIN_USAGE_DELTA_RATIO:
+            return False
         if bool(state.get("armed", True)):
             return True
         if ratio >= self.JANITOR_FORCE_RATIO:
             return True
-        last_used_tokens = int(state.get("last_run_used_tokens") or 0)
         last_message_count = int(state.get("last_run_message_count") or 0)
-        if max(0, usage.used_tokens - last_used_tokens) >= self.JANITOR_MIN_TOKEN_DELTA:
+        if token_delta >= self.JANITOR_MIN_TOKEN_DELTA:
             return True
         if max(0, int(message_count or 0) - last_message_count) >= self.JANITOR_MIN_MESSAGE_DELTA:
             return True
@@ -1158,11 +1230,9 @@ class OpenAgentRuntime:
         tools: list[dict[str, Any]],
     ) -> list[SemanticCompressionDecision]:
         del system_prompt, tools
-        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=2)
-        if not candidates:
+        selected = self._selected_janitor_candidates(messages)
+        if not selected:
             return []
-        selected = sorted(candidates, key=lambda item: (item.output_length, item.age), reverse=True)[:12]
-        selected.sort(key=lambda item: (item.locator.message_index, item.locator.item_index))
         topic_context = self._extract_recent_topic_context(messages)
         todo_context = self._todo_hint_context(session)
         fallback = self._fallback_context_relevance_decisions(session, selected, topic_context)
@@ -1576,7 +1646,13 @@ class OpenAgentRuntime:
         self._payload_message_cache[session.id] = (cache_key, payload_messages)
         self._context_usage_cache[session.id] = (cache_key, reduced_usage)
         self._remember_context_usage(session.id, reduced_usage)
-        self._record_context_janitor_run(session, reduced_usage, message_count=len(messages))
+        self._record_context_janitor_run(
+            session,
+            baseline_usage,
+            reduced_usage,
+            message_count=len(messages),
+            automatic=False,
+        )
         if changed_results > 0:
             self._note_context_governance(session.id, "janitor", f"janitor reduced {changed_results} tool result(s)")
         saver = getattr(getattr(self, "session_manager", None), "save", None)

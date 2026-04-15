@@ -52,6 +52,32 @@ class RuntimeToolOutputTests(unittest.TestCase):
             has_error=has_error,
         )
 
+    def _tool_round_messages(self, *contents: str) -> list[dict]:
+        messages: list[dict] = []
+        for index, content in enumerate(contents, start=1):
+            call_id = f"call-{index}"
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_call", "id": call_id, "name": "grep", "input": {"pattern": f"needle-{index}"}}],
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": call_id,
+                            "content": content,
+                            "raw_output": content,
+                            "log_id": f"log-{index}",
+                        }
+                    ],
+                }
+            )
+        return messages
+
     def test_todowrite_is_logged_but_not_printed(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "todo-log"})
@@ -1134,8 +1160,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(first.used_tokens, 70_000)
         self.assertEqual(second.used_tokens, 70_000)
         self.assertEqual(third.used_tokens, 70_000)
-        self.assertEqual(len(analyzer_calls), 2)
-        self.assertEqual(analyzer_calls, [1, 2])
+        self.assertEqual(len(analyzer_calls), 0)
+        self.assertEqual(analyzer_calls, [])
         self.assertEqual(len(provider_calls), 2)
         self.assertEqual(provider_calls, [1, 2])
 
@@ -1190,8 +1216,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         OpenAgentRuntime._record_context_janitor_run(
             runtime,
             session,
+            ContextWindowUsage(used_tokens=50_000, max_tokens=100_000),
             ContextWindowUsage(used_tokens=44_000, max_tokens=100_000),
             message_count=10,
+            automatic=True,
         )
         second = OpenAgentRuntime._should_run_context_janitor(
             runtime,
@@ -1216,6 +1244,134 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertFalse(rearm)
         self.assertTrue(third)
+
+    def test_context_janitor_skips_when_prunable_candidates_are_exhausted(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
+        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400))
+
+        should_run = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=60_000, max_tokens=100_000),
+            session=session,
+            message_count=len(session.messages),
+            messages=session.messages,
+        )
+
+        self.assertFalse(should_run)
+        self.assertTrue(runtime._janitor_state["session-1"]["saturated"])
+
+    def test_context_janitor_skips_when_close_to_auto_compact_threshold(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
+        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400, "c" * 400, "d" * 400, "e" * 400))
+
+        should_run = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=80_000, max_tokens=100_000),
+            session=session,
+            message_count=len(session.messages),
+            messages=session.messages,
+        )
+
+        self.assertFalse(should_run)
+
+    def test_context_janitor_skips_when_usage_delta_since_last_run_is_too_small(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.JANITOR_REARM_RATIO = OpenAgentRuntime.JANITOR_REARM_RATIO
+        runtime.JANITOR_FORCE_RATIO = OpenAgentRuntime.JANITOR_FORCE_RATIO
+        runtime.JANITOR_MIN_TOKEN_DELTA = OpenAgentRuntime.JANITOR_MIN_TOKEN_DELTA
+        runtime.JANITOR_MIN_MESSAGE_DELTA = OpenAgentRuntime.JANITOR_MIN_MESSAGE_DELTA
+        runtime.JANITOR_MIN_USAGE_DELTA_RATIO = OpenAgentRuntime.JANITOR_MIN_USAGE_DELTA_RATIO
+        runtime.JANITOR_MIN_USAGE_DELTA_TOKENS = OpenAgentRuntime.JANITOR_MIN_USAGE_DELTA_TOKENS
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
+        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400, "c" * 400, "d" * 400, "e" * 400))
+        runtime._janitor_state["session-1"] = {
+            "armed": True,
+            "last_run_used_tokens": 50_000,
+            "last_run_message_count": len(session.messages),
+            "last_run_ratio": 0.50,
+            "last_reduction_ratio": 0.20,
+            "saturated": False,
+            "auto_low_yield_streak": 0,
+            "disabled": False,
+        }
+
+        should_run = OpenAgentRuntime._should_run_context_janitor(
+            runtime,
+            ContextWindowUsage(used_tokens=50_500, max_tokens=100_000),
+            session=session,
+            message_count=len(session.messages),
+            messages=session.messages,
+        )
+
+        self.assertFalse(should_run)
+
+    def test_context_janitor_two_low_yield_auto_runs_disable_future_auto_janitor(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.JANITOR_LOW_YIELD_RATIO = OpenAgentRuntime.JANITOR_LOW_YIELD_RATIO
+        runtime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS = OpenAgentRuntime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1")
+
+        OpenAgentRuntime._record_context_janitor_run(
+            runtime,
+            session,
+            ContextWindowUsage(used_tokens=100_000, max_tokens=100_000),
+            ContextWindowUsage(used_tokens=98_000, max_tokens=100_000),
+            message_count=10,
+            automatic=True,
+        )
+        OpenAgentRuntime._record_context_janitor_run(
+            runtime,
+            session,
+            ContextWindowUsage(used_tokens=100_000, max_tokens=100_000),
+            ContextWindowUsage(used_tokens=97_000, max_tokens=100_000),
+            message_count=12,
+            automatic=True,
+        )
+
+        self.assertEqual(runtime._janitor_state["session-1"]["auto_low_yield_streak"], 2)
+        self.assertTrue(runtime._janitor_state["session-1"]["disabled"])
+
+    def test_manual_janitor_run_does_not_count_toward_auto_low_yield_fuse(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.JANITOR_LOW_YIELD_RATIO = OpenAgentRuntime.JANITOR_LOW_YIELD_RATIO
+        runtime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS = OpenAgentRuntime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS
+        runtime._janitor_state = {}
+        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
+        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
+        session = AgentSession(id="session-1")
+
+        OpenAgentRuntime._record_context_janitor_run(
+            runtime,
+            session,
+            ContextWindowUsage(used_tokens=100_000, max_tokens=100_000),
+            ContextWindowUsage(used_tokens=99_000, max_tokens=100_000),
+            message_count=10,
+            automatic=False,
+        )
+
+        self.assertEqual(runtime._janitor_state["session-1"]["auto_low_yield_streak"], 0)
+        self.assertFalse(runtime._janitor_state["session-1"]["disabled"])
 
     def test_context_window_usage_falls_back_to_payload_estimate(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
