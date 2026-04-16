@@ -1,33 +1,59 @@
-# release.ps1 — Somnia 发版脚本 (Windows PowerShell)
-# =============================================================
-#  用法:
-#    powershell -File scripts\release.ps1 0.2.0
-#    powershell -File scripts\release.ps1
-#    powershell -File scripts\release.ps1 0.2.0 -Dry
-#    powershell -File scripts\release.ps1 -Dry
-#
-#  流程 (本地):
-#    1. 检查工作区干净
-#    2. 更新 VERSION → 同步版本号
-#    3. 更新 CHANGELOG
-#    4. git commit + tag
-#    5. git push (触发 CI 自动发布 PyPI + npm + GitHub Release)
-#
-#  CI 自动完成:
-#    - PyPI 发布
-#    - npm 发布
-#    - GitHub Release 创建
-# =============================================================
-
 param(
     [string]$Version = "",
-
     [switch]$Dry
 )
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-Set-Location $root
+
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$script:Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Set-Location $script:Root
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Cyan
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Green
+}
+
+function Write-Warn {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Yellow
+}
+
+function Write-Fail {
+    param([string]$Message)
+    Write-Host $Message -ForegroundColor Red
+}
+
+function Read-TextFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+    return [System.IO.File]::ReadAllText((Resolve-Path $Path), [System.Text.Encoding]::UTF8)
+}
+
+function Write-TextFile {
+    param(
+        [string]$Path,
+        [string]$Content,
+        [switch]$NoNewline
+    )
+    $resolvedPath = Join-Path $script:Root $Path
+    $directory = Split-Path -Parent $resolvedPath
+    if ($directory -and -not (Test-Path $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $text = $Content
+    if (-not $NoNewline) {
+        $text += [Environment]::NewLine
+    }
+    [System.IO.File]::WriteAllText($resolvedPath, $text, $script:Utf8NoBom)
+}
 
 function Parse-SemVer {
     param([string]$InputVersion)
@@ -50,8 +76,12 @@ function Compare-SemVer {
         [object]$Left,
         [object]$Right
     )
-    if ($Left.Major -ne $Right.Major) { return $Left.Major - $Right.Major }
-    if ($Left.Minor -ne $Right.Minor) { return $Left.Minor - $Right.Minor }
+    if ($Left.Major -ne $Right.Major) {
+        return $Left.Major - $Right.Major
+    }
+    if ($Left.Minor -ne $Right.Minor) {
+        return $Left.Minor - $Right.Minor
+    }
     return $Left.Patch - $Right.Patch
 }
 
@@ -59,24 +89,32 @@ function Get-LatestSemVer {
     $candidates = New-Object System.Collections.Generic.List[object]
 
     if (Test-Path "VERSION") {
-        $parsed = Parse-SemVer ((Get-Content "VERSION" -Raw).Trim())
-        if ($parsed) { $candidates.Add($parsed) }
+        $parsed = Parse-SemVer ((Read-TextFile "VERSION").Trim())
+        if ($parsed) {
+            [void]$candidates.Add($parsed)
+        }
     }
 
     $tags = git tag -l "v*" 2>$null
     foreach ($tag in @($tags)) {
         $trimmed = "$tag".Trim()
-        if (-not $trimmed) { continue }
+        if (-not $trimmed) {
+            continue
+        }
         $parsed = Parse-SemVer $trimmed
-        if ($parsed) { $candidates.Add($parsed) }
+        if ($parsed) {
+            [void]$candidates.Add($parsed)
+        }
     }
 
     if (Test-Path "CHANGELOG.md") {
-        $changelog = Get-Content "CHANGELOG.md" -Raw
+        $changelog = Read-TextFile "CHANGELOG.md"
         $matches = [regex]::Matches($changelog, '(?m)^##\s+(\d+\.\d+\.\d+)\b')
         foreach ($match in $matches) {
             $parsed = Parse-SemVer $match.Groups[1].Value
-            if ($parsed) { $candidates.Add($parsed) }
+            if ($parsed) {
+                [void]$candidates.Add($parsed)
+            }
         }
     }
 
@@ -107,145 +145,176 @@ function Get-NextVersion {
     return "$major.$minor.$patch"
 }
 
+function Require-Success {
+    param(
+        [int]$Code,
+        [string]$Message
+    )
+    if ($Code -ne 0) {
+        throw $Message
+    }
+}
+
 Write-Host ""
-Write-Host "🚀 Somnia Release" -ForegroundColor Cyan
+Write-Info "Somnia Release"
 Write-Host ""
 
-# ─── 1. 检查工作区干净 ──────────────────────────────────────
 $status = git status --porcelain
+Require-Success $LASTEXITCODE "Failed to inspect git status."
 if ($status) {
-    Write-Host "✗ 工作区有未提交的更改，请先 commit 或 stash" -ForegroundColor Red
+    Write-Fail "Working tree is not clean. Please commit or stash changes first."
     git status --short
     exit 1
 }
-Write-Host "✓ 工作区干净" -ForegroundColor Green
+Write-Success "Working tree is clean."
 
-# ─── 2. 验证版本号格式 ──────────────────────────────────────
-$currentVersion = (Get-Content "VERSION" -Raw).Trim()
+$currentVersion = ""
+if (Test-Path "VERSION") {
+    $currentVersion = (Read-TextFile "VERSION").Trim()
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $latest = Get-LatestSemVer
     if ($latest) {
         $Version = Get-NextVersion $latest
-        Write-Host "  未传版本号，自动推断: $($latest.Version) -> $Version" -ForegroundColor Cyan
+        Write-Info ("Auto-detected next version: {0} -> {1}" -f $latest.Version, $Version)
     } else {
         $Version = "0.1.0"
-        Write-Host "  未检测到历史版本，默认使用: $Version" -ForegroundColor Cyan
+        Write-Info ("No previous version found, defaulting to {0}" -f $Version)
     }
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    Write-Host "✗ 版本号格式错误: $Version (需要 semver: x.y.z)" -ForegroundColor Red
+    Write-Fail ("Invalid version format: {0}. Expected semver x.y.z" -f $Version)
     exit 1
 }
 
-Write-Host "  当前版本: $currentVersion" -ForegroundColor Yellow
-Write-Host "  目标版本: $Version" -ForegroundColor Green
+Write-Warn ("Current version: {0}" -f $currentVersion)
+Write-Success ("Target version: {0}" -f $Version)
 Write-Host ""
 
 if ($Dry) {
-    Write-Host "👀 DRY RUN — 不会实际修改任何内容" -ForegroundColor Yellow
+    Write-Warn "DRY RUN mode enabled. No files or git state will be changed."
     Write-Host ""
 }
 
-# ─── 3. 更新 VERSION 文件 ────────────────────────────────────
 if (-not $Dry) {
-    Set-Content "VERSION" $Version -NoNewline
-    Write-Host "✓ VERSION → $Version" -ForegroundColor Green
+    Write-TextFile -Path "VERSION" -Content $Version -NoNewline
+    Write-Success ("Updated VERSION to {0}" -f $Version)
 }
 
-# ─── 4. 同步版本号 ───────────────────────────────────────────
 if (-not $Dry) {
-    & powershell -File "scripts\sync-version.ps1"
+    & powershell.exe -ExecutionPolicy Bypass -File "scripts\sync-version.ps1"
+    Require-Success $LASTEXITCODE "sync-version.ps1 failed."
 }
 
-# ─── 5. 更新 CHANGELOG.md (根据 git 自动生成) ───────────────
 $today = Get-Date -Format "yyyy-MM-dd"
 if (-not $Dry) {
+    $previousTag = ""
     $previousTagRaw = git describe --tags --match "v*" --abbrev=0 2>$null
-    $previousTag = if ($previousTagRaw) { "$previousTagRaw".Trim() } else { "" }
-    $logRange = if ($previousTag) { "$previousTag..HEAD" } else { "HEAD" }
+    if ($LASTEXITCODE -eq 0 -and $previousTagRaw) {
+        $previousTag = "$previousTagRaw".Trim()
+    }
+
+    $logRange = "HEAD"
+    if ($previousTag) {
+        $logRange = "$previousTag..HEAD"
+    }
+
     $logLines = git log $logRange --no-merges --pretty=format:"- %s (%h)"
-    $logLines = @($logLines | Where-Object { $_.Trim() -ne "" })
-    if (-not $logLines) {
+    Require-Success $LASTEXITCODE "Failed to build changelog from git log."
+    $logLines = @($logLines | Where-Object { "$_".Trim() -ne "" })
+    if (-not $logLines -or $logLines.Count -eq 0) {
         $logLines = @("- Maintenance release.")
     }
-    $changes = ($logLines -join "`n")
 
-    $existing = Get-Content "CHANGELOG.md" -Raw
-    $body = $existing -replace "^# Changelog\s*", ""
+    $changes = ($logLines -join "`n")
+    $existing = Read-TextFile "CHANGELOG.md"
+    if ([string]::IsNullOrWhiteSpace($existing)) {
+        $existing = "# Changelog`n"
+    }
+    $body = [regex]::Replace($existing, '^# Changelog\s*', '')
     $newEntry = "# Changelog`n`n## $Version ($today)`n`n$changes`n`n"
-    Set-Content "CHANGELOG.md" ($newEntry + $body.TrimStart()) -NoNewline
+    Write-TextFile -Path "CHANGELOG.md" -Content ($newEntry + $body.TrimStart()) -NoNewline
 
     if ($previousTag) {
-        Write-Host "✓ CHANGELOG.md 已根据 $previousTag..HEAD 自动更新" -ForegroundColor Green
+        Write-Success ("Updated CHANGELOG.md from {0}..HEAD" -f $previousTag)
     } else {
-        Write-Host "✓ CHANGELOG.md 已根据历史提交自动更新" -ForegroundColor Green
+        Write-Success "Updated CHANGELOG.md from full git history."
     }
 }
 
-# ─── 6. Git commit + tag ─────────────────────────────────────
 if (-not $Dry) {
-    # 删除已有同名 tag（如果有）
     $existingTag = git tag -l "v$Version" 2>$null
+    Require-Success $LASTEXITCODE "Failed to inspect existing git tags."
     if ($existingTag) {
-        git tag -d "v$Version" 2>$null
-        Write-Host "⚠ 删除已有本地 tag v$Version" -ForegroundColor Yellow
+        git tag -d "v$Version" 2>$null | Out-Null
+        Require-Success $LASTEXITCODE ("Failed to delete existing local tag v{0}" -f $Version)
+        Write-Warn ("Deleted existing local tag v{0}" -f $Version)
     }
 
     git add VERSION open_somnia/__init__.py npm/package.json CHANGELOG.md
+    Require-Success $LASTEXITCODE "git add failed."
     git commit -m "release: v$Version"
+    Require-Success $LASTEXITCODE "git commit failed."
     git tag "v$Version"
-    Write-Host "✓ git commit + tag v$Version" -ForegroundColor Green
+    Require-Success $LASTEXITCODE ("Failed to create tag v{0}" -f $Version)
+    Write-Success ("Created release commit and tag v{0}" -f $Version)
 }
 
-# ─── 7. 推送到 GitHub → 触发 CI ─────────────────────────────
 if (-not $Dry) {
     Write-Host ""
-    Write-Host "📤 推送到远程仓库 ..." -ForegroundColor Cyan
+    Write-Info "Pushing to remote repository..."
 
-    # 自动检测远程名（优先 github.com，其次 origin，再取第一个）
     $remote = $null
     $remotes = (git remote) -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-    
+    Require-Success $LASTEXITCODE "Failed to inspect git remotes."
+
     foreach ($r in $remotes) {
-        $url = (git remote get-url $r 2>$null)
-        if ($url -match "github") {
+        $url = git remote get-url $r 2>$null
+        if ($LASTEXITCODE -eq 0 -and "$url" -match "github") {
             $remote = $r
             break
         }
     }
+
     if (-not $remote) {
         foreach ($r in $remotes) {
-            if ($r -eq "origin") { $remote = $r; break }
+            if ($r -eq "origin") {
+                $remote = $r
+                break
+            }
         }
     }
+
     if (-not $remote -and $remotes) {
         $remote = $remotes[0]
     }
 
     if (-not $remote) {
-        Write-Host "✗ 找不到 git remote，请手动推送:" -ForegroundColor Red
-        Write-Host "  git push <remote> main"
-        Write-Host "  git push <remote> v$Version"
+        Write-Fail "No git remote found. Push manually with:"
+        Write-Host '  git push <remote> main'
+        Write-Host ("  git push <remote> v{0}" -f $Version)
         exit 1
     }
 
-    $branch = (git branch --show-current)
+    $branch = (git branch --show-current).Trim()
+    Require-Success $LASTEXITCODE "Failed to detect current branch."
     git push $remote $branch
+    Require-Success $LASTEXITCODE ("Failed to push branch {0} to {1}" -f $branch, $remote)
     git push $remote "v$Version"
-    Write-Host "✓ 已推送到 $remote ($branch + v$Version)" -ForegroundColor Green
+    Require-Success $LASTEXITCODE ("Failed to push tag v{0} to {1}" -f $Version, $remote)
+    Write-Success ("Pushed to {0} ({1} and v{2})" -f $remote, $branch, $Version)
 }
 
-# ─── 完成 ─────────────────────────────────────────────────────
 Write-Host ""
 if ($Dry) {
-    Write-Host "👀 DRY RUN 完成 — 去掉 -Dry 即可实际执行" -ForegroundColor Yellow
+    Write-Warn "DRY RUN complete. Re-run without -Dry to execute the release."
 } else {
-    Write-Host "✅ v$Version 已推送！CI 将自动执行:" -ForegroundColor Green
+    Write-Success ("Release v{0} pushed. CI should start automatically." -f $Version)
     Write-Host ""
-    Write-Host "  📦 PyPI  →  https://pypi.org/project/somnia/$Version/"
-    Write-Host "  📦 npm   →  npm install somnia"
-    Write-Host "  📋 Release → GitHub Releases 页面"
-    Write-Host ""
-    Write-Host "  查看 CI 进度: GitHub → Actions 标签页"
+    Write-Host ("  PyPI:   https://pypi.org/project/somnia/{0}/" -f $Version)
+    Write-Host "  npm:    npm install somnia"
+    Write-Host "  GitHub: Releases page"
+    Write-Host "  CI:     GitHub Actions"
 }
