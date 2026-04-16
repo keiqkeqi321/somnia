@@ -21,8 +21,9 @@ from typing import Any
 
 from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
-from open_somnia.config.models import AppSettings, ProviderProfileSettings, ProviderSettings
-from open_somnia.config.settings import _materialize_provider, load_settings, persist_provider_selection
+from open_somnia.config.models import AppSettings, HookSettings, ProviderProfileSettings, ProviderSettings
+from open_somnia.config.settings import _materialize_provider, load_settings, persist_hook_enabled, persist_provider_selection
+from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
 from open_somnia.mcp.registry import MCPRegistry
 from open_somnia.providers.anthropic_provider import AnthropicProvider
@@ -366,6 +367,9 @@ class OpenAgentRuntime:
     def configured_provider_profiles(self) -> dict[str, ProviderProfileSettings]:
         return dict(self.settings.provider_profiles)
 
+    def configured_hooks(self) -> list[HookSettings]:
+        return list(getattr(self.settings, "hooks", []) or [])
+
     def _workspace_authorizations_path(self) -> Path | None:
         return self._permission_manager().workspace_authorizations_path()
 
@@ -428,6 +432,24 @@ class OpenAgentRuntime:
         self._payload_message_cache = {}
         self._recent_context_usage = {}
         self._janitor_state = {}
+
+    def reload_hook_configuration(self) -> None:
+        reloaded = load_settings(
+            self.settings.workspace_root,
+            provider_override=self.settings.provider.name,
+            model_override=self.settings.provider.model,
+        )
+        self.settings.raw_config = reloaded.raw_config
+        self.settings.hooks = reloaded.hooks
+        self.hook_manager = HookManager(self.settings)
+
+    def set_hook_enabled(self, hook: HookSettings, enabled: bool) -> str:
+        config_path = persist_hook_enabled(hook, enabled)
+        self.reload_hook_configuration()
+        state = "enabled" if enabled else "disabled"
+        kind = "builtin" if hook.managed_by == BUILTIN_NOTIFY_MANAGER else "custom"
+        scope = getattr(hook, "config_scope", None) or "config"
+        return f"{state.capitalize()} {kind} hook for {hook.event} in {scope} config: {config_path}"
 
     def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry

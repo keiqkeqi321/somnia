@@ -29,6 +29,7 @@ COMMAND_SPECS = [
     ("/symbols", "Find symbols and inspect matching source locations"),
     ("/model", "Choose the active provider and model"),
     ("/providers", "Add or edit shared provider profiles"),
+    ("/hooks", "Browse hooks by event and toggle them on or off"),
     ("/undo", "Undo the most recent file change set"),
     ("/checkpoint", "Save a named checkpoint of the current session state"),
     ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),

@@ -24,6 +24,8 @@ from open_somnia.cli.prompting import (
 )
 from open_somnia.cli.provider_management import collect_provider_profile_interactively, choose_provider_target_interactively
 from open_somnia.config.settings import persist_provider_profile
+from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
+from open_somnia.hooks.models import normalize_hook_event
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.compact import ContextWindowUsage
 from open_somnia.runtime.execution_mode import (
@@ -55,7 +57,15 @@ READ_ONLY_COMMAND_PREFIXES = (
     "/mcp",
     "/toollog",
     "/bg",
+    "/hooks",
     "/help",
+)
+HOOK_EVENT_ORDER = (
+    "SessionStart",
+    "PreToolUse",
+    "PostToolUse",
+    "AssistantResponse",
+    "UserChoiceRequested",
 )
 AUTHORIZATION_PROMPT_SENTINEL = "__open_somnia_authorization__"
 
@@ -954,6 +964,91 @@ def _handle_mcp_command(runtime) -> None:
             )
 
 
+def _hook_identity_label(hook) -> str:
+    command = str(getattr(hook, "command", "")).strip() or "(no command)"
+    args = [str(arg) for arg in getattr(hook, "args", []) or []]
+    joined = " ".join([command, *args]).strip()
+    return joined[:80] + "..." if len(joined) > 83 else joined
+
+
+def _handle_hooks_command(runtime) -> None:
+    getter = getattr(runtime, "configured_hooks", None)
+    hooks = list(getter() if callable(getter) else getattr(getattr(runtime, "settings", None), "hooks", []) or [])
+    hooks_by_event: dict[str, list[object]] = {}
+    for hook in hooks:
+        event = normalize_hook_event(str(getattr(hook, "event", "")).strip())
+        hooks_by_event.setdefault(event, []).append(hook)
+
+    while True:
+        event_items = []
+        for event in HOOK_EVENT_ORDER:
+            event_hooks = hooks_by_event.get(event, [])
+            enabled_count = sum(1 for hook in event_hooks if bool(getattr(hook, "enabled", True)))
+            event_items.append((event, f"{event} | hooks={len(event_hooks)} | enabled={enabled_count}"))
+        selected_event = choose_item_interactively(
+            "Hooks",
+            "Choose an event to inspect its configured hooks.",
+            event_items,
+        )
+        if not selected_event:
+            return
+
+        while True:
+            event_hooks = hooks_by_event.get(selected_event, [])
+            hook_items = [("__back__", "Back to events")]
+            hook_items.extend(
+                (
+                    str(index),
+                    (
+                        f"{'on' if bool(getattr(hook, 'enabled', True)) else 'off'}"
+                        f" | {'builtin' if getattr(hook, 'managed_by', None) == BUILTIN_NOTIFY_MANAGER else 'custom'}"
+                        f" | {_hook_identity_label(hook)}"
+                    ),
+                )
+                for index, hook in enumerate(event_hooks, start=1)
+            )
+            selected_hook = choose_item_interactively(
+                "Event Hooks",
+                f"Event: {selected_event}\nChoose a hook to inspect or toggle.",
+                hook_items,
+            )
+            if not selected_hook or selected_hook == "__back__":
+                break
+
+            hook = event_hooks[int(selected_hook) - 1]
+            enabled = bool(getattr(hook, "enabled", True))
+            builtin = getattr(hook, "managed_by", None) == BUILTIN_NOTIFY_MANAGER
+            scope = str(getattr(hook, "config_scope", "")).strip() or "unknown"
+            detail_selection = choose_item_interactively(
+                "Hook Details",
+                (
+                    f"Event: {selected_event}\n"
+                    f"Enabled: {'yes' if enabled else 'no'}\n"
+                    f"Builtin: {'yes' if builtin else 'no'}\n"
+                    f"Scope: {scope}\n"
+                    f"Command: {_hook_identity_label(hook)}"
+                ),
+                [
+                    ("toggle", "Disable hook" if enabled else "Enable hook"),
+                    ("back", "Back to event hooks"),
+                ],
+            )
+            if detail_selection != "toggle":
+                continue
+            setter = getattr(runtime, "set_hook_enabled", None)
+            if not callable(setter):
+                print("Hook toggling is unavailable in this session.")
+                return
+            print(setter(hook, not enabled))
+            getter = getattr(runtime, "configured_hooks", None)
+            hooks = list(getter() if callable(getter) else getattr(getattr(runtime, "settings", None), "hooks", []) or [])
+            hooks_by_event = {}
+            for refreshed_hook in hooks:
+                event = normalize_hook_event(str(getattr(refreshed_hook, "event", "")).strip())
+                hooks_by_event.setdefault(event, []).append(refreshed_hook)
+            continue
+
+
 def _handle_undo_command(runtime, session) -> None:
     undo_stack = list(getattr(session, "undo_stack", []) or [])
     if not undo_stack:
@@ -1316,6 +1411,12 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /providers]")
                         continue
                     _handle_providers_command(runtime)
+                    continue
+                if stripped == "/hooks":
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /hooks]")
+                        continue
+                    _handle_hooks_command(runtime)
                     continue
                 if stripped == "/tasks":
                     tasks = runtime.task_store.list_all()

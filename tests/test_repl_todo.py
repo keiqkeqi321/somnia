@@ -11,6 +11,7 @@ from open_somnia.cli.repl import (
     TurnQueueRunner,
     _ensure_accept_edits_for_command,
     _expand_skill_command,
+    _handle_hooks_command,
     _handle_scan_command,
     _handle_symbols_command,
     _is_exit_command,
@@ -479,6 +480,49 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertEqual(mock_choose.call_count, 5)
         mock_print.assert_not_called()
+
+    def test_hooks_command_browses_events_and_toggles_selected_hook(self) -> None:
+        builtin_hook = SimpleNamespace(
+            event="AssistantResponse",
+            enabled=True,
+            managed_by="somnia_builtin_notify",
+            command="python",
+            args=["notify_user.py"],
+            config_scope="global",
+        )
+        custom_hook = SimpleNamespace(
+            event="AssistantResponse",
+            enabled=False,
+            managed_by=None,
+            command="python",
+            args=["hooks/custom_notify.py"],
+            config_scope="workspace",
+        )
+        hooks_state = [builtin_hook, custom_hook]
+        toggles: list[tuple[object, bool]] = []
+
+        def configured_hooks():
+            return list(hooks_state)
+
+        def set_hook_enabled(hook, enabled: bool) -> str:
+            toggles.append((hook, enabled))
+            hook.enabled = enabled
+            return f"hook toggled to {enabled}"
+
+        runtime = SimpleNamespace(
+            configured_hooks=configured_hooks,
+            set_hook_enabled=set_hook_enabled,
+        )
+
+        with patch(
+            "open_somnia.cli.repl.choose_item_interactively",
+            side_effect=["AssistantResponse", "1", "toggle", "__back__", None],
+        ) as mock_choose, patch("builtins.print") as mock_print:
+            _handle_hooks_command(runtime)
+
+        self.assertEqual(mock_choose.call_count, 5)
+        self.assertEqual(toggles, [(builtin_hook, False)])
+        mock_print.assert_called_once_with("hook toggled to False")
 
     def test_request_interrupt_marks_runner_interrupting(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)

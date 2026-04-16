@@ -71,6 +71,9 @@ class HookSettings:
     on_error: str = "continue"
     enabled: bool = True
     managed_by: str | None = None
+    config_path: Path | None = None
+    config_scope: str | None = None
+    config_index: int | None = None
     matcher: HookMatcherSettings = field(default_factory=HookMatcherSettings)
 
 

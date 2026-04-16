@@ -331,7 +331,14 @@ def _build_mcp_server(root: Path, name: str, item: dict) -> MCPServerSettings:
     )
 
 
-def _build_hook(root: Path, item: dict) -> HookSettings:
+def _build_hook(
+    root: Path,
+    item: dict,
+    *,
+    config_path: Path | None = None,
+    config_scope: str | None = None,
+    config_index: int | None = None,
+) -> HookSettings:
     matcher_raw = item.get("matcher", {})
     if not isinstance(matcher_raw, dict):
         matcher_raw = {}
@@ -345,6 +352,9 @@ def _build_hook(root: Path, item: dict) -> HookSettings:
         on_error=str(item.get("on_error", "continue")).strip().lower() or "continue",
         enabled=bool(item.get("enabled", True)),
         managed_by=str(item.get("managed_by", "")).strip() or None,
+        config_path=config_path.resolve() if isinstance(config_path, Path) else None,
+        config_scope=str(config_scope).strip() or None,
+        config_index=config_index,
         matcher=HookMatcherSettings(
             tool_name=str(matcher_raw.get("tool_name", "")).strip() or None,
             actor=str(matcher_raw.get("actor", "")).strip() or None,
@@ -352,29 +362,32 @@ def _build_hook(root: Path, item: dict) -> HookSettings:
     )
 
 
-def _load_hooks(root: Path, raw: dict) -> list[HookSettings]:
+def _load_hooks(
+    root: Path,
+    raw: dict,
+    *,
+    config_path: Path | None = None,
+    config_scope: str | None = None,
+) -> list[HookSettings]:
     hooks_raw = raw.get("hooks", [])
     if not isinstance(hooks_raw, list):
         return []
     hooks: list[HookSettings] = []
-    for item in hooks_raw:
+    for index, item in enumerate(hooks_raw):
         if not isinstance(item, dict):
             continue
         if not str(item.get("event", "")).strip() or not str(item.get("command", "")).strip():
             continue
-        hooks.append(_build_hook(root, item))
-    custom_events = {
-        normalize_hook_event(hook.event)
-        for hook in hooks
-        if str(hook.event).strip() and hook.managed_by != BUILTIN_NOTIFY_MANAGER
-    }
-    filtered: list[HookSettings] = []
-    for hook in hooks:
-        event = normalize_hook_event(hook.event)
-        if hook.managed_by == BUILTIN_NOTIFY_MANAGER and event in custom_events:
-            continue
-        filtered.append(hook)
-    return filtered
+        hooks.append(
+            _build_hook(
+                root,
+                item,
+                config_path=config_path,
+                config_scope=config_scope,
+                config_index=index,
+            )
+        )
+    return hooks
 
 
 def _builtin_notify_source_path() -> Path:
@@ -415,11 +428,49 @@ def _strip_builtin_hook_block(lines: list[str]) -> list[str]:
     return stripped
 
 
-def _render_builtin_hook_block(script_path: Path, events: list[str]) -> list[str]:
+def _strip_managed_hook_entries(lines: list[str], *, managed_by: str) -> list[str]:
+    stripped: list[str] = []
+    block: list[str] = []
+    in_hook_block = False
+
+    def flush_hook_block() -> None:
+        nonlocal block, in_hook_block
+        if not block:
+            return
+        managed = any(line.strip() == f'managed_by = "{managed_by}"' for line in block)
+        if not managed:
+            stripped.extend(block)
+        block = []
+        in_hook_block = False
+
+    for line in lines:
+        marker = line.strip()
+        if marker == "[[hooks]]":
+            flush_hook_block()
+            block = [line]
+            in_hook_block = True
+            continue
+        if in_hook_block and marker.startswith("[") and marker.endswith("]") and marker != "[hooks.matcher]":
+            flush_hook_block()
+            stripped.append(line)
+            continue
+        if in_hook_block:
+            block.append(line)
+            continue
+        stripped.append(line)
+    flush_hook_block()
+    while stripped and not stripped[-1].strip():
+        stripped.pop()
+    return stripped
+
+
+def _render_builtin_hook_block(script_path: Path, hooks: list[dict[str, object]]) -> list[str]:
     block = [BUILTIN_HOOKS_BEGIN]
     command = str(Path(sys.executable).resolve())
     script_value = str(script_path.resolve())
-    for event in events:
+    for hook in hooks:
+        event = normalize_hook_event(str(hook.get("event", "")).strip())
+        enabled = bool(hook.get("enabled", True))
         block.extend(
             [
                 "[[hooks]]",
@@ -429,6 +480,7 @@ def _render_builtin_hook_block(script_path: Path, events: list[str]) -> list[str
                 'managed_by = "somnia_builtin_notify"',
                 "timeout_seconds = 10",
                 'on_error = "continue"',
+                f"enabled = {'true' if enabled else 'false'}",
                 "",
             ]
         )
@@ -438,11 +490,11 @@ def _render_builtin_hook_block(script_path: Path, events: list[str]) -> list[str
     return block
 
 
-def _configured_hook_events(raw: dict) -> set[str]:
+def _builtin_notify_items(raw: dict) -> dict[str, dict[str, object]]:
     hooks_raw = raw.get("hooks", [])
     if not isinstance(hooks_raw, list):
-        return set()
-    events: set[str] = set()
+        return {}
+    items: dict[str, dict[str, object]] = {}
     for item in hooks_raw:
         if not isinstance(item, dict):
             continue
@@ -450,36 +502,81 @@ def _configured_hook_events(raw: dict) -> set[str]:
         if not event:
             continue
         if str(item.get("managed_by", "")).strip() == BUILTIN_NOTIFY_MANAGER:
-            continue
-        events.add(normalize_hook_event(event))
-    return events
+            normalized = normalize_hook_event(event)
+            items[normalized] = {
+                "event": normalized,
+                "enabled": bool(item.get("enabled", True)),
+            }
+    return items
 
 
 def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> None:
     config_path = config_path or global_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
-    base_lines = _strip_builtin_hook_block(lines)
-    base_text = "\n".join(base_lines).strip()
-    raw = tomllib.loads(base_text) if base_text else {}
-    existing_events = _configured_hook_events(raw)
-    missing_events = [
-        event
+    base_lines = _strip_managed_hook_entries(_strip_builtin_hook_block(lines), managed_by=BUILTIN_NOTIFY_MANAGER)
+    raw = _read_toml(config_path)
+    existing_items = _builtin_notify_items(raw)
+    target_script = _install_builtin_notify_assets()
+    desired_hooks = [
+        existing_items.get(event, {"event": event, "enabled": True})
         for event in ("AssistantResponse", "UserChoiceRequested")
-        if normalize_hook_event(event) not in existing_events
     ]
-    if not missing_events and base_lines == lines:
-        return
     updated = list(base_lines)
-    if missing_events:
-        target_script = _install_builtin_notify_assets()
-        if updated and updated[-1].strip():
-            updated.append("")
-        updated.extend(_render_builtin_hook_block(target_script, missing_events))
-    if updated:
-        config_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
-    elif config_path.exists():
-        config_path.unlink()
+    if updated and updated[-1].strip():
+        updated.append("")
+    updated.extend(_render_builtin_hook_block(target_script, desired_hooks))
+    if updated == lines:
+        return
+    config_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def _find_hook_block_bounds(lines: list[str], hook_index: int) -> tuple[int | None, int | None]:
+    current_index = -1
+    start: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[[hooks]]":
+            current_index += 1
+            if current_index == hook_index:
+                start = index
+                continue
+            if start is not None:
+                return start, index
+        if start is not None and stripped.startswith("[") and stripped.endswith("]") and not stripped.startswith("[hooks."):
+            return start, index
+    if start is None:
+        return None, None
+    return start, len(lines)
+
+
+def _upsert_hook_boolean(lines: list[str], hook_index: int, key: str, value: bool) -> None:
+    start, end = _find_hook_block_bounds(lines, hook_index)
+    if start is None or end is None:
+        raise ValueError(f"Hook entry #{hook_index} was not found in config.")
+    assignment = f"{key} = {'true' if value else 'false'}"
+    insert_at = end
+    for index in range(start + 1, end):
+        stripped = lines[index].strip()
+        if stripped.startswith(f"{key} ="):
+            lines[index] = assignment
+            return
+        if stripped.startswith("[hooks."):
+            insert_at = index
+            break
+    lines.insert(insert_at, assignment)
+
+
+def persist_hook_enabled(hook: HookSettings, enabled: bool) -> Path:
+    config_path = getattr(hook, "config_path", None)
+    config_index = getattr(hook, "config_index", None)
+    if not isinstance(config_path, Path) or config_index is None:
+        raise ValueError("Hook origin metadata is missing; cannot persist enabled state.")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    _upsert_hook_boolean(lines, int(config_index), "enabled", enabled)
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config_path
 
 
 def _load_mcp_servers(root: Path, raw: dict) -> list[MCPServerSettings]:
@@ -706,7 +803,10 @@ def load_settings(
     model_override: str | None = None,
 ) -> AppSettings:
     root = Path(workspace_root or Path.cwd()).resolve()
-    raw = load_raw_config(root)
+    _ensure_global_builtin_notify_hooks()
+    global_raw = _read_toml(global_config_path())
+    workspace_raw = _read_toml(workspace_config_path(root))
+    raw = _merge_config(global_raw, workspace_raw)
     agent_raw = raw.get("agent", {})
     agent = AgentSettings(
         name=str(agent_raw.get("name", DEFAULT_AGENT_NAME)).strip() or DEFAULT_AGENT_NAME,
@@ -737,7 +837,8 @@ def load_settings(
     )
 
     mcp_servers = _load_mcp_servers(root, raw)
-    hooks = _load_hooks(root, raw)
+    hooks = _load_hooks(root, global_raw, config_path=global_config_path(), config_scope="global")
+    hooks.extend(_load_hooks(root, workspace_raw, config_path=workspace_config_path(root), config_scope="workspace"))
 
     settings = AppSettings(
         workspace_root=root,

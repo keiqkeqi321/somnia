@@ -103,7 +103,7 @@ class HookSystemTests(unittest.TestCase):
         self.assertIn("AssistantResponse", events)
         self.assertIn("UserChoiceRequested", events)
 
-    def test_load_settings_does_not_duplicate_builtin_event_when_user_configures_same_event(self) -> None:
+    def test_load_settings_keeps_builtin_notification_when_user_configures_same_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
@@ -130,9 +130,52 @@ class HookSystemTests(unittest.TestCase):
                 settings = load_settings(root)
 
         assistant_hooks = [hook for hook in settings.hooks if hook.event == "AssistantResponse"]
-        self.assertEqual(len(assistant_hooks), 1)
-        self.assertEqual(assistant_hooks[0].args, ["hooks/custom_notify.py"])
+        self.assertEqual(len(assistant_hooks), 2)
+        self.assertEqual(
+            [hook.args for hook in assistant_hooks if hook.managed_by != "somnia_builtin_notify"],
+            [["hooks/custom_notify.py"]],
+        )
+        self.assertEqual(len([hook for hook in assistant_hooks if hook.managed_by == "somnia_builtin_notify"]), 1)
         self.assertIn("UserChoiceRequested", [hook.event for hook in settings.hooks])
+
+    def test_load_settings_preserves_disabled_builtin_notification_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_global_config(
+                home,
+                """
+                [[hooks]]
+                event = "AssistantResponse"
+                command = "python"
+                args = ["hooks/notify_user.py"]
+                managed_by = "somnia_builtin_notify"
+                enabled = false
+                """,
+            )
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "sk-test"
+                base_url = "https://api.openai.example/v1"
+                """,
+            )
+
+            with patch("open_somnia.config.settings.Path.home", return_value=home):
+                settings = load_settings(root)
+                reloaded = load_settings(root)
+
+        assistant_hooks = [hook for hook in settings.hooks if hook.event == "AssistantResponse"]
+        self.assertEqual(len(assistant_hooks), 1)
+        self.assertEqual(assistant_hooks[0].managed_by, "somnia_builtin_notify")
+        self.assertFalse(assistant_hooks[0].enabled)
+        self.assertFalse(next(hook for hook in reloaded.hooks if hook.event == "AssistantResponse").enabled)
 
     def test_session_start_hook_runs_when_creating_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -485,5 +528,10 @@ class HookSystemTests(unittest.TestCase):
 
     def _write_workspace_config(self, root: Path, content: str) -> None:
         config_dir = root / ".open_somnia"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "open_somnia.toml").write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
+
+    def _write_global_config(self, home: Path, content: str) -> None:
+        config_dir = home / ".open_somnia"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "open_somnia.toml").write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
