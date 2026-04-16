@@ -24,7 +24,7 @@ from prompt_toolkit.shortcuts.dialogs import input_dialog
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 
-COMMAND_SPECS = [
+VISIBLE_COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory"),
     ("/symbols", "Find symbols and inspect matching source locations"),
     ("/model", "Choose the active provider and model"),
@@ -38,14 +38,19 @@ COMMAND_SPECS = [
     ("/skills", "Choose a skill to apply to the next prompt"),
     ("/tasks", "Show persistent tasks"),
     ("/team", "Show teammate roster and states"),
-    ("/teamlog", "Show the full message and tool history for a teammate"),
-    ("/inbox", "Read the lead inbox"),
     ("/mcp", "Browse configured MCP servers and tools"),
-    ("/toollog", "Show recent tool logs or expand one by id"),
     ("/bg", "Show background jobs"),
     ("/help", "Show available REPL commands"),
     ("/exit", "Exit chat mode"),
 ]
+
+HIDDEN_COMMAND_SPECS = [
+    ("/teamlog", "Show the full message and tool history for a teammate"),
+    ("/inbox", "Read the lead inbox"),
+    ("/toollog", "Show recent tool logs or expand one by id"),
+]
+
+COMMAND_SPECS = VISIBLE_COMMAND_SPECS + HIDDEN_COMMAND_SPECS
 
 IGNORED_DIR_NAMES = {
     ".git",
@@ -132,7 +137,7 @@ class OpenAgentCompleter(Completer):
             yield from self._skill_command_completions(query)
             return
         lowered = query.lower()
-        for command, description in COMMAND_SPECS:
+        for command, description in VISIBLE_COMMAND_SPECS:
             command_name = command[1:]
             haystack = f"{command_name} {description}".lower()
             if lowered and lowered not in haystack:
