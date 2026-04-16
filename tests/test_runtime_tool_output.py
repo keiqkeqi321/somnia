@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from open_somnia.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
 from open_somnia.providers.base import ProviderError
+from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.agent import OpenAgentRuntime, TurnInterrupted
 from open_somnia.runtime.compact import (
@@ -1696,6 +1697,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_complete_retries_retryable_provider_error(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(provider=SimpleNamespace(max_tokens=1024))
+        runtime.PROVIDER_RETRY_DELAY_SECONDS = 0
         attempts: list[str] = []
 
         class _Provider:
@@ -1709,6 +1711,26 @@ class RuntimeToolOutputTests(unittest.TestCase):
             OpenAgentRuntime.complete(runtime, "system", [], [], text_callback=None)
 
         self.assertEqual(attempts, ["called", "called", "called"])
+
+    def test_complete_waits_between_retryable_provider_attempts(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(provider=SimpleNamespace(max_tokens=1024))
+        attempts: list[str] = []
+        waits: list[str] = []
+
+        class _Provider:
+            def complete(self, **kwargs):
+                attempts.append("called")
+                raise ProviderError("temporary timeout", retryable=True)
+
+        runtime.provider = _Provider()
+        runtime._wait_before_provider_retry = lambda should_interrupt=None: waits.append("wait")
+
+        with self.assertRaisesRegex(RuntimeError, "temporary timeout"):
+            OpenAgentRuntime.complete(runtime, "system", [], [], text_callback=None)
+
+        self.assertEqual(attempts, ["called", "called", "called"])
+        self.assertEqual(waits, ["wait", "wait"])
 
     def test_openai_provider_marks_overload_error_as_non_retryable(self) -> None:
         provider = OpenAIProvider(
@@ -1769,6 +1791,72 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertFalse(context.exception.retryable)
         self.assertIn("Upstream access forbidden", str(context.exception))
+
+    def test_openai_provider_wraps_generic_exception_as_retryable_provider_error(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="qwen3.5-plus",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("temporary upstream network error")):
+            with self.assertRaises(ProviderError) as context:
+                provider.complete("system", [], [], max_tokens=1024)
+
+        self.assertTrue(context.exception.retryable)
+        self.assertIn("OpenAI request failed", str(context.exception))
+        self.assertIn("temporary upstream network error", str(context.exception))
+
+    def test_anthropic_provider_wraps_transient_exception_as_retryable_provider_error(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="glm-5",
+                api_key="test-key",
+                base_url="https://example.com/anthropic",
+                timeout_seconds=30,
+            )
+        )
+
+        class TemporaryNetworkError(Exception):
+            status_code = 502
+
+        provider.client = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: (_ for _ in ()).throw(TemporaryNetworkError("网络错误，错误id：req-1"))
+            )
+        )
+
+        with self.assertRaises(ProviderError) as context:
+            provider.complete("system", [{"role": "user", "content": "hello"}], [], max_tokens=1024)
+
+        self.assertTrue(context.exception.retryable)
+        self.assertIn("Anthropic request failed", str(context.exception))
+        self.assertIn("网络错误", str(context.exception))
+
+    def test_complete_retries_wrapped_anthropic_provider_exception(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(provider=SimpleNamespace(max_tokens=1024))
+        runtime.PROVIDER_RETRY_DELAY_SECONDS = 0
+        attempts: list[str] = []
+
+        class _AnthropicLikeProvider:
+            def complete(self, **kwargs):
+                attempts.append("called")
+                raise ProviderError("Anthropic request failed: 网络错误", retryable=True)
+
+        runtime.provider = _AnthropicLikeProvider()
+
+        with self.assertRaisesRegex(RuntimeError, "Anthropic request failed: 网络错误"):
+            OpenAgentRuntime.complete(runtime, "system", [], [], text_callback=None)
+
+        self.assertEqual(attempts, ["called", "called", "called"])
 
     def test_complete_interrupts_promptly_while_provider_call_is_blocked(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

@@ -5,7 +5,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from open_somnia.config.models import ProviderSettings
-from open_somnia.providers.base import LLMProvider, StopChecker, TextCallback
+from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 
@@ -42,6 +42,66 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                 )
         converted.append({"role": role, "content": blocks})
     return converted
+
+
+def _anthropic_exception_retryable(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in {408, 409, 429}:
+            return True
+        if status_code >= 500:
+            return True
+        if 400 <= status_code < 500:
+            return False
+
+    type_name = type(exc).__name__.lower()
+    message = str(exc).strip().lower()
+    retryable_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "connect",
+        "temporar",
+        "temporary",
+        "network",
+        "service unavailable",
+        "internal server",
+        "overloaded",
+        "rate limit",
+        "apiconnectionerror",
+        "apitimeouterror",
+        "internalservererror",
+    )
+    non_retryable_markers = (
+        "authentication",
+        "auth",
+        "permission",
+        "forbidden",
+        "unauthorized",
+        "invalid",
+        "bad request",
+        "not found",
+        "unprocessable",
+        "ratelimiterror",
+        "permissiondeniederror",
+        "authenticationerror",
+        "badrequesterror",
+        "notfounderror",
+    )
+    if any(marker in type_name or marker in message for marker in non_retryable_markers):
+        return False
+    if any(marker in type_name or marker in message for marker in retryable_markers):
+        return True
+    return True
+
+
+def _wrap_anthropic_exception(exc: Exception) -> ProviderError:
+    if isinstance(exc, ProviderError):
+        return exc
+    return ProviderError(
+        f"Anthropic request failed: {exc}",
+        retryable=_anthropic_exception_retryable(exc),
+    )
 
 
 class AnthropicProvider(LLMProvider):
@@ -121,20 +181,25 @@ class AnthropicProvider(LLMProvider):
             stream=text_callback is not None or stop_checker is not None,
         )
         request_kwargs.pop("stream", None)
-        if text_callback is None and stop_checker is None:
-            response = self.client.messages.create(**request_kwargs)
-        else:
-            with self.client.messages.stream(**request_kwargs) as stream:
-                if stop_checker is not None and stop_checker():
-                    raise TurnInterrupted("Interrupted by user.")
-                for text in stream.text_stream:
+        try:
+            if text_callback is None and stop_checker is None:
+                response = self.client.messages.create(**request_kwargs)
+            else:
+                with self.client.messages.stream(**request_kwargs) as stream:
                     if stop_checker is not None and stop_checker():
                         raise TurnInterrupted("Interrupted by user.")
-                    if text_callback is not None:
-                        text_callback(text)
-                if stop_checker is not None and stop_checker():
-                    raise TurnInterrupted("Interrupted by user.")
-                response = stream.get_final_message()
+                    for text in stream.text_stream:
+                        if stop_checker is not None and stop_checker():
+                            raise TurnInterrupted("Interrupted by user.")
+                        if text_callback is not None:
+                            text_callback(text)
+                    if stop_checker is not None and stop_checker():
+                        raise TurnInterrupted("Interrupted by user.")
+                    response = stream.get_final_message()
+        except TurnInterrupted:
+            raise
+        except Exception as exc:
+            raise _wrap_anthropic_exception(exc) from exc
         text_blocks: list[str] = []
         tool_calls: list[ToolCall] = []
         for block in response.content:

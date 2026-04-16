@@ -89,6 +89,7 @@ class OpenAgentRuntime:
     TURN_BOUNDARY_TOOL_NAMES = {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
+    PROVIDER_RETRY_DELAY_SECONDS = 2.0
     JANITOR_REARM_RATIO = 0.45
     JANITOR_FORCE_RATIO = 0.70
     JANITOR_MIN_TOKEN_DELTA = 8_000
@@ -1643,6 +1644,8 @@ class OpenAgentRuntime:
                 last_error = exc
                 if not getattr(exc, "retryable", True):
                     break
+                if attempt < 3:
+                    self._wait_before_provider_retry(should_interrupt)
             except Exception as exc:
                 last_error = exc
                 break
@@ -1651,6 +1654,18 @@ class OpenAgentRuntime:
         if attempts <= 1:
             raise RuntimeError(f"Provider call failed: {last_error}")
         raise RuntimeError(f"Provider call failed after {attempts} attempts: {last_error}")
+
+    def _wait_before_provider_retry(self, should_interrupt=None) -> None:
+        delay_seconds = max(0.0, float(getattr(self, "PROVIDER_RETRY_DELAY_SECONDS", 0.0) or 0.0))
+        if delay_seconds <= 0:
+            return
+        deadline = time.monotonic() + delay_seconds
+        while True:
+            self._raise_if_interrupted(should_interrupt)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(self.PROVIDER_POLL_INTERVAL_SECONDS, remaining))
 
     def _complete_with_interrupt_polling(
         self,

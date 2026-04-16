@@ -155,6 +155,59 @@ def _is_forbidden_like_error(status_code: int, details: str) -> bool:
     return any(marker in message or marker in detail_text for marker in forbidden_markers)
 
 
+def _openai_exception_retryable(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in {408, 409, 429}:
+            return True
+        if status_code >= 500:
+            return True
+        if 400 <= status_code < 500:
+            return False
+
+    type_name = type(exc).__name__.lower()
+    message = str(exc).strip().lower()
+    retryable_markers = (
+        "timeout",
+        "timed out",
+        "connection",
+        "connect",
+        "temporar",
+        "temporary",
+        "network",
+        "service unavailable",
+        "internal server",
+        "overloaded",
+        "rate limit",
+        "server disconnected",
+    )
+    non_retryable_markers = (
+        "authentication",
+        "auth",
+        "permission",
+        "forbidden",
+        "unauthorized",
+        "invalid",
+        "bad request",
+        "not found",
+        "unprocessable",
+    )
+    if any(marker in type_name or marker in message for marker in non_retryable_markers):
+        return False
+    if any(marker in type_name or marker in message for marker in retryable_markers):
+        return True
+    return True
+
+
+def _wrap_openai_exception(exc: Exception) -> ProviderError:
+    if isinstance(exc, ProviderError):
+        return exc
+    return ProviderError(
+        f"OpenAI request failed: {exc}",
+        retryable=_openai_exception_retryable(exc),
+    )
+
+
 class OpenAIProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         self.settings = settings
@@ -258,6 +311,8 @@ class OpenAIProvider(LLMProvider):
         except urllib.error.URLError as exc:
             retryable = isinstance(getattr(exc, "reason", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()
             raise ProviderError(f"OpenAI request failed: {exc}", retryable=retryable) from exc
+        except Exception as exc:
+            raise _wrap_openai_exception(exc) from exc
 
         choice = body["choices"][0]
         message = choice["message"]
