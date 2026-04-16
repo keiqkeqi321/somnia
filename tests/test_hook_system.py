@@ -51,6 +51,7 @@ class HookSystemTests(unittest.TestCase):
         events = [hook.event for hook in settings.hooks]
         self.assertIn("AssistantResponse", events)
         self.assertIn("UserChoiceRequested", events)
+        self.assertIn("TurnFailed", events)
         builtin = next(hook for hook in settings.hooks if hook.event == "AssistantResponse")
         self.assertEqual(Path(builtin.command).resolve(), Path(sys.executable).resolve())
         self.assertEqual(
@@ -92,7 +93,7 @@ class HookSystemTests(unittest.TestCase):
             with patch("open_somnia.config.settings.Path.home", return_value=home):
                 settings = load_settings(root)
 
-        self.assertEqual(len(settings.hooks), 3)
+        self.assertEqual(len(settings.hooks), 4)
         hook = next(hook for hook in settings.hooks if hook.event == "PreToolUse")
         self.assertEqual(hook.event, "PreToolUse")
         self.assertEqual(hook.command, "python")
@@ -103,6 +104,7 @@ class HookSystemTests(unittest.TestCase):
         events = [hook.event for hook in settings.hooks]
         self.assertIn("AssistantResponse", events)
         self.assertIn("UserChoiceRequested", events)
+        self.assertIn("TurnFailed", events)
 
     def test_load_settings_rejects_background_pre_tool_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -750,6 +752,43 @@ class HookSystemTests(unittest.TestCase):
         self.assertEqual(payload["choice_payload"]["current_mode"], "plan")
         self.assertEqual(payload["choice_payload"]["target_mode"], "accept_edits")
         self.assertEqual(payload["options"], ["accept_edits", "plan"])
+
+    def test_turn_failed_hook_runs_when_runtime_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_path = root / "turn_failed.json"
+            script_path = self._write_script(
+                root / "record_turn_failed.py",
+                """
+                import json
+                import pathlib
+                import sys
+
+                payload = json.load(sys.stdin)
+                pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="TurnFailed",
+                        command=sys.executable,
+                        args=[str(script_path), str(output_path)],
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.complete = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider call failed"))
+            session = runtime.create_session()
+
+            with self.assertRaisesRegex(RuntimeError, "provider call failed"):
+                runtime.run_turn(session, "Say hi")
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["event"], "TurnFailed")
+        self.assertEqual(payload["error_type"], "RuntimeError")
+        self.assertEqual(payload["error_message"], "provider call failed")
 
     def _make_settings(self, root: Path, *, hooks: list[HookSettings] | None = None) -> AppSettings:
         data_dir = root / ".open_somnia"

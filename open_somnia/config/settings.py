@@ -546,7 +546,7 @@ def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> N
     target_script = _install_builtin_notify_assets()
     desired_hooks = [
         existing_items.get(event, {"event": event, "enabled": True})
-        for event in ("AssistantResponse", "UserChoiceRequested")
+        for event in ("AssistantResponse", "UserChoiceRequested", "TurnFailed")
     ]
     updated = list(base_lines)
     if updated and updated[-1].strip():

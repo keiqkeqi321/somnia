@@ -59,6 +59,15 @@ def build_notification(payload: dict[str, object]) -> tuple[str, str]:
                 body += f" {reason}"
             return stable_preview(APP_NAME, limit=TITLE_LIMIT), stable_preview(body, limit=BODY_LIMIT)
         return stable_preview(APP_NAME, limit=TITLE_LIMIT), "Action required."
+    if event == "TurnFailed":
+        error_type = stable_preview(str(payload.get("error_type", "")).strip(), limit=48)
+        error_message = stable_preview(str(payload.get("error_message", "")).strip(), limit=160)
+        body = "Turn failed."
+        if error_type:
+            body += f" {error_type}."
+        if error_message:
+            body += f" {error_message}"
+        return stable_preview(APP_NAME, limit=TITLE_LIMIT), stable_preview(body, limit=BODY_LIMIT)
     return "", ""
 
 

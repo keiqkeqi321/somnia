@@ -13,6 +13,7 @@ HOOK_EVENTS = frozenset(
         "PostToolUse",
         "AssistantResponse",
         "UserChoiceRequested",
+        "TurnFailed",
     }
 )
 
@@ -25,6 +26,7 @@ def normalize_hook_event(value: str) -> str:
         "posttooluse": "PostToolUse",
         "assistantresponse": "AssistantResponse",
         "userchoicerequested": "UserChoiceRequested",
+        "turnfailed": "TurnFailed",
     }
     event = mapping.get(normalized)
     if event is None:
@@ -55,6 +57,8 @@ class HookContext:
     choice_type: str | None = None
     choice_payload: dict[str, Any] | None = None
     options: list[str] | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -86,6 +90,10 @@ class HookContext:
             payload["choice_payload"] = self.choice_payload
         if self.options is not None:
             payload["options"] = self.options
+        if self.error_type is not None:
+            payload["error_type"] = self.error_type
+        if self.error_message is not None:
+            payload["error_message"] = self.error_message
         return payload
 
 

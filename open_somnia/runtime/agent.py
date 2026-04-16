@@ -2084,6 +2084,18 @@ class OpenAgentRuntime:
             session.last_turn_file_changes = []
             self.session_manager.save(session)
             raise
+        except Exception as exc:
+            try:
+                self._hook_manager().on_turn_failed(
+                    session=session,
+                    trace_id=f"{session.id}-{getattr(session, 'latest_turn_id', None) or 'failed'}",
+                    actor="lead",
+                    execution_mode=getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
+                    error=exc,
+                )
+            except Exception:
+                pass
+            raise
 
     def doctor(self) -> str:
         lines = [

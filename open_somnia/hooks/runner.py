@@ -155,6 +155,12 @@ class HookRunner:
         env.update(hook.env)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
+        source_root = Path(__file__).resolve().parents[2]
+        pythonpath_parts = [str(source_root)]
+        existing_pythonpath = env.get("PYTHONPATH", "").strip()
+        if existing_pythonpath:
+            pythonpath_parts.append(existing_pythonpath)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         cwd = hook.cwd or self.workspace_root
         return command, payload, env, cwd
 

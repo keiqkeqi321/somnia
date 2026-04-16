@@ -144,6 +144,31 @@ class HookManager:
         )
         self._run_event(context)
 
+    def on_turn_failed(
+        self,
+        *,
+        session: Any | None = None,
+        trace_id: str | None = None,
+        actor: str = "lead",
+        execution_mode: str | None = None,
+        error: Exception,
+    ) -> None:
+        context_refs = self._context_refs(getattr(session, "id", None))
+        context = HookContext(
+            event="TurnFailed",
+            session_id=getattr(session, "id", None),
+            trace_id=trace_id,
+            actor=actor,
+            execution_mode=execution_mode,
+            workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
+            error_type=type(error).__name__,
+            error_message=str(error),
+        )
+        self._run_event(context)
+
     def _run_pre_tool_use(self, context: HookContext) -> HookDecision:
         current_input = dict(context.tool_input or {})
         for hook in self._matching_hooks(context.event, tool_name=context.tool_name, actor=context.actor):
