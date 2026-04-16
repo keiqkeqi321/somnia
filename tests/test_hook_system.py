@@ -177,6 +177,55 @@ class HookSystemTests(unittest.TestCase):
         self.assertFalse(assistant_hooks[0].enabled)
         self.assertFalse(next(hook for hook in reloaded.hooks if hook.event == "AssistantResponse").enabled)
 
+    def test_load_settings_workspace_managed_hook_overrides_global_managed_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_global_config(
+                home,
+                """
+                [[hooks]]
+                event = "AssistantResponse"
+                command = "python"
+                args = ["global_notify.py"]
+                managed_by = "vendor_notify"
+                enabled = true
+                """,
+            )
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "sk-test"
+                base_url = "https://api.openai.example/v1"
+
+                [[hooks]]
+                event = "AssistantResponse"
+                command = "python"
+                args = ["workspace_notify.py"]
+                managed_by = "vendor_notify"
+                enabled = false
+                """,
+            )
+
+            with patch("open_somnia.config.settings.Path.home", return_value=home):
+                settings = load_settings(root)
+
+        managed_hooks = [
+            hook
+            for hook in settings.hooks
+            if hook.event == "AssistantResponse" and hook.managed_by == "vendor_notify"
+        ]
+        self.assertEqual(len(managed_hooks), 1)
+        self.assertEqual(managed_hooks[0].args, ["workspace_notify.py"])
+        self.assertFalse(managed_hooks[0].enabled)
+        self.assertEqual(managed_hooks[0].config_scope, "workspace")
+
     def test_session_start_hook_runs_when_creating_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

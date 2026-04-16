@@ -390,6 +390,22 @@ def _load_hooks(
     return hooks
 
 
+def _merge_hooks(global_hooks: list[HookSettings], workspace_hooks: list[HookSettings]) -> list[HookSettings]:
+    workspace_override_keys = {
+        (normalize_hook_event(hook.event), hook.managed_by)
+        for hook in workspace_hooks
+        if str(hook.managed_by or "").strip()
+    }
+    merged: list[HookSettings] = []
+    for hook in global_hooks:
+        key = (normalize_hook_event(hook.event), hook.managed_by)
+        if key in workspace_override_keys:
+            continue
+        merged.append(hook)
+    merged.extend(workspace_hooks)
+    return merged
+
+
 def _builtin_notify_source_path() -> Path:
     return Path(__file__).resolve().parent.parent / "hooks" / "notify_user.py"
 
@@ -837,8 +853,10 @@ def load_settings(
     )
 
     mcp_servers = _load_mcp_servers(root, raw)
-    hooks = _load_hooks(root, global_raw, config_path=global_config_path(), config_scope="global")
-    hooks.extend(_load_hooks(root, workspace_raw, config_path=workspace_config_path(root), config_scope="workspace"))
+    hooks = _merge_hooks(
+        _load_hooks(root, global_raw, config_path=global_config_path(), config_scope="global"),
+        _load_hooks(root, workspace_raw, config_path=workspace_config_path(root), config_scope="workspace"),
+    )
 
     settings = AppSettings(
         workspace_root=root,
