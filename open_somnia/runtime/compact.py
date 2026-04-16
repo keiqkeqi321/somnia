@@ -8,7 +8,7 @@ from typing import Any
 from open_somnia.providers.base import ProviderError
 
 
-SEMANTIC_JANITOR_TRIGGER_RATIO = 0.50
+SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
 AUTO_COMPACT_TRIGGER_RATIO = 0.82
 
 

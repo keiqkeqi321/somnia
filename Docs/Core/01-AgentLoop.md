@@ -28,6 +28,11 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
         │
         ▼
 ┌─────────────────────────────┐
+│  0. turn-boundary janitor   │  只在用户发问后检查
+│     - 用户消息已入列         │  - 必要时语义脱水
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
 │  1. build_system_prompt     │  动态构建系统提示
 │     - 角色/名称注入          │  - 工具 schema 注入
 │     - 执行模式指引           │  - 环境指引
@@ -36,7 +41,7 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
                ▼
 ┌─────────────────────────────┐
 │  2. _messages_for_model     │  构建 payload
-│     - deep clone messages   │  - 注入语义治理(janitor)
+│     - deep clone messages   │  - strip tool metadata
 │     - 计算 token 使用量      │
 └──────────────┬──────────────┘
                ▼
@@ -65,7 +70,6 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
                              ▼
                   ┌─────────────────────┐
                   │  6. 上下文治理检查   │
-                  │  - semantic janitor │  (60% 阈值)
                   │  - auto compact     │  (82% 阈值)
                   └──────────┬──────────┘
                              ▼
@@ -95,8 +99,9 @@ turn = self.provider.complete(
 
 1. **Deep clone** 原始消息
 2. **Strip metadata**（移除 `raw_output` / `log_id`）
-3. **Semantic Janitor**（当使用率 >= 60%）：对历史工具结果执行语义脱水
-4. **返回最终 payload**
+3. **返回最终 payload**
+
+`_messages_for_model()` 现在是**无副作用**的。自动 `Semantic Janitor` 不在这里执行，而是在新 user message 入列后的 turn boundary 先完成。
 
 ### 权限检查
 
@@ -140,12 +145,12 @@ session.undo_stack.append({
 
 ## 上下文治理集成
 
-在 Agent Loop 中，上下文治理是自动触发的：
+上下文治理的触发点现在拆成两层：
 
 | 触发条件 | 动作 | 阈值 |
 |----------|------|------|
-| `usage_ratio >= 0.60` | Semantic Janitor | 语义脱水 |
-| `usage_ratio >= 0.82` | Auto Compact | 整体摘要压缩 |
+| 新 user message 入列后，且 `usage_ratio >= 0.60` | Semantic Janitor | 语义脱水 |
+| Agent Loop 内，且 `usage_ratio >= 0.82` | Auto Compact | 整体摘要压缩 |
 
 ---
 

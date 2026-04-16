@@ -88,7 +88,7 @@ class OpenAgentRuntime:
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
     JANITOR_REARM_RATIO = 0.45
-    JANITOR_FORCE_RATIO = 0.60
+    JANITOR_FORCE_RATIO = 0.70
     JANITOR_MIN_TOKEN_DELTA = 8_000
     JANITOR_MIN_MESSAGE_DELTA = 6
     MANUAL_JANITOR_MIN_RATIO = 0.20
@@ -96,8 +96,8 @@ class OpenAgentRuntime:
     JANITOR_MIN_USAGE_DELTA_TOKENS = 1_000
     JANITOR_MIN_PRUNABLE_CANDIDATES = 1
     JANITOR_PRUNABLE_OUTPUT_CHARS = 240
-    JANITOR_LOW_YIELD_RATIO = 0.05
-    JANITOR_LOW_YIELD_MAX_AUTO_RUNS = 2
+    JANITOR_LOW_YIELD_RATIO = 0.10
+    JANITOR_LOW_YIELD_MAX_AUTO_RUNS = 1
     JANITOR_PREEMPTIVE_COMPACT_GAP = 0.02
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
@@ -664,6 +664,75 @@ class OpenAgentRuntime:
     def _count_prunable_janitor_candidates(self, messages: list[dict[str, Any]]) -> int:
         return sum(1 for candidate in self._janitor_candidates(messages) if candidate.output_length >= self.JANITOR_PRUNABLE_OUTPUT_CHARS)
 
+    def _run_automatic_context_janitor(
+        self,
+        session: AgentSession,
+        *,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+    ) -> ContextWindowUsage:
+        payload_cache = getattr(self, "_payload_message_cache", None)
+        if payload_cache is None:
+            payload_cache = {}
+            self._payload_message_cache = payload_cache
+        usage_cache = getattr(self, "_context_usage_cache", None)
+        if usage_cache is None:
+            usage_cache = {}
+            self._context_usage_cache = usage_cache
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list):
+            messages = []
+        try:
+            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
+        except TypeError:
+            system_prompt = self.build_system_prompt()
+        tools = self._context_usage_tools(actor)
+        cache_key = self._payload_message_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        payload_messages = build_payload_messages(messages)
+        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        message_count = len(messages)
+        final_usage = baseline_usage
+        if self._should_run_context_janitor(
+            baseline_usage,
+            session=session,
+            message_count=message_count,
+            messages=messages,
+        ):
+            decisions = self._analyze_context_relevance(
+                session=session,
+                messages=messages,
+                system_prompt=system_prompt,
+                tools=tools,
+            )
+            if decisions:
+                changed_results = sum(1 for decision in decisions if decision.state != "original")
+                persist_semantic_compression(messages, decisions)
+                payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+                final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+                if changed_results > 0:
+                    self._note_context_governance(
+                        session.id,
+                        "janitor",
+                        f"janitor reduced {changed_results} tool result(s)",
+                    )
+            self._record_context_janitor_run(
+                session,
+                baseline_usage,
+                final_usage,
+                message_count=message_count,
+                automatic=True,
+            )
+        payload_cache[session.id] = (cache_key, payload_messages)
+        usage_cache[session.id] = (cache_key, final_usage)
+        self._remember_context_usage(session.id, final_usage)
+        return final_usage
+
     def _messages_for_model(
         self,
         messages: list[dict[str, Any]],
@@ -704,41 +773,6 @@ class OpenAgentRuntime:
             return cached[1]
 
         payload_messages = build_payload_messages(messages)
-        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        message_count = len(messages)
-        final_usage = baseline_usage
-        if self._should_run_context_janitor(
-            baseline_usage,
-            session=session,
-            message_count=message_count,
-            messages=messages,
-        ):
-            decisions = self._analyze_context_relevance(
-                session=session,
-                messages=messages,
-                system_prompt=system_prompt,
-                tools=tools,
-            )
-            if decisions:
-                changed_results = sum(1 for decision in decisions if decision.state != "original")
-                persist_semantic_compression(messages, decisions)
-                payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
-                final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-                if changed_results > 0:
-                    self._note_context_governance(
-                        session.id,
-                        "janitor",
-                        f"janitor reduced {changed_results} tool result(s)",
-                    )
-            self._record_context_janitor_run(
-                session,
-                baseline_usage,
-                final_usage,
-                message_count=message_count,
-                automatic=True,
-            )
-        usage_cache[session.id] = (cache_key, final_usage)
-        self._remember_context_usage(session.id, final_usage)
         cache[session.id] = (cache_key, payload_messages)
         return payload_messages
 
@@ -1806,6 +1840,7 @@ class OpenAgentRuntime:
         task_anchor_message = make_user_text_message(user_input)
         session.messages.append(task_anchor_message)
         self.transcript_store.append(session.id, {"role": "user", "content": user_input})
+        self._run_automatic_context_janitor(session)
         return self._agent_loop(
             session,
             text_callback=text_callback,

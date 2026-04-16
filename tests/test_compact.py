@@ -199,10 +199,10 @@ class CompactTests(unittest.TestCase):
 
     def test_should_run_semantic_janitor_uses_ratio_only(self) -> None:
         self.assertTrue(
-            should_run_semantic_janitor(ContextWindowUsage(used_tokens=50_000, max_tokens=100_000))
+            should_run_semantic_janitor(ContextWindowUsage(used_tokens=60_000, max_tokens=100_000))
         )
         self.assertFalse(
-            should_run_semantic_janitor(ContextWindowUsage(used_tokens=49_000, max_tokens=100_000))
+            should_run_semantic_janitor(ContextWindowUsage(used_tokens=59_000, max_tokens=100_000))
         )
         self.assertFalse(
             should_run_semantic_janitor(ContextWindowUsage(used_tokens=40_000, max_tokens=None))
