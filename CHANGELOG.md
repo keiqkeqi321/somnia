@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.5 (2026-04-16)
+
+- fix: 淇 release 鑴氭湰鐨?Windows 10 鍏煎鎬?(bc4cc22)
+- feat: 澧炲姞妯″瀷涓婁笅鏂囩獥鍙ｆ槧灏勮〃 (da97f3d)
+- refactor: 绉婚櫎 token 闃堝€煎苟鏀圭敤 janitor 瑙﹀彂姣斾緥 (623acf6)
+- fix: 缁熶竴 Provider 寮傚父鍖呰骞跺鍔犻噸璇曞欢鏃?(32e6ccf)
+- feat: 澧炲姞澶辫触閫氱煡骞朵慨澶?Hook SDK 瀵煎叆 (e4731f2)
+- feat(debug): dump provider payloads behind hidden env (1ff3793)
+- refactor(janitor): move auto janitor to turn boundary (0ac9ba6)
+- docs: update janitor governance thresholds (fe5e7c5)
+- fix(edit_file): accept stringified edits payload (2bde3af)
+- provider 淇敼 (236a937)
+- edit_file 宸ュ叿榛樿鍙彁渚涙壒閲忕紪杈?(4805512)
+- Hide diagnostic commands from slash completion (aed8c71)
+
 ## 0.4.4 (2026-04-16)
 
 - Add repository line ending rules (3f5ad51)
