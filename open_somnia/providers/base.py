@@ -48,6 +48,23 @@ class LLMProvider(ABC):
     def token_counter_name(self) -> str:
         return "provider"
 
+    def debug_request_payload(
+        self,
+        system_prompt: str,
+        messages: list[NormalizedMessage],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return {
+            "system_prompt": system_prompt,
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+
 
 def dump_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)

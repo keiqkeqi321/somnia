@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 import tempfile
 import time
 import urllib.error
@@ -1527,6 +1529,60 @@ class RuntimeToolOutputTests(unittest.TestCase):
             self.assertEqual(session.undo_stack, [])
             self.assertEqual(session.last_turn_file_changes, [])
             self.assertIn("Undid 1 file change", message)
+
+    def test_dump_provider_payload_if_enabled_writes_hidden_debug_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / ".open_somnia"
+            logs_dir = data_dir / "logs"
+            transcripts_dir = data_dir / "transcripts"
+            sessions_dir = data_dir / "sessions"
+            runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+            runtime.settings = SimpleNamespace(
+                storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
+                provider=SimpleNamespace(
+                    name="openai",
+                    provider_type="openai",
+                    model="gpt-4.1",
+                    base_url="https://api.example.test/v1",
+                    max_tokens=4096,
+                    context_window_tokens=100_000,
+                ),
+            )
+            runtime.provider = SimpleNamespace(
+                count_tokens=lambda system_prompt, messages, tools: 12_345,
+                token_counter_name=lambda: "tiktoken",
+                context_window_tokens=lambda: 100_000,
+                debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
+                    "url": "https://api.example.test/v1/chat/completions",
+                    "body": {"model": "gpt-4.1", "stream": stream},
+                },
+            )
+            runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
+            runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
+            runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+            runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
+            session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+            with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
+                OpenAgentRuntime._dump_provider_payload_if_enabled(
+                    runtime,
+                    session=session,
+                    system_prompt="system",
+                    payload_messages=[{"role": "user", "content": "hello"}],
+                    tools=[],
+                    max_tokens=4096,
+                    actor="lead",
+                    stream=True,
+                )
+
+            dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
+            self.assertEqual(len(dump_files), 1)
+            dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(dumped["session_id"], "session-1")
+            self.assertEqual(dumped["provider"]["model"], "gpt-4.1")
+            self.assertEqual(dumped["context_usage"]["used_tokens"], 12_345)
+            self.assertEqual(dumped["provider_request"]["body"]["stream"], True)
+            self.assertTrue(dumped["transcript_path"].endswith("session-1.jsonl"))
 
     def test_undo_last_turn_normalizes_workspace_root_before_boundary_check(self) -> None:
         class _FakeResolvedPath:

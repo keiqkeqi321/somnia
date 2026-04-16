@@ -191,6 +191,27 @@ class OpenAIProvider(LLMProvider):
             "source": "provider",
         }
 
+    def debug_request_payload(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return {
+            "url": f"{self.settings.base_url.rstrip('/')}/chat/completions",
+            "body": {
+                "model": self.settings.model,
+                "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
+                "tools": [_schema_to_openai_tool(tool) for tool in tools],
+                "tool_choice": "auto",
+                "max_tokens": max_tokens,
+                "stream": stream,
+            },
+        }
+
     def complete(
         self,
         system_prompt: str,
@@ -202,14 +223,13 @@ class OpenAIProvider(LLMProvider):
     ) -> AssistantTurn:
         url = f"{self.settings.base_url.rstrip('/')}/chat/completions"
         should_stream = text_callback is not None or stop_checker is not None
-        payload = {
-            "model": self.settings.model,
-            "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
-            "tools": [_schema_to_openai_tool(tool) for tool in tools],
-            "tool_choice": "auto",
-            "max_tokens": max_tokens,
-            "stream": should_stream,
-        }
+        payload = self.debug_request_payload(
+            system_prompt,
+            messages,
+            tools,
+            max_tokens,
+            stream=should_stream,
+        )["body"]
         headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",

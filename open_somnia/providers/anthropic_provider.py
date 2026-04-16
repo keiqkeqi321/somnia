@@ -86,6 +86,24 @@ class AnthropicProvider(LLMProvider):
             "source": "provider",
         }
 
+    def debug_request_payload(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return {
+            "model": self.settings.model,
+            "system": system_prompt,
+            "messages": _to_anthropic_messages(messages),
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
+
     def complete(
         self,
         system_prompt: str,
@@ -95,13 +113,14 @@ class AnthropicProvider(LLMProvider):
         text_callback: TextCallback | None = None,
         stop_checker: StopChecker | None = None,
     ) -> AssistantTurn:
-        request_kwargs = {
-            "model": self.settings.model,
-            "system": system_prompt,
-            "messages": _to_anthropic_messages(messages),
-            "tools": tools,
-            "max_tokens": max_tokens,
-        }
+        request_kwargs = self.debug_request_payload(
+            system_prompt,
+            messages,
+            tools,
+            max_tokens,
+            stream=text_callback is not None or stop_checker is not None,
+        )
+        request_kwargs.pop("stream", None)
         if text_callback is None and stop_checker is None:
             response = self.client.messages.create(**request_kwargs)
         else:

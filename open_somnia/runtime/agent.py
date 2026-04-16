@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -80,6 +81,7 @@ from open_somnia.tools.todo import TodoManager, register_todo_tool
 
 
 class OpenAgentRuntime:
+    DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
     SILENT_TOOL_NAMES = {"TodoWrite"}
@@ -545,6 +547,74 @@ class OpenAgentRuntime:
             "label": str(label).strip(),
             "changed_at": time.monotonic(),
         }
+
+    def _provider_payload_dump_enabled(self) -> bool:
+        raw = str(os.environ.get(self.DEBUG_PROVIDER_PAYLOAD_ENV, "")).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _dump_provider_payload_if_enabled(
+        self,
+        *,
+        session: AgentSession,
+        system_prompt: str,
+        payload_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+        actor: str = "lead",
+        stream: bool = False,
+    ) -> None:
+        if not self._provider_payload_dump_enabled():
+            return
+        logs_root = Path(getattr(getattr(self.settings, "storage", None), "logs_dir", ""))
+        if not str(logs_root).strip():
+            return
+        provider = getattr(self, "provider", None)
+        usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        provider_payload: dict[str, Any] | None = None
+        serializer = getattr(provider, "debug_request_payload", None)
+        if callable(serializer):
+            try:
+                provider_payload = serializer(
+                    system_prompt,
+                    payload_messages,
+                    tools,
+                    max_tokens,
+                    stream=stream,
+                )
+            except Exception as exc:
+                provider_payload = {"error": f"failed to serialize provider payload: {exc}"}
+        dump_payload = {
+            "timestamp": time.time(),
+            "session_id": str(getattr(session, "id", "")).strip(),
+            "actor": actor,
+            "provider": {
+                "name": getattr(getattr(self.settings, "provider", None), "name", ""),
+                "type": getattr(getattr(self.settings, "provider", None), "provider_type", ""),
+                "model": getattr(getattr(self.settings, "provider", None), "model", ""),
+                "base_url": getattr(getattr(self.settings, "provider", None), "base_url", None),
+            },
+            "context_usage": {
+                "used_tokens": usage.used_tokens,
+                "max_tokens": usage.max_tokens,
+                "usage_ratio": usage.usage_ratio,
+                "usage_percent": usage.usage_percent,
+                "counter_name": usage.counter_name,
+            },
+            "system_prompt": system_prompt,
+            "messages": payload_messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "stream": stream,
+            "provider_request": provider_payload,
+            "session_path": str(self.settings.storage.sessions_dir / f"{session.id}.json"),
+            "transcript_path": str(self.transcript_store.transcript_path(session.id)),
+        }
+        dump_dir = logs_root / "provider_payloads"
+        dump_name = f"{session.id}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.json"
+        atomic_write_text(
+            dump_dir / dump_name,
+            json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
+        )
 
     def recent_context_governance_label(self, session, *, max_age_seconds: float = 15.0) -> str:
         session_id = str(getattr(session, "id", "")).strip()
@@ -1890,6 +1960,15 @@ class OpenAgentRuntime:
                     session=session,
                     system_prompt=system_prompt,
                     tools=tool_schemas,
+                )
+                self._dump_provider_payload_if_enabled(
+                    session=session,
+                    system_prompt=system_prompt,
+                    payload_messages=payload_messages,
+                    tools=tool_schemas,
+                    max_tokens=self.settings.provider.max_tokens,
+                    actor="lead",
+                    stream=text_callback is not None or should_interrupt is not None,
                 )
 
                 turn = self.complete(
