@@ -153,6 +153,33 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(active_files[0]["path"], "demo.txt")
         self.assertEqual(active_files[0]["source"], "edit_file")
 
+    def test_edit_file_accepts_stringified_edits_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            target.write_text("alpha\nbeta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.txt",
+                    "edits": '[{"old_text":"beta","new_text":"beta updated"}]',
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["applied_edits"], 1)
+        self.assertEqual(final_content, "alpha\nbeta updated\n")
+
     def test_edit_file_supports_multiple_replacements_in_one_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

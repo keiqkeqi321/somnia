@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import json
 from collections import Counter
 import os
 from pathlib import Path
@@ -922,6 +923,13 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
     workspace_root = ctx.runtime.settings.workspace_root
     default_path = str(payload.get("path", "")).strip()
     replacements_payload = payload.get("edits")
+    if isinstance(replacements_payload, str):
+        stripped = replacements_payload.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                replacements_payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
     if not isinstance(replacements_payload, list) or not replacements_payload:
         return "Error: edits must be a non-empty list. Wrap even one replacement as edits=[{old_text, new_text}]."
     replacements = []
