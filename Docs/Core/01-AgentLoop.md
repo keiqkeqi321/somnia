@@ -65,8 +65,8 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
                              ▼
                   ┌─────────────────────┐
                   │  6. 上下文治理检查   │
-                  │  - semantic janitor │  (50% 阈值)
-                  │  - auto compact     │  (72% 阈值)
+                  │  - semantic janitor │  (60% 阈值)
+                  │  - auto compact     │  (82% 阈值)
                   └──────────┬──────────┘
                              ▼
                   继续下一轮循环 (回到步骤 1)
@@ -95,7 +95,7 @@ turn = self.provider.complete(
 
 1. **Deep clone** 原始消息
 2. **Strip metadata**（移除 `raw_output` / `log_id`）
-3. **Semantic Janitor**（当使用率 >= 50%）：对历史工具结果执行语义脱水
+3. **Semantic Janitor**（当使用率 >= 60%）：对历史工具结果执行语义脱水
 4. **返回最终 payload**
 
 ### 权限检查
@@ -144,8 +144,8 @@ session.undo_stack.append({
 
 | 触发条件 | 动作 | 阈值 |
 |----------|------|------|
-| `usage_ratio >= 0.50` | Semantic Janitor | 语义脱水 |
-| `usage_ratio >= 0.72` | Auto Compact | 整体摘要压缩 |
+| `usage_ratio >= 0.60` | Semantic Janitor | 语义脱水 |
+| `usage_ratio >= 0.82` | Auto Compact | 整体摘要压缩 |
 
 ---
 
