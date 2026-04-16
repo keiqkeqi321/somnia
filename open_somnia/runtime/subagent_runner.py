@@ -188,15 +188,28 @@ class SubagentRunner:
             registry.register(
                 ToolDefinition(
                     name="edit_file",
-                    description="Replace exact text in a file once.",
+                    description=(
+                        "Replace exact text in one or more files. Always pass "
+                        "`edits=[{old_text,new_text}, ...]`, even for a single replacement."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "path": {"type": "string"},
-                            "old_text": {"type": "string"},
-                            "new_text": {"type": "string"},
+                            "edits": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "path": {"type": "string"},
+                                        "old_text": {"type": "string"},
+                                        "new_text": {"type": "string"},
+                                    },
+                                    "required": ["old_text", "new_text"],
+                                },
+                            },
                         },
-                        "required": ["path", "old_text", "new_text"],
+                        "required": ["edits"],
                     },
                     handler=edit_file,
                 )

@@ -60,6 +60,7 @@ class SystemPromptBuilder:
             "- After reading project guidance files such as AGENTS.md or CLAUDE.md, use `project_scan`, `tree`, or `find_symbol` to validate the documented structure against the actual repository.\n"
             "- Prefer precise `glob` patterns such as an exact filename, a suffix filter like `**/*.cs`, or a narrowed directory such as `Runtime/UI/**/*.cs`.\n"
             "- Before `read_file` or `edit_file`, confirm the exact path with a focused `glob`; do not guess file paths from broad directory listings.\n"
+            "- For `edit_file`, always wrap replacements as `edits=[{old_text,new_text}, ...]`; do not send top-level `old_text` or `new_text`.\n"
             "- Reserve `bash` for system commands and terminal operations that truly require shell execution.\n"
             "- If you are unsure and a dedicated tool exists, use the dedicated tool first."
         )
@@ -69,7 +70,8 @@ class SystemPromptBuilder:
             "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
             "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
             "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
-            "- When editing one file in several nearby places, prefer a single `edit_file` call with `edits=[...]` over many tiny follow-up patches.\n"
+            "- Use `edit_file` with `edits=[...]` for every text replacement, including a single replacement.\n"
+            "- When editing one file in several nearby places, prefer a single `edit_file` call with multiple `edits` items over many tiny follow-up patches.\n"
             "- After `write_file` or `edit_file`, use the returned updated snippet or active working file cache before rereading the same file.\n"
             "- Do not claim a root cause until your evidence materially narrows the main alternatives.\n"
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"

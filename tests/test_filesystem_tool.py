@@ -95,6 +95,28 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(active_files[0]["path"], "demo.txt")
         self.assertEqual(active_files[0]["source"], "write_file")
 
+    def test_edit_file_requires_edits_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            target.write_text("a\nb\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            result = edit_file(ctx, {"path": "demo.txt", "old_text": "b\n", "new_text": "b\nc\n"})
+
+        self.assertEqual(
+            result,
+            "Error: edits must be a non-empty list. Wrap even one replacement as edits=[{old_text, new_text}].",
+        )
+
     def test_edit_file_returns_diff_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -112,7 +134,13 @@ class FilesystemToolTests(unittest.TestCase):
                 ),
                 session=session,
             )
-            result = edit_file(ctx, {"path": "demo.txt", "old_text": "b\n", "new_text": "b\nc\n"})
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.txt",
+                    "edits": [{"old_text": "b\n", "new_text": "b\nc\n"}],
+                },
+            )
 
         self.assertEqual(result["path"], "demo.txt")
         self.assertTrue(result["absolute_path"].endswith("demo.txt"))

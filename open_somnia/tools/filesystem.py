@@ -922,37 +922,25 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
     workspace_root = ctx.runtime.settings.workspace_root
     default_path = str(payload.get("path", "")).strip()
     replacements_payload = payload.get("edits")
-    if replacements_payload is None:
-        if not default_path:
-            return "Error: path is required."
-        replacements = [
+    if not isinstance(replacements_payload, list) or not replacements_payload:
+        return "Error: edits must be a non-empty list. Wrap even one replacement as edits=[{old_text, new_text}]."
+    replacements = []
+    for index, item in enumerate(replacements_payload, start=1):
+        if not isinstance(item, dict):
+            return f"Error: edits[{index}] must be an object."
+        if "old_text" not in item or "new_text" not in item:
+            return f"Error: edits[{index}] must contain old_text and new_text."
+        item_path = str(item.get("path", default_path)).strip()
+        if not item_path:
+            return f"Error: edits[{index}] must contain path, or provide a top-level path."
+        replacements.append(
             {
-                "path": default_path,
-                "old_text": str(payload["old_text"]),
-                "new_text": str(payload["new_text"]),
-                "source_index": 1,
+                "path": item_path,
+                "old_text": str(item["old_text"]),
+                "new_text": str(item["new_text"]),
+                "source_index": index,
             }
-        ]
-    else:
-        if not isinstance(replacements_payload, list) or not replacements_payload:
-            return "Error: edits must be a non-empty list."
-        replacements = []
-        for index, item in enumerate(replacements_payload, start=1):
-            if not isinstance(item, dict):
-                return f"Error: edits[{index}] must be an object."
-            if "old_text" not in item or "new_text" not in item:
-                return f"Error: edits[{index}] must contain old_text and new_text."
-            item_path = str(item.get("path", default_path)).strip()
-            if not item_path:
-                return f"Error: edits[{index}] must contain path, or provide a top-level path."
-            replacements.append(
-                {
-                    "path": item_path,
-                    "old_text": str(item["old_text"]),
-                    "new_text": str(item["new_text"]),
-                    "source_index": index,
-                }
-            )
+        )
 
     replacements_by_path: dict[str, list[dict[str, Any]]] = {}
     path_order: list[str] = []
@@ -975,8 +963,6 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
             new_text = replacement["new_text"]
             source_index = int(replacement["source_index"])
             if old_text not in updated:
-                if replacements_payload is None:
-                    return f"Error: Text not found in {target_path}"
                 return f"Error: Text not found for edits[{source_index}] in {target_path}"
             updated = updated.replace(old_text, new_text, 1)
             snippet_anchors.extend(_snippet_anchor_candidates(new_text))
@@ -1168,9 +1154,9 @@ def register_filesystem_tools(registry) -> None:
         ToolDefinition(
             name="edit_file",
             description=(
-                "Replace exact text in a file. Use `old_text`/`new_text` for a single replacement, or pass "
-                "`edits=[{old_text,new_text}, ...]` to apply multiple exact replacements in one call. "
-                "Each edit may also provide its own `path`; if omitted, the top-level `path` is used. "
+                "Replace exact text in one or more files. Always pass "
+                "`edits=[{old_text,new_text}, ...]`, even for a single replacement. Each edit may also provide "
+                "its own `path`; if omitted, the top-level `path` is used. "
                 "Successful edits return an updated snippet around the changed region. Confirm the exact path "
                 "with a focused `glob` before editing; do not guess paths from broad directory listings."
             ),
@@ -1178,8 +1164,6 @@ def register_filesystem_tools(registry) -> None:
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "old_text": {"type": "string"},
-                    "new_text": {"type": "string"},
                     "edits": {
                         "type": "array",
                         "items": {
@@ -1193,6 +1177,7 @@ def register_filesystem_tools(registry) -> None:
                         },
                     },
                 },
+                "required": ["edits"],
             },
             handler=edit_file,
         )

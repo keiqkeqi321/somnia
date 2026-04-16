@@ -123,7 +123,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 runtime,
                 "lead",
                 "edit_file",
-                {"path": "open_somnia/config/settings.py", "old_text": "a\n", "new_text": "a\nb\n"},
+                {
+                    "path": "open_somnia/config/settings.py",
+                    "edits": [{"old_text": "a\n", "new_text": "a\nb\n"}],
+                },
                 {
                     "status": "ok",
                     "path": "open_somnia/config/settings.py",
@@ -177,7 +180,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 "category": "TOOL",
                 "actor": "lead",
                 "tool_name": "edit_file",
-                "tool_input": {"path": "demo.txt", "old_text": "a", "new_text": "b"},
+                "tool_input": {"path": "demo.txt", "edits": [{"old_text": "a", "new_text": "b"}]},
                 "output": {"status": "ok", "path": "demo.txt"},
             }
             if log_id == "edit-log"
@@ -316,8 +319,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Use `grep` instead of shell content search commands", prompt)
         self.assertIn("Do not start with broad `glob` patterns such as `**/*`", prompt)
         self.assertIn("Before `read_file` or `edit_file`, confirm the exact path", prompt)
+        self.assertIn("always wrap replacements as `edits=[{old_text,new_text}, ...]`", prompt)
         self.assertIn("Use `TodoWrite` to break down meaningful work", prompt)
-        self.assertIn("prefer a single `edit_file` call with `edits=[...]`", prompt)
+        self.assertIn("Use `edit_file` with `edits=[...]` for every text replacement", prompt)
         self.assertIn("use the returned updated snippet or active working file cache", prompt)
         self.assertIn("Do not claim a root cause", prompt)
         self.assertIn("If you keep rereading the same file or area", prompt)
@@ -481,7 +485,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 item_index=0,
                 tool_name="edit_file",
                 content='{"status":"ok"}',
-                tool_input={"path": "frontend/src/App.tsx", "old_text": "old", "new_text": "new"},
+                tool_input={
+                    "path": "frontend/src/App.tsx",
+                    "edits": [{"old_text": "old", "new_text": "new"}],
+                },
                 log_id="edit-new",
                 age=4,
             ),

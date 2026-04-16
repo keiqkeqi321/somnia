@@ -82,6 +82,33 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 
 ---
 
+## 文件编辑工具约定
+
+`edit_file` 现在只支持批量编辑格式，即使只改一处也必须传 `edits`：
+
+```json
+{
+  "path": "open_somnia/runtime/tool_events.py",
+  "edits": [
+    {
+      "old_text": "return normalized",
+      "new_text": "return display_name"
+    }
+  ]
+}
+```
+
+约束：
+
+- 顶层不再接受 `old_text` / `new_text`
+- `edits` 必须是非空数组
+- 每个 edit 项必须包含 `old_text` 和 `new_text`
+- 每个 edit 项可单独带 `path`；未提供时回退到顶层 `path`
+
+这样可以统一模型的调用心智，避免单编辑和多编辑两套 schema 混用。
+
+---
+
 ## 工具执行流程
 
 ```

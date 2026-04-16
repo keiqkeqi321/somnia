@@ -69,7 +69,7 @@ class ToolEventRenderer:
             command = self.runtime._compact_preview(str(tool_input.get("command", "")).strip(), limit=140)
             return f"Bash({command or '(no command)'})"
         if tool_name == "edit_file":
-            path = str(tool_input.get("path", "")).strip() or str(getattr(output, "get", lambda *_: "")("path", "")).strip()
+            path = self._edit_file_primary_path(tool_input, output)
             return f"{self._display_tool_name(tool_name)}({path or '(unknown path)'})"
         if tool_name == "read_file":
             path = str(tool_input.get("path", "")).strip() or "(unknown path)"
@@ -235,8 +235,7 @@ class ToolEventRenderer:
 
     def _render_file_change_diff(self, tool_name: str, tool_input: dict[str, Any], *, limit: int = 8) -> list[str]:
         if tool_name == "edit_file":
-            before = str(tool_input.get("old_text", ""))
-            after = str(tool_input.get("new_text", ""))
+            return self._render_edit_file_diff(tool_input, limit=limit)
         else:
             before = ""
             after = str(tool_input.get("content", ""))
@@ -268,9 +267,77 @@ class ToolEventRenderer:
         return f"      {line}"
 
     def _file_change_needs_log_hint(self, tool_name: str, tool_input: dict[str, Any]) -> bool:
-        key = "new_text" if tool_name == "edit_file" else "content"
-        text = str(tool_input.get(key, ""))
+        if tool_name == "edit_file":
+            text = self._edit_file_preview_text(tool_input)
+        else:
+            text = str(tool_input.get("content", ""))
         return len(text.splitlines()) > 8 or len(text) > 240
+
+    def _edit_file_primary_path(self, tool_input: dict[str, Any], output: Any) -> str:
+        path = str(tool_input.get("path", "")).strip()
+        if path:
+            return path
+        edits = tool_input.get("edits")
+        if isinstance(edits, list):
+            for item in edits:
+                if isinstance(item, dict):
+                    item_path = str(item.get("path", "")).strip()
+                    if item_path:
+                        return item_path
+        return str(getattr(output, "get", lambda *_: "")("path", "")).strip()
+
+    def _render_edit_file_diff(self, tool_input: dict[str, Any], *, limit: int = 8) -> list[str]:
+        edits = tool_input.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return []
+        visible: list[str] = []
+        truncated = False
+        for index, item in enumerate(edits, start=1):
+            if not isinstance(item, dict):
+                continue
+            before = str(item.get("old_text", ""))
+            after = str(item.get("new_text", ""))
+            if not before and not after:
+                continue
+            diff_lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=1))
+            rendered_lines = [line for line in diff_lines[2:] if line.strip()]
+            if not rendered_lines:
+                continue
+            if len(edits) > 1:
+                path_label = str(item.get("path", "")).strip()
+                label = f"[edit {index}]"
+                if path_label:
+                    label = f"{label} {path_label}"
+                rendered_lines.insert(0, label)
+            remaining = limit - len(visible)
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(rendered_lines) > remaining:
+                visible.extend(rendered_lines[:remaining])
+                truncated = True
+                break
+            visible.extend(rendered_lines)
+        rendered: list[str] = []
+        for line in visible:
+            if line.startswith("[edit "):
+                rendered.append(f"      {line}")
+                continue
+            rendered.append(self._format_diff_preview_line(line))
+        if truncated:
+            rendered.append("      ...")
+        return rendered
+
+    def _edit_file_preview_text(self, tool_input: dict[str, Any]) -> str:
+        edits = tool_input.get("edits")
+        if not isinstance(edits, list):
+            return ""
+        chunks: list[str] = []
+        for item in edits:
+            if not isinstance(item, dict):
+                continue
+            chunks.append(str(item.get("new_text", "")))
+        return "\n".join(chunk for chunk in chunks if chunk)
 
     def _format_clickable_file_label(self, label: str, absolute_path: str) -> str:
         if not absolute_path or not self.runtime._supports_ansi_output():

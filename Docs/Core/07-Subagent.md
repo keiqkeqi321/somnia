@@ -59,6 +59,8 @@ Subagent（子代理）是 Somnia 的隔离执行单元，允许主 Agent 在独
 | `write_file` | 文件写入 |
 | `edit_file` | 文本替换 |
 
+`edit_file` 与主 Agent 保持同一约定：只接受 `edits=[{old_text,new_text}, ...]`，单次替换也必须包装成单元素数组。
+
 ---
 
 ## 权限控制
