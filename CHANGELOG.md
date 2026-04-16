@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 (2026-04-16)
+
+- Add repository line ending rules (3f5ad51)
+- Add async hooks context refs and SDK (d48a479)
+- Override managed hooks from workspace config (288b519)
+- Add hook toggles and /hooks browser (b6b25e6)
+- feat: 增加 Hooks 系统与内置通知钩子 (b8efcae)
+
 ## 0.4.3 (2026-04-15)
 
 - 为 janitor 增加低收益自动熔断 (a3e870f)
