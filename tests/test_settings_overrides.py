@@ -11,6 +11,7 @@ from unittest.mock import patch
 from open_somnia.config.settings import (
     NoConfiguredProvidersError,
     NoUsableProvidersError,
+    _infer_context_window_tokens,
     load_settings,
     persist_initial_provider_setup,
     persist_provider_profile,
@@ -142,6 +143,42 @@ class SettingsOverrideTests(unittest.TestCase):
 
         self.assertEqual(openrouter_settings.provider.context_window_tokens, 131072)
         self.assertEqual(glm_settings.provider.context_window_tokens, 262144)
+
+    def test_infer_context_window_tokens_uses_official_model_mappings(self) -> None:
+        self.assertEqual(_infer_context_window_tokens("openai", "minimax/MiniMax-M2.7"), 204800)
+        self.assertEqual(_infer_context_window_tokens("openai", "kimi-k2.5"), 256000)
+        self.assertEqual(_infer_context_window_tokens("openai", "moonshot-v1-128k"), 128000)
+        self.assertEqual(_infer_context_window_tokens("openai", "qwen/qwen-plus:free"), 1000000)
+        self.assertEqual(_infer_context_window_tokens("openai", "stepfun/step-3.5-flash"), 256000)
+        self.assertEqual(_infer_context_window_tokens("openai", "Doubao-1-5-lite-32k"), 32000)
+
+    def test_infer_context_window_tokens_falls_back_to_200k_for_unmapped_models(self) -> None:
+        self.assertEqual(_infer_context_window_tokens("anthropic", "glm-5.1"), 200000)
+        self.assertEqual(_infer_context_window_tokens("openai", "unknown-model"), 200000)
+
+    def test_load_settings_provider_context_window_overrides_mapping(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openrouter"
+
+                [providers.openrouter]
+                provider_type = "openai"
+                models = ["qwen-plus"]
+                default_model = "qwen-plus"
+                api_key = "openrouter-test-key"
+                context_window_tokens = 65536
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        self.assertEqual(settings.provider.context_window_tokens, 65536)
 
     def test_load_settings_allows_custom_provider_name_to_map_to_openai_adapter(self) -> None:
         with self._tempdir() as tmpdir:

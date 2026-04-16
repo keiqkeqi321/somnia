@@ -27,6 +27,57 @@ BUILTIN_NOTIFY_FOLDER = "builtin_notify"
 BUILTIN_NOTIFY_MANAGER = "somnia_builtin_notify"
 BUILTIN_HOOKS_BEGIN = "# BEGIN SOMNIA BUILTIN HOOKS"
 BUILTIN_HOOKS_END = "# END SOMNIA BUILTIN HOOKS"
+DEFAULT_FALLBACK_CONTEXT_WINDOW_TOKENS = 200_000
+
+_CONTEXT_WINDOW_EXACT_MAPPINGS: dict[str, int] = {
+    "gpt-4.1": 1_047_576,
+    "gpt-4.1-mini": 1_047_576,
+    "gpt-4.1-nano": 1_047_576,
+    "moonshot-v1-8k": 8_000,
+    "moonshot-v1-32k": 32_000,
+    "moonshot-v1-128k": 128_000,
+    "kimi-k2-0905-preview": 256_000,
+    "kimi-k2-turbo-preview": 256_000,
+    "kimi-k2-thinking": 256_000,
+    "kimi-k2-thinking-turbo": 256_000,
+    "kimi-k2-0711-preview": 128_000,
+    "step-3.5-flash": 256_000,
+    "step-1-8k": 8_000,
+    "step-1-32k": 32_000,
+    "step-1-256k": 256_000,
+    "step-2-16k": 16_000,
+    "step-2-mini": 32_000,
+    "doubao-1-5-pro-32k": 32_000,
+    "doubao-1-5-lite-32k": 32_000,
+    "doubao-1-5-vision-pro-32k": 32_000,
+    "qwen3-max": 262_144,
+    "qwen3.5-plus": 1_000_000,
+    "qwen3.5-flash": 1_000_000,
+    "qwen-plus": 1_000_000,
+    "qwen-flash": 1_000_000,
+    "qwen-long": 10_000_000,
+    "minimax-m2": 204_800,
+    "minimax-m2.1": 204_800,
+    "minimax-m2.1-highspeed": 204_800,
+    "minimax-m2.5": 204_800,
+    "minimax-m2.5-highspeed": 204_800,
+    "minimax-m2.7": 204_800,
+    "minimax-m2.7-highspeed": 204_800,
+}
+
+_CONTEXT_WINDOW_PREFIX_MAPPINGS: tuple[tuple[str, int], ...] = (
+    ("kimi-k2.5", 256_000),
+    ("qwen3-max", 262_144),
+    ("qwen3.5-plus", 1_000_000),
+    ("qwen3.5-flash", 1_000_000),
+    ("qwen-plus", 1_000_000),
+    ("qwen-flash", 1_000_000),
+    ("qwen-long", 10_000_000),
+    ("minimax-m2.7", 204_800),
+    ("minimax-m2.5", 204_800),
+    ("minimax-m2.1", 204_800),
+    ("minimax-m2", 204_800),
+)
 
 
 class NoConfiguredProvidersError(RuntimeError):
@@ -654,17 +705,34 @@ def _normalize_provider_type(value: str | None, *, profile_name: str) -> str:
     return provider_type
 
 
+def _context_window_lookup_candidates(model: str) -> tuple[str, ...]:
+    raw = model.strip().lower()
+    candidates: list[str] = []
+    queue = [raw]
+    seen: set[str] = set()
+    while queue:
+        candidate = queue.pop(0).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+        if ":" in candidate:
+            queue.append(candidate.split(":", 1)[0])
+        if "/" in candidate:
+            queue.append(candidate.rsplit("/", 1)[-1])
+    return tuple(candidates)
+
+
 def _infer_context_window_tokens(provider_type: str, model: str) -> int:
-    lowered = model.strip().lower()
-    if provider_type == "anthropic" or "claude" in lowered:
-        return 200_000
-    if "gpt-4.1" in lowered:
-        return 1_047_576
-    if any(token in lowered for token in ("gpt-5", "o1", "o3", "o4", "gpt-4o")):
-        return 128_000
-    if any(token in lowered for token in ("qwen", "glm", "kimi", "deepseek", "llama", "mistral", "gemini")):
-        return 128_000
-    return 128_000
+    del provider_type
+    for candidate in _context_window_lookup_candidates(model):
+        exact = _CONTEXT_WINDOW_EXACT_MAPPINGS.get(candidate)
+        if exact is not None:
+            return exact
+        for prefix, tokens in _CONTEXT_WINDOW_PREFIX_MAPPINGS:
+            if candidate.startswith(prefix):
+                return tokens
+    return DEFAULT_FALLBACK_CONTEXT_WINDOW_TOKENS
 
 
 def _default_provider_profile(name: str) -> ProviderProfileSettings:
