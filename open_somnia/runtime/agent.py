@@ -716,7 +716,13 @@ class OpenAgentRuntime:
         return ratio is not None and ratio >= self.MANUAL_JANITOR_MIN_RATIO
 
     def _semantic_janitor_trigger_ratio(self) -> float:
-        return float(SEMANTIC_JANITOR_TRIGGER_RATIO)
+        runtime_settings = getattr(getattr(self, "settings", None), "runtime", None)
+        configured = getattr(runtime_settings, "janitor_trigger_ratio", SEMANTIC_JANITOR_TRIGGER_RATIO)
+        try:
+            ratio = float(configured)
+        except (TypeError, ValueError):
+            ratio = float(SEMANTIC_JANITOR_TRIGGER_RATIO)
+        return max(0.0, min(1.0, ratio))
 
     def _janitor_preemptive_compact_ratio(self) -> float:
         return max(self._semantic_janitor_trigger_ratio(), AUTO_COMPACT_TRIGGER_RATIO - self.JANITOR_PREEMPTIVE_COMPACT_GAP)
@@ -966,7 +972,7 @@ class OpenAgentRuntime:
         if ratio is None:
             return False
         state = self._janitor_state_for(session)
-        if not should_run_semantic_janitor(usage):
+        if not should_run_semantic_janitor(usage, trigger_ratio=self._semantic_janitor_trigger_ratio()):
             if state is not None and ratio <= self.JANITOR_REARM_RATIO:
                 state["armed"] = True
                 state["saturated"] = False
@@ -1947,10 +1953,7 @@ class OpenAgentRuntime:
                 inbox = self.bus.read_inbox("lead")
                 if inbox:
                     session.messages.append(make_user_text_message(f"<inbox>{json.dumps(inbox, ensure_ascii=False, indent=2)}</inbox>"))
-                if should_auto_compact(
-                    self.context_window_usage(session),
-                    hard_threshold=self.settings.runtime.token_threshold,
-                ):
+                if should_auto_compact(self.context_window_usage(session)):
                     preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
                     session.messages = self.compact_manager.auto_compact(
                         session.id,

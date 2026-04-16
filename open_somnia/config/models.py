@@ -80,7 +80,7 @@ class HookSettings:
 
 @dataclass(slots=True)
 class RuntimeSettings:
-    token_threshold: int = 100_000
+    janitor_trigger_ratio: float = 0.6
     command_timeout_seconds: int = 120
     background_poll_interval_seconds: int = 2
     teammate_idle_timeout_seconds: int = 60

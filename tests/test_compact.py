@@ -177,24 +177,15 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].tool_call_id, "call-2")
 
-    def test_should_auto_compact_uses_ratio_or_hard_threshold(self) -> None:
+    def test_should_auto_compact_uses_ratio_only(self) -> None:
         self.assertTrue(
-            should_auto_compact(
-                ContextWindowUsage(used_tokens=82_000, max_tokens=100_000),
-                hard_threshold=200_000,
-            )
-        )
-        self.assertTrue(
-            should_auto_compact(
-                ContextWindowUsage(used_tokens=100_000, max_tokens=None),
-                hard_threshold=100_000,
-            )
+            should_auto_compact(ContextWindowUsage(used_tokens=82_000, max_tokens=100_000))
         )
         self.assertFalse(
-            should_auto_compact(
-                ContextWindowUsage(used_tokens=81_000, max_tokens=100_000),
-                hard_threshold=100_000,
-            )
+            should_auto_compact(ContextWindowUsage(used_tokens=81_000, max_tokens=100_000))
+        )
+        self.assertFalse(
+            should_auto_compact(ContextWindowUsage(used_tokens=100_000, max_tokens=None))
         )
 
     def test_should_run_semantic_janitor_uses_ratio_only(self) -> None:

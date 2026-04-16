@@ -149,7 +149,7 @@ session.undo_stack.append({
 
 | 触发条件 | 动作 | 阈值 |
 |----------|------|------|
-| 新 user message 入列后，且 `usage_ratio >= 0.60` | Semantic Janitor | 语义脱水 |
+| 新 user message 入列后，且 `usage_ratio >= runtime.janitor_trigger_ratio`（默认 `0.60`） | Semantic Janitor | 语义脱水 |
 | Agent Loop 内，且 `usage_ratio >= 0.82` | Auto Compact | 整体摘要压缩 |
 
 ---

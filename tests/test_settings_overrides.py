@@ -227,6 +227,7 @@ class SettingsOverrideTests(unittest.TestCase):
 
                 [runtime]
                 max_agent_rounds = 20
+                janitor_trigger_ratio = 0.65
                 teammate_poll_interval_seconds = 9
                 """,
             )
@@ -252,6 +253,7 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.model, "gpt-4.1-mini")
         self.assertEqual(settings.provider.api_key, "global-key")
         self.assertEqual(settings.runtime.max_agent_rounds, 80)
+        self.assertEqual(settings.runtime.janitor_trigger_ratio, 0.65)
         self.assertEqual(settings.runtime.teammate_poll_interval_seconds, 9)
         self.assertEqual(settings.provider_profiles["openai"].models, ["gpt-4.1", "gpt-4.1-mini"])
 

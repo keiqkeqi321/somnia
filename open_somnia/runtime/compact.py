@@ -263,16 +263,18 @@ def build_payload_messages(
     return payload_messages
 
 
-def should_run_semantic_janitor(usage: ContextWindowUsage) -> bool:
+def should_run_semantic_janitor(
+    usage: ContextWindowUsage,
+    *,
+    trigger_ratio: float = SEMANTIC_JANITOR_TRIGGER_RATIO,
+) -> bool:
     ratio = usage.usage_ratio
-    return ratio is not None and ratio >= SEMANTIC_JANITOR_TRIGGER_RATIO
+    return ratio is not None and ratio >= float(trigger_ratio)
 
 
-def should_auto_compact(usage: ContextWindowUsage, *, hard_threshold: int) -> bool:
+def should_auto_compact(usage: ContextWindowUsage) -> bool:
     ratio = usage.usage_ratio
-    if ratio is not None and ratio >= AUTO_COMPACT_TRIGGER_RATIO:
-        return True
-    return usage.used_tokens >= hard_threshold
+    return ratio is not None and ratio >= AUTO_COMPACT_TRIGGER_RATIO
 
 
 class CompactManager:

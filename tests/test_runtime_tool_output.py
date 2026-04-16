@@ -508,7 +508,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
         runtime.provider = SimpleNamespace(
             count_tokens=lambda system_prompt, messages, tools: 70_000 if "Semantic Summary" not in str(messages) else 55_000,
@@ -560,7 +560,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
         runtime.provider = SimpleNamespace(
             count_tokens=lambda system_prompt, messages, tools: 30_000 if "Semantic Summary" not in str(messages) else 24_000,
@@ -604,7 +604,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
         runtime.provider = SimpleNamespace(
             count_tokens=lambda system_prompt, messages, tools: 19_000,
@@ -1077,7 +1077,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
 
         def _count_tokens(system_prompt, messages, tools):
@@ -1125,7 +1125,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
         runtime.provider = SimpleNamespace(
             count_tokens=lambda system_prompt, messages, tools: 70_000 if "Semantic Summary" not in str(messages) else 55_000,
@@ -1198,7 +1198,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
 
         def _count_tokens(system_prompt, messages, tools):
@@ -1242,7 +1242,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(token_threshold=90_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
         )
 
         def _count_tokens(system_prompt, messages, tools):
@@ -1953,7 +1953,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_stops_turn_after_request_authorization_and_replans(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -2022,7 +2022,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_flushes_streamed_text_before_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -2086,7 +2086,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         captured: dict[str, object] = {}
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -2139,7 +2139,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_accumulates_token_usage_sum(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, token_threshold=999999, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
