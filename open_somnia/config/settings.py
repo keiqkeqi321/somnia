@@ -342,15 +342,24 @@ def _build_hook(
     matcher_raw = item.get("matcher", {})
     if not isinstance(matcher_raw, dict):
         matcher_raw = {}
+    event = str(item.get("event", "")).strip()
+    on_error = str(item.get("on_error", "continue")).strip().lower() or "continue"
+    background = bool(item.get("background", False))
+    normalized_event = normalize_hook_event(event)
+    if background and normalized_event == "PreToolUse":
+        raise ValueError("PreToolUse hooks do not support background=true.")
+    if background and on_error == "fail":
+        raise ValueError("Background hooks do not support on_error='fail'.")
     return HookSettings(
-        event=str(item.get("event", "")).strip(),
+        event=event,
         command=str(item.get("command", "")).strip(),
         args=[str(arg) for arg in item.get("args", [])],
         cwd=_resolve_optional_path(root, item.get("cwd")),
         env={str(k): str(v) for k, v in item.get("env", {}).items()},
         timeout_seconds=int(item.get("timeout_seconds", 10)),
-        on_error=str(item.get("on_error", "continue")).strip().lower() or "continue",
+        on_error=on_error,
         enabled=bool(item.get("enabled", True)),
+        background=background,
         managed_by=str(item.get("managed_by", "")).strip() or None,
         config_path=config_path.resolve() if isinstance(config_path, Path) else None,
         config_scope=str(config_scope).strip() or None,
@@ -497,6 +506,7 @@ def _render_builtin_hook_block(script_path: Path, hooks: list[dict[str, object]]
                 "timeout_seconds = 10",
                 'on_error = "continue"',
                 f"enabled = {'true' if enabled else 'false'}",
+                "background = true",
                 "",
             ]
         )

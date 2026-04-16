@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from threading import Thread
 import time
 from pathlib import Path
+from typing import Callable
 
 from open_somnia.config.models import HookSettings
 from open_somnia.hooks.models import HookContext, HookDecision, HookExecutionError, HookExecutionResult
@@ -16,13 +18,7 @@ class HookRunner:
 
     def run(self, hook: HookSettings, context: HookContext) -> HookExecutionResult:
         started = time.time()
-        command = [self._resolve_command(hook.command), *hook.args]
-        payload = json.dumps(context.to_payload(), ensure_ascii=False)
-        env = os.environ.copy()
-        env.update(hook.env)
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
-        cwd = hook.cwd or self.workspace_root
+        command, payload, env, cwd = self._build_invocation(hook, context)
         try:
             completed = subprocess.run(
                 command,
@@ -74,6 +70,93 @@ class HookRunner:
             stderr=stderr,
             response_payload=response_payload,
         )
+
+    def run_background(
+        self,
+        hook: HookSettings,
+        context: HookContext,
+        *,
+        on_complete: Callable[[HookExecutionResult | None, HookExecutionError | None], None] | None = None,
+    ) -> HookExecutionResult:
+        started = time.time()
+        command, payload, env, cwd = self._build_invocation(hook, context)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(cwd),
+                env=env,
+            )
+        except OSError as exc:
+            raise HookExecutionError(
+                f"Hook '{hook.event}' failed to start '{hook.command}': {exc}"
+            ) from exc
+
+        def _watch() -> None:
+            watch_started = time.time()
+            try:
+                assert process.stdin is not None
+                stdout, stderr = process.communicate(
+                    input=payload,
+                    timeout=max(1, int(hook.timeout_seconds)),
+                )
+                stdout = (stdout or "").strip()
+                stderr = (stderr or "").strip()
+                if process.returncode != 0:
+                    details = stderr or stdout or f"exit code {process.returncode}"
+                    raise HookExecutionError(
+                        f"Hook '{hook.event}' command '{hook.command}' failed: {details}"
+                    )
+                result = HookExecutionResult(
+                    hook=hook,
+                    decision=HookDecision(action="continue"),
+                    duration_ms=max(0, int((time.time() - watch_started) * 1000)),
+                    status="ok",
+                    background=True,
+                    pid=process.pid,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                if on_complete is not None:
+                    on_complete(result, None)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.communicate()
+                if on_complete is not None:
+                    on_complete(
+                        None,
+                        HookExecutionError(
+                            f"Hook '{hook.event}' timed out after {hook.timeout_seconds}s: {hook.command}"
+                        ),
+                    )
+            except HookExecutionError as exc:
+                if on_complete is not None:
+                    on_complete(None, exc)
+
+        Thread(target=_watch, name=f"somnia-hook-{hook.event}", daemon=True).start()
+        return HookExecutionResult(
+            hook=hook,
+            decision=HookDecision(action="continue"),
+            duration_ms=max(0, int((time.time() - started) * 1000)),
+            status="queued",
+            background=True,
+            pid=process.pid,
+        )
+
+    def _build_invocation(self, hook: HookSettings, context: HookContext) -> tuple[list[str], str, dict[str, str], Path]:
+        command = [self._resolve_command(hook.command), *hook.args]
+        payload = json.dumps(context.to_payload(), ensure_ascii=False)
+        env = os.environ.copy()
+        env.update(hook.env)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("PYTHONUTF8", "1")
+        cwd = hook.cwd or self.workspace_root
+        return command, payload, env, cwd
 
     def _resolve_command(self, command: str) -> str:
         raw = str(command).strip()

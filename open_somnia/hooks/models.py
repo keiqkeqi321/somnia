@@ -43,6 +43,9 @@ class HookContext:
     actor: str | None = None
     execution_mode: str | None = None
     workspace_root: Path | None = None
+    session_path: Path | None = None
+    transcript_path: Path | None = None
+    snapshot_path: Path | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
     tool_result: Any = None
@@ -61,6 +64,9 @@ class HookContext:
             "actor": self.actor,
             "execution_mode": self.execution_mode,
             "workspace_root": str(self.workspace_root) if self.workspace_root is not None else None,
+            "session_path": str(self.session_path) if self.session_path is not None else None,
+            "transcript_path": str(self.transcript_path) if self.transcript_path is not None else None,
+            "snapshot_path": str(self.snapshot_path) if self.snapshot_path is not None else None,
         }
         if self.tool_name is not None:
             payload["tool_name"] = self.tool_name
@@ -95,6 +101,9 @@ class HookExecutionResult:
     hook: HookSettings
     decision: HookDecision
     duration_ms: int
+    status: str = "ok"
+    background: bool = False
+    pid: int | None = None
     stdout: str = ""
     stderr: str = ""
     response_payload: dict[str, Any] = field(default_factory=dict)

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -102,6 +103,63 @@ class HookSystemTests(unittest.TestCase):
         events = [hook.event for hook in settings.hooks]
         self.assertIn("AssistantResponse", events)
         self.assertIn("UserChoiceRequested", events)
+
+    def test_load_settings_rejects_background_pre_tool_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "sk-test"
+                base_url = "https://api.openai.example/v1"
+
+                [[hooks]]
+                event = "PreToolUse"
+                command = "python"
+                args = ["hooks/pre_bash.py"]
+                background = true
+                """,
+            )
+
+            with patch("open_somnia.config.settings.Path.home", return_value=home):
+                with self.assertRaisesRegex(ValueError, "PreToolUse hooks do not support background=true"):
+                    load_settings(root)
+
+    def test_load_settings_rejects_background_hook_with_fail_error_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "sk-test"
+                base_url = "https://api.openai.example/v1"
+
+                [[hooks]]
+                event = "AssistantResponse"
+                command = "python"
+                args = ["hooks/post.py"]
+                background = true
+                on_error = "fail"
+                """,
+            )
+
+            with patch("open_somnia.config.settings.Path.home", return_value=home):
+                with self.assertRaisesRegex(ValueError, "Background hooks do not support on_error='fail'"):
+                    load_settings(root)
 
     def test_load_settings_keeps_builtin_notification_when_user_configures_same_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -404,6 +462,46 @@ class HookSystemTests(unittest.TestCase):
         self.assertEqual(payload["assistant_message"]["role"], "assistant")
         self.assertEqual(payload["assistant_message"]["content"], "Done.")
 
+    def test_assistant_response_hook_payload_includes_context_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_path = root / "assistant_context_refs.json"
+            script_path = self._write_script(
+                root / "record_context_refs.py",
+                """
+                import json
+                import pathlib
+                import sys
+
+                payload = json.load(sys.stdin)
+                pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="AssistantResponse",
+                        command=sys.executable,
+                        args=[str(script_path), str(output_path)],
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.complete = lambda *args, **kwargs: AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+            session = runtime.create_session()
+
+            runtime.run_turn(session, "Say hi")
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["session_id"], session.id)
+            self.assertTrue(str(payload["session_path"]).endswith(f"{session.id}.json"))
+            self.assertTrue(str(payload["transcript_path"]).endswith(f"{session.id}.jsonl"))
+            self.assertTrue(str(payload["snapshot_path"]).endswith(f"{session.id}.snapshot.json"))
+            self.assertTrue(Path(payload["session_path"]).exists())
+            self.assertTrue(Path(payload["transcript_path"]).exists())
+            self.assertTrue(Path(payload["snapshot_path"]).exists())
+
     def test_assistant_response_hook_handles_unicode_payload_on_windows_codepages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -438,6 +536,135 @@ class HookSystemTests(unittest.TestCase):
 
         self.assertEqual(result, "Hi there! 👋")
         self.assertEqual(payload["text"], "Hi there! 👋")
+
+    def test_assistant_response_background_hook_does_not_block_turn_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_path = root / "assistant_background.txt"
+            script_path = self._write_script(
+                root / "background_response.py",
+                """
+                import pathlib
+                import sys
+                import time
+
+                time.sleep(1.5)
+                pathlib.Path(sys.argv[1]).write_text("done", encoding="utf-8")
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="AssistantResponse",
+                        command=sys.executable,
+                        args=[str(script_path), str(output_path)],
+                        background=True,
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.complete = lambda *args, **kwargs: AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+            session = runtime.create_session()
+
+            started = time.monotonic()
+            result = runtime.run_turn(session, "Say hi")
+            elapsed = time.monotonic() - started
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not output_path.exists():
+                time.sleep(0.05)
+            self.assertEqual(result, "Done.")
+            self.assertLess(elapsed, 1.0)
+            self.assertTrue(output_path.exists())
+
+    def test_background_hook_failure_is_logged_without_blocking_main_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script_path = self._write_script(
+                root / "background_fail.py",
+                """
+                import sys
+                import time
+
+                time.sleep(0.5)
+                print("boom", file=sys.stderr)
+                raise SystemExit(2)
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="AssistantResponse",
+                        command=sys.executable,
+                        args=[str(script_path)],
+                        background=True,
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.complete = lambda *args, **kwargs: AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+            session = runtime.create_session()
+
+            result = runtime.run_turn(session, "Say hi")
+            deadline = time.monotonic() + 5
+            log_path = root / ".open_somnia" / "logs" / "hooks.jsonl"
+            while time.monotonic() < deadline:
+                if log_path.exists():
+                    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    statuses = [line.get("status") for line in lines]
+                    if "queued" in statuses and "error" in statuses:
+                        break
+                time.sleep(0.05)
+            else:
+                self.fail("Timed out waiting for background hook logs.")
+
+        self.assertEqual(result, "Done.")
+        self.assertIn("queued", statuses)
+        self.assertIn("error", statuses)
+
+    def test_sdk_hook_handler_emits_replace_input_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script_path = self._write_script(
+                root / "sdk_replace_input.py",
+                """
+                from open_somnia.hooks.sdk import HookHandler, replace_input_response, run
+
+                class ReplaceHandler(HookHandler):
+                    def handle(self, payload):
+                        return replace_input_response({"value": "patched"}, "rewritten")
+
+                if __name__ == "__main__":
+                    raise SystemExit(run(ReplaceHandler()))
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="PreToolUse",
+                        command=sys.executable,
+                        args=[str(script_path)],
+                        matcher=HookMatcherSettings(tool_name="echo_payload"),
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.execution_mode = "yolo"
+            session = runtime.create_session()
+            runtime.registry.register(
+                ToolDefinition(
+                    name="echo_payload",
+                    description="Return the payload for testing.",
+                    input_schema={"type": "object", "properties": {"value": {"type": "string"}}},
+                    handler=lambda ctx, payload: payload["value"],
+                )
+            )
+
+            result = runtime.invoke_tool(session, "echo_payload", {"value": "original"})
+
+        self.assertEqual(result, "patched")
 
     def test_user_choice_requested_hook_runs_for_authorization_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

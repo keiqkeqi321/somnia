@@ -70,6 +70,7 @@ class HookSettings:
     timeout_seconds: int = 10
     on_error: str = "continue"
     enabled: bool = True
+    background: bool = False
     managed_by: str | None = None
     config_path: Path | None = None
     config_scope: str | None = None

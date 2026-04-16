@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from open_somnia.config.models import AppSettings, HookSettings
@@ -24,10 +25,12 @@ class HookManager:
         logs_dir = getattr(storage, "logs_dir", None)
         self.log_path = logs_dir / "hooks.jsonl" if isinstance(logs_dir, Path) else None
         self.runner = HookRunner(self.workspace_root)
+        self._log_lock = Lock()
         configured_hooks = getattr(settings, "hooks", []) or []
         self.hooks = [hook for hook in configured_hooks if getattr(hook, "enabled", True)]
 
     def on_session_start(self, session: Any, *, actor: str = "lead") -> None:
+        context_refs = self._context_refs(getattr(session, "id", None))
         context = HookContext(
             event="SessionStart",
             session_id=getattr(session, "id", None),
@@ -35,17 +38,25 @@ class HookManager:
             actor=actor,
             execution_mode=None,
             workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
         )
         self._run_event(context)
 
     def before_tool_use(self, ctx: Any, tool_name: str, tool_input: dict[str, Any]) -> HookDecision:
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        context_refs = self._context_refs(session_id)
         context = HookContext(
             event="PreToolUse",
-            session_id=getattr(getattr(ctx, "session", None), "id", None),
+            session_id=session_id,
             trace_id=getattr(ctx, "trace_id", None),
             actor=getattr(ctx, "actor", None),
             execution_mode=getattr(getattr(ctx, "runtime", None), "execution_mode", None),
             workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
             tool_name=tool_name,
             tool_input=dict(tool_input),
         )
@@ -60,13 +71,18 @@ class HookManager:
         result: Any = None,
         error: Exception | None = None,
     ) -> None:
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        context_refs = self._context_refs(session_id)
         context = HookContext(
             event="PostToolUse",
-            session_id=getattr(getattr(ctx, "session", None), "id", None),
+            session_id=session_id,
             trace_id=getattr(ctx, "trace_id", None),
             actor=getattr(ctx, "actor", None),
             execution_mode=getattr(getattr(ctx, "runtime", None), "execution_mode", None),
             workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
             tool_name=tool_name,
             tool_input=dict(tool_input),
             tool_result=result,
@@ -84,6 +100,7 @@ class HookManager:
         text: str,
         execution_mode: str,
     ) -> None:
+        context_refs = self._context_refs(getattr(session, "id", None))
         context = HookContext(
             event="AssistantResponse",
             session_id=getattr(session, "id", None),
@@ -91,6 +108,9 @@ class HookManager:
             actor=actor,
             execution_mode=execution_mode,
             workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
             assistant_message=assistant_message,
             text=text,
         )
@@ -107,6 +127,7 @@ class HookManager:
         choice_payload: dict[str, Any],
         options: list[str],
     ) -> None:
+        context_refs = self._context_refs(getattr(session, "id", None))
         context = HookContext(
             event="UserChoiceRequested",
             session_id=getattr(session, "id", None),
@@ -114,6 +135,9 @@ class HookManager:
             actor=actor,
             execution_mode=execution_mode,
             workspace_root=self.workspace_root,
+            session_path=context_refs["session_path"],
+            transcript_path=context_refs["transcript_path"],
+            snapshot_path=context_refs["snapshot_path"],
             choice_type=choice_type,
             choice_payload=dict(choice_payload),
             options=list(options),
@@ -165,6 +189,14 @@ class HookManager:
 
     def _execute_hook(self, hook: HookSettings, context: HookContext) -> HookExecutionResult:
         try:
+            if getattr(hook, "background", False) and normalize_hook_event(context.event) != "PreToolUse":
+                execution = self.runner.run_background(
+                    hook,
+                    context,
+                    on_complete=lambda result, error: self._handle_background_completion(hook, context, result, error),
+                )
+                self._log_hook_queued(execution, context)
+                return execution
             execution = self.runner.run(hook, context)
         except HookExecutionError as exc:
             self._log_hook_failure(hook, context, str(exc))
@@ -174,46 +206,104 @@ class HookManager:
         self._log_hook_success(execution, context)
         return execution
 
+    def _handle_background_completion(
+        self,
+        hook: HookSettings,
+        context: HookContext,
+        execution: HookExecutionResult | None,
+        error: HookExecutionError | None,
+    ) -> None:
+        if error is not None:
+            self._log_hook_failure(hook, context, str(error), background=True)
+            return
+        if execution is not None:
+            self._log_hook_success(execution, context)
+
     def _continued_failure_result(self, hook: HookSettings) -> HookExecutionResult:
         return HookExecutionResult(hook=hook, decision=HookDecision(action="continue"), duration_ms=0)
+
+    def _context_refs(self, session_id: str | None) -> dict[str, Path | None]:
+        if not session_id:
+            return {
+                "session_path": None,
+                "transcript_path": None,
+                "snapshot_path": None,
+            }
+        storage = getattr(self.settings, "storage", None)
+        sessions_dir = getattr(storage, "sessions_dir", None)
+        transcripts_dir = getattr(storage, "transcripts_dir", None)
+        session_path = sessions_dir / f"{session_id}.json" if isinstance(sessions_dir, Path) else None
+        transcript_path = transcripts_dir / f"{session_id}.jsonl" if isinstance(transcripts_dir, Path) else None
+        snapshot_path = transcripts_dir / f"{session_id}.snapshot.json" if isinstance(transcripts_dir, Path) else None
+        return {
+            "session_path": session_path,
+            "transcript_path": transcript_path,
+            "snapshot_path": snapshot_path,
+        }
+
+    def _log_hook_queued(self, execution: HookExecutionResult, context: HookContext) -> None:
+        if self.log_path is None:
+            return
+        with self._log_lock:
+            append_jsonl(
+                self.log_path,
+                {
+                    "ts": now_ts(),
+                    "status": execution.status,
+                    "event": context.event,
+                    "hook": self._hook_identity(execution.hook),
+                    "tool_name": context.tool_name,
+                    "actor": context.actor,
+                    "session_id": context.session_id,
+                    "trace_id": context.trace_id,
+                    "duration_ms": execution.duration_ms,
+                    "background": True,
+                    "pid": execution.pid,
+                },
+            )
 
     def _log_hook_success(self, execution: HookExecutionResult, context: HookContext) -> None:
         if self.log_path is None:
             return
-        append_jsonl(
-            self.log_path,
-            {
-                "ts": now_ts(),
-                "status": "ok",
-                "event": context.event,
-                "hook": self._hook_identity(execution.hook),
-                "tool_name": context.tool_name,
-                "actor": context.actor,
-                "session_id": context.session_id,
-                "trace_id": context.trace_id,
-                "duration_ms": execution.duration_ms,
-                "action": execution.decision.action,
-                "message": execution.decision.message,
-            },
-        )
+        with self._log_lock:
+            append_jsonl(
+                self.log_path,
+                {
+                    "ts": now_ts(),
+                    "status": execution.status,
+                    "event": context.event,
+                    "hook": self._hook_identity(execution.hook),
+                    "tool_name": context.tool_name,
+                    "actor": context.actor,
+                    "session_id": context.session_id,
+                    "trace_id": context.trace_id,
+                    "duration_ms": execution.duration_ms,
+                    "action": execution.decision.action,
+                    "message": execution.decision.message,
+                    "background": execution.background,
+                    "pid": execution.pid,
+                },
+            )
 
-    def _log_hook_failure(self, hook: HookSettings, context: HookContext, error: str) -> None:
+    def _log_hook_failure(self, hook: HookSettings, context: HookContext, error: str, *, background: bool = False) -> None:
         if self.log_path is None:
             return
-        append_jsonl(
-            self.log_path,
-            {
-                "ts": now_ts(),
-                "status": "error",
-                "event": context.event,
-                "hook": self._hook_identity(hook),
-                "tool_name": context.tool_name,
-                "actor": context.actor,
-                "session_id": context.session_id,
-                "trace_id": context.trace_id,
-                "message": error,
-            },
-        )
+        with self._log_lock:
+            append_jsonl(
+                self.log_path,
+                {
+                    "ts": now_ts(),
+                    "status": "error",
+                    "event": context.event,
+                    "hook": self._hook_identity(hook),
+                    "tool_name": context.tool_name,
+                    "actor": context.actor,
+                    "session_id": context.session_id,
+                    "trace_id": context.trace_id,
+                    "message": error,
+                    "background": background,
+                },
+            )
 
     def _hook_identity(self, hook: HookSettings) -> str:
         args = " ".join(str(arg) for arg in hook.args)

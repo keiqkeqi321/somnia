@@ -19,5 +19,5 @@
 | 11 | [任务系统](./11-任务系统.md) | 持久化任务管理：状态流转、依赖关系、自动认领 |
 | 12 | [后台任务](./12-后台任务.md) | 异步任务执行：后台线程、通知机制、超时控制 |
 | 13 | [Agent Team](./13-AgentTeam.md) | 多 Agent 协作：消息总线、计划审批、空间轮询、启动恢复 |
-| 14 | [Hooks](./14-Hooks.md) | 运行时 Hook 系统：事件模型、配置协议、内置通知、workspace 对 global 的 managed Hook 覆盖、`/hooks` 开关管理 |
+| 14 | [Hooks](./14-Hooks.md) | 运行时 Hook 系统：事件模型、同步/异步 Hook、上下文引用、Python SDK、内置通知与 `/hooks` 管理 |
 
