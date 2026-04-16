@@ -128,6 +128,33 @@ def _is_overloaded_error(status_code: int, details: str) -> bool:
     return any(marker in message or marker in detail_text for marker in overload_markers)
 
 
+def _is_forbidden_like_error(status_code: int, details: str) -> bool:
+    payload = _parse_error_payload(details)
+    error_payload = payload.get("error", {}) if isinstance(payload.get("error"), dict) else {}
+    error_type = str(error_payload.get("type", "")).strip().lower()
+    error_code = str(error_payload.get("code", "")).strip().lower()
+    message = str(error_payload.get("message", "")).strip().lower()
+    detail_text = details.strip().lower()
+    forbidden_markers = (
+        "forbidden",
+        "access denied",
+        "access forbidden",
+        "unauthorized",
+        "not allowed",
+        "permission denied",
+        "contact administrator",
+        "policy",
+    )
+    if status_code in {401, 403}:
+        return True
+    if error_type in {"authentication_error", "permission_error", "access_error", "upstream_error"}:
+        if any(marker in message or marker in detail_text for marker in forbidden_markers):
+            return True
+    if error_code in {"forbidden", "access_denied", "permission_denied", "unauthorized"}:
+        return True
+    return any(marker in message or marker in detail_text for marker in forbidden_markers)
+
+
 class OpenAIProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         self.settings = settings
@@ -203,9 +230,10 @@ class OpenAIProvider(LLMProvider):
                     body = self._read_streaming_response(response, text_callback, stop_checker=stop_checker)
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")
+            retryable = exc.code >= 500 and not _is_overloaded_error(exc.code, details) and not _is_forbidden_like_error(exc.code, details)
             raise ProviderError(
                 f"OpenAI request failed: {exc.code} {details}",
-                retryable=not _is_overloaded_error(exc.code, details) and exc.code >= 500,
+                retryable=retryable,
             ) from exc
         except urllib.error.URLError as exc:
             retryable = isinstance(getattr(exc, "reason", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()

@@ -1630,6 +1630,36 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertFalse(context.exception.retryable)
         self.assertIn("1305", str(context.exception))
 
+    def test_openai_provider_marks_forbidden_like_502_as_non_retryable(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="qwen3.5-plus",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+        forbidden_body = (
+            '{"error":{"message":"Upstream access forbidden, please contact administrator",'
+            '"type":"upstream_error"}}'
+        ).encode("utf-8")
+        http_error = urllib.error.HTTPError(
+            url="https://example.com/v1/chat/completions",
+            code=502,
+            msg="Bad Gateway",
+            hdrs=None,
+            fp=io.BytesIO(forbidden_body),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            with self.assertRaises(ProviderError) as context:
+                provider.complete("system", [], [], max_tokens=1024)
+
+        self.assertFalse(context.exception.retryable)
+        self.assertIn("Upstream access forbidden", str(context.exception))
+
     def test_complete_interrupts_promptly_while_provider_call_is_blocked(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(provider=SimpleNamespace(max_tokens=1024))
