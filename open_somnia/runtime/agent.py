@@ -563,12 +563,13 @@ class OpenAgentRuntime:
         max_tokens: int,
         actor: str = "lead",
         stream: bool = False,
-    ) -> None:
+        kind: str = "turn",
+    ) -> Path | None:
         if not self._provider_payload_dump_enabled():
-            return
+            return None
         logs_root = Path(getattr(getattr(self.settings, "storage", None), "logs_dir", ""))
         if not str(logs_root).strip():
-            return
+            return None
         provider = getattr(self, "provider", None)
         usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         provider_payload: dict[str, Any] | None = None
@@ -588,6 +589,7 @@ class OpenAgentRuntime:
             "timestamp": time.time(),
             "session_id": str(getattr(session, "id", "")).strip(),
             "actor": actor,
+            "kind": str(kind).strip().lower() or "turn",
             "provider": {
                 "name": getattr(getattr(self.settings, "provider", None), "name", ""),
                 "type": getattr(getattr(self.settings, "provider", None), "provider_type", ""),
@@ -607,15 +609,68 @@ class OpenAgentRuntime:
             "max_tokens": max_tokens,
             "stream": stream,
             "provider_request": provider_payload,
+            "provider_response": None,
+            "response_text": None,
+            "provider_error": None,
+            "latency_ms": None,
             "session_path": str(self.settings.storage.sessions_dir / f"{session.id}.json"),
             "transcript_path": str(self.transcript_store.transcript_path(session.id)),
         }
         dump_dir = logs_root / "provider_payloads"
         dump_name = f"{session.id}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.json"
-        atomic_write_text(
-            dump_dir / dump_name,
-            json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
-        )
+        dump_path = dump_dir / dump_name
+        atomic_write_text(dump_path, json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+        return dump_path
+
+    def _serialize_provider_response(self, turn: Any) -> dict[str, Any]:
+        tool_calls: list[dict[str, Any]] = []
+        for tool_call in list(getattr(turn, "tool_calls", []) or []):
+            tool_calls.append(
+                {
+                    "id": getattr(tool_call, "id", None),
+                    "name": getattr(tool_call, "name", None),
+                    "input": getattr(tool_call, "input", None),
+                }
+            )
+        text_blocks = [str(block) for block in list(getattr(turn, "text_blocks", []) or [])]
+        return {
+            "stop_reason": getattr(turn, "stop_reason", None),
+            "text_blocks": text_blocks,
+            "tool_calls": tool_calls,
+            "usage": getattr(turn, "usage", None),
+            "raw_response": getattr(turn, "raw_response", None),
+        }
+
+    def _record_provider_payload_result(
+        self,
+        dump_path: Path | None,
+        *,
+        turn: Any | None = None,
+        error: BaseException | None = None,
+        latency_ms: float | None = None,
+    ) -> None:
+        if dump_path is None:
+            return
+        try:
+            payload = json.loads(Path(dump_path).read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if latency_ms is not None:
+            payload["latency_ms"] = round(max(0.0, float(latency_ms)), 3)
+        if turn is not None:
+            response = self._serialize_provider_response(turn)
+            payload["provider_response"] = response
+            payload["response_text"] = "\n\n".join(response.get("text_blocks") or []).strip()
+            payload["provider_error"] = None
+        if error is not None:
+            payload["provider_error"] = {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+            retryable = getattr(error, "retryable", None)
+            if retryable is not None:
+                payload["provider_error"]["retryable"] = bool(retryable)
+        atomic_write_text(Path(dump_path), json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 
     def recent_context_governance_label(self, session, *, max_age_seconds: float = 15.0) -> str:
         session_id = str(getattr(session, "id", "")).strip()
@@ -1379,16 +1434,42 @@ class OpenAgentRuntime:
         todo_context = self._todo_hint_context(session)
         fallback = self._fallback_context_relevance_decisions(session, selected, topic_context)
         try:
-            turn = self.provider.complete(
-                system_prompt=(
-                    "You are a context janitor for a coding agent.\n"
-                    "Prioritize the current recent topic. Todo items are only weak hints.\n"
-                    "Decide whether each old tool result should remain original, be condensed into one factual sentence, or be evicted.\n"
-                    "Return strict JSON only."
-                ),
-                messages=[{"role": "user", "content": self._build_semantic_janitor_prompt(topic_context, todo_context, selected)}],
+            janitor_system_prompt = (
+                "You are a context janitor for a coding agent.\n"
+                "Prioritize the current recent topic. Todo items are only weak hints.\n"
+                "Decide whether each old tool result should remain original, be condensed into one factual sentence, or be evicted.\n"
+                "Return strict JSON only."
+            )
+            janitor_messages = [{"role": "user", "content": self._build_semantic_janitor_prompt(topic_context, todo_context, selected)}]
+            dump_path = self._dump_provider_payload_if_enabled(
+                session=session,
+                system_prompt=janitor_system_prompt,
+                payload_messages=janitor_messages,
                 tools=[],
                 max_tokens=min(900, self.settings.provider.max_tokens),
+                actor="janitor",
+                stream=False,
+                kind="janitor",
+            )
+            started_at = time.monotonic()
+            try:
+                turn = self.provider.complete(
+                    system_prompt=janitor_system_prompt,
+                    messages=janitor_messages,
+                    tools=[],
+                    max_tokens=min(900, self.settings.provider.max_tokens),
+                )
+            except Exception as exc:
+                self._record_provider_payload_result(
+                    dump_path,
+                    error=exc,
+                    latency_ms=(time.monotonic() - started_at) * 1000,
+                )
+                raise
+            self._record_provider_payload_result(
+                dump_path,
+                turn=turn,
+                latency_ms=(time.monotonic() - started_at) * 1000,
             )
             text = "\n".join(getattr(turn, "text_blocks", []) or []).strip()
             if not text:
@@ -1979,7 +2060,7 @@ class OpenAgentRuntime:
                     system_prompt=system_prompt,
                     tools=tool_schemas,
                 )
-                self._dump_provider_payload_if_enabled(
+                dump_path = self._dump_provider_payload_if_enabled(
                     session=session,
                     system_prompt=system_prompt,
                     payload_messages=payload_messages,
@@ -1987,14 +2068,28 @@ class OpenAgentRuntime:
                     max_tokens=self.settings.provider.max_tokens,
                     actor="lead",
                     stream=text_callback is not None or should_interrupt is not None,
+                    kind="turn",
                 )
-
-                turn = self.complete(
-                    system_prompt,
-                    payload_messages,
-                    tool_schemas,
-                    text_callback=text_callback,
-                    should_interrupt=should_interrupt,
+                started_at = time.monotonic()
+                try:
+                    turn = self.complete(
+                        system_prompt,
+                        payload_messages,
+                        tool_schemas,
+                        text_callback=text_callback,
+                        should_interrupt=should_interrupt,
+                    )
+                except Exception as exc:
+                    self._record_provider_payload_result(
+                        dump_path,
+                        error=exc,
+                        latency_ms=(time.monotonic() - started_at) * 1000,
+                    )
+                    raise
+                self._record_provider_payload_result(
+                    dump_path,
+                    turn=turn,
+                    latency_ms=(time.monotonic() - started_at) * 1000,
                 )
                 self._record_session_token_usage(
                     session,

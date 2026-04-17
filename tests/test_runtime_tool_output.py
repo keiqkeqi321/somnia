@@ -29,6 +29,11 @@ from open_somnia.runtime.session import AgentSession
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
+    def _stable_test_dir(self, name: str) -> Path:
+        root = Path.cwd() / ".tmp-tests" / f"{name}-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def _candidate(
         self,
         *,
@@ -917,7 +922,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(OpenAgentRuntime.authorize_tool_call(runtime, "edit_file", {"path": "demo.txt"}))
 
     def test_workspace_authorization_is_persisted_under_openagent_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
             data_dir = Path(tmpdir) / ".open_somnia"
             runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
             runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
@@ -1499,7 +1504,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         mock_anthropic.assert_not_called()
 
     def test_undo_last_turn_restores_previous_file_content(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
             root = Path(tmpdir)
             target = root / "greet.py"
             target.write_text("new\n", encoding="utf-8")
@@ -1532,58 +1537,225 @@ class RuntimeToolOutputTests(unittest.TestCase):
             self.assertIn("Undid 1 file change", message)
 
     def test_dump_provider_payload_if_enabled_writes_hidden_debug_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            data_dir = Path(tmpdir) / ".open_somnia"
-            logs_dir = data_dir / "logs"
-            transcripts_dir = data_dir / "transcripts"
-            sessions_dir = data_dir / "sessions"
-            runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-            runtime.settings = SimpleNamespace(
-                storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
-                provider=SimpleNamespace(
-                    name="openai",
-                    provider_type="openai",
-                    model="gpt-4.1",
-                    base_url="https://api.example.test/v1",
-                    max_tokens=4096,
-                    context_window_tokens=100_000,
+        root = self._stable_test_dir("provider-payload")
+        data_dir = root / ".open_somnia"
+        logs_dir = data_dir / "logs"
+        transcripts_dir = data_dir / "transcripts"
+        sessions_dir = data_dir / "sessions"
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
+            provider=SimpleNamespace(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                base_url="https://api.example.test/v1",
+                max_tokens=4096,
+                context_window_tokens=100_000,
+            ),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 12_345,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+            debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
+                "url": "https://api.example.test/v1/chat/completions",
+                "body": {"model": "gpt-4.1", "stream": stream},
+            },
+        )
+        runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._serialize_provider_response = OpenAgentRuntime._serialize_provider_response.__get__(runtime, OpenAgentRuntime)
+        runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
+        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
+            dump_path = OpenAgentRuntime._dump_provider_payload_if_enabled(
+                runtime,
+                session=session,
+                system_prompt="system",
+                payload_messages=[{"role": "user", "content": "hello"}],
+                tools=[],
+                max_tokens=4096,
+                actor="lead",
+                stream=True,
+            )
+            OpenAgentRuntime._record_provider_payload_result(
+                runtime,
+                dump_path,
+                turn=AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["hello world"],
+                    usage={"input_tokens": 10, "output_tokens": 5},
+                    raw_response={"id": "resp-1"},
                 ),
+                latency_ms=23.5,
             )
-            runtime.provider = SimpleNamespace(
-                count_tokens=lambda system_prompt, messages, tools: 12_345,
-                token_counter_name=lambda: "tiktoken",
-                context_window_tokens=lambda: 100_000,
-                debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
-                    "url": "https://api.example.test/v1/chat/completions",
-                    "body": {"model": "gpt-4.1", "stream": stream},
-                },
+
+        dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
+        self.assertEqual(len(dump_files), 1)
+        dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(dumped["session_id"], "session-1")
+        self.assertEqual(dumped["kind"], "turn")
+        self.assertEqual(dumped["provider"]["model"], "gpt-4.1")
+        self.assertEqual(dumped["context_usage"]["used_tokens"], 12_345)
+        self.assertEqual(dumped["provider_request"]["body"]["stream"], True)
+        self.assertEqual(dumped["provider_response"]["stop_reason"], "end_turn")
+        self.assertEqual(dumped["response_text"], "hello world")
+        self.assertEqual(dumped["latency_ms"], 23.5)
+        self.assertTrue(dumped["transcript_path"].endswith("session-1.jsonl"))
+
+    def test_record_provider_payload_result_writes_error_details(self) -> None:
+        root = self._stable_test_dir("provider-payload-error")
+        data_dir = root / ".open_somnia"
+        logs_dir = data_dir / "logs"
+        transcripts_dir = data_dir / "transcripts"
+        sessions_dir = data_dir / "sessions"
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
+            provider=SimpleNamespace(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                base_url="https://api.example.test/v1",
+                max_tokens=4096,
+                context_window_tokens=100_000,
+            ),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 12_345,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+            debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
+                "url": "https://api.example.test/v1/chat/completions",
+                "body": {"model": "gpt-4.1", "stream": stream},
+            },
+        )
+        runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._serialize_provider_response = OpenAgentRuntime._serialize_provider_response.__get__(runtime, OpenAgentRuntime)
+        runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
+        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
+        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+
+        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
+            dump_path = OpenAgentRuntime._dump_provider_payload_if_enabled(
+                runtime,
+                session=session,
+                system_prompt="system",
+                payload_messages=[{"role": "user", "content": "hello"}],
+                tools=[],
+                max_tokens=4096,
+                actor="lead",
+                stream=False,
             )
-            runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
-            runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
-            runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
-            runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
-            session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
+            OpenAgentRuntime._record_provider_payload_result(
+                runtime,
+                dump_path,
+                error=RuntimeError("boom"),
+                latency_ms=12.0,
+            )
 
-            with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
-                OpenAgentRuntime._dump_provider_payload_if_enabled(
-                    runtime,
-                    session=session,
-                    system_prompt="system",
-                    payload_messages=[{"role": "user", "content": "hello"}],
-                    tools=[],
-                    max_tokens=4096,
-                    actor="lead",
-                    stream=True,
-                )
+        dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
+        self.assertEqual(len(dump_files), 1)
+        dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(dumped["provider_error"]["type"], "RuntimeError")
+        self.assertEqual(dumped["provider_error"]["message"], "boom")
+        self.assertEqual(dumped["latency_ms"], 12.0)
 
-            dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
-            self.assertEqual(len(dump_files), 1)
-            dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
-            self.assertEqual(dumped["session_id"], "session-1")
-            self.assertEqual(dumped["provider"]["model"], "gpt-4.1")
-            self.assertEqual(dumped["context_usage"]["used_tokens"], 12_345)
-            self.assertEqual(dumped["provider_request"]["body"]["stream"], True)
-            self.assertTrue(dumped["transcript_path"].endswith("session-1.jsonl"))
+    def test_analyze_context_relevance_dumps_janitor_provider_payload_when_enabled(self) -> None:
+        root = self._stable_test_dir("janitor-provider-payload")
+        data_dir = root / ".open_somnia"
+        logs_dir = data_dir / "logs"
+        transcripts_dir = data_dir / "transcripts"
+        sessions_dir = data_dir / "sessions"
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
+            provider=SimpleNamespace(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                base_url="https://api.example.test/v1",
+                max_tokens=4096,
+                context_window_tokens=100_000,
+            ),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 12_345,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+            debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
+                "url": "https://api.example.test/v1/chat/completions",
+                "body": {"model": "gpt-4.1", "stream": stream, "messages": messages},
+            },
+            complete=lambda **kwargs: AssistantTurn(
+                stop_reason="end_turn",
+                text_blocks=['[{"message_index":1,"item_index":0,"state":"condensed","summary":"condensed"}]'],
+            ),
+        )
+        runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
+        runtime._serialize_provider_response = OpenAgentRuntime._serialize_provider_response.__get__(runtime, OpenAgentRuntime)
+        runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
+        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime._selected_janitor_candidates = OpenAgentRuntime._selected_janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._extract_recent_topic_context = OpenAgentRuntime._extract_recent_topic_context.__get__(runtime, OpenAgentRuntime)
+        runtime._todo_hint_context = lambda session: {"open_items": [], "completed_items": [], "open_tokens": set(), "completed_tokens": set()}
+        runtime._fallback_context_relevance_decisions = OpenAgentRuntime._fallback_context_relevance_decisions.__get__(runtime, OpenAgentRuntime)
+        runtime._build_semantic_janitor_prompt = OpenAgentRuntime._build_semantic_janitor_prompt.__get__(runtime, OpenAgentRuntime)
+        runtime._parse_semantic_janitor_response = OpenAgentRuntime._parse_semantic_janitor_response.__get__(runtime, OpenAgentRuntime)
+        runtime._strip_json_fence = OpenAgentRuntime._strip_json_fence.__get__(runtime, OpenAgentRuntime)
+        runtime._render_condensed_context = OpenAgentRuntime._render_condensed_context.__get__(runtime, OpenAgentRuntime)
+        runtime._render_evicted_context = OpenAgentRuntime._render_evicted_context.__get__(runtime, OpenAgentRuntime)
+        runtime._context_compact_text = OpenAgentRuntime._context_compact_text.__get__(runtime, OpenAgentRuntime)
+        runtime._candidate_target_path = OpenAgentRuntime._candidate_target_path.__get__(runtime, OpenAgentRuntime)
+        runtime._candidate_relevance_score = OpenAgentRuntime._candidate_relevance_score.__get__(runtime, OpenAgentRuntime)
+        runtime._extract_topic_tokens = OpenAgentRuntime._extract_topic_tokens.__get__(runtime, OpenAgentRuntime)
+        runtime._is_visible_conversation_message = OpenAgentRuntime._is_visible_conversation_message.__get__(runtime, OpenAgentRuntime)
+        runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "demo"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "demo hit", "raw_output": "demo hit", "log_id": "log-2"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-3"}]},
+                {"role": "assistant", "content": "please keep demo.txt context"},
+            ],
+        )
+
+        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
+            decisions = OpenAgentRuntime._analyze_context_relevance(
+                runtime,
+                session=session,
+                messages=session.messages,
+                system_prompt="ignored",
+                tools=[],
+            )
+
+        self.assertEqual(len(decisions), 1)
+        dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
+        self.assertEqual(len(dump_files), 1)
+        dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(dumped["kind"], "janitor")
+        self.assertEqual(dumped["actor"], "janitor")
+        self.assertEqual(dumped["stream"], False)
+        self.assertEqual(dumped["provider_request"]["body"]["stream"], False)
+        self.assertEqual(dumped["provider_response"]["stop_reason"], "end_turn")
+        self.assertEqual(
+            dumped["response_text"],
+            '[{"message_index":1,"item_index":0,"state":"condensed","summary":"condensed"}]',
+        )
+        self.assertIsNone(dumped["provider_error"])
+        self.assertIsInstance(dumped["latency_ms"], float)
 
     def test_undo_last_turn_normalizes_workspace_root_before_boundary_check(self) -> None:
         class _FakeResolvedPath:
