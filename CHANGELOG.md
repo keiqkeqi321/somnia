@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.6 (2026-04-17)
+
+- Implement topic-shift janitor assist and importance weighting (6da75fa)
+- Record provider debug payload responses and errors (b698de4)
+
 ## 0.4.5 (2026-04-16)
 
 - fix: 淇 release 鑴氭湰鐨?Windows 10 鍏煎鎬?(bc4cc22)
