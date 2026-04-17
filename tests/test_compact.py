@@ -177,6 +177,32 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].tool_call_id, "call-2")
 
+    def test_extract_tool_result_candidates_preserves_tool_importance(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "main.py"},
+                        "importance": "foundation",
+                    }
+                ],
+            },
+            _tool_result("call-1", "print('hello')"),
+            _tool_call("call-2", "grep"),
+            _tool_result("call-2", "recent content"),
+            _tool_call("call-3", "grep"),
+            _tool_result("call-3", "most recent content"),
+        ]
+
+        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=2)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].importance, "foundation")
+
     def test_should_auto_compact_uses_ratio_only(self) -> None:
         self.assertTrue(
             should_auto_compact(ContextWindowUsage(used_tokens=82_000, max_tokens=100_000))

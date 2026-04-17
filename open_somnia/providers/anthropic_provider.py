@@ -7,7 +7,7 @@ from anthropic import Anthropic
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
 
 
 def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -206,7 +206,9 @@ class AnthropicProvider(LLMProvider):
             if getattr(block, "type", None) == "text":
                 text_blocks.append(block.text)
             elif getattr(block, "type", None) == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input)))
+                tool_input = dict(block.input)
+                importance = normalize_tool_importance(tool_input.pop("importance", None))
+                tool_calls.append(ToolCall(id=block.id, name=block.name, input=tool_input, importance=importance))
         stop_reason = response.stop_reason or "end_turn"
         if stop_reason == "tool_use":
             stop_reason = "tool_use"

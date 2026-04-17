@@ -25,6 +25,14 @@ LIST_PATTERN = re.compile(r"^(\s*)([-+*]|\d+\.)\s+(.*)$")
 INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+)`")
 INLINE_BOLD_PATTERN = re.compile(r"(\*\*|__)(.+?)\1")
 INLINE_ITALIC_PATTERN = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
+ALLOWED_TOOL_IMPORTANCE = {"glance", "investigate", "foundation"}
+
+
+def normalize_tool_importance(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in ALLOWED_TOOL_IMPORTANCE:
+        return normalized
+    return None
 
 
 @dataclass(slots=True)
@@ -32,6 +40,7 @@ class ToolCall:
     id: str
     name: str
     input: dict[str, Any]
+    importance: str | None = None
 
 
 @dataclass(slots=True)
@@ -53,14 +62,15 @@ class AssistantTurn:
         for text in self.text_blocks:
             blocks.append({"type": "text", "text": text})
         for tool_call in selected_tool_calls:
-            blocks.append(
-                {
-                    "type": "tool_call",
-                    "id": tool_call.id,
-                    "name": tool_call.name,
-                    "input": tool_call.input,
-                }
-            )
+            block = {
+                "type": "tool_call",
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_call.input,
+            }
+            if tool_call.importance:
+                block["importance"] = tool_call.importance
+            blocks.append(block)
         return {"role": "assistant", "content": blocks}
 
 

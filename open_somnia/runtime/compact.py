@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from open_somnia.providers.base import ProviderError
+from open_somnia.runtime.messages import normalize_tool_importance
 
 
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
@@ -44,6 +45,7 @@ class ToolResultCandidate:
     tool_call_id: str
     tool_name: str
     tool_input: dict[str, Any]
+    importance: str | None
     content: str
     log_id: str | None
     age: int
@@ -111,8 +113,8 @@ def _strip_tool_result_metadata(item: dict[str, Any]) -> None:
     item.pop("log_id", None)
 
 
-def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any]]]:
-    lookup: dict[str, tuple[str, dict[str, Any]]] = {}
+def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any], str | None]]:
+    lookup: dict[str, tuple[str, dict[str, Any], str | None]] = {}
     for message in messages:
         if message.get("role") != "assistant":
             continue
@@ -125,9 +127,14 @@ def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, di
             call_id = str(item.get("id", "")).strip()
             if not call_id:
                 continue
+            tool_input = dict(item.get("input") or {})
+            importance = normalize_tool_importance(item.get("importance"))
+            if importance is None:
+                importance = normalize_tool_importance(tool_input.get("importance"))
             lookup[call_id] = (
                 str(item.get("name", "")).strip() or "tool",
-                dict(item.get("input") or {}),
+                tool_input,
+                importance,
             )
     return lookup
 
@@ -178,7 +185,7 @@ def extract_tool_result_candidates(
             if semantic_state in {"condensed", "evicted"}:
                 continue
             call_id = str(item.get("tool_call_id", "")).strip()
-            tool_name, tool_input = lookup.get(call_id, ("tool", {}))
+            tool_name, tool_input, importance = lookup.get(call_id, ("tool", {}, None))
             content = str(item.get("content", ""))
             candidates.append(
                 ToolResultCandidate(
@@ -186,6 +193,7 @@ def extract_tool_result_candidates(
                     tool_call_id=call_id,
                     tool_name=tool_name,
                     tool_input=tool_input,
+                    importance=importance,
                     content=content,
                     log_id=str(item.get("log_id", "")).strip() or None,
                     age=total_rounds - round_position,

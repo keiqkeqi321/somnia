@@ -42,6 +42,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         tool_name: str,
         content: str,
         tool_input: dict | None = None,
+        importance: str | None = None,
         log_id: str = "log-1",
         age: int = 4,
         output_preview: str | None = None,
@@ -52,6 +53,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             tool_call_id=f"call-{message_index}-{item_index}",
             tool_name=tool_name,
             tool_input=tool_input or {},
+            importance=importance,
             content=content,
             log_id=log_id,
             age=age,
@@ -1196,6 +1198,146 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
         self.assertIn("[Semantic Summary | bash | log log-call-1]", session.messages[1]["content"][0]["content"])
         self.assertEqual(loop_messages[-1]["content"], "please continue in main.py")
+
+    def test_run_turn_skips_topic_shift_detection_below_manual_janitor_threshold(self) -> None:
+        detection_calls: list[str] = []
+        transcript_entries: list[dict] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 15_000,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime._recent_context_usage = {}
+        runtime._context_governance_events = {}
+        runtime._janitor_state = {}
+        runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
+        runtime._detect_topic_shift = lambda **kwargs: detection_calls.append(kwargs["latest_user_message"]) or (True, "shift")
+        runtime._agent_loop = lambda session, **kwargs: "loop-result"
+
+        session = AgentSession(id="session-1", messages=[{"role": "assistant", "content": "Ready."}])
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "new question")
+
+        self.assertEqual(result, "loop-result")
+        self.assertEqual(detection_calls, [])
+        self.assertEqual(transcript_entries, [{"role": "user", "content": "new question"}])
+
+    def test_run_turn_topic_shift_detection_can_trigger_janitor_without_polluting_transcript(self) -> None:
+        detection_calls: list[str] = []
+        loop_messages: list[dict] = []
+        transcript_entries: list[dict] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
+            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
+        )
+        runtime.provider = SimpleNamespace(
+            count_tokens=lambda system_prompt, messages, tools: 30_000 if "Semantic Summary" not in str(messages) else 22_000,
+            token_counter_name=lambda: "tiktoken",
+            context_window_tokens=lambda: 100_000,
+        )
+        runtime.registry = SimpleNamespace(schemas=lambda: [])
+        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
+        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
+        runtime.execution_mode = "accept_edits"
+        runtime._context_usage_cache = {}
+        runtime._payload_message_cache = {}
+        runtime._recent_context_usage = {}
+        runtime._context_governance_events = {}
+        runtime._janitor_state = {}
+        runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
+        runtime._detect_topic_shift = lambda **kwargs: detection_calls.append(kwargs["latest_user_message"]) or (True, "new topic")
+        runtime._agent_loop = lambda session, **kwargs: loop_messages.extend(session.messages) or "loop-result"
+
+        def _analyze(**kwargs):
+            return [
+                SemanticCompressionDecision(
+                    message_index=1,
+                    item_index=0,
+                    state="condensed",
+                    summary="[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
+                )
+            ]
+
+        runtime._analyze_context_relevance = _analyze
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "ls -R"}, "importance": "glance"}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "a" * 1000, "raw_output": "a" * 1000, "log_id": "log-call-1"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "needle", "raw_output": "needle", "log_id": "log-call-2"}]},
+                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}, "importance": "foundation"}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-call-3"}]},
+                {"role": "assistant", "content": "Ready for the next request."},
+            ],
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "now switch to auth.py")
+
+        self.assertEqual(result, "loop-result")
+        self.assertEqual(detection_calls, ["now switch to auth.py"])
+        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
+        self.assertIn("[Semantic Summary | bash | log log-call-1]", session.messages[1]["content"][0]["content"])
+        self.assertEqual(loop_messages[-1]["content"], "now switch to auth.py")
+        self.assertEqual(transcript_entries, [{"role": "user", "content": "now switch to auth.py"}])
+
+    def test_topic_shift_candidate_pressure_ignores_foundation_only_candidates(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
+        runtime._topic_shift_candidate_pressure = OpenAgentRuntime._topic_shift_candidate_pressure.__get__(runtime, OpenAgentRuntime)
+        runtime._tool_importance_review_priority = OpenAgentRuntime._tool_importance_review_priority.__get__(runtime, OpenAgentRuntime)
+        runtime.JANITOR_PRUNABLE_OUTPUT_CHARS = OpenAgentRuntime.JANITOR_PRUNABLE_OUTPUT_CHARS
+
+        messages = [
+            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "main.py"}, "importance": "foundation"}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 800, "raw_output": "x" * 800, "log_id": "log-1"}]},
+            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "recent", "raw_output": "recent", "log_id": "log-2"}]},
+            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "grep", "input": {"pattern": "other"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "most recent", "raw_output": "most recent", "log_id": "log-3"}]},
+        ]
+
+        pressure = OpenAgentRuntime._topic_shift_candidate_pressure(runtime, messages)
+
+        self.assertEqual(pressure, 0)
+
+    def test_candidate_relevance_score_applies_importance_bonus(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._tool_candidate_haystack = OpenAgentRuntime._tool_candidate_haystack.__get__(runtime, OpenAgentRuntime)
+        runtime._tool_importance_preservation_score = OpenAgentRuntime._tool_importance_preservation_score.__get__(runtime, OpenAgentRuntime)
+
+        foundation_score = OpenAgentRuntime._candidate_relevance_score(
+            runtime,
+            self._candidate(message_index=1, item_index=0, tool_name="read_file", content="plain content", importance="foundation"),
+            active_files=set(),
+            active_symbols=set(),
+            topic_tokens=set(),
+            open_todo_tokens=set(),
+            completed_todo_tokens=set(),
+        )
+        glance_score = OpenAgentRuntime._candidate_relevance_score(
+            runtime,
+            self._candidate(message_index=1, item_index=0, tool_name="read_file", content="plain content", importance="glance"),
+            active_files=set(),
+            active_symbols=set(),
+            topic_tokens=set(),
+            open_todo_tokens=set(),
+            completed_todo_tokens=set(),
+        )
+
+        self.assertGreater(foundation_score, glance_score)
 
     def test_context_window_usage_cache_invalidates_after_session_messages_change(self) -> None:
         provider_calls: list[int] = []

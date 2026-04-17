@@ -9,7 +9,7 @@ from typing import Any
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
 
 try:
     import tiktoken
@@ -324,14 +324,20 @@ class OpenAIProvider(LLMProvider):
             for item in content:
                 if item.get("type") == "text":
                     text_blocks.append(item.get("text", ""))
-        tool_calls = [
-            ToolCall(
-                id=tool_call["id"],
-                name=tool_call["function"]["name"],
-                input=json.loads(tool_call["function"].get("arguments") or "{}"),
+        tool_calls = []
+        for tool_call in message.get("tool_calls", []):
+            arguments = json.loads(tool_call["function"].get("arguments") or "{}")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            importance = normalize_tool_importance(arguments.pop("importance", None))
+            tool_calls.append(
+                ToolCall(
+                    id=tool_call["id"],
+                    name=tool_call["function"]["name"],
+                    input=arguments,
+                    importance=importance,
+                )
             )
-            for tool_call in message.get("tool_calls", [])
-        ]
         stop_reason = choice.get("finish_reason") or "stop"
         if stop_reason == "tool_calls":
             stop_reason = "tool_use"

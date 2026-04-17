@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 import re
@@ -82,6 +83,7 @@ from open_somnia.tools.todo import TodoManager, register_todo_tool
 
 class OpenAgentRuntime:
     DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
+    TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
     SILENT_TOOL_NAMES = {"TodoWrite"}
@@ -454,9 +456,52 @@ class OpenAgentRuntime:
         scope = getattr(hook, "config_scope", None) or "config"
         return f"{state.capitalize()} {kind} hook for {hook.event} in {scope} config: {config_path}"
 
-    def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
+    def _augment_tool_schemas_with_importance(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        augmented: list[dict[str, Any]] = []
+        for schema in schemas:
+            clone = deepcopy(schema)
+            input_schema = clone.get("input_schema")
+            if isinstance(input_schema, dict) and input_schema.get("type") == "object":
+                properties = input_schema.setdefault("properties", {})
+                if "importance" not in properties:
+                    properties["importance"] = {
+                        "type": "string",
+                        "enum": list(self.TOOL_IMPORTANCE_VALUES),
+                        "description": (
+                            "Optional context-governance hint. "
+                            "Use 'glance' for disposable checks, 'investigate' for normal exploration, "
+                            "or 'foundation' for evidence that should be preserved more strongly."
+                        ),
+                    }
+            augmented.append(clone)
+        return augmented
+
+    def _tool_schemas_for_model(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
-        return registry.schemas()
+        return self._augment_tool_schemas_with_importance(registry.schemas())
+
+    def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
+        return self._tool_schemas_for_model(actor)
+
+    def _tool_importance_preservation_score(self, importance: str | None) -> int:
+        normalized = str(importance or "").strip().lower()
+        if normalized == "foundation":
+            return 4
+        if normalized == "investigate":
+            return 1
+        if normalized == "glance":
+            return -2
+        return 0
+
+    def _tool_importance_review_priority(self, importance: str | None) -> int:
+        normalized = str(importance or "").strip().lower()
+        if normalized == "glance":
+            return 2
+        if normalized == "investigate":
+            return 1
+        if normalized == "foundation":
+            return 0
+        return 1
 
     def _context_usage_cache_key(
         self,
@@ -789,17 +834,242 @@ class OpenAgentRuntime:
         candidates = self._janitor_candidates(messages)
         if not candidates:
             return []
-        selected = sorted(candidates, key=lambda item: (item.output_length, item.age), reverse=True)[:12]
+        selected = sorted(
+            candidates,
+            key=lambda item: (
+                self._tool_importance_review_priority(item.importance),
+                item.output_length,
+                item.age,
+            ),
+            reverse=True,
+        )[:12]
         selected.sort(key=lambda item: (item.locator.message_index, item.locator.item_index))
         return selected
 
     def _count_prunable_janitor_candidates(self, messages: list[dict[str, Any]]) -> int:
         return sum(1 for candidate in self._janitor_candidates(messages) if candidate.output_length >= self.JANITOR_PRUNABLE_OUTPUT_CHARS)
 
-    def _run_automatic_context_janitor(
+    def _topic_shift_candidate_pressure(self, messages: list[dict[str, Any]]) -> int:
+        pressure = 0
+        for candidate in self._janitor_candidates(messages):
+            if candidate.output_length < self.JANITOR_PRUNABLE_OUTPUT_CHARS:
+                continue
+            pressure += self._tool_importance_review_priority(candidate.importance)
+        return pressure
+
+    def _apply_context_janitor_decisions(
         self,
         session: AgentSession,
         *,
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+        actor: str,
+        role: str,
+        automatic: bool,
+        governance_label: str,
+    ) -> ContextWindowUsage:
+        payload_cache = getattr(self, "_payload_message_cache", None)
+        if payload_cache is None:
+            payload_cache = {}
+            self._payload_message_cache = payload_cache
+        usage_cache = getattr(self, "_context_usage_cache", None)
+        if usage_cache is None:
+            usage_cache = {}
+            self._context_usage_cache = usage_cache
+        cache_key = self._payload_message_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        payload_messages = build_payload_messages(messages)
+        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        final_usage = baseline_usage
+        decisions = self._analyze_context_relevance(
+            session=session,
+            messages=messages,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        if decisions:
+            changed_results = sum(1 for decision in decisions if decision.state != "original")
+            persist_semantic_compression(messages, decisions)
+            payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+            final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+            if changed_results > 0:
+                self._note_context_governance(
+                    session.id,
+                    "janitor",
+                    f"{governance_label} reduced {changed_results} tool result(s)",
+                )
+        self._record_context_janitor_run(
+            session,
+            baseline_usage,
+            final_usage,
+            message_count=len(messages),
+            automatic=automatic,
+        )
+        payload_cache[session.id] = (cache_key, payload_messages)
+        usage_cache[session.id] = (cache_key, final_usage)
+        self._remember_context_usage(session.id, final_usage)
+        return final_usage
+
+    def _recent_dialogue_excerpt(self, messages: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+        excerpt: list[str] = []
+        for message in reversed(messages):
+            if len(excerpt) >= limit:
+                break
+            if not self._is_visible_conversation_message(message):
+                continue
+            text = self._context_compact_text(render_text_content(message.get("content", "")), limit=240)
+            if not text:
+                continue
+            excerpt.append(f"{message.get('role', 'user')}: {text}")
+        excerpt.reverse()
+        return excerpt
+
+    def _topic_shift_snapshot(self, session: AgentSession, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        topic_context = self._extract_recent_topic_context(messages)
+        todo_context = self._todo_hint_context(session)
+        return {
+            "active_files": list(topic_context.get("active_files", []))[:8],
+            "active_symbols": list(topic_context.get("active_symbols", []))[:12],
+            "keywords": list(topic_context.get("keywords", []))[:18],
+            "todo_in_progress": list(todo_context.get("open_items", []))[:6],
+        }
+
+    def _build_topic_shift_prompt(
+        self,
+        *,
+        topic_snapshot: dict[str, Any],
+        recent_dialogue_excerpt: list[str],
+        latest_user_message: str,
+    ) -> str:
+        lines = [
+            "Decide whether the latest user message starts a clearly new topic relative to the current topic snapshot.",
+            "Be conservative. Small follow-ups, nearby-file work, tests, fixes, review, or commit requests usually remain the same topic.",
+            "Return strict JSON only with keys context_shift (boolean) and reason (string).",
+            "",
+            "Current topic snapshot:",
+            f"- Active files: {', '.join(topic_snapshot.get('active_files', [])) or '(none)'}",
+            f"- Active symbols: {', '.join(topic_snapshot.get('active_symbols', [])) or '(none)'}",
+            f"- Keywords: {', '.join(topic_snapshot.get('keywords', [])) or '(none)'}",
+            f"- Todo in progress: {', '.join(topic_snapshot.get('todo_in_progress', [])) or '(none)'}",
+            "",
+            "Recent dialogue excerpt:",
+        ]
+        for item in recent_dialogue_excerpt or ["(none)"]:
+            lines.append(f"- {item}")
+        lines.extend(
+            [
+                "",
+                f"Latest user message: {latest_user_message or '(none)'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _parse_topic_shift_response(self, text: str) -> tuple[bool, str]:
+        cleaned = self._strip_json_fence(text)
+        payload = json.loads(cleaned)
+        if not isinstance(payload, dict):
+            raise ValueError("Topic shift response must be a JSON object.")
+        raw_context_shift = payload.get("context_shift")
+        if isinstance(raw_context_shift, bool):
+            context_shift = raw_context_shift
+        else:
+            context_shift = str(raw_context_shift or "").strip().lower() in {"1", "true", "yes", "on"}
+        reason = str(payload.get("reason", "")).strip()
+        return context_shift, reason
+
+    def _should_check_topic_shift(
+        self,
+        usage: ContextWindowUsage,
+        *,
+        session: AgentSession | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        latest_user_message: str = "",
+    ) -> bool:
+        ratio = usage.usage_ratio
+        if ratio is None or ratio < self.MANUAL_JANITOR_MIN_RATIO:
+            return False
+        if ratio >= self._semantic_janitor_trigger_ratio():
+            return False
+        if not str(latest_user_message).strip():
+            return False
+        state = self._janitor_state_for(session)
+        if state is not None and bool(state.get("disabled")):
+            return False
+        if messages is not None and self._topic_shift_candidate_pressure(messages) <= 0:
+            return False
+        return True
+
+    def _detect_topic_shift(
+        self,
+        *,
+        session: AgentSession,
+        messages: list[dict[str, Any]],
+        latest_user_message: str,
+    ) -> tuple[bool, str]:
+        history_messages = list(messages[:-1]) if messages else []
+        topic_snapshot = self._topic_shift_snapshot(session, history_messages)
+        dialogue_excerpt = self._recent_dialogue_excerpt(history_messages)
+        topic_shift_system_prompt = (
+            "You are a topic-shift detector for a coding agent.\n"
+            "Judge only whether the latest user message starts a clearly new topic.\n"
+            "Return strict JSON only."
+        )
+        topic_shift_messages = [
+            {
+                "role": "user",
+                "content": self._build_topic_shift_prompt(
+                    topic_snapshot=topic_snapshot,
+                    recent_dialogue_excerpt=dialogue_excerpt,
+                    latest_user_message=latest_user_message,
+                ),
+            }
+        ]
+        dump_path = self._dump_provider_payload_if_enabled(
+            session=session,
+            system_prompt=topic_shift_system_prompt,
+            payload_messages=topic_shift_messages,
+            tools=[],
+            max_tokens=min(160, self.settings.provider.max_tokens),
+            actor="lead",
+            stream=False,
+            kind="topic_shift",
+        )
+        started_at = time.monotonic()
+        try:
+            turn = self.provider.complete(
+                system_prompt=topic_shift_system_prompt,
+                messages=topic_shift_messages,
+                tools=[],
+                max_tokens=min(160, self.settings.provider.max_tokens),
+            )
+        except Exception as exc:
+            self._record_provider_payload_result(
+                dump_path,
+                error=exc,
+                latency_ms=(time.monotonic() - started_at) * 1000,
+            )
+            return False, ""
+        self._record_provider_payload_result(
+            dump_path,
+            turn=turn,
+            latency_ms=(time.monotonic() - started_at) * 1000,
+        )
+        try:
+            return self._parse_topic_shift_response("\n".join(getattr(turn, "text_blocks", []) or []).strip())
+        except Exception:
+            return False, ""
+
+    def _run_topic_shift_assist(
+        self,
+        session: AgentSession,
+        *,
+        latest_user_message: str,
         actor: str = "lead",
         role: str = "lead coding agent",
     ) -> ContextWindowUsage:
@@ -828,42 +1098,90 @@ class OpenAgentRuntime:
         )
         payload_messages = build_payload_messages(messages)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
+        if not self._should_check_topic_shift(
+            baseline_usage,
+            session=session,
+            messages=messages,
+            latest_user_message=latest_user_message,
+        ):
+            payload_cache[session.id] = (cache_key, payload_messages)
+            usage_cache[session.id] = (cache_key, baseline_usage)
+            self._remember_context_usage(session.id, baseline_usage)
+            return baseline_usage
+        context_shift, _reason = self._detect_topic_shift(
+            session=session,
+            messages=messages,
+            latest_user_message=latest_user_message,
+        )
+        if not context_shift:
+            payload_cache[session.id] = (cache_key, payload_messages)
+            usage_cache[session.id] = (cache_key, baseline_usage)
+            self._remember_context_usage(session.id, baseline_usage)
+            return baseline_usage
+        return self._apply_context_janitor_decisions(
+            session,
+            messages=messages,
+            system_prompt=system_prompt,
+            tools=tools,
+            actor=actor,
+            role=role,
+            automatic=True,
+            governance_label="topic-shift janitor",
+        )
+
+    def _run_automatic_context_janitor(
+        self,
+        session: AgentSession,
+        *,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+    ) -> ContextWindowUsage:
+        messages = getattr(session, "messages", None)
+        if not isinstance(messages, list):
+            messages = []
+        try:
+            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
+        except TypeError:
+            system_prompt = self.build_system_prompt()
+        tools = self._context_usage_tools(actor)
+        cache_key = self._payload_message_cache_key(
+            session,
+            actor=actor,
+            role=role,
+            system_prompt=system_prompt,
+            tools=tools,
+        )
+        payload_cache = getattr(self, "_payload_message_cache", None)
+        if payload_cache is None:
+            payload_cache = {}
+            self._payload_message_cache = payload_cache
+        usage_cache = getattr(self, "_context_usage_cache", None)
+        if usage_cache is None:
+            usage_cache = {}
+            self._context_usage_cache = usage_cache
+        payload_messages = build_payload_messages(messages)
+        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         message_count = len(messages)
-        final_usage = baseline_usage
         if self._should_run_context_janitor(
             baseline_usage,
             session=session,
             message_count=message_count,
             messages=messages,
         ):
-            decisions = self._analyze_context_relevance(
-                session=session,
+            return self._apply_context_janitor_decisions(
+                session,
                 messages=messages,
                 system_prompt=system_prompt,
                 tools=tools,
-            )
-            if decisions:
-                changed_results = sum(1 for decision in decisions if decision.state != "original")
-                persist_semantic_compression(messages, decisions)
-                payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
-                final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-                if changed_results > 0:
-                    self._note_context_governance(
-                        session.id,
-                        "janitor",
-                        f"janitor reduced {changed_results} tool result(s)",
-                    )
-            self._record_context_janitor_run(
-                session,
-                baseline_usage,
-                final_usage,
-                message_count=message_count,
+                actor=actor,
+                role=role,
                 automatic=True,
+                governance_label="janitor",
             )
         payload_cache[session.id] = (cache_key, payload_messages)
-        usage_cache[session.id] = (cache_key, final_usage)
-        self._remember_context_usage(session.id, final_usage)
-        return final_usage
+        usage_cache[session.id] = (cache_key, baseline_usage)
+        self._remember_context_usage(session.id, baseline_usage)
+        return baseline_usage
 
     def _messages_for_model(
         self,
@@ -1242,6 +1560,7 @@ class OpenAgentRuntime:
         completed_hits = sum(1 for token in completed_todo_tokens if token in haystack)
         if completed_hits and topic_hits == 0 and symbol_hits == 0:
             score -= 1
+        score += self._tool_importance_preservation_score(candidate.importance)
         if candidate.tool_name in {"read_file", "find_symbol", "read_text"}:
             score += 2
         if candidate.tool_name in {"pwd", "cd", "ls", "tree", "glob"}:
@@ -1400,7 +1719,10 @@ class OpenAgentRuntime:
         for candidate in candidates:
             topic_lines.extend(
                 [
-                    f"- message_index={candidate.locator.message_index} item_index={candidate.locator.item_index} tool={candidate.tool_name} age={candidate.age}",
+                    (
+                        f"- message_index={candidate.locator.message_index} item_index={candidate.locator.item_index} "
+                        f"tool={candidate.tool_name} age={candidate.age} importance={candidate.importance or 'investigate'}"
+                    ),
                     f"  log_id={candidate.log_id or '(none)'}",
                     f"  input={self._context_compact_text(json.dumps(candidate.tool_input, ensure_ascii=False, default=str), limit=180)}",
                     f"  output_preview={candidate.output_preview or '(no output)'}",
@@ -2012,6 +2334,7 @@ class OpenAgentRuntime:
         task_anchor_message = make_user_text_message(user_input)
         session.messages.append(task_anchor_message)
         self.transcript_store.append(session.id, {"role": "user", "content": user_input})
+        self._run_topic_shift_assist(session, latest_user_message=user_input)
         self._run_automatic_context_janitor(session)
         return self._agent_loop(
             session,
@@ -2053,7 +2376,7 @@ class OpenAgentRuntime:
                     system_prompt = self.build_system_prompt(session=session)
                 except TypeError:
                     system_prompt = self.build_system_prompt()
-                tool_schemas = self.registry.schemas()
+                tool_schemas = self._tool_schemas_for_model("lead")
                 payload_messages = self._messages_for_model(
                     session.messages,
                     session=session,
