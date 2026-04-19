@@ -2450,6 +2450,163 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.messages[4]["content"], "current request")
         self.assertEqual(session.messages[5]["content"], "Done.")
 
+    def test_agent_loop_todo_reminder_persists_while_items_remain_open_and_stops_after_completion(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(
+            has_open_items=lambda session: any(item.get("status") in {"pending", "in_progress"} for item in getattr(session, "todo_items", []))
+        )
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                if name == "TodoWrite":
+                    ctx.session.todo_items = list(payload["items"])
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call-1",
+                            "TodoWrite",
+                            {
+                                "items": [
+                                    {"content": "Step 1", "status": "completed", "activeForm": "Completing step 1"},
+                                    {"content": "Step 2", "status": "in_progress", "activeForm": "Completing step 2"},
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-2", "bash", {"command": "git status"})],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call-3",
+                            "TodoWrite",
+                            {
+                                "items": [
+                                    {"content": "Step 1", "status": "completed", "activeForm": "Completing step 1"},
+                                    {"content": "Step 2", "status": "completed", "activeForm": "Completing step 2"},
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Done."],
+                ),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        reminder = OpenAgentRuntime.TODO_REMINDER_TEXT
+        reminder_counts = [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads]
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(reminder_counts, [0, 1, 1, 0])
+        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
+
+    def test_agent_loop_todo_reminder_is_injected_every_round_while_items_remain_open(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(
+            has_open_items=lambda session: any(item.get("status") in {"pending", "in_progress"} for item in getattr(session, "todo_items", []))
+        )
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-1", "bash", {"command": "pwd"})],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-2", "bash", {"command": "git status"})],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-3", "bash", {"command": "ls"})],
+                ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Done."],
+                ),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        session = AgentSession(
+            id="session-1",
+            todo_items=[{"content": "Step 2", "status": "in_progress", "activeForm": "Completing step 2"}],
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        reminder = OpenAgentRuntime.TODO_REMINDER_TEXT
+        reminder_counts = [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads]
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(reminder_counts, [1, 1, 1, 1])
+        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
+
     def test_agent_loop_accumulates_token_usage_sum(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

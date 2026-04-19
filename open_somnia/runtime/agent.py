@@ -83,6 +83,10 @@ from open_somnia.tools.todo import TodoManager, register_todo_tool
 
 class OpenAgentRuntime:
     DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
+    TODO_REMINDER_TEXT = (
+        "<reminder>If any todo changed, call TodoWrite now. "
+        "Do not just say you will. If nothing changed, ignore this and continue.</reminder>"
+    )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -2377,9 +2381,17 @@ class OpenAgentRuntime:
                 except TypeError:
                     system_prompt = self.build_system_prompt()
                 tool_schemas = self._tool_schemas_for_model("lead")
+                transient_payload_messages: list[dict[str, Any]] = []
+                if self.todo_manager.has_open_items(session):
+                    transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
+                payload_source_messages = session.messages
+                payload_session: AgentSession | None = session
+                if transient_payload_messages:
+                    payload_source_messages = [*session.messages, *transient_payload_messages]
+                    payload_session = None
                 payload_messages = self._messages_for_model(
-                    session.messages,
-                    session=session,
+                    payload_source_messages,
+                    session=payload_session,
                     system_prompt=system_prompt,
                     tools=tool_schemas,
                 )
@@ -2492,8 +2504,6 @@ class OpenAgentRuntime:
                 session.messages.append(assistant_message)
                 self.transcript_store.append(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
-                if self.todo_manager.has_open_items(session) and session.rounds_without_todo >= 3:
-                    tool_results.insert(0, {"type": "text", "text": "<reminder>Update your todos.</reminder>"})
                 session.messages.append(make_tool_result_message(tool_results))
                 if manual_compact:
                     preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
