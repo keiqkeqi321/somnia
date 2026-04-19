@@ -99,6 +99,29 @@ Todo 清单渲染时**不显示 cancelled 项**，可见状态为 `pending / in_
 
 ---
 
+## 运行时提醒机制
+
+只要会话里仍有 **open todo**（`pending` 或 `in_progress`），运行时就会在**每一轮发给模型的 payload** 里临时追加一条 reminder：
+
+```text
+<reminder>If any todo changed, call TodoWrite now. Do not just say you will. If nothing changed, ignore this and continue.</reminder>
+```
+
+这条 reminder 的规则是：
+
+- 仅注入到当前轮次的模型 payload
+- **不会**写入 `session.messages`
+- **不会**写入 transcript snapshot
+- 当所有 todo 都进入 closed 状态（`completed` 或 `cancelled`）后立即停止注入
+
+这样做的目的不是强制每轮都调用 `TodoWrite`，而是约束 Agent：
+
+- 如果 todo 状态确实发生变化，就先调用 `TodoWrite`
+- 不要只口头说“我来更新 todo”
+- 如果 todo 状态没有变化，就忽略 reminder 并继续当前任务
+
+---
+
 ## 与上下文治理的关系
 
 Todo 在上下文治理（Semantic Janitor）中仅作为**弱锚点**使用：

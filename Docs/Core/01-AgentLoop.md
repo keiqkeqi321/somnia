@@ -103,6 +103,8 @@ turn = self.provider.complete(
 
 `_messages_for_model()` 现在是**无副作用**的。自动 `Semantic Janitor` 不在这里执行，而是在新 user message 入列后的 turn boundary 先完成。
 
+在进入 `_messages_for_model()` 之前，调用方还可能临时扩展消息列表。例如当会话里仍有 open todo 时，Agent Loop 会先追加一条**仅当前轮次可见**的 `TodoWrite` reminder，再把扩展后的列表送入 `_messages_for_model()`。这条 reminder 不会写回会话历史。
+
 ### 权限检查
 
 工具执行前通过 `PermissionManager.authorize_tool_call()` 检查：
@@ -136,7 +138,7 @@ session.undo_stack.append({
 | `messages` | 对话消息列表 |
 | `token_usage` | 累计 token 用量 |
 | `todo_items` | 当前待办清单 |
-| `rounds_without_todo` | 无 todo 的轮数计数器 |
+| `rounds_without_todo` | 自上次 `TodoWrite` 以来的轮数计数器 |
 | `latest_turn_id` | 最新轮次 ID |
 | `last_turn_file_changes` | 上一轮文件变更摘要 |
 | `undo_stack` | 文件修改撤销栈（最多 10 轮） |

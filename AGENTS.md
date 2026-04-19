@@ -61,8 +61,10 @@ The runtime owns:
 - After the user answers an authorization prompt, the agent should continue the same task without requiring the user to restate it.
 - Empty or incomplete sessions should not appear in resume history. A session must include both a visible user message and a visible assistant reply.
 - `TodoWrite` updates session-scoped todos.
+- While any todo item remains open, the runtime should inject a transient `TodoWrite` reminder into the model payload on every round.
+- The transient todo reminder must not be persisted into session message history or transcript snapshots.
 - Todos are shown persistently in the REPL status area above `somnia >>` while any item is still open.
-- When all todos are completed, the todo status block disappears.
+- When all todos are closed, the todo status block disappears.
 - Todo status markers are:
   - `☐` pending
   - `⏳` in progress
