@@ -386,6 +386,20 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(restored.token_usage["output_tokens"], 5)
         self.assertEqual(restored.token_usage["total_tokens"], 15)
 
+    def test_agent_session_roundtrips_read_file_overlap_state(self) -> None:
+        session = AgentSession(
+            id="session-1",
+            read_file_overlap_state={
+                "source_tool_call_ids": ["call-2"],
+                "coverage": {"demo.txt": [[1, 10]]},
+            },
+        )
+
+        restored = AgentSession.from_payload(session.to_payload())
+
+        self.assertEqual(restored.read_file_overlap_state["source_tool_call_ids"], ["call-2"])
+        self.assertEqual(restored.read_file_overlap_state["coverage"]["demo.txt"], [[1, 10]])
+
     def test_request_original_context_returns_tool_log_output(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(
@@ -986,6 +1000,152 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(payload[1]["content"][0]["content"], older_content)
         self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+
+    def test_build_payload_messages_uses_persisted_read_file_overlap_state_after_trailing_non_read_file_round(self) -> None:
+        older_content = "\n".join(f"line {index}" for index in range(3, 9))
+        newer_content = "\n".join(f"line {index}" for index in range(1, 11))
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 3, "end_line": 8},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": older_content,
+                        "raw_output": older_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-2",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 1, "end_line": 10},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": newer_content,
+                        "raw_output": newer_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-3", "name": "TodoWrite", "input": {"items": []}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "ok", "raw_output": "ok", "log_id": "log-3"}],
+            },
+        ]
+
+        payload = build_payload_messages(
+            messages,
+            read_file_overlap_state={
+                "source_tool_call_ids": ["call-2"],
+                "coverage": {"demo.txt": [[1, 10]]},
+            },
+        )
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            "[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.",
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+        self.assertEqual(payload[5]["content"][0]["content"], "ok")
+
+    def test_messages_for_model_accepts_explicit_read_file_overlap_state_for_transient_payloads(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        older_content = "\n".join(f"line {index}" for index in range(3, 9))
+        newer_content = "\n".join(f"line {index}" for index in range(1, 11))
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 3, "end_line": 8},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": older_content,
+                        "raw_output": older_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-2",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 1, "end_line": 10},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": newer_content,
+                        "raw_output": newer_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+            {"role": "user", "content": OpenAgentRuntime.TODO_REMINDER_TEXT},
+        ]
+
+        payload = OpenAgentRuntime._messages_for_model(
+            runtime,
+            messages,
+            session=None,
+            read_file_overlap_state={
+                "source_tool_call_ids": ["call-2"],
+                "coverage": {"demo.txt": [[1, 10]]},
+            },
+        )
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            "[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.",
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+        self.assertEqual(payload[4]["content"], OpenAgentRuntime.TODO_REMINDER_TEXT)
 
     def test_build_payload_messages_prunes_only_paths_read_in_latest_round(self) -> None:
         older_demo = "\n".join(f"demo {index}" for index in range(3, 9))

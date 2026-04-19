@@ -19,6 +19,7 @@ class AgentSession:
     token_usage: dict[str, int] = field(default_factory=dict)
     todo_items: list[dict[str, Any]] = field(default_factory=list)
     rounds_without_todo: int = 0
+    read_file_overlap_state: dict[str, Any] = field(default_factory=dict, repr=False)
     latest_turn_id: str | None = None
     last_turn_file_changes: list[dict[str, Any]] = field(default_factory=list)
     undo_stack: list[dict[str, Any]] = field(default_factory=list)
@@ -34,6 +35,7 @@ class AgentSession:
             token_usage=dict(payload.get("token_usage", {})),
             todo_items=list(payload.get("todo_items", [])),
             rounds_without_todo=int(payload.get("rounds_without_todo", 0)),
+            read_file_overlap_state=deepcopy(payload.get("read_file_overlap_state", {})),
             latest_turn_id=payload.get("latest_turn_id"),
             last_turn_file_changes=list(payload.get("last_turn_file_changes", [])),
             undo_stack=list(payload.get("undo_stack", [])),
@@ -48,6 +50,7 @@ class AgentSession:
             "token_usage": self.token_usage,
             "todo_items": self.todo_items,
             "rounds_without_todo": self.rounds_without_todo,
+            "read_file_overlap_state": self.read_file_overlap_state,
             "latest_turn_id": self.latest_turn_id,
             "last_turn_file_changes": self.last_turn_file_changes,
             "undo_stack": self.undo_stack,
@@ -224,6 +227,7 @@ class SessionManager:
                 "token_usage": dict(session.token_usage),
                 "todo_items": list(session.todo_items),
                 "rounds_without_todo": session.rounds_without_todo,
+                "read_file_overlap_state": deepcopy(session.read_file_overlap_state),
                 "latest_turn_id": session.latest_turn_id,
                 "last_turn_file_changes": list(session.last_turn_file_changes),
             },
@@ -323,6 +327,7 @@ class SessionManager:
         session.token_usage = dict(checkpoint_state.get("token_usage", {}))
         session.todo_items = list(checkpoint_state.get("todo_items", []))
         session.rounds_without_todo = int(checkpoint_state.get("rounds_without_todo", 0))
+        session.read_file_overlap_state = deepcopy(checkpoint_state.get("read_file_overlap_state", {}))
         session.latest_turn_id = checkpoint_state.get("latest_turn_id")
         session.last_turn_file_changes = list(checkpoint_state.get("last_turn_file_changes", []))
         try:

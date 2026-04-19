@@ -286,6 +286,67 @@ def _merge_interval(intervals: list[tuple[int, int]], new_interval: tuple[int, i
     return merged
 
 
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _serialize_read_file_overlap_coverage(
+    coverage: dict[str, list[tuple[int, int]]],
+) -> dict[str, list[list[int]]]:
+    return {
+        path: [[start_line, end_line] for start_line, end_line in intervals]
+        for path, intervals in coverage.items()
+        if intervals
+    }
+
+
+def _normalize_read_file_overlap_state(
+    read_file_overlap_state: dict[str, Any] | None,
+) -> tuple[dict[str, list[tuple[int, int]]], set[str]]:
+    if not isinstance(read_file_overlap_state, dict):
+        return {}, set()
+
+    raw_coverage = read_file_overlap_state.get("coverage")
+    if not isinstance(raw_coverage, dict):
+        raw_coverage = {
+            key: value
+            for key, value in read_file_overlap_state.items()
+            if key not in {"coverage", "source_tool_call_ids"}
+        }
+
+    coverage: dict[str, list[tuple[int, int]]] = {}
+    for raw_path, raw_intervals in raw_coverage.items():
+        path = str(raw_path).strip().replace("\\", "/")
+        if not path or not isinstance(raw_intervals, list):
+            continue
+        intervals: list[tuple[int, int]] = []
+        for raw_interval in raw_intervals:
+            if not isinstance(raw_interval, (list, tuple)) or len(raw_interval) < 2:
+                continue
+            start_line = _parse_optional_positive_int(raw_interval[0])
+            end_line = _parse_optional_positive_int(raw_interval[1])
+            if start_line is None or end_line is None:
+                continue
+            if end_line < start_line:
+                start_line, end_line = end_line, start_line
+            intervals = _merge_interval(intervals, (start_line, end_line))
+        if intervals:
+            coverage[path] = intervals
+
+    source_tool_call_ids = set(
+        _dedupe_preserve_order(list(read_file_overlap_state.get("source_tool_call_ids") or []))
+    )
+    return coverage, source_tool_call_ids
+
+
 def _render_pruned_read_file_content(
     span: ReadFilePayloadSpan,
     kept_segments: list[tuple[int, int]],
@@ -314,43 +375,101 @@ def _render_pruned_read_file_content(
     return "\n".join(lines)
 
 
-def _latest_round_active_read_file_paths(
+def _latest_round_read_file_overlap_state(
     rounds: list[tuple[int, list[dict[str, Any]]]],
     lookup: dict[str, tuple[str, dict[str, Any], str | None]],
-) -> set[str]:
+) -> tuple[bool, dict[str, list[tuple[int, int]]], list[str]]:
     if not rounds:
-        return set()
+        return False, {}, []
     _message_index, latest_tool_results = rounds[-1]
-    paths: set[str] = set()
+    coverage: dict[str, list[tuple[int, int]]] = {}
+    source_tool_call_ids: list[str] = []
+    saw_read_file = False
     for item in latest_tool_results:
         call_id = str(item.get("tool_call_id", "")).strip()
         tool_name, tool_input, _importance = lookup.get(call_id, ("tool", {}, None))
         if tool_name != "read_file":
             continue
-        path = _normalized_read_file_path(tool_input)
-        if path:
-            paths.add(path)
-    return paths
+        saw_read_file = True
+        if call_id:
+            source_tool_call_ids.append(call_id)
+        span = _parse_read_file_payload_span(item, lookup)
+        if span is None:
+            continue
+        coverage[span.path] = _merge_interval(
+            coverage.get(span.path, []),
+            (span.start_line, span.end_line),
+        )
+    return saw_read_file, coverage, _dedupe_preserve_order(source_tool_call_ids)
 
 
-def _suppress_overlapping_read_file_results(payload_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def extract_latest_read_file_overlap_state(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    rounds = _tool_result_rounds(messages)
+    if not rounds:
+        return {}
+    lookup = _tool_call_lookup(messages)
+    saw_read_file, coverage, source_tool_call_ids = _latest_round_read_file_overlap_state(rounds, lookup)
+    if not saw_read_file:
+        return {}
+    return {
+        "source_tool_call_ids": source_tool_call_ids,
+        "coverage": _serialize_read_file_overlap_coverage(coverage),
+    }
+
+
+def _suppress_overlapping_read_file_results(
+    payload_messages: list[dict[str, Any]],
+    *,
+    read_file_overlap_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     rounds = _tool_result_rounds(payload_messages)
     if not rounds:
         return payload_messages
     lookup = _tool_call_lookup(payload_messages)
-    active_paths = _latest_round_active_read_file_paths(rounds, lookup)
+    latest_has_read_file, latest_coverage, latest_source_tool_call_ids = _latest_round_read_file_overlap_state(
+        rounds,
+        lookup,
+    )
+    persisted_coverage, persisted_source_tool_call_ids = _normalize_read_file_overlap_state(read_file_overlap_state)
+
+    if latest_has_read_file:
+        if latest_coverage:
+            active_paths = set(latest_coverage)
+            covered_by_path: dict[str, list[tuple[int, int]]] = {}
+            source_tool_call_ids: set[str] = set()
+        elif (
+            latest_source_tool_call_ids
+            and set(latest_source_tool_call_ids) == persisted_source_tool_call_ids
+            and persisted_coverage
+        ):
+            active_paths = set(persisted_coverage)
+            covered_by_path = {
+                path: list(intervals)
+                for path, intervals in persisted_coverage.items()
+            }
+            source_tool_call_ids = persisted_source_tool_call_ids
+        else:
+            return payload_messages
+    else:
+        active_paths = set(persisted_coverage)
+        covered_by_path = {
+            path: list(intervals)
+            for path, intervals in persisted_coverage.items()
+        }
+        source_tool_call_ids = persisted_source_tool_call_ids
     if not active_paths:
         return payload_messages
-    covered_by_path: dict[str, list[tuple[int, int]]] = {}
+
     for _message_index, tool_results in reversed(rounds):
         for item in reversed(tool_results):
+            call_id = str(item.get("tool_call_id", "")).strip()
             span = _parse_read_file_payload_span(item, lookup)
             if span is None:
                 continue
             if span.path not in active_paths:
                 continue
             covered = covered_by_path.get(span.path, [])
-            if covered:
+            if call_id not in source_tool_call_ids and covered:
                 kept_segments = _subtract_interval(span.start_line, span.end_line, covered)
                 if not kept_segments:
                     item["content"] = _overlapping_read_file_summary(span)
@@ -527,6 +646,7 @@ def persist_semantic_compression(
 def build_payload_messages(
     messages: list[dict[str, Any]],
     semantic_decisions: list[SemanticCompressionDecision] | None = None,
+    read_file_overlap_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     payload_messages = _clone_messages_for_payload(messages)
     apply_semantic_compression(payload_messages, semantic_decisions)
@@ -535,7 +655,10 @@ def build_payload_messages(
         for item in tool_results:
             _strip_tool_result_metadata(item)
     _dedupe_tool_results(payload_messages)
-    _suppress_overlapping_read_file_results(payload_messages)
+    _suppress_overlapping_read_file_results(
+        payload_messages,
+        read_file_overlap_state=read_file_overlap_state,
+    )
     return payload_messages
 
 

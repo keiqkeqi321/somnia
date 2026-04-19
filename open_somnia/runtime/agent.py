@@ -40,6 +40,7 @@ from open_somnia.runtime.compact import (
     ToolResultCandidate,
     build_payload_messages,
     estimate_payload_tokens,
+    extract_latest_read_file_overlap_state,
     extract_tool_result_candidates,
     persist_semantic_compression,
     should_auto_compact,
@@ -526,11 +527,22 @@ class OpenAgentRuntime:
             )
         except Exception:
             last_message_digest = str(last_message)
+        read_file_overlap_state = self._session_read_file_overlap_state(session)
+        try:
+            read_file_overlap_state_digest = json.dumps(
+                read_file_overlap_state,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception:
+            read_file_overlap_state_digest = str(read_file_overlap_state)
         return (
             id(messages),
             len(messages),
             getattr(session, "latest_turn_id", None),
             last_message_digest,
+            read_file_overlap_state_digest,
             actor,
             role,
             system_prompt,
@@ -568,6 +580,27 @@ class OpenAgentRuntime:
             used_tokens=used_tokens,
             max_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
             counter_name=counter_name,
+        )
+
+    def _session_read_file_overlap_state(self, session: AgentSession | None) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        state = getattr(session, "read_file_overlap_state", None)
+        if not isinstance(state, dict):
+            return None
+        return state
+
+    def _build_payload_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session: AgentSession | None = None,
+        semantic_decisions: list[SemanticCompressionDecision] | None = None,
+    ) -> list[dict[str, Any]]:
+        return build_payload_messages(
+            messages,
+            semantic_decisions=semantic_decisions,
+            read_file_overlap_state=self._session_read_file_overlap_state(session),
         )
 
     def _payload_message_cache_key(
@@ -888,7 +921,7 @@ class OpenAgentRuntime:
             system_prompt=system_prompt,
             tools=tools,
         )
-        payload_messages = build_payload_messages(messages)
+        payload_messages = self._build_payload_messages(messages, session=session)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         final_usage = baseline_usage
         decisions = self._analyze_context_relevance(
@@ -900,7 +933,11 @@ class OpenAgentRuntime:
         if decisions:
             changed_results = sum(1 for decision in decisions if decision.state != "original")
             persist_semantic_compression(messages, decisions)
-            payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+            payload_messages = self._build_payload_messages(
+                messages,
+                session=session,
+                semantic_decisions=decisions,
+            )
             final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
             if changed_results > 0:
                 self._note_context_governance(
@@ -1100,7 +1137,7 @@ class OpenAgentRuntime:
             system_prompt=system_prompt,
             tools=tools,
         )
-        payload_messages = build_payload_messages(messages)
+        payload_messages = self._build_payload_messages(messages, session=session)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         if not self._should_check_topic_shift(
             baseline_usage,
@@ -1163,7 +1200,7 @@ class OpenAgentRuntime:
         if usage_cache is None:
             usage_cache = {}
             self._context_usage_cache = usage_cache
-        payload_messages = build_payload_messages(messages)
+        payload_messages = self._build_payload_messages(messages, session=session)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         message_count = len(messages)
         if self._should_run_context_janitor(
@@ -1192,13 +1229,17 @@ class OpenAgentRuntime:
         messages: list[dict[str, Any]],
         *,
         session: AgentSession | None = None,
+        read_file_overlap_state: dict[str, Any] | None = None,
         actor: str = "lead",
         role: str = "lead coding agent",
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if session is None:
-            return build_payload_messages(messages)
+            return build_payload_messages(
+                messages,
+                read_file_overlap_state=read_file_overlap_state,
+            )
         if system_prompt is None:
             try:
                 system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
@@ -1226,7 +1267,7 @@ class OpenAgentRuntime:
         if cached is not None and cached[0] == cache_key:
             return cached[1]
 
-        payload_messages = build_payload_messages(messages)
+        payload_messages = self._build_payload_messages(messages, session=session)
         cache[session.id] = (cache_key, payload_messages)
         return payload_messages
 
@@ -2181,7 +2222,7 @@ class OpenAgentRuntime:
             system_prompt=system_prompt,
             tools=tools,
         )
-        payload_messages = build_payload_messages(messages)
+        payload_messages = self._build_payload_messages(messages, session=session)
         baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         if not self._should_run_manual_context_janitor(baseline_usage):
             self._payload_message_cache[session.id] = (cache_key, payload_messages)
@@ -2206,7 +2247,11 @@ class OpenAgentRuntime:
         changed_results = sum(1 for decision in decisions if decision.state != "original")
         if decisions:
             persist_semantic_compression(messages, decisions)
-            payload_messages = build_payload_messages(messages, semantic_decisions=decisions)
+            payload_messages = self._build_payload_messages(
+                messages,
+                session=session,
+                semantic_decisions=decisions,
+            )
         reduced_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         self._payload_message_cache[session.id] = (cache_key, payload_messages)
         self._context_usage_cache[session.id] = (cache_key, reduced_usage)
@@ -2392,6 +2437,7 @@ class OpenAgentRuntime:
                 payload_messages = self._messages_for_model(
                     payload_source_messages,
                     session=payload_session,
+                    read_file_overlap_state=self._session_read_file_overlap_state(session),
                     system_prompt=system_prompt,
                     tools=tool_schemas,
                 )
@@ -2459,6 +2505,7 @@ class OpenAgentRuntime:
                 tool_results: list[dict[str, Any]] = []
                 executed_tool_calls = []
                 used_todo = False
+                used_read_file = False
                 manual_compact = False
                 end_turn_after_tool = False
                 for tool_call in turn.tool_calls:
@@ -2496,6 +2543,8 @@ class OpenAgentRuntime:
                     )
                     if tool_call.name == "TodoWrite":
                         used_todo = True
+                    if tool_call.name == "read_file":
+                        used_read_file = True
                     if tool_call.name in self.TURN_BOUNDARY_TOOL_NAMES:
                         end_turn_after_tool = True
                         break
@@ -2504,7 +2553,10 @@ class OpenAgentRuntime:
                 session.messages.append(assistant_message)
                 self.transcript_store.append(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
-                session.messages.append(make_tool_result_message(tool_results))
+                tool_result_message = make_tool_result_message(tool_results)
+                session.messages.append(tool_result_message)
+                if used_read_file:
+                    session.read_file_overlap_state = extract_latest_read_file_overlap_state(session.messages)
                 if manual_compact:
                     preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
                     session.messages = self.compact_manager.auto_compact(
