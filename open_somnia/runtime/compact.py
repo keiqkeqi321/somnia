@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import json
 from typing import Any
 
@@ -11,6 +12,7 @@ from open_somnia.runtime.messages import normalize_tool_importance
 
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
 AUTO_COMPACT_TRIGGER_RATIO = 0.82
+DUPLICATE_TOOL_RESULT_MIN_LENGTH = 240
 
 
 @dataclass(slots=True)
@@ -137,6 +139,53 @@ def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, di
                 importance,
             )
     return lookup
+
+
+def _duplicate_tool_result_summary(tool_name: str) -> str:
+    label = str(tool_name).strip() or "tool"
+    return f"[Duplicate tool result omitted | {label}] Identical output appears later."
+
+
+def _tool_result_dedup_key(
+    item: dict[str, Any],
+    lookup: dict[str, tuple[str, dict[str, Any], str | None]],
+) -> tuple[str, str, str] | None:
+    content = str(item.get("content", ""))
+    if len(content) < DUPLICATE_TOOL_RESULT_MIN_LENGTH:
+        return None
+    call_id = str(item.get("tool_call_id", "")).strip()
+    tool_name, tool_input, _importance = lookup.get(call_id, ("tool", {}, None))
+    normalized_input = {
+        key: value
+        for key, value in dict(tool_input or {}).items()
+        if key != "importance"
+    }
+    try:
+        input_signature = json.dumps(normalized_input, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        input_signature = json.dumps(str(normalized_input), ensure_ascii=False)
+    content_hash = hashlib.sha1(content.encode("utf-8", errors="replace")).hexdigest()
+    return (str(tool_name).strip() or "tool", input_signature, content_hash)
+
+
+def _dedupe_tool_results(payload_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rounds = _tool_result_rounds(payload_messages)
+    if not rounds:
+        return payload_messages
+    lookup = _tool_call_lookup(payload_messages)
+    seen_keys: set[tuple[str, str, str]] = set()
+    for _message_index, tool_results in reversed(rounds):
+        for item in reversed(tool_results):
+            key = _tool_result_dedup_key(item, lookup)
+            if key is None:
+                continue
+            if key in seen_keys:
+                call_id = str(item.get("tool_call_id", "")).strip()
+                tool_name, _tool_input, _importance = lookup.get(call_id, ("tool", {}, None))
+                item["content"] = _duplicate_tool_result_summary(tool_name)
+                continue
+            seen_keys.add(key)
+    return payload_messages
 
 
 def _compact_text(text: str, *, limit: int = 220) -> str:
@@ -268,6 +317,7 @@ def build_payload_messages(
     for _, tool_results in rounds:
         for item in tool_results:
             _strip_tool_result_metadata(item)
+    _dedupe_tool_results(payload_messages)
     return payload_messages
 
 

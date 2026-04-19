@@ -53,7 +53,7 @@ class ToolExecutionContext:
 | | `find_symbol` | 符号查找 |
 | | `glob` | 文件模式匹配 |
 | | `grep` | 内容搜索 |
-| | `read_file` | 读取文件 |
+| | `read_file` | 读取文件，支持按行范围读取 |
 | | `write_file` | 写入文件 |
 | | `edit_file` | 替换文件文本 |
 | Shell | `bash` | 执行 shell 命令 |
@@ -106,6 +106,30 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 - 每个 edit 项可单独带 `path`；未提供时回退到顶层 `path`
 
 这样可以统一模型的调用心智，避免单编辑和多编辑两套 schema 混用。
+
+---
+
+## `read_file` 读取约定
+
+`read_file` 现在支持以下输入组合：
+
+```json
+{
+  "path": "open_somnia/runtime/agent.py",
+  "start_line": 2440,
+  "end_line": 2515
+}
+```
+
+规则：
+
+- 行号是 **1-based**
+- `end_line` 是**包含该行**的结束边界
+- 同时提供 `end_line` 和 `limit` 时，优先使用 `end_line`
+- 当只想看某个命中位置附近的实现时，优先配合 `grep` / `find_symbol` 后做局部范围读取
+- 如果输出尾部出现 `[read_file output truncated ...]`，说明当前片段仍然过大，应继续缩小范围
+
+发送给模型前，payload 组装还会对较大的完全重复工具结果做去重：旧副本会被折叠为简短占位，最新副本保留完整内容。这一去重只作用于 payload，不改写原始会话历史。
 
 ---
 

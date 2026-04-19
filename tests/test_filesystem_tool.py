@@ -307,6 +307,71 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(active_files[0]["source"], "read_file")
         self.assertEqual(active_files[0]["content"], "line 1\nline 2\n")
 
+    def test_read_file_supports_start_line_and_limit(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / self._testMethodName
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / "demo.txt"
+        target.write_text("line 1\nline 2\nline 3\nline 4\nline 5\nline 6\n", encoding="utf-8")
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+        result = read_file(ctx, {"path": "demo.txt", "start_line": 3, "limit": 2})
+
+        self.assertEqual(
+            result,
+            "... (2 lines omitted before line 3)\nline 3\nline 4\n... (2 more lines after line 4)",
+        )
+
+    def test_read_file_supports_end_line(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / self._testMethodName
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / "demo.txt"
+        target.write_text("line 1\nline 2\nline 3\nline 4\nline 5\n", encoding="utf-8")
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+        result = read_file(ctx, {"path": "demo.txt", "start_line": 2, "end_line": 4})
+
+        self.assertEqual(
+            result,
+            "... (1 lines omitted before line 2)\nline 2\nline 3\nline 4\n... (1 more lines after line 4)",
+        )
+
+    def test_read_file_returns_explicit_truncation_marker_when_output_hits_char_limit(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / self._testMethodName
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / "demo.txt"
+        target.write_text(("0123456789\n" * 30), encoding="utf-8")
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=120),
+                )
+            ),
+            session=None,
+        )
+
+        result = read_file(ctx, {"path": "demo.txt"})
+
+        self.assertLessEqual(len(result), 120)
+        self.assertIn("[read_file output truncated at 120 chars;", result)
+        self.assertIn("use start_line/end_line", result)
+
     def test_glob_search_returns_matching_workspace_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

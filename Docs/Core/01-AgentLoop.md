@@ -98,12 +98,15 @@ turn = self.provider.complete(
 负责构建发送给模型的消息 payload，包含：
 
 1. **Deep clone** 原始消息
-2. **Strip metadata**（移除 `raw_output` / `log_id`）
-3. **返回最终 payload**
+2. **Strip metadata**（移除 payload 副本里的 `raw_output` / `log_id`）
+3. **Dedupe duplicate large results**（折叠较大的完全重复工具结果，保留最新副本）
+4. **返回最终 payload**
 
 `_messages_for_model()` 现在是**无副作用**的。自动 `Semantic Janitor` 不在这里执行，而是在新 user message 入列后的 turn boundary 先完成。
 
 在进入 `_messages_for_model()` 之前，调用方还可能临时扩展消息列表。例如当会话里仍有 open todo 时，Agent Loop 会先追加一条**仅当前轮次可见**的 `TodoWrite` reminder，再把扩展后的列表送入 `_messages_for_model()`。这条 reminder 不会写回会话历史。
+
+另外，`_messages_for_model()` 做的是**payload 级别**的归一化，而不是会话历史改写。像重复大 `read_file` 结果这类折叠，只影响本轮发给模型的 payload，不会回写 `session.messages`。
 
 ### 权限检查
 

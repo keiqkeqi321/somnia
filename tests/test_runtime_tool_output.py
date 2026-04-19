@@ -729,6 +729,55 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("[Restored tool output | pwd | log pwd-log]", restored)
         self.assertIn("D:/Project/Git/somnia", restored)
 
+    def test_build_payload_messages_dedupes_large_duplicate_tool_results_and_keeps_latest_copy(self) -> None:
+        duplicate_content = "x" * 400
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt", "limit": 120}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": duplicate_content,
+                        "raw_output": duplicate_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-2", "name": "read_file", "input": {"path": "demo.txt", "limit": 120}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": duplicate_content,
+                        "raw_output": duplicate_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_payload_messages(messages)
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            "[Duplicate tool result omitted | read_file] Identical output appears later.",
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], duplicate_content)
+        self.assertNotIn("raw_output", payload[1]["content"][0])
+        self.assertNotIn("log_id", payload[1]["content"][0])
+        self.assertIn("raw_output", messages[1]["content"][0])
+        self.assertEqual(messages[1]["content"][0]["content"], duplicate_content)
+
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "accept_edits"

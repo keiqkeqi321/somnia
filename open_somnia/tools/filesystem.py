@@ -291,12 +291,40 @@ def _format_missing_file_message(
     return "\n".join(lines)
 
 
+def _parse_optional_positive_int(payload: dict[str, Any], key: str) -> tuple[int | None, str | None]:
+    value = payload.get(key)
+    if value is None:
+        return None, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"Error: {key} must be an integer."
+    if parsed < 1:
+        return None, f"Error: {key} must be >= 1."
+    return parsed, None
+
+
+def _truncate_read_file_output(text: str, *, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = (
+        f"\n... [read_file output truncated at {max_chars} chars; "
+        "use start_line/end_line to narrow the range]"
+    )
+    if max_chars <= len(marker):
+        return marker[-max_chars:]
+    trimmed = text[: max_chars - len(marker)].rstrip("\n")
+    if trimmed:
+        return trimmed + marker
+    return marker.lstrip("\n")
+
+
 def read_file(ctx: Any, payload: dict[str, Any]) -> str:
     """读取文件内容.
 
     Args:
         ctx: 运行时上下文对象。
-        payload: 包含 "path" 和可选 "limit" 的参数字典。
+        payload: 包含 "path" 与可选范围参数的字典。
 
     Returns:
         文件内容字符串。
@@ -304,7 +332,19 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
     requested_path = str(payload["path"])
     path = safe_path(workspace_root, requested_path)
-    limit = payload.get("limit")
+    limit, error = _parse_optional_positive_int(payload, "limit")
+    if error is not None:
+        return error
+    start_line, error = _parse_optional_positive_int(payload, "start_line")
+    if error is not None:
+        return error
+    end_line, error = _parse_optional_positive_int(payload, "end_line")
+    if error is not None:
+        return error
+    if start_line is None:
+        start_line = 1
+    if end_line is not None and end_line < start_line:
+        return "Error: end_line must be greater than or equal to start_line."
     prefix = ""
     if not path.exists() or not path.is_file():
         candidates = _path_candidates_for_missing_file(workspace_root, requested_path, path)
@@ -324,9 +364,29 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
         prefix = _format_missing_file_message(workspace_root, requested_path, path, candidates) + "\n\n"
     text = _read_text_with_fallback(path)
     lines = text.splitlines()
-    if limit and limit < len(lines):
-        lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-    content = "\n".join(lines)
+    if lines and start_line > len(lines):
+        return f"Error: start_line {start_line} is past end of file ({len(lines)} lines)."
+    if not lines and start_line > 1:
+        return f"Error: start_line {start_line} is past end of file (0 lines)."
+    start_index = max(0, start_line - 1)
+    if end_line is not None:
+        end_index = min(len(lines), end_line)
+    elif limit is not None:
+        end_index = min(len(lines), start_index + limit)
+    else:
+        end_index = len(lines)
+    visible_lines = lines[start_index:end_index]
+    rendered_lines: list[str] = []
+    if start_index > 0:
+        rendered_lines.append(f"... ({start_index} lines omitted before line {start_line})")
+    rendered_lines.extend(visible_lines)
+    remaining_after = max(0, len(lines) - end_index)
+    if remaining_after > 0:
+        if start_index > 0:
+            rendered_lines.append(f"... ({remaining_after} more lines after line {end_index})")
+        else:
+            rendered_lines.append(f"... ({remaining_after} more lines)")
+    content = "\n".join(rendered_lines)
     _update_runtime_active_file(
         ctx,
         path=path,
@@ -334,7 +394,10 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
         source="read_file",
         snippet=content,
     )
-    return f"{prefix}{content}"[: ctx.runtime.settings.runtime.max_tool_output_chars]
+    return _truncate_read_file_output(
+        f"{prefix}{content}",
+        max_chars=ctx.runtime.settings.runtime.max_tool_output_chars,
+    )
 
 
 def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
@@ -1131,11 +1194,13 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="read_file",
-            description="Read file contents. Before using this, confirm the exact path with a focused `glob` instead of guessing from broad listings. If the path is missing and there is exactly one filename match nearby, this tool will auto-resolve it.",
+            description="Read file contents. Supports `start_line`, `end_line`, and `limit` for ranged reads. Before using this, confirm the exact path with a focused `glob` instead of guessing from broad listings. If the path is missing and there is exactly one filename match nearby, this tool will auto-resolve it.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
                     "limit": {"type": "integer"},
                 },
                 "required": ["path"],
