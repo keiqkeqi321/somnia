@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from typing import Any
 
 from open_somnia.providers.base import ProviderError
@@ -13,6 +14,9 @@ from open_somnia.runtime.messages import normalize_tool_importance
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
 AUTO_COMPACT_TRIGGER_RATIO = 0.82
 DUPLICATE_TOOL_RESULT_MIN_LENGTH = 240
+READ_FILE_TRUNCATION_MARKER = "[read_file output truncated at "
+READ_FILE_PREFIX_PATTERN = re.compile(r"^\.\.\. \((\d+) lines omitted before line (\d+)\)$")
+READ_FILE_SUFFIX_PATTERN = re.compile(r"^\.\.\. \((\d+) more lines(?: after line (\d+))?\)$")
 
 
 @dataclass(slots=True)
@@ -66,6 +70,16 @@ class SemanticCompressionDecision:
     @property
     def locator(self) -> ToolResultLocator:
         return ToolResultLocator(self.message_index, self.item_index)
+
+
+@dataclass(slots=True)
+class ReadFilePayloadSpan:
+    path: str
+    start_line: int
+    end_line: int
+    visible_lines: list[str]
+    prefix_marker: str | None = None
+    suffix_marker: str | None = None
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -144,6 +158,209 @@ def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, di
 def _duplicate_tool_result_summary(tool_name: str) -> str:
     label = str(tool_name).strip() or "tool"
     return f"[Duplicate tool result omitted | {label}] Identical output appears later."
+
+
+def _overlapping_read_file_summary(span: ReadFilePayloadSpan) -> str:
+    return (
+        f"[Overlapping read_file result omitted | {span.path}:{span.start_line}-{span.end_line}] "
+        "Covered by later read(s) of the same file."
+    )
+
+
+def _read_file_overlap_marker(start_line: int, end_line: int) -> str:
+    count = max(0, end_line - start_line + 1)
+    if count <= 0:
+        return ""
+    line_label = f"line {start_line}" if start_line == end_line else f"lines {start_line}-{end_line}"
+    return (
+        f"... ({count} overlapping lines omitted here; covered by later read(s) of the same file, "
+        f"{line_label})"
+    )
+
+
+def _normalized_read_file_path(tool_input: dict[str, Any]) -> str:
+    path = str(tool_input.get("path", "")).strip().replace("\\", "/")
+    return path
+
+
+def _parse_optional_positive_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _parse_read_file_payload_span(
+    item: dict[str, Any],
+    lookup: dict[str, tuple[str, dict[str, Any], str | None]],
+) -> ReadFilePayloadSpan | None:
+    call_id = str(item.get("tool_call_id", "")).strip()
+    tool_name, tool_input, _importance = lookup.get(call_id, ("tool", {}, None))
+    if tool_name != "read_file":
+        return None
+    path = _normalized_read_file_path(tool_input)
+    if not path:
+        return None
+    content = str(item.get("content", ""))
+    if not content or READ_FILE_TRUNCATION_MARKER in content:
+        return None
+    if content.startswith("[Duplicate tool result omitted |") or content.startswith("[Semantic Summary |"):
+        return None
+    if content.startswith("[Context Evicted |") or content.startswith("[Overlapping read_file result omitted |"):
+        return None
+
+    start_line = _parse_optional_positive_int(tool_input.get("start_line")) or 1
+    end_line = _parse_optional_positive_int(tool_input.get("end_line"))
+    limit = _parse_optional_positive_int(tool_input.get("limit"))
+    if end_line is None and limit is not None:
+        end_line = start_line + limit - 1
+
+    rendered_lines = [] if content == "" else content.split("\n")
+    prefix_marker: str | None = None
+    suffix_marker: str | None = None
+    visible_lines = list(rendered_lines)
+
+    if visible_lines and READ_FILE_PREFIX_PATTERN.match(visible_lines[0]):
+        prefix_marker = visible_lines.pop(0)
+    if visible_lines and READ_FILE_SUFFIX_PATTERN.match(visible_lines[-1]):
+        suffix_marker = visible_lines.pop()
+
+    if end_line is None:
+        if not visible_lines:
+            return None
+        end_line = start_line + len(visible_lines) - 1
+    expected_count = max(0, end_line - start_line + 1)
+    if len(visible_lines) != expected_count:
+        return None
+    return ReadFilePayloadSpan(
+        path=path,
+        start_line=start_line,
+        end_line=end_line,
+        visible_lines=visible_lines,
+        prefix_marker=prefix_marker,
+        suffix_marker=suffix_marker,
+    )
+
+
+def _subtract_interval(start_line: int, end_line: int, covered: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    remaining: list[tuple[int, int]] = []
+    cursor = start_line
+    for covered_start, covered_end in covered:
+        if covered_end < cursor:
+            continue
+        if covered_start > end_line:
+            break
+        if covered_start > cursor:
+            remaining.append((cursor, min(end_line, covered_start - 1)))
+        cursor = max(cursor, covered_end + 1)
+        if cursor > end_line:
+            break
+    if cursor <= end_line:
+        remaining.append((cursor, end_line))
+    return remaining
+
+
+def _merge_interval(intervals: list[tuple[int, int]], new_interval: tuple[int, int]) -> list[tuple[int, int]]:
+    start_line, end_line = new_interval
+    merged: list[tuple[int, int]] = []
+    inserted = False
+    for current_start, current_end in intervals:
+        if current_end + 1 < start_line:
+            merged.append((current_start, current_end))
+            continue
+        if end_line + 1 < current_start:
+            if not inserted:
+                merged.append((start_line, end_line))
+                inserted = True
+            merged.append((current_start, current_end))
+            continue
+        start_line = min(start_line, current_start)
+        end_line = max(end_line, current_end)
+    if not inserted:
+        merged.append((start_line, end_line))
+    return merged
+
+
+def _render_pruned_read_file_content(
+    span: ReadFilePayloadSpan,
+    kept_segments: list[tuple[int, int]],
+) -> str:
+    lines: list[str] = []
+    if span.prefix_marker:
+        lines.append(span.prefix_marker)
+
+    cursor = span.start_line
+    for segment_start, segment_end in kept_segments:
+        if segment_start > cursor:
+            gap_marker = _read_file_overlap_marker(cursor, segment_start - 1)
+            if gap_marker:
+                lines.append(gap_marker)
+        offset_start = segment_start - span.start_line
+        offset_end = segment_end - span.start_line + 1
+        lines.extend(span.visible_lines[offset_start:offset_end])
+        cursor = segment_end + 1
+
+    if cursor <= span.end_line:
+        gap_marker = _read_file_overlap_marker(cursor, span.end_line)
+        if gap_marker:
+            lines.append(gap_marker)
+    if span.suffix_marker:
+        lines.append(span.suffix_marker)
+    return "\n".join(lines)
+
+
+def _latest_round_active_read_file_paths(
+    rounds: list[tuple[int, list[dict[str, Any]]]],
+    lookup: dict[str, tuple[str, dict[str, Any], str | None]],
+) -> set[str]:
+    if not rounds:
+        return set()
+    _message_index, latest_tool_results = rounds[-1]
+    paths: set[str] = set()
+    for item in latest_tool_results:
+        call_id = str(item.get("tool_call_id", "")).strip()
+        tool_name, tool_input, _importance = lookup.get(call_id, ("tool", {}, None))
+        if tool_name != "read_file":
+            continue
+        path = _normalized_read_file_path(tool_input)
+        if path:
+            paths.add(path)
+    return paths
+
+
+def _suppress_overlapping_read_file_results(payload_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rounds = _tool_result_rounds(payload_messages)
+    if not rounds:
+        return payload_messages
+    lookup = _tool_call_lookup(payload_messages)
+    active_paths = _latest_round_active_read_file_paths(rounds, lookup)
+    if not active_paths:
+        return payload_messages
+    covered_by_path: dict[str, list[tuple[int, int]]] = {}
+    for _message_index, tool_results in reversed(rounds):
+        for item in reversed(tool_results):
+            span = _parse_read_file_payload_span(item, lookup)
+            if span is None:
+                continue
+            if span.path not in active_paths:
+                continue
+            covered = covered_by_path.get(span.path, [])
+            if covered:
+                kept_segments = _subtract_interval(span.start_line, span.end_line, covered)
+                if not kept_segments:
+                    item["content"] = _overlapping_read_file_summary(span)
+                elif kept_segments != [(span.start_line, span.end_line)]:
+                    item["content"] = _render_pruned_read_file_content(span, kept_segments)
+            covered_by_path[span.path] = _merge_interval(
+                covered,
+                (span.start_line, span.end_line),
+            )
+    return payload_messages
 
 
 def _tool_result_dedup_key(
@@ -318,6 +535,7 @@ def build_payload_messages(
         for item in tool_results:
             _strip_tool_result_metadata(item)
     _dedupe_tool_results(payload_messages)
+    _suppress_overlapping_read_file_results(payload_messages)
     return payload_messages
 
 

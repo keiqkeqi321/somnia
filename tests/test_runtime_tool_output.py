@@ -778,6 +778,265 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("raw_output", messages[1]["content"][0])
         self.assertEqual(messages[1]["content"][0]["content"], duplicate_content)
 
+    def test_build_payload_messages_omits_older_read_file_result_fully_covered_by_later_range(self) -> None:
+        older_content = "\n".join(f"line {index}" for index in range(3, 9))
+        newer_content = "\n".join(f"line {index}" for index in range(1, 11))
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 3, "end_line": 8},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": older_content,
+                        "raw_output": older_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-2",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 1, "end_line": 10},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": newer_content,
+                        "raw_output": newer_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_payload_messages(messages)
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            "[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.",
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+        self.assertEqual(messages[1]["content"][0]["content"], older_content)
+
+    def test_build_payload_messages_prunes_partial_read_file_overlap_and_keeps_unique_lines(self) -> None:
+        older_content = (
+            "... (2 lines omitted before line 3)\n"
+            "line 3\n"
+            "line 4\n"
+            "line 5\n"
+            "line 6\n"
+            "line 7\n"
+            "line 8\n"
+            "... (2 more lines after line 8)"
+        )
+        newer_content = (
+            "... (3 lines omitted before line 4)\n"
+            "line 4\n"
+            "line 5\n"
+            "line 6\n"
+            "... (4 more lines after line 6)"
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 3, "end_line": 8},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": older_content,
+                        "raw_output": older_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-2",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 4, "end_line": 6},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": newer_content,
+                        "raw_output": newer_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+        ]
+
+        payload = build_payload_messages(messages)
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            (
+                "... (2 lines omitted before line 3)\n"
+                "line 3\n"
+                "... (3 overlapping lines omitted here; covered by later read(s) of the same file, lines 4-6)\n"
+                "line 7\n"
+                "line 8\n"
+                "... (2 more lines after line 8)"
+            ),
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+        self.assertEqual(messages[1]["content"][0]["content"], older_content)
+
+    def test_build_payload_messages_skips_overlap_pruning_when_latest_round_has_no_read_file(self) -> None:
+        older_content = "\n".join(f"line {index}" for index in range(3, 9))
+        newer_content = "\n".join(f"line {index}" for index in range(1, 11))
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-1",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 3, "end_line": 8},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": older_content,
+                        "raw_output": older_content,
+                        "log_id": "log-1",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call-2",
+                        "name": "read_file",
+                        "input": {"path": "demo.txt", "start_line": 1, "end_line": 10},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": newer_content,
+                        "raw_output": newer_content,
+                        "log_id": "log-2",
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-3", "name": "grep", "input": {"path": "demo.txt", "pattern": "needle"}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "demo.txt:5: needle", "raw_output": "demo.txt:5: needle", "log_id": "log-3"}],
+            },
+        ]
+
+        payload = build_payload_messages(messages)
+
+        self.assertEqual(payload[1]["content"][0]["content"], older_content)
+        self.assertEqual(payload[3]["content"][0]["content"], newer_content)
+
+    def test_build_payload_messages_prunes_only_paths_read_in_latest_round(self) -> None:
+        older_demo = "\n".join(f"demo {index}" for index in range(3, 9))
+        newer_demo = "\n".join(f"demo {index}" for index in range(1, 11))
+        older_other = "\n".join(f"other {index}" for index in range(3, 9))
+        newer_other = "\n".join(f"other {index}" for index in range(1, 11))
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt", "start_line": 3, "end_line": 8}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": older_demo, "raw_output": older_demo, "log_id": "log-1"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-2", "name": "read_file", "input": {"path": "other.txt", "start_line": 3, "end_line": 8}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": older_other, "raw_output": older_other, "log_id": "log-2"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "other.txt", "start_line": 1, "end_line": 10}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": newer_other, "raw_output": newer_other, "log_id": "log-3"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-4", "name": "read_file", "input": {"path": "demo.txt", "start_line": 1, "end_line": 10}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_call_id": "call-4", "content": newer_demo, "raw_output": newer_demo, "log_id": "log-4"}],
+            },
+        ]
+
+        payload = build_payload_messages(messages)
+
+        self.assertEqual(
+            payload[1]["content"][0]["content"],
+            "[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.",
+        )
+        self.assertEqual(payload[3]["content"][0]["content"], older_other)
+        self.assertEqual(payload[5]["content"][0]["content"], newer_other)
+        self.assertEqual(payload[7]["content"][0]["content"], newer_demo)
+
     def test_authorize_tool_call_blocks_non_edit_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "accept_edits"

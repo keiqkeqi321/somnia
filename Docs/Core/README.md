@@ -25,4 +25,4 @@
 
 | 文档 | 说明 |
 |------|------|
-| [ReadFile](./Tool/ReadFile.md) | `read_file` 工具：范围读取、显式截断提示、与 payload 去重的关系 |
+| [ReadFile](./Tool/ReadFile.md) | `read_file` 工具：范围读取、显式截断提示、与 payload 去重及同文件重叠抑制的关系 |

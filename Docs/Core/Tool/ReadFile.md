@@ -109,7 +109,17 @@
 [Duplicate tool result omitted | read_file] Identical output appears later.
 ```
 
-这只是 payload 级别的去重，不会改写原始 `session.messages`。
+- 如果**最新一轮 tool result 里出现了 `read_file`**，payload 构建还会只针对这一轮读过的路径，逆向裁剪更早的同文件重叠区间：
+
+```text
+[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.
+```
+
+- 完全覆盖时会替换成上面的占位
+- 部分重叠时只移除重叠行，保留前后独有片段，并插入显式 overlap marker
+- 如果最新一轮没有 `read_file`，这一步会完全跳过
+
+这只是 payload 级别的去重与重叠抑制，不会改写原始 `session.messages`。
 
 换句话说，去重能减少重复上下文污染，但它不是鼓励整文件反复重读的替代品。正确做法仍然是优先使用范围读取。
 
