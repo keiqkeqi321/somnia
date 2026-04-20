@@ -120,6 +120,12 @@ Todo 清单渲染时**不显示 cancelled 项**，可见状态为 `pending / in_
 - 不要只口头说“我来更新 todo”
 - 如果 todo 状态没有变化，就忽略 reminder 并继续当前任务
 
+因此：
+
+- reminder 本身**不是**“有 open todo 就禁止结束”的硬门禁
+- 但如果 Agent Loop 达到 `max_agent_rounds`（默认 100）时仍有 open todo，runtime 会返回显式状态 `stopped_with_open_todos`
+- 上层 REPL / CLI 应把它视为“停在未完成任务上”，而不是正常 done
+
 ---
 
 ## 与上下文治理的关系

@@ -227,6 +227,8 @@ class TurnQueueRunner:
         "Loading genius",
     )
     DONE_TEXT = "done"
+    STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
+    STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
     THINKING_FRAME_SECONDS = 0.25
     CONTEXT_HEALTHY_STYLE = "fg:#22c55e"
     CONTEXT_WARNING_STYLE = "fg:#84cc16"
@@ -430,6 +432,7 @@ class TurnQueueRunner:
                     if preview_id != task.id
                 ]
             self._set_status("compacting" if task.kind == "compact" else "thinking")
+            response = None
             try:
                 with self._lock:
                     self._interrupt_requested = False
@@ -451,9 +454,18 @@ class TurnQueueRunner:
                         text_callback=streamer,
                         should_interrupt=self.should_interrupt,
                     )
+                    response_status = str(getattr(response, "status", "")).strip()
                     if streamer.has_output:
                         streamer.finish()
                         print()
+                        if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
+                            print(
+                                _prefix_first_line(
+                                    render_markdown_text(response, ansi=sys.stdout.isatty()),
+                                    _assistant_prefix(ansi=sys.stdout.isatty()),
+                                )
+                            )
+                            print()
                     elif response:
                         print()
                         print(
@@ -475,7 +487,7 @@ class TurnQueueRunner:
                 with self._lock:
                     self._active = False
                     self._interrupt_requested = False
-                self._set_status("done")
+                self._set_status(self._status_for_response(response))
                 self._queue.task_done()
 
     def _set_status(self, status: str) -> None:
@@ -648,7 +660,19 @@ class TurnQueueRunner:
             return "interrupting"
         if status == "done":
             return self.DONE_TEXT
+        if status == "stopped_with_open_todos":
+            return self.STOPPED_WITH_OPEN_TODOS_TEXT
+        if status == "stopped_after_max_rounds":
+            return self.STOPPED_AFTER_MAX_ROUNDS_TEXT
         return ""
+
+    def _status_for_response(self, response) -> str:
+        status = str(getattr(response, "status", "")).strip()
+        if status == "stopped_with_open_todos":
+            return "stopped_with_open_todos"
+        if status == "stopped_after_max_rounds":
+            return "stopped_after_max_rounds"
+        return "done"
 
     def _queue_preview_lines(self) -> list[str]:
         with self._lock:

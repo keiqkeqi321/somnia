@@ -73,7 +73,7 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
                   │  - auto compact     │  (82% 阈值)
                   └──────────┬──────────┘
                              ▼
-                  继续下一轮循环 (回到步骤 1)
+                  继续下一轮循环 (回到步骤 1，最多 `max_agent_rounds`，默认 100)
 ```
 
 ---
@@ -134,6 +134,21 @@ session.undo_stack.append({
 ```
 
 支持最多 10 轮 undo 记录（`MAX_UNDO_TURNS = 10`）。
+
+### 结束状态
+
+Agent Loop 不只有“正常完成”这一种退出方式：
+
+- 模型返回纯文本且没有 `tool_calls` 时，返回 `status="completed"`
+- 如果达到 `max_agent_rounds` 仍未结束，返回显式停止状态，而不是把它伪装成正常完成
+- 当达到 `max_agent_rounds` 且会话里仍有 open todo 时，返回 `status="stopped_with_open_todos"`
+- 当达到 `max_agent_rounds` 但没有 open todo 时，返回 `status="stopped_after_max_rounds"`
+
+这样上层 REPL / CLI 可以区分：
+
+- 正常 done
+- 轮次耗尽但还有未完成工作
+- 轮次耗尽但没有 open todo
 
 ---
 

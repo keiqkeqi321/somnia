@@ -89,6 +89,22 @@ from open_somnia.tools.tool_errors import (
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 
 
+class AgentLoopResult(str):
+    __slots__ = ("status", "open_todo_count")
+
+    def __new__(
+        cls,
+        text: str = "",
+        *,
+        status: str = "completed",
+        open_todo_count: int = 0,
+    ):
+        obj = str.__new__(cls, text)
+        obj.status = str(status or "completed")
+        obj.open_todo_count = max(0, int(open_todo_count or 0))
+        return obj
+
+
 class OpenAgentRuntime:
     DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
     TODO_REMINDER_TEXT = (
@@ -2384,7 +2400,24 @@ class OpenAgentRuntime:
         if should_interrupt is not None and should_interrupt():
             raise TurnInterrupted("Interrupted by user.")
 
-    def run_turn(self, session: AgentSession, user_input: str, text_callback=None, should_interrupt=None) -> str:
+    def _count_open_todo_items(self, session: AgentSession | None) -> int:
+        if session is None:
+            return 0
+        count = 0
+        for item in list(getattr(session, "todo_items", []) or []):
+            status = str(item.get("status", "pending")).strip().lower()
+            if status in {"pending", "in_progress"}:
+                count += 1
+        return count
+
+    def _agent_loop_result(self, text: str, *, status: str, session: AgentSession | None) -> AgentLoopResult:
+        return AgentLoopResult(
+            text,
+            status=status,
+            open_todo_count=self._count_open_todo_items(session),
+        )
+
+    def run_turn(self, session: AgentSession, user_input: str, text_callback=None, should_interrupt=None) -> AgentLoopResult:
         session.pending_file_changes = []
         session.last_turn_file_changes = []
         task_anchor_message = make_user_text_message(user_input)
@@ -2399,7 +2432,13 @@ class OpenAgentRuntime:
             task_anchor_message=task_anchor_message,
         )
 
-    def _agent_loop(self, session: AgentSession, text_callback=None, should_interrupt=None, task_anchor_message=None) -> str:
+    def _agent_loop(
+        self,
+        session: AgentSession,
+        text_callback=None,
+        should_interrupt=None,
+        task_anchor_message=None,
+    ) -> AgentLoopResult:
         final_text = ""
         pending_tool_repair_hints: list[dict[str, Any]] = []
         try:
@@ -2513,7 +2552,7 @@ class OpenAgentRuntime:
                         text=final_text,
                         execution_mode=getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
                     )
-                    return final_text
+                    return self._agent_loop_result(final_text, status="completed", session=session)
 
                 tool_results: list[dict[str, Any]] = []
                 executed_tool_calls = []
@@ -2593,7 +2632,22 @@ class OpenAgentRuntime:
                     continue
             self._capture_turn_file_changes(session)
             self.session_manager.save(session)
-            return final_text or "Stopped after max rounds."
+            open_todo_count = self._count_open_todo_items(session)
+            if open_todo_count > 0:
+                return AgentLoopResult(
+                    final_text
+                    or (
+                        f"Stopped after max rounds with open todo items remaining ({open_todo_count} open). "
+                        "Continue the session to resume unfinished work."
+                    ),
+                    status="stopped_with_open_todos",
+                    open_todo_count=open_todo_count,
+                )
+            return self._agent_loop_result(
+                final_text or "Stopped after max rounds.",
+                status="stopped_after_max_rounds",
+                session=session,
+            )
         except TurnInterrupted:
             self.interrupt_active_teammates(reason="lead_interrupt")
             session.pending_file_changes = []

@@ -44,6 +44,28 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.model, "glm-5")
         self.assertEqual(settings.provider_profiles["anthropic"].models, ["glm-5", "claude-sonnet-4-5"])
 
+    def test_load_settings_defaults_max_agent_rounds_to_100(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["glm-5"]
+                default_model = "glm-5"
+                api_key = "anthropic-test-key"
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        self.assertEqual(settings.runtime.max_agent_rounds, 100)
+
     def test_load_settings_can_override_provider_and_model_from_configured_profiles(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)

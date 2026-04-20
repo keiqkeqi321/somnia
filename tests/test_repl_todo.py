@@ -547,6 +547,24 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(requested)
         self.assertEqual(reasons, ["lead_interrupt"])
 
+    def test_status_for_response_marks_open_todo_max_round_stop_explicitly(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        status = runner._status_for_response(SimpleNamespace(status="stopped_with_open_todos"))
+
+        self.assertEqual(status, "stopped_with_open_todos")
+        runner._status = status
+        self.assertEqual(runner._status_line(), "stopped_with_open_todos")
+
+    def test_status_for_response_marks_generic_max_round_stop_explicitly(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        status = runner._status_for_response(SimpleNamespace(status="stopped_after_max_rounds"))
+
+        self.assertEqual(status, "stopped_after_max_rounds")
+        runner._status = status
+        self.assertEqual(runner._status_line(), "stopped_after_max_rounds")
+
     def test_compact_task_runs_before_queued_turn(self) -> None:
         events: list[str] = []
         runtime = SimpleNamespace(

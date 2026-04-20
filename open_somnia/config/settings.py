@@ -927,7 +927,7 @@ def load_settings(
         teammate_poll_interval_seconds=int(runtime_raw.get("teammate_poll_interval_seconds", 5)),
         max_tool_output_chars=int(runtime_raw.get("max_tool_output_chars", 50_000)),
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
-        max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 50)),
+        max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
     )
 
     mcp_servers = _load_mcp_servers(root, raw)

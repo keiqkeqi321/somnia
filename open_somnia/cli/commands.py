@@ -194,8 +194,12 @@ def cmd_run(runtime: OpenAgentRuntime, prompt: str) -> int:
     session = runtime.create_session()
     streamer = ConsoleStreamer()
     result = runtime.run_turn(session, prompt, text_callback=streamer)
+    result_status = str(getattr(result, "status", "")).strip()
     if streamer.has_output:
         streamer.finish()
+        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and result:
+            print()
+            print(_prefix_first_line(render_markdown_text(result, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
     elif result:
         print(_prefix_first_line(render_markdown_text(result, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
     return 0

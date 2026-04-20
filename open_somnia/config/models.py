@@ -87,7 +87,7 @@ class RuntimeSettings:
     teammate_poll_interval_seconds: int = 5
     max_tool_output_chars: int = 50_000
     max_subagent_rounds: int = 30
-    max_agent_rounds: int = 50
+    max_agent_rounds: int = 100
 
 
 @dataclass(slots=True)
