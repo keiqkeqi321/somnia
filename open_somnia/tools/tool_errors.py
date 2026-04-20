@@ -379,6 +379,15 @@ def _classify_message_error_type(message: str) -> str:
         return "path_outside_workspace"
     if "permission denied" in lowered or "access denied" in lowered:
         return "permission_denied"
+    if any(
+        token in lowered
+        for token in (
+            "text not found",
+            "content not found",
+            "old_text not found",
+        )
+    ):
+        return "content_not_found"
     if "not found" in lowered or "no such file" in lowered:
         return "file_not_found"
     if any(token in lowered for token in ("required", "must contain", "must be", "non-empty", "invalid", "one of")):

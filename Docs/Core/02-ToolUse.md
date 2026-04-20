@@ -189,6 +189,7 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 - `tool_access_blocked`
 - `unknown_tool`
 - `file_not_found`
+- `content_not_found`
 - `permission_denied`
 - `path_outside_workspace`
 - `io_error`

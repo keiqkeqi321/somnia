@@ -1077,6 +1077,126 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["repair_hint"], {"required": ["path", "content"]})
         self.assertEqual(called, [])
 
+    def test_tool_registry_classifies_edit_file_text_miss_as_content_not_found(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="edit_file",
+                description="Replace exact text in one or more files.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "old_text": {"type": "string"},
+                                    "new_text": {"type": "string"},
+                                },
+                                "required": ["old_text", "new_text"],
+                            },
+                        },
+                    },
+                    "required": ["edits"],
+                },
+                handler=edit_file,
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "backend" / "libicrab" / "api" / "v1" / "conversations.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("return ApiResponse(data=messages)\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            result = registry.execute(
+                ctx,
+                "edit_file",
+                {
+                    "path": "backend/libicrab/api/v1/conversations.py",
+                    "edits": [
+                        {
+                            "old_text": "missing old text",
+                            "new_text": "replacement",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "content_not_found")
+        self.assertEqual(result["tool_name"], "edit_file")
+        self.assertIn("Text not found for edits[1]", result["message"])
+
+    def test_tool_registry_keeps_real_missing_file_as_file_not_found(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="edit_file",
+                description="Replace exact text in one or more files.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "old_text": {"type": "string"},
+                                    "new_text": {"type": "string"},
+                                },
+                                "required": ["old_text", "new_text"],
+                            },
+                        },
+                    },
+                    "required": ["edits"],
+                },
+                handler=edit_file,
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            result = registry.execute(
+                ctx,
+                "edit_file",
+                {
+                    "path": "backend/libicrab/api/v1/conversations.py",
+                    "edits": [
+                        {
+                            "old_text": "missing old text",
+                            "new_text": "replacement",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "file_not_found")
+        self.assertEqual(result["tool_name"], "edit_file")
+
 
 if __name__ == "__main__":
     unittest.main()
