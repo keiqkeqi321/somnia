@@ -3075,6 +3075,88 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(reminder_counts, [1, 1, 1, 1])
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
+    def test_agent_loop_injects_repair_hint_once_and_keeps_compact_error_afterward(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: "log-1"
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                if name == "write_file":
+                    return {
+                        "status": "error",
+                        "error_type": "missing_required_params",
+                        "tool_name": "write_file",
+                        "message": "Missing required parameter(s) for 'write_file': content.",
+                        "missing_params": ["content"],
+                        "repair_hint": {"required": ["path", "content"]},
+                    }
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-1", "write_file", {"path": "demo.txt"})],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-2", "bash", {"command": "pwd"})],
+                ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Done."],
+                ),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "write the file")
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(len(payloads), 3)
+
+        round_two_payload = json.dumps(payloads[1], ensure_ascii=False)
+        round_three_payload = json.dumps(payloads[2], ensure_ascii=False)
+        persisted_tool_error = session.messages[2]["content"][0]["content"]
+        session_dump = json.dumps(session.messages, ensure_ascii=False)
+
+        self.assertIn("<tool-repair-hints>", round_two_payload)
+        self.assertIn("repair_hint", round_two_payload)
+        self.assertIn("path", round_two_payload)
+        self.assertIn("content", round_two_payload)
+        self.assertNotIn("<tool-repair-hints>", round_three_payload)
+        self.assertIn("missing_required_params", round_three_payload)
+        self.assertIn("missing_required_params", persisted_tool_error)
+        self.assertNotIn("repair_hint", persisted_tool_error)
+        self.assertIn("missing_required_params", session_dump)
+        self.assertNotIn("repair_hint", session_dump)
+        self.assertNotIn("<tool-repair-hints>", session_dump)
+
     def test_agent_loop_accumulates_token_usage_sum(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

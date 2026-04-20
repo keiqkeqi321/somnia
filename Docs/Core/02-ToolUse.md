@@ -149,12 +149,72 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 │     - 执行模式限制          │
 │     - subagent 特殊规则     │
 │                             │
-│  3. 被阻断 → 返回阻断消息   │
-│  4. 通过 → 执行 handler     │
+│  3. 运行 PreToolUse hook    │
+│     - hook 可 deny          │
+│     - hook 可 rewrite input │
+│  4. 对 hook 后 payload 校验 │
+│     - required / type / enum│
+│     - items / allOf / if/then│
+│  5. 通过 → 执行 handler     │
+│  6. 统一归一化工具输出      │
 └──────────────┬──────────────┘
                ▼
         返回结果 → 记录到 ToolLogStore
 ```
+
+---
+
+## 统一错误外壳
+
+工具执行不再把底层 `KeyError('path')`、`TypeError` 或松散的 `"Error: ..."` 直接暴露给模型。运行时会统一收敛为结构化错误对象：
+
+```json
+{
+  "status": "error",
+  "error_type": "missing_required_params",
+  "tool_name": "write_file",
+  "message": "Missing required parameter(s) for 'write_file': content.",
+  "missing_params": ["content"],
+  "repair_hint": {
+    "required": ["path", "content"]
+  }
+}
+```
+
+常见 `error_type`：
+
+- `missing_required_params`
+- `invalid_arguments`
+- `blocked_by_hook`
+- `tool_access_blocked`
+- `unknown_tool`
+- `file_not_found`
+- `permission_denied`
+- `path_outside_workspace`
+- `io_error`
+
+设计约束：
+
+- 所有工具错误统一返回 `status / error_type / tool_name / message`
+- 只有 `missing_required_params`、`invalid_arguments` 这类可自修复错误才附带最小 `repair_hint`
+- `repair_hint` 只包含最小必要签名，不回灌完整大 schema
+
+---
+
+## 临时修复提示与持久化策略
+
+主 Agent、Subagent、Teammate 都采用同一核心策略：
+
+- 当前轮工具失败后，如果错误属于可自修复类型，则下一轮 payload 临时注入 `<tool-repair-hints>`
+- 该提示只注入一次，用完即丢；Lead/Subagent 不写入会话历史
+- Teammate 的 `tool_result_message` 与工具日志同样只保留精简错误，但 team log 会额外记一条 `source=tool_repair_hint` 的一次性提示消息
+- 会话历史、tool_result、tool_log 中保留的是**瘦身后的结构化错误**
+- 持久化前会剥离 `repair_hint`，避免上下文随着 repeated retries 持续膨胀
+
+这意味着：
+
+- 模型在下一轮仍能拿到最小修复提示
+- 再往后即使临时提示消失，历史里仍有简单错误信息，不会“完全丢失”
 
 ---
 
@@ -189,11 +249,20 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 
 支持通过 `request_original_context(log_id)` 恢复已压缩的原始工具输出。
 
+日志中的 `output` 会先做稳定序列化：
+
+- 字符串保持原样
+- 对象统一转为 JSON 字符串
+- 结构化错误写入前会剥离 `repair_hint`
+
+因此新日志里不应再出现 Python `dict` 的单引号 repr 形式；旧日志可能仍然保留旧格式。
+
 ---
 
 ## 相关代码
 
 - `open_somnia/tools/registry.py` — `ToolRegistry`, `ToolDefinition`
+- `open_somnia/tools/tool_errors.py` — 统一错误外壳、参数校验、临时修复提示
 - `open_somnia/tools/filesystem.py` — 文件系统工具
 - `open_somnia/tools/shell.py` — Shell 工具
 - `open_somnia/tools/todo.py` — TodoWrite 工具

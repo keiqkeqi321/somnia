@@ -25,6 +25,11 @@ from open_somnia.tools.registry import ToolDefinition
 
 
 class HookSystemTests(unittest.TestCase):
+    def _stable_test_dir(self, name: str) -> Path:
+        root = Path.cwd() / ".tmp-tests" / f"{name}-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def test_load_settings_adds_builtin_notification_hooks_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -387,43 +392,92 @@ class HookSystemTests(unittest.TestCase):
         self.assertEqual(post_payload["tool_input"]["value"], "patched")
         self.assertEqual(post_payload["tool_result"], "patched")
 
-    def test_pre_tool_hook_can_deny_execution(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            deny_script = self._write_script(
-                root / "deny.py",
-                """
-                import json
+    def test_pre_tool_rewrite_is_validated_after_hook_runs(self) -> None:
+        root = self._stable_test_dir("hook-pretool-rewrite-validation")
+        rewrite_script = self._write_script(
+            root / "rewrite_missing_content.py",
+            """
+            import json
 
-                print(json.dumps({"action": "deny", "message": "blocked by test"}, ensure_ascii=False))
-                """,
-            )
-            settings = self._make_settings(
-                root,
-                hooks=[
-                    HookSettings(
-                        event="PreToolUse",
-                        command=sys.executable,
-                        args=[str(deny_script)],
-                        matcher=HookMatcherSettings(tool_name="echo_payload"),
-                    )
-                ],
-            )
-            runtime = OpenAgentRuntime(settings)
-            runtime.execution_mode = "yolo"
-            session = runtime.create_session()
-            runtime.registry.register(
-                ToolDefinition(
-                    name="echo_payload",
-                    description="Return the payload for testing.",
-                    input_schema={"type": "object", "properties": {"value": {"type": "string"}}},
-                    handler=lambda ctx, payload: payload["value"],
+            print(json.dumps({"action": "replace_input", "replacement_input": {"path": "demo.txt"}}, ensure_ascii=False))
+            """,
+        )
+        settings = self._make_settings(
+            root,
+            hooks=[
+                HookSettings(
+                    event="PreToolUse",
+                    command=sys.executable,
+                    args=[str(rewrite_script)],
+                    matcher=HookMatcherSettings(tool_name="write_file"),
                 )
+            ],
+        )
+        runtime = OpenAgentRuntime(settings)
+        runtime.execution_mode = "yolo"
+        session = runtime.create_session()
+        called: list[dict[str, str]] = []
+        runtime.registry.register(
+            ToolDefinition(
+                name="write_file",
+                description="Write content to a file.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+                handler=lambda ctx, payload: called.append(payload) or {"status": "ok"},
             )
+        )
 
-            result = runtime.invoke_tool(session, "echo_payload", {"value": "original"})
+        result = runtime.invoke_tool(session, "write_file", {"path": "demo.txt", "content": "hello"})
 
-        self.assertEqual(result["status"], "denied")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "missing_required_params")
+        self.assertEqual(result["missing_params"], ["content"])
+        self.assertEqual(result["repair_hint"], {"required": ["path", "content"]})
+        self.assertEqual(called, [])
+
+    def test_pre_tool_hook_can_deny_execution(self) -> None:
+        root = self._stable_test_dir("hook-pretool-deny")
+        deny_script = self._write_script(
+            root / "deny.py",
+            """
+            import json
+
+            print(json.dumps({"action": "deny", "message": "blocked by test"}, ensure_ascii=False))
+            """,
+        )
+        settings = self._make_settings(
+            root,
+            hooks=[
+                HookSettings(
+                    event="PreToolUse",
+                    command=sys.executable,
+                    args=[str(deny_script)],
+                    matcher=HookMatcherSettings(tool_name="echo_payload"),
+                )
+            ],
+        )
+        runtime = OpenAgentRuntime(settings)
+        runtime.execution_mode = "yolo"
+        session = runtime.create_session()
+        runtime.registry.register(
+            ToolDefinition(
+                name="echo_payload",
+                description="Return the payload for testing.",
+                input_schema={"type": "object", "properties": {"value": {"type": "string"}}},
+                handler=lambda ctx, payload: payload["value"],
+            )
+        )
+
+        result = runtime.invoke_tool(session, "echo_payload", {"value": "original"})
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "blocked_by_hook")
         self.assertEqual(result["message"], "blocked by test")
 
     def test_assistant_response_hook_runs_on_non_tool_reply(self) -> None:

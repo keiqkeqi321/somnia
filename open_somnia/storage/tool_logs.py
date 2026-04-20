@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from open_somnia.storage.common import append_jsonl, now_ts
+from open_somnia.tools.tool_errors import serialize_tool_output
 
 
 class ToolLogStore:
@@ -30,7 +31,7 @@ class ToolLogStore:
             "actor": actor,
             "tool_name": tool_name,
             "tool_input": tool_input,
-            "output": str(output),
+            "output": serialize_tool_output(output),
             "category": category,
         }
         path = self.root / f"{log_id}.json"

@@ -113,6 +113,7 @@ spawn_teammate(name, role, prompt)
 │  while True:                 │
 │    ├── 检查关机请求          │
 │    ├── 读取收件箱            │
+│    ├── 注入 repair hint      │
 │    ├── provider.complete()   │
 │    ├── 执行工具调用          │
 │    └── idle 阶段:            │
@@ -243,6 +244,33 @@ def _restore_state(self) -> None:
 
 ---
 
+## 工具错误与修复提示
+
+Teammate Worker 与 Lead/Subagent 共享同一套工具错误协议：
+
+- `ToolRegistry.execute()` 返回统一结构化错误外壳
+- 只有 `missing_required_params`、`invalid_arguments` 这类可自修复错误会提取 `repair_hint`
+- Worker 不会把 `repair_hint` 塞回当前轮 `tool_result_message`
+- 下一轮调用模型前，会把待处理提示渲染成一次性的 `<tool-repair-hints>` 消息注入 `messages`
+
+与 Lead 会话不同，Teammate 会把这条一次性提示额外记录成一条：
+
+```python
+{
+    "type": "user_message",
+    "source": "tool_repair_hint",
+    "content": "<tool-repair-hints>...</tool-repair-hints>",
+}
+```
+
+这样做的结果是：
+
+- Worker 给模型看的下一轮提示仍然是临时注入，只消费一次
+- `tool_result_message` 和工具日志里保留的是去掉 `repair_hint` 的精简结构化错误
+- 团队活动日志仍能复盘“这一轮曾注入过什么修复提示”
+
+---
+
 ## 活动日志
 
 每个 Teammate 的活动记录在 `team_log` 中：
@@ -259,6 +287,8 @@ def _restore_state(self) -> None:
 - `tool_call` — 工具调用记录
 - `tool_result_message` — 工具结果
 - `runtime_error` — 运行时错误
+
+当出现一次性修复提示时，会额外记录一条 `user_message(source="tool_repair_hint")`。对应的 `tool_result_message` 仍然只保存精简后的结构化错误，避免把大 schema 或重复提示持续堆进工作历史。
 
 ---
 
@@ -280,3 +310,4 @@ def _restore_state(self) -> None:
 - `open_somnia/tools/team.py` — 团队工具注册
 - `open_somnia/storage/team.py` — `TeamStore`
 - `open_somnia/storage/inbox.py` — `InboxStore`
+- `open_somnia/tools/tool_errors.py` — 统一错误外壳、修复提示提取与渲染

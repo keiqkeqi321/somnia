@@ -18,6 +18,13 @@ from open_somnia.tools.filesystem import (
 )
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 from open_somnia.tools.shell import register_shell_tool
+from open_somnia.tools.tool_errors import (
+    extract_transient_repair_hint,
+    render_transient_repair_hint_message,
+    sanitize_tool_output_for_persistence,
+    serialize_tool_output,
+    tool_error_from_exception,
+)
 
 
 class SubagentRunner:
@@ -40,7 +47,13 @@ class SubagentRunner:
             f"{self.runtime._environment_guidance()}"
         )
         final_text = "(subagent failed)"
+        pending_tool_repair_hints: list[dict[str, Any]] = []
         for _ in range(self.runtime.settings.runtime.max_subagent_rounds):
+            if pending_tool_repair_hints:
+                repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
+                pending_tool_repair_hints = []
+                if repair_message:
+                    messages.append(make_user_text_message(repair_message))
             turn = self.runtime.complete(system_prompt, messages, registry.schemas())
             messages.append(turn.as_message())
             if not turn.has_tool_calls():
@@ -57,12 +70,16 @@ class SubagentRunner:
                 try:
                     output = registry.execute(ctx, tool_call.name, tool_call.input)
                 except Exception as exc:
-                    output = f"Error: {exc}"
+                    output = tool_error_from_exception(tool_call.name, exc)
+                repair_hint = extract_transient_repair_hint(output)
+                if repair_hint is not None:
+                    pending_tool_repair_hints.append(repair_hint)
+                persisted_output = sanitize_tool_output_for_persistence(output)
                 results.append(
                     {
                         "type": "tool_result",
                         "tool_call_id": tool_call.id,
-                        "content": str(output),
+                        "content": serialize_tool_output(persisted_output),
                     }
                 )
             messages.append(make_tool_result_message(results))

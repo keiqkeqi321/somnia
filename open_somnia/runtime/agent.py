@@ -79,6 +79,13 @@ from open_somnia.tools.shell import register_shell_tool
 from open_somnia.tools.subagent import register_subagent_tool
 from open_somnia.tools.tasks import register_task_tools
 from open_somnia.tools.team import register_team_tools
+from open_somnia.tools.tool_errors import (
+    extract_transient_repair_hint,
+    render_transient_repair_hint_message,
+    sanitize_tool_output_for_persistence,
+    serialize_tool_output,
+    tool_error_from_exception,
+)
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 
 
@@ -2394,6 +2401,7 @@ class OpenAgentRuntime:
 
     def _agent_loop(self, session: AgentSession, text_callback=None, should_interrupt=None, task_anchor_message=None) -> str:
         final_text = ""
+        pending_tool_repair_hints: list[dict[str, Any]] = []
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -2429,6 +2437,11 @@ class OpenAgentRuntime:
                 transient_payload_messages: list[dict[str, Any]] = []
                 if self.todo_manager.has_open_items(session):
                     transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
+                if pending_tool_repair_hints:
+                    repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
+                    pending_tool_repair_hints = []
+                    if repair_message:
+                        transient_payload_messages.append(make_user_text_message(repair_message))
                 payload_source_messages = session.messages
                 payload_session: AgentSession | None = session
                 if transient_payload_messages:
@@ -2521,14 +2534,19 @@ class OpenAgentRuntime:
                     try:
                         output = self.registry.execute(ctx, tool_call.name, tool_call.input)
                     except Exception as exc:
-                        output = f"Error: {exc}"
-                    log_id = self.print_tool_event("lead", tool_call.name, tool_call.input, output)
+                        output = tool_error_from_exception(tool_call.name, exc)
+                    repair_hint = extract_transient_repair_hint(output)
+                    if repair_hint is not None:
+                        pending_tool_repair_hints.append(repair_hint)
+                    persisted_output = sanitize_tool_output_for_persistence(output)
+                    rendered_output = serialize_tool_output(persisted_output)
+                    log_id = self.print_tool_event("lead", tool_call.name, tool_call.input, persisted_output)
                     executed_tool_calls.append(tool_call)
                     result = {
                         "type": "tool_result",
                         "tool_call_id": tool_call.id,
-                        "content": str(output)[: self.settings.runtime.max_tool_output_chars],
-                        "raw_output": output,
+                        "content": rendered_output[: self.settings.runtime.max_tool_output_chars],
+                        "raw_output": persisted_output,
                         "log_id": log_id,
                     }
                     tool_results.append(result)

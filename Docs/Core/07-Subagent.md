@@ -91,9 +91,17 @@ def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
     
     # 3. 初始消息
     messages = [make_user_text_message(prompt)]
+    pending_tool_repair_hints = []
     
     # 4. 执行 Agent Loop
     for _ in range(max_subagent_rounds):
+        if pending_tool_repair_hints:
+            messages.append(
+                make_user_text_message(
+                    render_transient_repair_hint_message(pending_tool_repair_hints)
+                )
+            )
+            pending_tool_repair_hints = []
         turn = self.provider.complete(system_prompt, messages, registry.schemas())
         messages.append(turn.as_message())
         
@@ -110,7 +118,13 @@ def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
                 trace_id=f"subagent-{uuid}"
             )
             output = registry.execute(ctx, tool_call.name, tool_call.input)
-            results.append(make_tool_result(...))
+            repair_hint = extract_transient_repair_hint(output)
+            if repair_hint is not None:
+                pending_tool_repair_hints.append(repair_hint)
+            persisted_output = sanitize_tool_output_for_persistence(output)
+            results.append(
+                make_tool_result(content=serialize_tool_output(persisted_output), ...)
+            )
         
         messages.append(make_tool_result_message(results))
     
@@ -132,9 +146,24 @@ def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
 
 ---
 
+## 工具错误与自修复
+
+Subagent 与主 Agent 共用同一套工具错误协议：
+
+- 工具失败统一收敛为结构化错误外壳，而不是裸 `KeyError` 或 `"Error: ..."`
+- 只有 `missing_required_params`、`invalid_arguments` 这类可自修复错误才会生成 `repair_hint`
+- `repair_hint` 不直接塞进当前轮 `tool_result`
+- 下一轮开始前，Runner 会把累计的提示渲染为一次性的 `<tool-repair-hints>` 用户消息注入到子代理消息流
+- 注入完成后立即清空，不会在后续轮次反复重复
+
+子代理内部消息历史中保留的是**去掉 `repair_hint` 的精简结构化错误**。因此即使一次性提示已经消费完，后续轮次仍然能看到简单错误信息，而不是完全丢失上下文。
+
+---
+
 ## 相关代码
 
 - `open_somnia/runtime/subagent_runner.py` — `SubagentRunner`
 - `open_somnia/tools/subagent.py` — `register_subagent_tool()`
 - `open_somnia/runtime/permissions.py` — `_authorize_subagent_call()`
 - `open_somnia/runtime/agent.py` — `run_subagent()` 入口
+- `open_somnia/tools/tool_errors.py` — 统一错误外壳、修复提示提取与渲染

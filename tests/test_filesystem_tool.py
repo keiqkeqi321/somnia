@@ -929,7 +929,39 @@ class FilesystemToolTests(unittest.TestCase):
 
         result = registry.execute(ctx, "write_file", {"path": "demo.txt"})
 
-        self.assertEqual(result, "blocked by mode")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "tool_access_blocked")
+        self.assertEqual(result["tool_name"], "write_file")
+        self.assertEqual(result["message"], "blocked by mode")
+        self.assertEqual(called, [])
+
+    def test_tool_registry_returns_structured_missing_required_params(self) -> None:
+        registry = ToolRegistry()
+        called: list[dict[str, str]] = []
+        registry.register(
+            ToolDefinition(
+                name="write_file",
+                description="Write content to a file.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+                handler=lambda ctx, payload: called.append(payload) or {"status": "ok"},
+            )
+        )
+        ctx = SimpleNamespace(runtime=SimpleNamespace(), session=None)
+
+        result = registry.execute(ctx, "write_file", {"path": "demo.txt"})
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "missing_required_params")
+        self.assertEqual(result["tool_name"], "write_file")
+        self.assertEqual(result["missing_params"], ["content"])
+        self.assertEqual(result["repair_hint"], {"required": ["path", "content"]})
         self.assertEqual(called, [])
 
 

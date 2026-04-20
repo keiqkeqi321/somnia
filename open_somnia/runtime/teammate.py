@@ -8,6 +8,13 @@ from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.messages import make_tool_result_message
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.registry import ToolRegistry
+from open_somnia.tools.tool_errors import (
+    extract_transient_repair_hint,
+    render_transient_repair_hint_message,
+    sanitize_tool_output_for_persistence,
+    serialize_tool_output,
+    tool_error_from_exception,
+)
 
 UNSET = object()
 
@@ -283,6 +290,7 @@ class TeammateRuntimeManager:
         resumed: bool = False,
     ) -> None:
         messages = list(initial_messages) if initial_messages else [{"role": "user", "content": prompt}]
+        pending_tool_repair_hints: list[dict[str, object]] = []
         registry = ToolRegistry()
         self.runtime.register_worker_tools(registry)
         system_prompt = self.runtime.build_system_prompt(actor=name, role=role)
@@ -300,6 +308,16 @@ class TeammateRuntimeManager:
                 for _ in range(self.runtime.settings.runtime.max_agent_rounds):
                     if self._shutdown_if_stop_requested(name):
                         return
+                    if pending_tool_repair_hints:
+                        repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
+                        pending_tool_repair_hints = []
+                        if repair_message:
+                            messages.append({"role": "user", "content": repair_message})
+                            self._append_log(
+                                name,
+                                "user_message",
+                                {"content": repair_message, "source": "tool_repair_hint"},
+                            )
                     self._update_member(name, status="working", activity="checking_inbox")
                     inbox = self.bus.read_inbox(name)
                     for message in inbox:
@@ -340,9 +358,14 @@ class TeammateRuntimeManager:
                                     task_id = int(tool_call.input["task_id"])
                                     self._update_member(name, current_task_id=task_id)
                             except Exception as exc:
-                                output = f"Error: {exc}"
+                                output = tool_error_from_exception(tool_call.name, exc)
                                 self._update_member(name, last_error=str(exc))
-                        log_id = self.runtime.print_tool_event(name, tool_call.name, tool_call.input, output)
+                        repair_hint = extract_transient_repair_hint(output)
+                        if repair_hint is not None:
+                            pending_tool_repair_hints.append(repair_hint)
+                        persisted_output = sanitize_tool_output_for_persistence(output)
+                        rendered_output = serialize_tool_output(persisted_output)
+                        log_id = self.runtime.print_tool_event(name, tool_call.name, tool_call.input, persisted_output)
                         self._update_member(name, current_tool_log_id=log_id)
                         self._append_log(
                             name,
@@ -350,7 +373,7 @@ class TeammateRuntimeManager:
                             {
                                 "tool_name": tool_call.name,
                                 "tool_input": tool_call.input,
-                                "output_preview": self.runtime._compact_preview(str(output), limit=120),
+                                "output_preview": self.runtime._compact_preview(rendered_output, limit=120),
                                 "tool_log_id": log_id,
                             },
                         )
@@ -358,7 +381,7 @@ class TeammateRuntimeManager:
                             {
                                 "type": "tool_result",
                                 "tool_call_id": tool_call.id,
-                                "content": str(output),
+                                "content": rendered_output,
                             }
                         )
                     messages.append(make_tool_result_message(tool_results))
