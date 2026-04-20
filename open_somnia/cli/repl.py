@@ -398,13 +398,14 @@ class TurnQueueRunner:
             if not self._active:
                 return False
             existing_requests = self._loop_injection_requests
+            ready_count = len(self._ready_loop_injections)
         if self._pending_turn_count() <= existing_requests:
-            return False
+            return ready_count > 0 or existing_requests > 0
         with self._lock:
             if not self._active:
                 return False
             if self._pending_turn_count() <= self._loop_injection_requests:
-                return False
+                return bool(self._ready_loop_injections) or self._loop_injection_requests > 0
             self._loop_injection_requests += 1
         self._invalidate_ui()
         return True
@@ -437,6 +438,8 @@ class TurnQueueRunner:
             payload = self._ready_loop_injections.pop(0)
             if self._ready_loop_injection_previews:
                 self._ready_loop_injection_previews.pop(0)
+        if payload:
+            print_user_message(payload)
         self._invalidate_ui()
         return payload
 

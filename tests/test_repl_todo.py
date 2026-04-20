@@ -330,6 +330,32 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertFalse(requested)
 
+    def test_request_loop_injection_is_idempotent_once_next_message_is_already_armed(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+        runner.enqueue("first queued prompt")
+
+        first_request = runner.request_loop_injection()
+        second_request = runner.request_loop_injection()
+
+        self.assertTrue(first_request)
+        self.assertTrue(second_request)
+        self.assertTrue(runner.prepare_next_loop_injection())
+        self.assertEqual(runner.take_next_loop_injection(), "first queued prompt")
+
+    def test_take_next_loop_injection_echoes_message_to_output(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+        runner.enqueue("first queued prompt")
+        runner.request_loop_injection()
+        runner.prepare_next_loop_injection()
+
+        with patch("open_somnia.cli.repl.print_user_message") as mock_print_user_message:
+            payload = runner.take_next_loop_injection()
+
+        self.assertEqual(payload, "first queued prompt")
+        mock_print_user_message.assert_called_once_with("first queued prompt")
+
     def test_clear_pending_drops_ready_loop_injection_messages(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
         runner._ready_loop_injections = ["first queued prompt"]

@@ -115,6 +115,20 @@ class PromptingTests(unittest.TestCase):
 
         self.assertEqual(events, ["promote"])
 
+    def test_escape_does_not_fall_back_to_interrupt_when_queue_state_is_already_armed(self) -> None:
+        events: list[str] = []
+        prompt_session = self._capture_prompt_session(
+            on_interrupt=lambda: events.append("interrupt"),
+            on_busy_escape=lambda: events.append("promote") or True,
+            is_busy=lambda: True,
+        )
+        handler = self._escape_handler(prompt_session)
+
+        handler(SimpleNamespace(current_buffer=SimpleNamespace(complete_state=None, text="")))
+        handler(SimpleNamespace(current_buffer=SimpleNamespace(complete_state=None, text="")))
+
+        self.assertEqual(events, ["promote", "promote"])
+
 
 if __name__ == "__main__":
     unittest.main()
