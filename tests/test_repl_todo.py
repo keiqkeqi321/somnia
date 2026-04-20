@@ -284,6 +284,26 @@ class ReplTodoTests(unittest.TestCase):
         self.assertLess(rendered.index("ctx: 32.0% (64.0k / 200.0k tokens)"), rendered.index("accept edits on"))
         self.assertEqual(context_fragments, [("fg:#84cc16", "ctx: 32.0% (64.0k / 200.0k tokens)")])
 
+    def test_prompt_message_shows_queue_notice_and_previews_before_mode(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._queued_previews = [
+            (1, "first queued prompt"),
+            (2, "second queued prompt"),
+        ]
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn(
+            "Queued messages: send after next tool call (Esc to send now)",
+            rendered,
+        )
+        self.assertIn("1. first queued prompt", rendered)
+        self.assertIn("2. second queued prompt", rendered)
+        self.assertLess(
+            rendered.index("Queued messages: send after next tool call"),
+            rendered.index("accept edits on  (Shift+Tab to cycle)"),
+        )
+
     def test_todo_manager_treats_cancelled_items_as_closed_and_hidden(self) -> None:
         session = SimpleNamespace(todo_items=[])
         manager = TodoManager()

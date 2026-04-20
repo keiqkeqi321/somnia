@@ -229,6 +229,7 @@ class TurnQueueRunner:
     DONE_TEXT = "done"
     STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
     STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
+    QUEUED_MESSAGES_NOTICE = "Queued messages: send after next tool call (Esc to send now)"
     THINKING_FRAME_SECONDS = 0.25
     CONTEXT_HEALTHY_STYLE = "fg:#22c55e"
     CONTEXT_WARNING_STYLE = "fg:#84cc16"
@@ -519,8 +520,10 @@ class TurnQueueRunner:
                 fragments.extend([panel_prefix, (self.current_context_style(), context_line), ("", "\n")])
             if governance_line:
                 fragments.extend([panel_prefix, ("fg:#67e8f9", governance_line), ("", "\n")])
-            for index, queue_line in enumerate(queue_lines, start=1):
-                fragments.extend([panel_prefix, ("fg:#94a3b8", f"queued {index}: {queue_line}"), ("", "\n")])
+            if queue_lines:
+                fragments.extend([panel_prefix, ("fg:#94a3b8", self.QUEUED_MESSAGES_NOTICE), ("", "\n")])
+                for index, queue_line in enumerate(queue_lines, start=1):
+                    fragments.extend([panel_prefix, ("fg:#cbd5e1", f"{index}. {queue_line}"), ("", "\n")])
         fragments.append(panel_prefix)
         fragments.extend([*mode_line, ("", "\n")])
         fragments.extend([("fg:#64748b", PROMPT_BORDER), ("", "\n")])
