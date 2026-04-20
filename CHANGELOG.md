@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.8 (2026-04-20)
+
+- release: v0.4.7 (ad8dbbe)
+- Persist read_file overlap coverage state (351a081)
+- Add scoped read_file overlap pruning (0874ef7)
+- Add ranged read_file support and payload dedupe (1aed30b)
+- Document TodoWrite reminder behavior (58f033b)
+- Refine transient todo reminders (7ab1a82)
+
 ## 0.4.7 (2026-04-19)
 
 - Persist read_file overlap coverage state (351a081)
