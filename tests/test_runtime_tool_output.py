@@ -3075,6 +3075,132 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(reminder_counts, [1, 1, 1, 1])
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
+    def test_agent_loop_injects_next_user_message_after_current_tool_boundary(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(
+            auto_compact=lambda session_id, messages, preserve_from_index=None: messages,
+            last_usage=None,
+        )
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_entries: list[tuple[str, dict]] = []
+        runtime.transcript_store = SimpleNamespace(
+            append=lambda session_id, message: transcript_entries.append(
+                (session_id, json.loads(json.dumps(message, ensure_ascii=False)))
+            )
+        )
+        runtime.print_tool_event = lambda *args, **kwargs: "log-1"
+        runtime.build_system_prompt = lambda session=None, actor=None, role=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = (
+            lambda messages, session=None, read_file_overlap_state=None, system_prompt=None, tools=None: json.loads(
+                json.dumps(messages, ensure_ascii=False)
+            )
+        )
+        runtime._session_read_file_overlap_state = lambda session: None
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._hook_manager = lambda: SimpleNamespace(
+            on_assistant_response=lambda *args, **kwargs: None,
+            on_turn_failed=lambda *args, **kwargs: None,
+        )
+        topic_shift_messages: list[str] = []
+        janitor_runs: list[int] = []
+        runtime._run_topic_shift_assist = (
+            lambda session, latest_user_message, actor="lead", role="lead coding agent": topic_shift_messages.append(
+                latest_user_message
+            )
+            or ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        )
+        runtime._run_automatic_context_janitor = (
+            lambda session, actor="lead", role="lead coding agent": janitor_runs.append(len(session.messages))
+            or ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        )
+
+        executed_commands: list[str] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                executed_commands.append(str(payload.get("command", "")))
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall("call-1", "bash", {"command": "pwd"}),
+                        ToolCall("call-2", "bash", {"command": "git status"}),
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Handled queued message."],
+                ),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        ready_messages: list[str] = []
+        promoted = {"done": False}
+
+        def prepare_next_loop_user_message():
+            if promoted["done"]:
+                return False
+            promoted["done"] = True
+            ready_messages.append("queued follow-up")
+            return True
+
+        def take_next_loop_user_message():
+            if not ready_messages:
+                return None
+            return ready_messages.pop(0)
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(
+            runtime,
+            session,
+            "inspect",
+            take_next_loop_user_message=take_next_loop_user_message,
+            prepare_next_loop_user_message=prepare_next_loop_user_message,
+        )
+
+        self.assertEqual(result, "Handled queued message.")
+        self.assertEqual(executed_commands, ["pwd"])
+        self.assertEqual(topic_shift_messages, ["inspect", "queued follow-up"])
+        self.assertEqual(len(janitor_runs), 2)
+        self.assertEqual(session.messages[0]["content"], "inspect")
+        self.assertEqual(session.messages[3]["content"], "queued follow-up")
+        self.assertEqual(len(session.messages[1]["content"]), 1)
+        self.assertEqual(session.messages[1]["content"][0]["input"]["command"], "pwd")
+        self.assertIn("queued follow-up", json.dumps(payloads[1], ensure_ascii=False))
+        self.assertIn(
+            {"role": "user", "content": "queued follow-up"},
+            [entry for _, entry in transcript_entries],
+        )
+        self.assertNotIn("git status", json.dumps(session.messages, ensure_ascii=False))
+
     def test_agent_loop_returns_explicit_status_when_max_rounds_end_with_open_todos(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import inspect
 import json
 import random
 import sys
@@ -229,7 +230,8 @@ class TurnQueueRunner:
     DONE_TEXT = "done"
     STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
     STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
-    QUEUED_MESSAGES_NOTICE = "Queued messages: send after next tool call (Esc to send now)"
+    QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
+    QUEUED_MESSAGES_ARMED_NOTICE = "Queued: next one sends after current tool"
     THINKING_FRAME_SECONDS = 0.25
     CONTEXT_HEALTHY_STYLE = "fg:#22c55e"
     CONTEXT_WARNING_STYLE = "fg:#84cc16"
@@ -254,6 +256,9 @@ class TurnQueueRunner:
         self._thinking_phrase = self.THINKING_PHRASES[0]
         self._next_query_id = 1
         self._queued_previews: list[tuple[int, str]] = []
+        self._ready_loop_injections: list[str] = []
+        self._ready_loop_injection_previews: list[str] = []
+        self._loop_injection_requests = 0
         self._interrupt_requested = False
         self._authorization_requests: list[AuthorizationRequest] = []
         self._mode_switch_requests: list[ModeSwitchRequest] = []
@@ -388,6 +393,53 @@ class TurnQueueRunner:
         self._set_status("interrupting")
         return True
 
+    def request_loop_injection(self) -> bool:
+        with self._lock:
+            if not self._active:
+                return False
+            existing_requests = self._loop_injection_requests
+        if self._pending_turn_count() <= existing_requests:
+            return False
+        with self._lock:
+            if not self._active:
+                return False
+            if self._pending_turn_count() <= self._loop_injection_requests:
+                return False
+            self._loop_injection_requests += 1
+        self._invalidate_ui()
+        return True
+
+    def prepare_next_loop_injection(self) -> bool:
+        with self._lock:
+            if self._loop_injection_requests <= 0:
+                return False
+        task = self._pop_next_queued_turn_task()
+        if task is None:
+            return False
+        with self._lock:
+            if self._loop_injection_requests > 0:
+                self._loop_injection_requests -= 1
+            self._queued = max(0, self._queued - 1)
+            self._queued_previews = [
+                (preview_id, preview)
+                for preview_id, preview in self._queued_previews
+                if preview_id != task.id
+            ]
+            self._ready_loop_injections.append(task.payload)
+            self._ready_loop_injection_previews.append(task.preview)
+        self._invalidate_ui()
+        return True
+
+    def take_next_loop_injection(self) -> str | None:
+        with self._lock:
+            if not self._ready_loop_injections:
+                return None
+            payload = self._ready_loop_injections.pop(0)
+            if self._ready_loop_injection_previews:
+                self._ready_loop_injection_previews.pop(0)
+        self._invalidate_ui()
+        return payload
+
     def should_interrupt(self) -> bool:
         with self._lock:
             return self._interrupt_requested
@@ -406,16 +458,46 @@ class TurnQueueRunner:
             dropped_ids.add(item.id)
             dropped += 1
             self._queue.task_done()
-        if dropped:
-            with self._lock:
+        with self._lock:
+            ready_dropped = len(self._ready_loop_injections)
+            if dropped:
                 self._queued = max(0, self._queued - dropped)
                 self._queued_previews = [
                     (preview_id, preview)
                     for preview_id, preview in self._queued_previews
                     if preview_id not in dropped_ids
                 ]
+            if self._ready_loop_injections:
+                self._ready_loop_injections = []
+                self._ready_loop_injection_previews = []
+            self._loop_injection_requests = 0
+        if dropped or ready_dropped:
+            dropped += ready_dropped
             self._invalidate_ui()
         return dropped
+
+    def _pending_turn_count(self) -> int:
+        with self._queue.mutex:
+            return sum(
+                1
+                for item in list(self._queue.queue)
+                if isinstance(item, QueueTask) and item.kind == "turn"
+            )
+
+    def _pop_next_queued_turn_task(self) -> QueueTask | None:
+        with self._queue.mutex:
+            queue_items = self._queue.queue
+            for item in list(queue_items):
+                if not isinstance(item, QueueTask) or item.kind != "turn":
+                    continue
+                queue_items.remove(item)
+                if self._queue.unfinished_tasks > 0:
+                    self._queue.unfinished_tasks -= 1
+                    if self._queue.unfinished_tasks == 0:
+                        self._queue.all_tasks_done.notify_all()
+                self._queue.not_full.notify()
+                return item
+        return None
 
     def _worker_loop(self) -> None:
         while True:
@@ -449,12 +531,20 @@ class TurnQueueRunner:
                         line_buffered=self.stable_prompt,
                         on_first_output=None,
                     )
-                    response = self.runtime.run_turn(
-                        self.session,
-                        task.payload,
-                        text_callback=streamer,
-                        should_interrupt=self.should_interrupt,
-                    )
+                    run_turn = getattr(self.runtime, "run_turn")
+                    turn_kwargs = {
+                        "text_callback": streamer,
+                        "should_interrupt": self.should_interrupt,
+                    }
+                    try:
+                        run_turn_parameters = inspect.signature(run_turn).parameters
+                    except (TypeError, ValueError):
+                        run_turn_parameters = {}
+                    if "take_next_loop_user_message" in run_turn_parameters:
+                        turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
+                    if "prepare_next_loop_user_message" in run_turn_parameters:
+                        turn_kwargs["prepare_next_loop_user_message"] = self.prepare_next_loop_injection
+                    response = run_turn(self.session, task.payload, **turn_kwargs)
                     response_status = str(getattr(response, "status", "")).strip()
                     if streamer.has_output:
                         streamer.finish()
@@ -488,6 +578,9 @@ class TurnQueueRunner:
                 with self._lock:
                     self._active = False
                     self._interrupt_requested = False
+                    self._loop_injection_requests = 0
+                    self._ready_loop_injections = []
+                    self._ready_loop_injection_previews = []
                 self._set_status(self._status_for_response(response))
                 self._queue.task_done()
 
@@ -505,6 +598,7 @@ class TurnQueueRunner:
         governance_line = self.current_context_governance_label()
         todo_lines = self._todo_lines()
         team_lines = self._team_lines()
+        queue_notice = self._queue_notice()
         queue_lines = self._queue_preview_lines()
         fragments = []
         panel_prefix = ("fg:#64748b", "│ ")
@@ -520,8 +614,9 @@ class TurnQueueRunner:
                 fragments.extend([panel_prefix, (self.current_context_style(), context_line), ("", "\n")])
             if governance_line:
                 fragments.extend([panel_prefix, ("fg:#67e8f9", governance_line), ("", "\n")])
+            if queue_notice:
+                fragments.extend([panel_prefix, ("fg:#94a3b8", queue_notice), ("", "\n")])
             if queue_lines:
-                fragments.extend([panel_prefix, ("fg:#94a3b8", self.QUEUED_MESSAGES_NOTICE), ("", "\n")])
                 for index, queue_line in enumerate(queue_lines, start=1):
                     fragments.extend([panel_prefix, ("fg:#cbd5e1", f"{index}. {queue_line}"), ("", "\n")])
         fragments.append(panel_prefix)
@@ -679,7 +774,17 @@ class TurnQueueRunner:
 
     def _queue_preview_lines(self) -> list[str]:
         with self._lock:
-            return [preview for _, preview in self._queued_previews]
+            ready = [f"[next] {preview}" for preview in self._ready_loop_injection_previews]
+            queued = [preview for _, preview in self._queued_previews]
+        return [*ready, *queued]
+
+    def _queue_notice(self) -> str:
+        with self._lock:
+            if self._ready_loop_injections or self._loop_injection_requests > 0:
+                return self.QUEUED_MESSAGES_ARMED_NOTICE
+            if self._queued_previews:
+                return self.QUEUED_MESSAGES_NOTICE
+        return ""
 
     def _execution_mode_fragments(self):
         spec = self.current_execution_mode()
@@ -1280,6 +1385,7 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
         prompt_session = create_prompt_session(
             runtime.settings.workspace_root,
             on_interrupt=runner.request_interrupt,
+            on_busy_escape=runner.request_loop_injection,
             is_busy=runner.has_inflight_work,
             on_cycle_mode=runner.cycle_execution_mode,
             skill_names_getter=lambda: runtime.skill_loader.names(),

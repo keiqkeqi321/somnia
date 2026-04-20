@@ -266,6 +266,7 @@ def create_prompt_session(
     workspace_root: Path,
     *,
     on_interrupt=None,
+    on_busy_escape=None,
     is_busy=None,
     on_cycle_mode=None,
     skill_names_getter: Callable[[], list[str]] | None = None,
@@ -290,8 +291,11 @@ def create_prompt_session(
         if buffer.complete_state:
             buffer.cancel_completion()
             return
-        if on_interrupt is not None and callable(is_busy) and is_busy() and not buffer.text:
-            on_interrupt()
+        if callable(is_busy) and is_busy() and not buffer.text:
+            if on_busy_escape is not None and on_busy_escape():
+                return
+            if on_interrupt is not None:
+                on_interrupt()
             return
 
     @bindings.add("up")

@@ -294,15 +294,53 @@ class ReplTodoTests(unittest.TestCase):
         rendered = _render_prompt_text(runner.prompt_message())
 
         self.assertIn(
-            "Queued messages: send after next tool call (Esc to send now)",
+            "Queued: after turn; Esc sends next after tool",
             rendered,
         )
         self.assertIn("1. first queued prompt", rendered)
         self.assertIn("2. second queued prompt", rendered)
         self.assertLess(
-            rendered.index("Queued messages: send after next tool call"),
+            rendered.index("Queued: after turn; Esc sends next after tool"),
             rendered.index("accept edits on  (Shift+Tab to cycle)"),
         )
+
+    def test_request_loop_injection_arms_next_turn_for_tool_boundary(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+        runner.enqueue("first queued prompt")
+        runner.enqueue_compact()
+
+        requested = runner.request_loop_injection()
+
+        self.assertTrue(requested)
+        self.assertIn("Queued: next one sends after current tool", _render_prompt_text(runner.prompt_message()))
+        self.assertTrue(runner.prepare_next_loop_injection())
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("[next] first queued prompt", rendered)
+        self.assertIn("/compact", rendered)
+        self.assertEqual(runner.take_next_loop_injection(), "first queued prompt")
+        self.assertEqual(runner.stats(), (True, 1))
+
+    def test_request_loop_injection_requires_pending_turn_message(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._active = True
+        runner.enqueue_compact()
+
+        requested = runner.request_loop_injection()
+
+        self.assertFalse(requested)
+
+    def test_clear_pending_drops_ready_loop_injection_messages(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._ready_loop_injections = ["first queued prompt"]
+        runner._ready_loop_injection_previews = ["first queued prompt"]
+        runner._loop_injection_requests = 1
+
+        dropped = runner._clear_pending()
+
+        self.assertEqual(dropped, 1)
+        self.assertEqual(runner._loop_injection_requests, 0)
+        self.assertIsNone(runner.take_next_loop_injection())
 
     def test_todo_manager_treats_cancelled_items_as_closed_and_hidden(self) -> None:
         session = SimpleNamespace(todo_items=[])

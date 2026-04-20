@@ -2417,7 +2417,15 @@ class OpenAgentRuntime:
             open_todo_count=self._count_open_todo_items(session),
         )
 
-    def run_turn(self, session: AgentSession, user_input: str, text_callback=None, should_interrupt=None) -> AgentLoopResult:
+    def run_turn(
+        self,
+        session: AgentSession,
+        user_input: str,
+        text_callback=None,
+        should_interrupt=None,
+        take_next_loop_user_message=None,
+        prepare_next_loop_user_message=None,
+    ) -> AgentLoopResult:
         session.pending_file_changes = []
         session.last_turn_file_changes = []
         task_anchor_message = make_user_text_message(user_input)
@@ -2430,6 +2438,8 @@ class OpenAgentRuntime:
             text_callback=text_callback,
             should_interrupt=should_interrupt,
             task_anchor_message=task_anchor_message,
+            take_next_loop_user_message=take_next_loop_user_message,
+            prepare_next_loop_user_message=prepare_next_loop_user_message,
         )
 
     def _agent_loop(
@@ -2438,12 +2448,23 @@ class OpenAgentRuntime:
         text_callback=None,
         should_interrupt=None,
         task_anchor_message=None,
+        take_next_loop_user_message=None,
+        prepare_next_loop_user_message=None,
     ) -> AgentLoopResult:
         final_text = ""
         pending_tool_repair_hints: list[dict[str, Any]] = []
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
+                loop_user_message = None
+                if callable(take_next_loop_user_message):
+                    loop_user_message = take_next_loop_user_message()
+                if loop_user_message:
+                    task_anchor_message = make_user_text_message(loop_user_message)
+                    session.messages.append(task_anchor_message)
+                    self.transcript_store.append(session.id, {"role": "user", "content": loop_user_message})
+                    self._run_topic_shift_assist(session, latest_user_message=loop_user_message)
+                    self._run_automatic_context_janitor(session)
                 background_notifications = self.background_manager.drain()
                 if background_notifications:
                     text = "\n".join(
@@ -2603,6 +2624,9 @@ class OpenAgentRuntime:
                     if tool_call.name == "read_file":
                         used_read_file = True
                     if tool_call.name in self.TURN_BOUNDARY_TOOL_NAMES:
+                        end_turn_after_tool = True
+                        break
+                    if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
                         end_turn_after_tool = True
                         break
 
