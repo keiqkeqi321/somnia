@@ -392,6 +392,60 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "src/app.py")
 
+    def test_glob_search_supports_brace_expansion_for_multiple_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "src" / "api").mkdir(parents=True)
+            (root / "frontend" / "src" / "App.tsx").write_text("export default function App() {}\n", encoding="utf-8")
+            (root / "frontend" / "src" / "api" / "conversations.ts").write_text("export const getMessages = () => {}\n", encoding="utf-8")
+            (root / "frontend" / "src" / "styles.css").write_text("body {}\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = glob_search(ctx, {"path": "frontend/src", "pattern": "*.{ts,tsx}", "recursive": True})
+
+        self.assertEqual(
+            set(result.splitlines()),
+            {
+                "frontend/src/App.tsx",
+                "frontend/src/api/conversations.ts",
+            },
+        )
+
+    def test_glob_search_accepts_workspace_prefixed_pattern_under_narrower_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "src" / "api").mkdir(parents=True)
+            (root / "frontend" / "src" / "api" / "conversations.ts").write_text("export const getMessages = () => {}\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = glob_search(
+                ctx,
+                {
+                    "path": "frontend/src",
+                    "pattern": "frontend/src/api/*.{ts,tsx}",
+                    "recursive": False,
+                    "match": "files",
+                },
+            )
+
+        self.assertEqual(result, "frontend/src/api/conversations.ts")
+
     def test_tree_view_renders_shallow_project_map_and_skips_noise_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -729,6 +783,65 @@ class FilesystemToolTests(unittest.TestCase):
             result = grep_search(ctx, {"pattern": "beta", "glob": "*.py"})
 
         self.assertEqual(result, "src/app.py:2:beta")
+
+    def test_grep_search_supports_brace_expansion_and_base_relative_glob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "src" / "api").mkdir(parents=True)
+            (root / "frontend" / "src" / "api" / "conversations.ts").write_text(
+                "export const getMessages = () => '/conversations/messages'\n",
+                encoding="utf-8",
+            )
+            (root / "frontend" / "src" / "App.tsx").write_text("export default function App() { return null }\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(
+                ctx,
+                {
+                    "path": "frontend/src",
+                    "pattern": "getMessages",
+                    "glob": "api/*.{ts,tsx}",
+                },
+            )
+
+        self.assertEqual(result, "frontend/src/api/conversations.ts:1:export const getMessages = () => '/conversations/messages'")
+
+    def test_grep_search_accepts_workspace_prefixed_glob_under_narrower_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "src" / "api").mkdir(parents=True)
+            (root / "frontend" / "src" / "api" / "conversations.ts").write_text(
+                "export const getMessages = () => '/conversations/messages'\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(
+                ctx,
+                {
+                    "path": "frontend/src",
+                    "pattern": "getMessages",
+                    "glob": "frontend/src/api/*.{ts,tsx}",
+                },
+            )
+
+        self.assertEqual(result, "frontend/src/api/conversations.ts:1:export const getMessages = () => '/conversations/messages'")
 
     def test_grep_search_accepts_single_file_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

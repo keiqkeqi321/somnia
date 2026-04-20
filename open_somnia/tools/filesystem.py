@@ -291,6 +291,129 @@ def _format_missing_file_message(
     return "\n".join(lines)
 
 
+def _split_brace_alternatives(pattern: str) -> list[str]:
+    alternatives: list[str] = []
+    current: list[str] = []
+    depth = 0
+    escaped = False
+    for char in pattern:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+        if char == "," and depth == 0:
+            alternatives.append("".join(current))
+            current = []
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+        current.append(char)
+    alternatives.append("".join(current))
+    return alternatives
+
+
+def _find_first_brace_group(pattern: str) -> tuple[int, int, list[str]] | None:
+    start: int | None = None
+    depth = 0
+    escaped = False
+    for index, char in enumerate(pattern):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+            continue
+        if char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                inner = pattern[start + 1 : index]
+                alternatives = _split_brace_alternatives(inner)
+                if len(alternatives) > 1:
+                    return start, index, alternatives
+                start = None
+    return None
+
+
+def _expand_brace_globs(pattern: str) -> list[str]:
+    brace_group = _find_first_brace_group(pattern)
+    if brace_group is None:
+        return [pattern]
+    start, end, alternatives = brace_group
+    prefix = pattern[:start]
+    suffix = pattern[end + 1 :]
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for alternative in alternatives:
+        for candidate in _expand_brace_globs(prefix + alternative + suffix):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            expanded.append(candidate)
+    return expanded
+
+
+def _glob_pattern_variants(workspace_root: Path, base_path: Path, pattern: str) -> list[str]:
+    normalized_pattern = pattern.replace("\\", "/")
+    base_label = _relative_label(workspace_root, base_path).rstrip("/")
+    if base_label == ".":
+        base_label = ""
+
+    variants: list[str] = []
+    seen: set[str] = set()
+    for expanded_pattern in _expand_brace_globs(normalized_pattern):
+        candidate_patterns = [expanded_pattern]
+        if base_label and (
+            expanded_pattern == base_label or expanded_pattern.startswith(base_label + "/")
+        ):
+            stripped_pattern = expanded_pattern[len(base_label) :].lstrip("/")
+            if stripped_pattern:
+                candidate_patterns.append(stripped_pattern)
+        for candidate_pattern in candidate_patterns:
+            if not candidate_pattern or candidate_pattern in seen:
+                continue
+            seen.add(candidate_pattern)
+            variants.append(candidate_pattern)
+    return variants
+
+
+def _candidate_glob_labels(workspace_root: Path, base_path: Path, candidate: Path) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def add(label: str) -> None:
+        if not label or label in seen:
+            return
+        seen.add(label)
+        labels.append(label)
+
+    add(candidate.relative_to(workspace_root).as_posix())
+    try:
+        add(candidate.relative_to(base_path).as_posix())
+    except ValueError:
+        pass
+    add(candidate.name)
+    return labels
+
+
+def _matches_glob_patterns(labels: list[str], patterns: list[str]) -> bool:
+    return any(
+        fnmatch.fnmatch(label, pattern)
+        for pattern in patterns
+        for label in labels
+    )
+
+
 def _parse_optional_positive_int(payload: dict[str, Any], key: str) -> tuple[int | None, str | None]:
     value = payload.get(key)
     if value is None:
@@ -717,9 +840,12 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
         return "Error: match must be one of 'files', 'dirs', or 'all'."
 
     normalized_pattern = pattern.replace("\\", "/")
-    iterators = [base_path.glob(normalized_pattern)]
-    if recursive and "/" not in normalized_pattern and "**" not in normalized_pattern:
-        iterators.append(base_path.rglob(normalized_pattern))
+    pattern_variants = _glob_pattern_variants(workspace_root, base_path, pattern)
+    iterators = []
+    for pattern_variant in pattern_variants:
+        iterators.append(base_path.glob(pattern_variant))
+        if recursive and "**" not in pattern_variant:
+            iterators.append(base_path.rglob(pattern_variant))
 
     results: list[str] = []
     seen: set[Path] = set()
@@ -765,7 +891,7 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
         return f"Error: Path not found: {payload.get('path', '.')}"
 
     pattern = str(payload["pattern"])
-    glob_pattern = str(payload.get("glob", "*"))
+    glob_patterns = _glob_pattern_variants(workspace_root, base_path, str(payload.get("glob", "*")))
     recursive = bool(payload.get("recursive", True))
     case_sensitive = bool(payload.get("case_sensitive", False))
     explicit_use_regex = "use_regex" in payload
@@ -798,8 +924,9 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
         if not candidate.is_file():
             continue
         relative = candidate.relative_to(workspace_root).as_posix()
-        if base_path.is_dir() and not (
-            fnmatch.fnmatch(relative, glob_pattern) or fnmatch.fnmatch(candidate.name, glob_pattern)
+        if base_path.is_dir() and not _matches_glob_patterns(
+            _candidate_glob_labels(workspace_root, base_path, candidate),
+            glob_patterns,
         ):
             continue
         try:
