@@ -115,9 +115,12 @@
 [Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.
 ```
 
+- 当某一轮出现 `read_file` 时，runtime 会把这一轮的覆盖区间提取到 `session.read_file_overlap_state`
 - 完全覆盖时会替换成上面的占位
 - 部分重叠时只移除重叠行，保留前后独有片段，并插入显式 overlap marker
-- 如果最新一轮没有 `read_file`，这一步会完全跳过
+- 后续轮次即使没有新的 `read_file`，只要 session 里仍有最近一次 coverage，这一步仍可继续生效
+- 这份 state 只保存路径和行区间，不保存文件内容本身
+- checkpoint / rollback 会一起保存并恢复这份 overlap state
 
 这只是 payload 级别的去重与重叠抑制，不会改写原始 `session.messages`。
 

@@ -108,6 +108,12 @@ turn = self.provider.complete(
 
 另外，`_messages_for_model()` 做的是**payload 级别**的归一化，而不是会话历史改写。像重复大 `read_file` 结果这类折叠，只影响本轮发给模型的 payload，不会回写 `session.messages`。
 
+`_messages_for_model()` 还会接收会话里的 `read_file_overlap_state`：
+
+- 某轮执行过 `read_file` 后，runtime 会把该轮覆盖到的路径与行区间提取出来
+- 这份状态会写入 `AgentSession`
+- 后续轮次即使只是插入临时 reminder 或执行了别的工具，payload 构建仍可沿用这份 overlap state 继续抑制旧的重叠 `read_file` 结果
+
 ### 权限检查
 
 工具执行前通过 `PermissionManager.authorize_tool_call()` 检查：
@@ -142,6 +148,7 @@ session.undo_stack.append({
 | `token_usage` | 累计 token 用量 |
 | `todo_items` | 当前待办清单 |
 | `rounds_without_todo` | 自上次 `TodoWrite` 以来的轮数计数器 |
+| `read_file_overlap_state` | 最近一组 `read_file` 覆盖区间及其 source tool call ids |
 | `latest_turn_id` | 最新轮次 ID |
 | `last_turn_file_changes` | 上一轮文件变更摘要 |
 | `undo_stack` | 文件修改撤销栈（最多 10 轮） |
