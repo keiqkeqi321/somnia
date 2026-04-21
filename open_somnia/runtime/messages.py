@@ -48,6 +48,7 @@ class AssistantTurn:
     stop_reason: str
     text_blocks: list[str] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
+    content_blocks: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, Any] | None = None
     raw_response: Any = None
 
@@ -56,6 +57,30 @@ class AssistantTurn:
 
     def as_message(self, tool_calls: list[ToolCall] | None = None) -> NormalizedMessage:
         selected_tool_calls = self.tool_calls if tool_calls is None else list(tool_calls)
+        if self.content_blocks:
+            selected_tool_calls_by_id = {tool_call.id: tool_call for tool_call in selected_tool_calls}
+            blocks: list[dict[str, Any]] = []
+            for block in self.content_blocks:
+                block_type = str(block.get("type", "")).strip()
+                if block_type == "tool_call":
+                    block_id = str(block.get("id", "")).strip()
+                    tool_call = selected_tool_calls_by_id.get(block_id)
+                    if tool_call is None:
+                        continue
+                    tool_block = {
+                        "type": "tool_call",
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "input": tool_call.input,
+                    }
+                    if tool_call.importance:
+                        tool_block["importance"] = tool_call.importance
+                    blocks.append(tool_block)
+                    continue
+                blocks.append(dict(block))
+            if len(blocks) == 1 and blocks[0].get("type") == "text":
+                return {"role": "assistant", "content": str(blocks[0].get("text", ""))}
+            return {"role": "assistant", "content": blocks}
         if not selected_tool_calls and len(self.text_blocks) == 1:
             return {"role": "assistant", "content": self.text_blocks[0]}
         blocks: list[dict[str, Any]] = []

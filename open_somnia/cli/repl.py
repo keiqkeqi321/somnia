@@ -27,6 +27,7 @@ from open_somnia.cli.provider_management import collect_provider_profile_interac
 from open_somnia.config.settings import persist_provider_profile
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.models import normalize_hook_event
+from open_somnia.reasoning import REASONING_LEVEL_VALUES, normalize_reasoning_level
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.compact import ContextWindowUsage
 from open_somnia.runtime.execution_mode import (
@@ -635,6 +636,8 @@ class TurnQueueRunner:
             return "model: unknown"
         provider_name = getattr(provider, "name", "unknown")
         model_name = getattr(provider, "model", "unknown")
+        reasoning_level = normalize_reasoning_level(getattr(provider, "reasoning_level", None)) or "auto"
+        model_name = f"{model_name}|{reasoning_level}"
         return f"model: {provider_name} / {model_name}"
 
     def _format_token_count(self, token_count: int) -> str:
@@ -986,6 +989,51 @@ def _handle_model_command(runtime) -> None:
         print("[model selection cancelled]")
         return
     print(runtime.switch_provider_model(selected_provider, selected_model))
+
+
+def _handle_reasoning_command(runtime, command: str) -> None:
+    parts = command.strip().split(maxsplit=1)
+    if len(parts) > 1:
+        raw_level = parts[1].strip()
+        if raw_level.lower() in {"auto", "none"}:
+            print(runtime.set_reasoning_level(None))
+            return
+        selected_level = normalize_reasoning_level(raw_level)
+        if selected_level is None:
+            print("[usage: /reasoning <auto|low|medium|high|deep>]")
+            return
+        print(runtime.set_reasoning_level(selected_level))
+        return
+
+    descriptions = {
+        "auto": "auto | provider default reasoning behavior",
+        "low": "low | fastest, lightest reasoning",
+        "medium": "medium | balanced default reasoning",
+        "high": "high | slower, more deliberate reasoning",
+        "deep": "deep | heaviest reasoning budget",
+    }
+    current_level = normalize_reasoning_level(getattr(runtime.settings.provider, "reasoning_level", None))
+    current_option = current_level or "auto"
+    ordered_levels = ["auto", *REASONING_LEVEL_VALUES]
+    if current_option in ordered_levels:
+        ordered_levels.remove(current_option)
+        ordered_levels.insert(0, current_option)
+    items = [
+        (
+            level,
+            f"{descriptions[level]}{' (current)' if level == current_option else ''}",
+        )
+        for level in ordered_levels
+    ]
+    selected_level = choose_item_interactively(
+        "Choose Reasoning",
+        "Select the reasoning level to use for subsequent turns, or choose auto to restore the unset state.",
+        items,
+    )
+    if not selected_level:
+        print("[reasoning selection cancelled]")
+        return
+    print(runtime.set_reasoning_level(None if selected_level == "auto" else selected_level))
 
 
 def _handle_providers_command(runtime) -> None:
@@ -1541,6 +1589,12 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /model]")
                         continue
                     _handle_model_command(runtime)
+                    continue
+                if stripped == "/reasoning" or stripped.startswith("/reasoning "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /reasoning]")
+                        continue
+                    _handle_reasoning_command(runtime, stripped)
                     continue
                 if stripped == "/providers":
                     if runner.has_inflight_work():

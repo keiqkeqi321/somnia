@@ -24,7 +24,13 @@ from typing import Any
 from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.config.models import AppSettings, HookSettings, ProviderProfileSettings, ProviderSettings
-from open_somnia.config.settings import _materialize_provider, load_settings, persist_hook_enabled, persist_provider_selection
+from open_somnia.config.settings import (
+    _materialize_provider,
+    load_settings,
+    persist_hook_enabled,
+    persist_provider_reasoning_level,
+    persist_provider_selection,
+)
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
 from open_somnia.mcp.registry import MCPRegistry
@@ -87,6 +93,7 @@ from open_somnia.tools.tool_errors import (
     tool_error_from_exception,
 )
 from open_somnia.tools.todo import TodoManager, register_todo_tool
+from open_somnia.reasoning import normalize_reasoning_level
 
 
 class AgentLoopResult(str):
@@ -445,6 +452,36 @@ class OpenAgentRuntime:
         return (
             f"Switched to provider '{self.settings.provider.name}' with model "
             f"'{self.settings.provider.model}' and saved it to .open_somnia/open_somnia.toml."
+        )
+
+    def set_reasoning_level(self, reasoning_level: str | None) -> str:
+        raw_level = str(reasoning_level or "").strip().lower() if reasoning_level is not None else ""
+        clear_requested = reasoning_level is None or raw_level in {"auto", "none"}
+        normalized_level = None if clear_requested else normalize_reasoning_level(reasoning_level)
+        if not clear_requested and normalized_level is None:
+            raise ValueError("Reasoning level must be one of: auto, low, medium, high, deep.")
+        provider_name = self.settings.provider.name
+        profile = self.settings.provider_profiles.get(provider_name)
+        if profile is None:
+            raise ValueError(f"Provider '{provider_name}' is not configured.")
+        profile.reasoning_level = normalized_level
+        self.settings.provider = _materialize_provider(profile, self.settings.provider.model)
+        self.provider = self._instantiate_provider(self.settings.provider)
+        self.compact_manager.provider = self.provider
+        self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
+        self._context_usage_cache = {}
+        self._payload_message_cache = {}
+        self._recent_context_usage = {}
+        self._janitor_state = {}
+        persist_provider_reasoning_level(self.settings, provider_name, normalized_level)
+        if clear_requested:
+            return (
+                f"Set reasoning level for provider '{self.settings.provider.name}' to 'auto' "
+                "and saved it to .open_somnia/open_somnia.toml."
+            )
+        return (
+            f"Set reasoning level for provider '{self.settings.provider.name}' to "
+            f"'{normalized_level}' and saved it to .open_somnia/open_somnia.toml."
         )
 
     def reload_provider_configuration(self, *, provider_name: str | None = None, model: str | None = None) -> None:

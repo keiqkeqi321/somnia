@@ -17,6 +17,7 @@ from open_somnia.config.models import (
     StorageSettings,
 )
 from open_somnia.hooks.models import normalize_hook_event
+from open_somnia.reasoning import normalize_reasoning_level
 from open_somnia.storage.common import atomic_write_text
 
 APP_DIRNAME = ".open_somnia"
@@ -186,6 +187,28 @@ def _upsert_section_value(lines: list[str], section_name: str, key: str, value: 
     lines.insert(insert_at, assignment)
 
 
+def _remove_section_value(lines: list[str], section_name: str, key: str) -> list[str]:
+    start, end = _find_section_bounds(lines, section_name)
+    if start is None or end is None:
+        return list(lines)
+
+    updated = [
+        line
+        for index, line in enumerate(lines)
+        if not (start < index < end and line.strip().startswith(f"{key} ="))
+    ]
+    new_start, new_end = _find_section_bounds(updated, section_name)
+    if new_start is None or new_end is None:
+        return updated
+    has_non_comment_content = any(
+        updated[index].strip() and not updated[index].strip().startswith("#")
+        for index in range(new_start + 1, new_end)
+    )
+    if not has_non_comment_content:
+        return _remove_section(updated, section_name)
+    return updated
+
+
 def _remove_section(lines: list[str], section_name: str) -> list[str]:
     start, end = _find_section_bounds(lines, section_name)
     if start is None or end is None:
@@ -270,6 +293,39 @@ def persist_provider_selection(settings: AppSettings, provider_name: str, model:
         provider_raw = {}
         providers_raw[provider_name] = provider_raw
     provider_raw["default_model"] = model
+
+
+def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, reasoning_level: str | None) -> None:
+    normalized_provider = str(provider_name).strip().lower()
+    raw_level = str(reasoning_level or "").strip().lower() if reasoning_level is not None else ""
+    clear_requested = reasoning_level is None or raw_level in {"auto", "none"}
+    normalized_level = None if clear_requested else normalize_reasoning_level(reasoning_level)
+    if not normalized_provider:
+        raise ValueError("A provider name is required to persist reasoning level.")
+    if not clear_requested and normalized_level is None:
+        raise ValueError("Reasoning level must be one of: auto, low, medium, high, deep.")
+
+    config_path = workspace_config_path(settings.workspace_root)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    if clear_requested:
+        lines = _remove_section_value(lines, f"providers.{normalized_provider}", "reasoning_level")
+    else:
+        _upsert_section_value(lines, f"providers.{normalized_provider}", "reasoning_level", _toml_string(normalized_level))
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    providers_raw = settings.raw_config.setdefault("providers", {})
+    if not isinstance(providers_raw, dict):
+        providers_raw = {}
+        settings.raw_config["providers"] = providers_raw
+    provider_raw = providers_raw.setdefault(normalized_provider, {})
+    if not isinstance(provider_raw, dict):
+        provider_raw = {}
+        providers_raw[normalized_provider] = provider_raw
+    if clear_requested:
+        provider_raw.pop("reasoning_level", None)
+    else:
+        provider_raw["reasoning_level"] = normalized_level
 
 
 def persist_initial_provider_setup(
@@ -766,6 +822,12 @@ def _build_model_traits(item: dict) -> ModelTraits:
     context_window_tokens = item.get("cwt", item.get("context_window_tokens"))
     return ModelTraits(
         context_window_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
+        supports_reasoning=bool(item["supports_reasoning"]) if item.get("supports_reasoning") is not None else None,
+        supports_adaptive_reasoning=(
+            bool(item["supports_adaptive_reasoning"])
+            if item.get("supports_adaptive_reasoning") is not None
+            else (bool(item["adaptive_reasoning"]) if item.get("adaptive_reasoning") is not None else None)
+        ),
     )
 
 
@@ -840,6 +902,7 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
         else defaults.context_window_tokens,
         max_tokens=int(item.get("max_tokens", defaults.max_tokens)),
         timeout_seconds=int(item.get("timeout_seconds", defaults.timeout_seconds)),
+        reasoning_level=normalize_reasoning_level(item.get("reasoning_level")),
     )
 
 
@@ -887,6 +950,9 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
         ),
         max_tokens=profile.max_tokens,
         timeout_seconds=profile.timeout_seconds,
+        reasoning_level=profile.reasoning_level,
+        supports_reasoning=model_traits.supports_reasoning if model_traits is not None else None,
+        supports_adaptive_reasoning=model_traits.supports_adaptive_reasoning if model_traits is not None else None,
     )
 
 

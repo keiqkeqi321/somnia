@@ -18,6 +18,7 @@ from open_somnia.cli.repl import (
     _handle_mcp_command,
     _handle_model_command,
     _handle_providers_command,
+    _handle_reasoning_command,
     _handle_skills_command,
     _handle_undo_command,
     _resolve_authorization_requests,
@@ -40,12 +41,20 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(_is_exit_command(" exit "))
         self.assertTrue(_is_exit_command("/exit"))
 
-    def test_current_model_label_uses_active_provider_and_model(self) -> None:
+    def test_current_model_label_uses_active_provider_model_and_auto_reasoning(self) -> None:
         runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
 
-        self.assertEqual(runner.current_model_label(), "model: anthropic / glm-5")
+        self.assertEqual(runner.current_model_label(), "model: anthropic / glm-5|auto")
         self.assertIn("accept edits on", runner.execution_mode_label())
+
+    def test_current_model_label_appends_reasoning_level_after_model_name(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5.4", reasoning_level="high"))
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        self.assertEqual(runner.current_model_label(), "model: openai / gpt-5.4|high")
 
     def test_bottom_toolbar_shows_model_and_context_window(self) -> None:
         runtime = SimpleNamespace(
@@ -61,7 +70,7 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(
             runner.bottom_toolbar(),
             [
-                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#94a3b8", "model: openai / gpt-5|auto"),
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
             ],
@@ -81,7 +90,7 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(
             runner.bottom_toolbar(),
             [
-                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#94a3b8", "model: openai / gpt-5|auto"),
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
                 ("fg:#64748b", " | "),
@@ -104,7 +113,7 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(
             runner.bottom_toolbar(),
             [
-                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#94a3b8", "model: openai / gpt-5|auto"),
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
                 ("fg:#64748b", " | "),
@@ -127,7 +136,7 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(
             runner.bottom_toolbar(),
             [
-                ("fg:#94a3b8", "model: openai / gpt-5"),
+                ("fg:#94a3b8", "model: openai / gpt-5|auto"),
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
             ],
@@ -434,6 +443,54 @@ class ReplTodoTests(unittest.TestCase):
             _handle_model_command(runtime)
 
         mock_print.assert_called_with("switched anthropic:glm-5")
+
+    def test_reasoning_command_sets_reasoning_level_directly(self) -> None:
+        runtime = SimpleNamespace(set_reasoning_level=lambda level: f"set reasoning:{level}")
+
+        with patch("builtins.print") as mock_print:
+            _handle_reasoning_command(runtime, "/reasoning high")
+
+        mock_print.assert_called_once_with("set reasoning:high")
+
+    def test_reasoning_command_uses_interactive_picker_when_no_argument_is_given(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(reasoning_level="medium")),
+            set_reasoning_level=lambda level: f"set reasoning:{level}",
+        )
+
+        with patch("open_somnia.cli.repl.choose_item_interactively", return_value="deep") as mock_choose, patch(
+            "builtins.print"
+        ) as mock_print:
+            _handle_reasoning_command(runtime, "/reasoning")
+
+        mock_choose.assert_called_once()
+        self.assertEqual(mock_choose.call_args.args[0], "Choose Reasoning")
+        self.assertEqual(mock_choose.call_args.args[2][0][0], "medium")
+        mock_print.assert_called_once_with("set reasoning:deep")
+
+    def test_reasoning_command_supports_auto_to_restore_unset_state(self) -> None:
+        runtime = SimpleNamespace(set_reasoning_level=lambda level: f"set reasoning:{level}")
+
+        with patch("builtins.print") as mock_print:
+            _handle_reasoning_command(runtime, "/reasoning auto")
+
+        mock_print.assert_called_once_with("set reasoning:None")
+
+    def test_reasoning_command_keeps_none_as_compatibility_alias(self) -> None:
+        runtime = SimpleNamespace(set_reasoning_level=lambda level: f"set reasoning:{level}")
+
+        with patch("builtins.print") as mock_print:
+            _handle_reasoning_command(runtime, "/reasoning none")
+
+        mock_print.assert_called_once_with("set reasoning:None")
+
+    def test_reasoning_command_rejects_invalid_argument(self) -> None:
+        runtime = SimpleNamespace(set_reasoning_level=lambda level: f"set reasoning:{level}")
+
+        with patch("builtins.print") as mock_print:
+            _handle_reasoning_command(runtime, "/reasoning turbo")
+
+        mock_print.assert_called_once_with("[usage: /reasoning <auto|low|medium|high|deep>]")
 
     def test_scan_command_scans_current_target_path(self) -> None:
         invoked: list[dict[str, object]] = []

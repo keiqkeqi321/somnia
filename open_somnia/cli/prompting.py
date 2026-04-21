@@ -28,6 +28,7 @@ VISIBLE_COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory"),
     ("/symbols", "Find symbols and inspect matching source locations"),
     ("/model", "Choose the active provider and model"),
+    ("/reasoning", "Set the active provider reasoning level"),
     ("/providers", "Add or edit shared provider profiles"),
     ("/hooks", "Browse hooks by event and toggle them on or off"),
     ("/undo", "Undo the most recent file change set"),

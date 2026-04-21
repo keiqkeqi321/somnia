@@ -8,6 +8,7 @@ from typing import Any
 
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
+from open_somnia.reasoning import openai_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
 
@@ -223,6 +224,11 @@ class OpenAIProvider(LLMProvider):
             "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
             "tools": [_schema_to_openai_tool(tool) for tool in tools],
             "tool_choice": "auto",
+            **openai_reasoning_payload(
+                model=self.settings.model,
+                reasoning_level=getattr(self.settings, "reasoning_level", None),
+                supports_reasoning=getattr(self.settings, "supports_reasoning", None),
+            ),
         }
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return len(encoding.encode(serialized))
@@ -253,6 +259,11 @@ class OpenAIProvider(LLMProvider):
         *,
         stream: bool,
     ) -> dict[str, Any]:
+        reasoning_payload = openai_reasoning_payload(
+            model=self.settings.model,
+            reasoning_level=getattr(self.settings, "reasoning_level", None),
+            supports_reasoning=getattr(self.settings, "supports_reasoning", None),
+        )
         return {
             "url": f"{self.settings.base_url.rstrip('/')}/chat/completions",
             "body": {
@@ -262,6 +273,7 @@ class OpenAIProvider(LLMProvider):
                 "tool_choice": "auto",
                 "max_tokens": max_tokens,
                 "stream": stream,
+                **reasoning_payload,
             },
         }
 

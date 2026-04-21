@@ -8,6 +8,8 @@ from typing import Any
 @dataclass(slots=True)
 class ModelTraits:
     context_window_tokens: int | None = None
+    supports_reasoning: bool | None = None
+    supports_adaptive_reasoning: bool | None = None
 
 
 @dataclass(slots=True)
@@ -21,6 +23,9 @@ class ProviderSettings:
     context_window_tokens: int | None = None
     max_tokens: int = 8_000
     timeout_seconds: int = 120
+    reasoning_level: str | None = None
+    supports_reasoning: bool | None = None
+    supports_adaptive_reasoning: bool | None = None
 
 
 @dataclass(slots=True)
@@ -36,6 +41,7 @@ class ProviderProfileSettings:
     context_window_tokens: int | None = None
     max_tokens: int = 8_000
     timeout_seconds: int = 120
+    reasoning_level: str | None = None
 
 
 @dataclass(slots=True)

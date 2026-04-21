@@ -1524,6 +1524,104 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(runtime.settings.provider_profiles["openai"].default_model, "gpt-4.1-mini")
         mock_persist.assert_called_once_with(runtime.settings, "openai", "gpt-4.1-mini")
 
+    def test_set_reasoning_level_updates_runtime_and_compact_manager(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            raw_config={"providers": {}},
+            provider=ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                max_tokens=8000,
+                reasoning_level="medium",
+            ),
+            provider_profiles={
+                "anthropic": ProviderProfileSettings(
+                    name="anthropic",
+                    provider_type="anthropic",
+                    models=["claude-sonnet-4-5"],
+                    default_model="claude-sonnet-4-5",
+                    api_key="",
+                    base_url="https://api.anthropic.com",
+                    max_tokens=8000,
+                    timeout_seconds=60,
+                    reasoning_level="medium",
+                )
+            },
+        )
+        runtime.compact_manager = SimpleNamespace(provider=None, model_max_tokens=0)
+        runtime.provider = "old-provider"
+        runtime._instantiate_provider = lambda provider_settings: {
+            "provider": provider_settings.name,
+            "model": provider_settings.model,
+            "reasoning_level": provider_settings.reasoning_level,
+        }
+
+        with patch("open_somnia.runtime.agent.persist_provider_reasoning_level") as mock_persist:
+            message = OpenAgentRuntime.set_reasoning_level(runtime, "high")
+
+        self.assertIn("high", message)
+        self.assertIn("saved it to .open_somnia/open_somnia.toml", message)
+        self.assertEqual(runtime.settings.provider.reasoning_level, "high")
+        self.assertEqual(runtime.settings.provider.model, "claude-sonnet-4-5")
+        self.assertEqual(runtime.provider, {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": "high"})
+        self.assertEqual(
+            runtime.compact_manager.provider,
+            {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": "high"},
+        )
+        self.assertEqual(runtime.compact_manager.model_max_tokens, 8000)
+        self.assertEqual(runtime.settings.provider_profiles["anthropic"].reasoning_level, "high")
+        mock_persist.assert_called_once_with(runtime.settings, "anthropic", "high")
+
+    def test_set_reasoning_level_auto_clears_runtime_and_compact_manager_state(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            raw_config={"providers": {"anthropic": {"reasoning_level": "high"}}},
+            provider=ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                max_tokens=8000,
+                reasoning_level="high",
+            ),
+            provider_profiles={
+                "anthropic": ProviderProfileSettings(
+                    name="anthropic",
+                    provider_type="anthropic",
+                    models=["claude-sonnet-4-5"],
+                    default_model="claude-sonnet-4-5",
+                    api_key="",
+                    base_url="https://api.anthropic.com",
+                    max_tokens=8000,
+                    timeout_seconds=60,
+                    reasoning_level="high",
+                )
+            },
+        )
+        runtime.compact_manager = SimpleNamespace(provider=None, model_max_tokens=0)
+        runtime.provider = "old-provider"
+        runtime._instantiate_provider = lambda provider_settings: {
+            "provider": provider_settings.name,
+            "model": provider_settings.model,
+            "reasoning_level": provider_settings.reasoning_level,
+        }
+
+        with patch("open_somnia.runtime.agent.persist_provider_reasoning_level") as mock_persist:
+            message = OpenAgentRuntime.set_reasoning_level(runtime, None)
+
+        self.assertIn("to 'auto'", message)
+        self.assertEqual(runtime.settings.provider.reasoning_level, None)
+        self.assertEqual(runtime.provider, {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": None})
+        self.assertEqual(
+            runtime.compact_manager.provider,
+            {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": None},
+        )
+        self.assertEqual(runtime.compact_manager.model_max_tokens, 8000)
+        self.assertEqual(runtime.settings.provider_profiles["anthropic"].reasoning_level, None)
+        mock_persist.assert_called_once_with(runtime.settings, "anthropic", None)
+
     def test_context_window_usage_prefers_provider_counter(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5", context_window_tokens=200_000))
@@ -2593,6 +2691,136 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertTrue(context.exception.retryable)
         self.assertIn("OpenAI request failed", str(context.exception))
         self.assertIn("temporary upstream network error", str(context.exception))
+
+    def test_openai_provider_debug_request_payload_includes_reasoning_effort(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5.4",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+                reasoning_level="deep",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertEqual(payload["body"]["reasoning"], {"effort": "xhigh"})
+
+    def test_openai_provider_debug_request_payload_defaults_to_reasoning_when_support_flag_is_unset(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+                reasoning_level="high",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertEqual(payload["body"]["reasoning"], {"effort": "high"})
+
+    def test_anthropic_provider_debug_request_payload_uses_adaptive_effort_for_supported_models(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-6",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+                reasoning_level="deep",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 64000, stream=False)
+
+        self.assertEqual(payload["thinking"], {"type": "adaptive"})
+        self.assertEqual(payload["output_config"], {"effort": "max"})
+
+    def test_anthropic_provider_debug_request_payload_clamps_legacy_budget(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+                reasoning_level="high",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 8000, stream=False)
+
+        self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 7999})
+
+    def test_assistant_turn_as_message_preserves_thinking_blocks_while_filtering_tool_calls(self) -> None:
+        turn = AssistantTurn(
+            stop_reason="tool_use",
+            text_blocks=["Need to inspect files."],
+            tool_calls=[
+                ToolCall("call-1", "bash", {"command": "pwd"}),
+                ToolCall("call-2", "bash", {"command": "git status"}),
+            ],
+            content_blocks=[
+                {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+                {"type": "text", "text": "Need to inspect files."},
+                {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+                {"type": "tool_call", "id": "call-2", "name": "bash", "input": {"command": "git status"}},
+            ],
+        )
+
+        message = turn.as_message([turn.tool_calls[0]])
+
+        self.assertEqual(message["role"], "assistant")
+        self.assertEqual(message["content"][0]["type"], "thinking")
+        self.assertEqual(message["content"][1]["type"], "text")
+        self.assertEqual(len([item for item in message["content"] if item["type"] == "tool_call"]), 1)
+        self.assertEqual(message["content"][2]["id"], "call-1")
+
+    def test_anthropic_provider_roundtrip_preserves_thinking_blocks_in_messages(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+                reasoning_level="medium",
+            )
+        )
+        provider.client = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    content=[
+                        SimpleNamespace(type="thinking", thinking="private reasoning", signature="sig-1"),
+                        SimpleNamespace(type="text", text="I need a tool."),
+                        SimpleNamespace(type="tool_use", id="call-1", name="bash", input={"command": "pwd"}),
+                    ],
+                    stop_reason="tool_use",
+                    usage=None,
+                )
+            )
+        )
+
+        turn = provider.complete("system", [{"role": "user", "content": "inspect"}], [], max_tokens=4096)
+        payload = provider.debug_request_payload("system", [turn.as_message()], [], 4096, stream=False)
+
+        assistant_content = payload["messages"][0]["content"]
+
+        self.assertEqual(assistant_content[0]["type"], "thinking")
+        self.assertEqual(assistant_content[0]["signature"], "sig-1")
+        self.assertEqual(assistant_content[1], {"type": "text", "text": "I need a tool."})
+        self.assertEqual(assistant_content[2]["type"], "tool_use")
+        self.assertEqual(assistant_content[2]["name"], "bash")
 
     def test_anthropic_provider_wraps_transient_exception_as_retryable_provider_error(self) -> None:
         provider = AnthropicProvider(

@@ -6,6 +6,7 @@ from anthropic import Anthropic
 
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
+from open_somnia.reasoning import anthropic_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
 
@@ -22,6 +23,21 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
         for item in content:
             if item["type"] == "text":
                 blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            elif item["type"] == "thinking":
+                blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": str(item.get("thinking", "")),
+                        "signature": str(item.get("signature", "")),
+                    }
+                )
+            elif item["type"] == "redacted_thinking":
+                blocks.append(
+                    {
+                        "type": "redacted_thinking",
+                        "data": item.get("data"),
+                    }
+                )
             elif item["type"] == "tool_call":
                 blocks.append(
                     {
@@ -155,7 +171,7 @@ class AnthropicProvider(LLMProvider):
         *,
         stream: bool,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "model": self.settings.model,
             "system": system_prompt,
             "messages": _to_anthropic_messages(messages),
@@ -163,6 +179,16 @@ class AnthropicProvider(LLMProvider):
             "max_tokens": max_tokens,
             "stream": stream,
         }
+        payload.update(
+            anthropic_reasoning_payload(
+                model=self.settings.model,
+                reasoning_level=getattr(self.settings, "reasoning_level", None),
+                max_tokens=max_tokens,
+                supports_reasoning=getattr(self.settings, "supports_reasoning", None),
+                supports_adaptive_reasoning=getattr(self.settings, "supports_adaptive_reasoning", None),
+            )
+        )
+        return payload
 
     def complete(
         self,
@@ -202,13 +228,41 @@ class AnthropicProvider(LLMProvider):
             raise _wrap_anthropic_exception(exc) from exc
         text_blocks: list[str] = []
         tool_calls: list[ToolCall] = []
+        content_blocks: list[dict[str, Any]] = []
         for block in response.content:
-            if getattr(block, "type", None) == "text":
+            block_type = getattr(block, "type", None)
+            if block_type == "thinking":
+                content_blocks.append(
+                    {
+                        "type": "thinking",
+                        "thinking": str(getattr(block, "thinking", "") or ""),
+                        "signature": str(getattr(block, "signature", "") or ""),
+                    }
+                )
+            elif block_type == "redacted_thinking":
+                content_blocks.append(
+                    {
+                        "type": "redacted_thinking",
+                        "data": getattr(block, "data", None),
+                    }
+                )
+            elif block_type == "text":
                 text_blocks.append(block.text)
-            elif getattr(block, "type", None) == "tool_use":
+                content_blocks.append({"type": "text", "text": block.text})
+            elif block_type == "tool_use":
                 tool_input = dict(block.input)
                 importance = normalize_tool_importance(tool_input.pop("importance", None))
-                tool_calls.append(ToolCall(id=block.id, name=block.name, input=tool_input, importance=importance))
+                tool_call = ToolCall(id=block.id, name=block.name, input=tool_input, importance=importance)
+                tool_calls.append(tool_call)
+                tool_call_block = {
+                    "type": "tool_call",
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "input": tool_call.input,
+                }
+                if tool_call.importance:
+                    tool_call_block["importance"] = tool_call.importance
+                content_blocks.append(tool_call_block)
         stop_reason = response.stop_reason or "end_turn"
         if stop_reason == "tool_use":
             stop_reason = "tool_use"
@@ -216,6 +270,7 @@ class AnthropicProvider(LLMProvider):
             stop_reason=stop_reason,
             text_blocks=text_blocks,
             tool_calls=tool_calls,
+            content_blocks=content_blocks,
             usage=self._extract_usage(response),
             raw_response=response,
         )

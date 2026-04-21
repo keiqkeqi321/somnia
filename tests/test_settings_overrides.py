@@ -15,11 +15,58 @@ from open_somnia.config.settings import (
     load_settings,
     persist_initial_provider_setup,
     persist_provider_profile,
+    persist_provider_reasoning_level,
     persist_provider_selection,
 )
+from open_somnia.reasoning import anthropic_reasoning_payload, openai_reasoning_payload
 
 
 class SettingsOverrideTests(unittest.TestCase):
+    def test_openai_reasoning_payload_defaults_to_enabled_when_support_flag_is_unset(self) -> None:
+        payload = openai_reasoning_payload(
+            model="custom-openai-compatible-model",
+            reasoning_level="high",
+            supports_reasoning=None,
+        )
+
+        self.assertEqual(payload, {"reasoning": {"effort": "high"}})
+
+    def test_anthropic_reasoning_payload_defaults_to_enabled_when_support_flag_is_unset(self) -> None:
+        payload = anthropic_reasoning_payload(
+            model="custom-anthropic-compatible-model",
+            reasoning_level="medium",
+            max_tokens=12_000,
+            supports_reasoning=None,
+            supports_adaptive_reasoning=None,
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 8_192,
+                }
+            },
+        )
+
+    def test_reasoning_payload_still_short_circuits_when_support_flag_is_explicitly_false(self) -> None:
+        openai_payload = openai_reasoning_payload(
+            model="gpt-5",
+            reasoning_level="high",
+            supports_reasoning=False,
+        )
+        anthropic_payload = anthropic_reasoning_payload(
+            model="claude-sonnet-4-6",
+            reasoning_level="high",
+            max_tokens=12_000,
+            supports_reasoning=False,
+            supports_adaptive_reasoning=None,
+        )
+
+        self.assertEqual(openai_payload, {})
+        self.assertEqual(anthropic_payload, {})
+
     def test_load_settings_reads_provider_profiles_and_default_model(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
@@ -127,6 +174,40 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(
             settings.provider_profiles["openrouter"].model_traits["qwen/qwen3.6-plus-preview:free"].context_window_tokens,
             262144,
+        )
+
+    def test_load_settings_reads_reasoning_level_and_reasoning_model_traits(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["claude-sonnet-4-6"]
+                default_model = "claude-sonnet-4-6"
+                api_key = "anthropic-test-key"
+                reasoning_level = "high"
+
+                [model_traits."claude-sonnet-4-6"]
+                supports_reasoning = true
+                supports_adaptive_reasoning = true
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        self.assertEqual(settings.provider.reasoning_level, "high")
+        self.assertTrue(settings.provider.supports_reasoning)
+        self.assertTrue(settings.provider.supports_adaptive_reasoning)
+        self.assertEqual(settings.provider_profiles["anthropic"].reasoning_level, "high")
+        self.assertTrue(settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-6"].supports_reasoning)
+        self.assertTrue(
+            settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-6"].supports_adaptive_reasoning
         )
 
     def test_load_settings_provider_model_traits_override_global_model_traits(self) -> None:
@@ -389,6 +470,35 @@ class SettingsOverrideTests(unittest.TestCase):
                 self.assertEqual(reloaded.provider.model, "kimi-k2.5")
                 self.assertEqual(reloaded.provider_profiles["openai"].default_model, "kimi-k2.5")
                 self.assertTrue(config_path.exists())
+
+    def test_persist_provider_reasoning_level_auto_removes_workspace_override_and_roundtrips(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            config_path = root / ".open_somnia" / "open_somnia.toml"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["claude-sonnet-4-6"]
+                default_model = "claude-sonnet-4-6"
+                api_key = "anthropic-test-key"
+                reasoning_level = "high"
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+                persist_provider_reasoning_level(settings, "anthropic", "auto")
+                reloaded = load_settings(root)
+
+            rendered = config_path.read_text(encoding="utf-8")
+            self.assertNotIn('reasoning_level = "high"', rendered)
+            self.assertIsNone(reloaded.provider.reasoning_level)
+            self.assertIsNone(reloaded.provider_profiles["anthropic"].reasoning_level)
 
     def test_persist_initial_provider_setup_writes_global_config_and_roundtrips(self) -> None:
         with self._tempdir() as tmpdir:
