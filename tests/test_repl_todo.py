@@ -706,6 +706,30 @@ class ReplTodoTests(unittest.TestCase):
         runner._status = status
         self.assertEqual(runner._status_line(), "stopped_after_max_rounds")
 
+    def test_status_for_response_marks_completed_turn_with_open_todos_explicitly(self) -> None:
+        runner = TurnQueueRunner(
+            SimpleNamespace(),
+            SimpleNamespace(todo_items=[{"content": "Confirm scope", "status": "in_progress"}]),
+            stable_prompt=True,
+        )
+
+        status = runner._status_for_response(SimpleNamespace(status="completed"))
+
+        self.assertEqual(status, "waiting_on_open_todos")
+        runner._status = status
+        self.assertEqual(runner._status_line(), "waiting_on_open_todos")
+
+    def test_status_for_response_keeps_done_when_all_todos_are_closed(self) -> None:
+        runner = TurnQueueRunner(
+            SimpleNamespace(),
+            SimpleNamespace(todo_items=[{"content": "Ship it", "status": "completed"}]),
+            stable_prompt=True,
+        )
+
+        status = runner._status_for_response(SimpleNamespace(status="completed"))
+
+        self.assertEqual(status, "done")
+
     def test_compact_task_runs_before_queued_turn(self) -> None:
         events: list[str] = []
         runtime = SimpleNamespace(

@@ -649,6 +649,31 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertIn("Runtime/Core/PaperComponent.cs:1:class PaperComponent", result)
         self.assertIn("Runtime/Core/PaperComponent.cs:2:method BuildMesh", result)
 
+    def test_find_symbol_accepts_file_path_and_scans_only_that_file(self) -> None:
+        root = Path.cwd()
+        candidate = root / "open_somnia" / "tools" / "filesystem.py"
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+        with patch("open_somnia.tools.filesystem._filtered_walk") as mock_walk, patch(
+            "open_somnia.tools.filesystem._read_text_with_fallback",
+            return_value="def _create_executor_for_agent():\n    pass\n\ndef other_helper():\n    pass\n",
+        ):
+            result = find_symbol(
+                ctx,
+                {"query": "_create_executor_for_agent", "path": "open_somnia/tools/filesystem.py"},
+            )
+
+        mock_walk.assert_not_called()
+        self.assertEqual(result, "open_somnia/tools/filesystem.py:1:function _create_executor_for_agent")
+
     def test_find_symbol_rejects_more_than_ten_pipe_separated_terms(self) -> None:
         root = Path.cwd()
         ctx = SimpleNamespace(

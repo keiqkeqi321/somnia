@@ -118,6 +118,10 @@ class OpenAgentRuntime:
         "<reminder>If any todo changed, call TodoWrite now. "
         "Do not just say you will. If nothing changed, ignore this and continue.</reminder>"
     )
+    TODO_RECONCILE_REMINDER_TEXT = (
+        "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
+        "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
+    )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -2490,6 +2494,7 @@ class OpenAgentRuntime:
     ) -> AgentLoopResult:
         final_text = ""
         pending_tool_repair_hints: list[dict[str, Any]] = []
+        pending_todo_reconcile = False
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -2534,6 +2539,8 @@ class OpenAgentRuntime:
                 transient_payload_messages: list[dict[str, Any]] = []
                 if self.todo_manager.has_open_items(session):
                     transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
+                if pending_todo_reconcile:
+                    transient_payload_messages.append(make_user_text_message(self.TODO_RECONCILE_REMINDER_TEXT))
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -2610,6 +2617,13 @@ class OpenAgentRuntime:
                         text=final_text,
                         execution_mode=getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
                     )
+                    if (
+                        self.todo_manager.has_open_items(session)
+                        and session.rounds_without_todo > 0
+                        and not pending_todo_reconcile
+                    ):
+                        pending_todo_reconcile = True
+                        continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
 
                 tool_results: list[dict[str, Any]] = []
@@ -2689,6 +2703,10 @@ class OpenAgentRuntime:
                     except Exception:
                         pass
                 self.session_manager.save(session)
+                if pending_todo_reconcile and used_todo:
+                    if executed_tool_calls and all(tool_call.name == "TodoWrite" for tool_call in executed_tool_calls):
+                        return self._agent_loop_result(final_text, status="completed", session=session)
+                    pending_todo_reconcile = False
                 if end_turn_after_tool:
                     continue
             self._capture_turn_file_changes(session)

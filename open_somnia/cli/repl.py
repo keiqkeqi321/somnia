@@ -229,6 +229,7 @@ class TurnQueueRunner:
         "Loading genius",
     )
     DONE_TEXT = "done"
+    OPEN_TODOS_TEXT = "waiting_on_open_todos"
     STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
     STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
     QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
@@ -764,11 +765,17 @@ class TurnQueueRunner:
             return "interrupting"
         if status == "done":
             return self.DONE_TEXT
+        if status == "waiting_on_open_todos":
+            return self.OPEN_TODOS_TEXT
         if status == "stopped_with_open_todos":
             return self.STOPPED_WITH_OPEN_TODOS_TEXT
         if status == "stopped_after_max_rounds":
             return self.STOPPED_AFTER_MAX_ROUNDS_TEXT
         return ""
+
+    def _session_has_open_todos(self) -> bool:
+        todo_items = list(getattr(self.session, "todo_items", []) or [])
+        return any(str(item.get("status", "pending")).lower() not in TODO_CLOSED_STATUSES for item in todo_items)
 
     def _status_for_response(self, response) -> str:
         status = str(getattr(response, "status", "")).strip()
@@ -776,6 +783,8 @@ class TurnQueueRunner:
             return "stopped_with_open_todos"
         if status == "stopped_after_max_rounds":
             return "stopped_after_max_rounds"
+        if self._session_has_open_todos():
+            return "waiting_on_open_todos"
         return "done"
 
     def _queue_preview_lines(self) -> list[str]:

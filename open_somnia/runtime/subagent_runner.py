@@ -122,7 +122,7 @@ class SubagentRunner:
         registry.register(
             ToolDefinition(
                 name="find_symbol",
-                description="Locate classes, functions, methods, or interfaces by symbol name substring.",
+                description="Locate classes, functions, methods, or interfaces by symbol name substring in a directory or a single file.",
                 input_schema={
                     "type": "object",
                     "properties": {

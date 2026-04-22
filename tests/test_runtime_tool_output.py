@@ -3280,6 +3280,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
                     stop_reason="end_turn",
                     text_blocks=["Done."],
                 ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Still done."],
+                ),
             ]
         )
 
@@ -3297,11 +3301,145 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
         reminder = OpenAgentRuntime.TODO_REMINDER_TEXT
+        reconcile_reminder = OpenAgentRuntime.TODO_RECONCILE_REMINDER_TEXT
         reminder_counts = [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads]
+        reconcile_counts = [json.dumps(payload, ensure_ascii=False).count(reconcile_reminder) for payload in payloads]
+
+        self.assertEqual(result, "Still done.")
+        self.assertEqual(reminder_counts, [1, 1, 1, 1, 1])
+        self.assertEqual(reconcile_counts, [0, 0, 0, 0, 1])
+        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
+        self.assertNotIn(reconcile_reminder, json.dumps(session.messages, ensure_ascii=False))
+
+    def test_agent_loop_runs_one_todo_reconcile_round_before_finishing_when_open_todos_remain(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(
+            has_open_items=lambda session: any(item.get("status") in {"pending", "in_progress"} for item in getattr(session, "todo_items", []))
+        )
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                if name == "TodoWrite":
+                    ctx.session.todo_items = list(payload["items"])
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Done."],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call-1",
+                            "TodoWrite",
+                            {
+                                "items": [
+                                    {"content": "Fix route", "status": "completed", "activeForm": "Fixing route"},
+                                    {"content": "Confirm tools/list scope", "status": "in_progress", "activeForm": "Waiting for confirmation"},
+                                ]
+                            },
+                        )
+                    ],
+                ),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        session = AgentSession(
+            id="session-1",
+            todo_items=[
+                {"content": "Fix route", "status": "in_progress", "activeForm": "Fixing route"},
+                {"content": "Confirm tools/list scope", "status": "pending", "activeForm": "Waiting for confirmation"},
+            ],
+            rounds_without_todo=1,
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        reconcile_reminder = OpenAgentRuntime.TODO_RECONCILE_REMINDER_TEXT
 
         self.assertEqual(result, "Done.")
-        self.assertEqual(reminder_counts, [1, 1, 1, 1])
-        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
+        self.assertEqual(getattr(result, "status", None), "completed")
+        self.assertEqual(session.todo_items[0]["status"], "completed")
+        self.assertEqual(session.todo_items[1]["status"], "in_progress")
+        self.assertEqual(session.rounds_without_todo, 0)
+        self.assertEqual(len(payloads), 2)
+        self.assertNotIn(reconcile_reminder, json.dumps(session.messages, ensure_ascii=False))
+        self.assertEqual(json.dumps(payloads[0], ensure_ascii=False).count(reconcile_reminder), 0)
+        self.assertEqual(json.dumps(payloads[1], ensure_ascii=False).count(reconcile_reminder), 1)
+
+    def test_agent_loop_does_not_loop_forever_if_todo_reconcile_is_ignored_once(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(
+            has_open_items=lambda session: any(item.get("status") in {"pending", "in_progress"} for item in getattr(session, "todo_items", []))
+        )
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime.registry = SimpleNamespace(schemas=lambda: [], execute=lambda ctx, name, payload: "ok")
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Still done."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+
+        session = AgentSession(
+            id="session-1",
+            todo_items=[{"content": "Confirm scope", "status": "in_progress", "activeForm": "Waiting for confirmation"}],
+            rounds_without_todo=1,
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        reconcile_reminder = OpenAgentRuntime.TODO_RECONCILE_REMINDER_TEXT
+
+        self.assertEqual(result, "Still done.")
+        self.assertEqual(getattr(result, "status", None), "completed")
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(json.dumps(payloads[1], ensure_ascii=False).count(reconcile_reminder), 1)
 
     def test_agent_loop_injects_next_user_message_after_current_tool_boundary(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

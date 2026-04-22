@@ -579,8 +579,6 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     base_path = safe_path(workspace_root, str(payload.get("path", ".")))
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
-    if not base_path.is_dir():
-        return f"Error: Path is not a directory: {payload.get('path', '.')}"
 
     query = str(payload.get("query", "")).strip()
     if not query:
@@ -599,36 +597,47 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     results: list[str] = []
     truncated = False
 
-    for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden):
-        for file_name in file_names:
-            candidate = current_root / file_name
-            extension = candidate.suffix.lower()
-            patterns = SYMBOL_PATTERNS.get(extension, [])
-            if not patterns:
-                continue
-            try:
-                lines = _read_text_with_fallback(candidate).splitlines()
-            except Exception:
-                continue
-            relative = candidate.relative_to(workspace_root).as_posix()
-            for line_number, line in enumerate(lines, start=1):
-                for pattern, default_kind, name_group in patterns:
-                    match = pattern.search(line)
-                    if not match:
-                        continue
-                    symbol_name = match.group(name_group)
-                    detected_kind = match.group(1).lower() if default_kind == "type" and match.lastindex and match.lastindex >= 2 else default_kind
-                    if kind_filter and detected_kind != kind_filter:
-                        continue
-                    haystack = symbol_name if case_sensitive else symbol_name.lower()
-                    if not any(term in haystack for term in normalized_terms):
-                        continue
-                    results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
-                    break
-                if len(results) >= limit:
-                    truncated = True
-                    break
-            if truncated:
+    if base_path.is_file():
+        candidates = [base_path]
+    elif base_path.is_dir():
+        candidates = [
+            current_root / file_name
+            for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden)
+            for file_name in file_names
+        ]
+    else:
+        return f"Error: Unsupported path type: {payload.get('path', '.')}"
+
+    for candidate in candidates:
+        extension = candidate.suffix.lower()
+        patterns = SYMBOL_PATTERNS.get(extension, [])
+        if not patterns:
+            continue
+        try:
+            lines = _read_text_with_fallback(candidate).splitlines()
+        except Exception:
+            continue
+        relative = candidate.relative_to(workspace_root).as_posix()
+        for line_number, line in enumerate(lines, start=1):
+            for pattern, default_kind, name_group in patterns:
+                match = pattern.search(line)
+                if not match:
+                    continue
+                symbol_name = match.group(name_group)
+                detected_kind = (
+                    match.group(1).lower()
+                    if default_kind == "type" and match.lastindex and match.lastindex >= 2
+                    else default_kind
+                )
+                if kind_filter and detected_kind != kind_filter:
+                    continue
+                haystack = symbol_name if case_sensitive else symbol_name.lower()
+                if not any(term in haystack for term in normalized_terms):
+                    continue
+                results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
+                break
+            if len(results) >= limit:
+                truncated = True
                 break
         if truncated:
             break
@@ -1264,7 +1273,7 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="find_symbol",
-            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. `query` also supports up to 10 alternative substrings joined by `|` for one broad pass before narrowing down.",
+            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. `path` may point to a directory or a single file. `query` also supports up to 10 alternative substrings joined by `|` for one broad pass before narrowing down.",
             input_schema={
                 "type": "object",
                 "properties": {
