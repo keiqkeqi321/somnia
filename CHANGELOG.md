@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.9 (2026-04-22)
+
+- Fix Windows CJK prompt cursor drift (030b199)
+- Improve todo reconciliation and single-file symbol search (2df2abb)
+- Add configurable reasoning levels and auto mode (1da6763)
+- Echo next-loop queued prompts in REPL (06df3fd)
+- Refine queued Esc handling at loop boundaries (0b873bb)
+- Shorten queued prompt notice in REPL (275444f)
+- Classify edit misses as content_not_found (81c858e)
+- Support brace-expanded glob patterns in filesystem search (f034577)
+- Return explicit open-todo stop status at max rounds (2fbf4a3)
+- Document persisted read_file overlap state (eb476aa)
+- 统一化工具错误，自动纠正 (8754845)
+
 ## 0.4.8 (2026-04-20)
 
 - release: v0.4.7 (ad8dbbe)
