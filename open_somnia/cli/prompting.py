@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
+import sys
 import time
 from typing import Callable
 
@@ -19,9 +20,11 @@ from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
 from prompt_toolkit.key_binding.defaults import load_key_bindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit
+from prompt_toolkit.output import Output
 from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.shortcuts.dialogs import input_dialog
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 
 VISIBLE_COMMAND_SPECS = [
@@ -104,6 +107,190 @@ class PathCandidate:
     relative_path: str
     basename: str
     kind: str
+
+
+class _WindowsSafeCursorOutput(Output):
+    """
+    Re-anchor horizontal cursor movement on Windows VT terminals.
+
+    prompt_toolkit's renderer uses relative left/right cursor movement while
+    diffing frames. On ConPTY-based terminals, those relative moves can drift
+    after double-width CJK cells. Resetting to the start of the current
+    physical line before moving to the target column avoids that accumulation.
+    """
+
+    def __init__(self, output: Output) -> None:
+        self._output = output
+        self.stdout = getattr(output, "stdout", None)
+        self._column = 0
+        self._row = 0
+
+    def _update_cursor_from_text(self, data: str) -> None:
+        for char in data:
+            if char == "\r":
+                self._column = 0
+            elif char == "\n":
+                self._row += 1
+                self._column = 0
+            elif char == "\b":
+                self._column = max(0, self._column - 1)
+            else:
+                self._column = max(0, self._column + get_cwidth(char))
+
+    def _move_to_column(self, target: int) -> None:
+        self._column = max(0, int(target))
+        self._output.write_raw("\r")
+        if self._column:
+            self._output.cursor_forward(self._column)
+
+    def fileno(self) -> int:
+        return self._output.fileno()
+
+    def encoding(self) -> str:
+        return self._output.encoding()
+
+    def write(self, data: str) -> None:
+        self._output.write(data)
+        self._update_cursor_from_text(data)
+
+    def write_raw(self, data: str) -> None:
+        self._output.write_raw(data)
+
+    def set_title(self, title: str) -> None:
+        self._output.set_title(title)
+
+    def clear_title(self) -> None:
+        self._output.clear_title()
+
+    def flush(self) -> None:
+        self._output.flush()
+
+    def erase_screen(self) -> None:
+        self._output.erase_screen()
+        self._row = 0
+        self._column = 0
+
+    def enter_alternate_screen(self) -> None:
+        self._output.enter_alternate_screen()
+        self._row = 0
+        self._column = 0
+
+    def quit_alternate_screen(self) -> None:
+        self._output.quit_alternate_screen()
+        self._row = 0
+        self._column = 0
+
+    def enable_mouse_support(self) -> None:
+        self._output.enable_mouse_support()
+
+    def disable_mouse_support(self) -> None:
+        self._output.disable_mouse_support()
+
+    def erase_end_of_line(self) -> None:
+        self._output.erase_end_of_line()
+
+    def erase_down(self) -> None:
+        self._output.erase_down()
+
+    def reset_attributes(self) -> None:
+        self._output.reset_attributes()
+
+    def set_attributes(self, attrs, color_depth) -> None:
+        self._output.set_attributes(attrs, color_depth)
+
+    def disable_autowrap(self) -> None:
+        self._output.disable_autowrap()
+
+    def enable_autowrap(self) -> None:
+        self._output.enable_autowrap()
+
+    def cursor_goto(self, row: int = 0, column: int = 0) -> None:
+        self._output.cursor_goto(row=row, column=column)
+        self._row = max(0, row)
+        self._column = max(0, column)
+
+    def cursor_up(self, amount: int) -> None:
+        self._output.cursor_up(amount)
+        self._row = max(0, self._row - amount)
+
+    def cursor_down(self, amount: int) -> None:
+        self._output.cursor_down(amount)
+        self._row = max(0, self._row + amount)
+
+    def cursor_forward(self, amount: int) -> None:
+        if amount < 0:
+            self.cursor_backward(-amount)
+            return
+        self._move_to_column(self._column + amount)
+
+    def cursor_backward(self, amount: int) -> None:
+        if amount < 0:
+            self.cursor_forward(-amount)
+            return
+        self._move_to_column(self._column - amount)
+
+    def hide_cursor(self) -> None:
+        self._output.hide_cursor()
+
+    def show_cursor(self) -> None:
+        self._output.show_cursor()
+
+    def set_cursor_shape(self, cursor_shape) -> None:
+        self._output.set_cursor_shape(cursor_shape)
+
+    def reset_cursor_shape(self) -> None:
+        self._output.reset_cursor_shape()
+
+    def ask_for_cpr(self) -> None:
+        self._output.ask_for_cpr()
+
+    @property
+    def responds_to_cpr(self) -> bool:
+        return self._output.responds_to_cpr
+
+    def get_size(self):
+        return self._output.get_size()
+
+    def bell(self) -> None:
+        self._output.bell()
+
+    def enable_bracketed_paste(self) -> None:
+        self._output.enable_bracketed_paste()
+
+    def disable_bracketed_paste(self) -> None:
+        self._output.disable_bracketed_paste()
+
+    def reset_cursor_key_mode(self) -> None:
+        self._output.reset_cursor_key_mode()
+
+    def scroll_buffer_to_prompt(self) -> None:
+        self._output.scroll_buffer_to_prompt()
+
+    def get_rows_below_cursor_position(self) -> int:
+        return self._output.get_rows_below_cursor_position()
+
+    def get_default_color_depth(self):
+        return self._output.get_default_color_depth()
+
+
+def _wrap_windows_prompt_output(prompt_session: PromptSession[str]) -> None:
+    if sys.platform != "win32":
+        return
+    app = getattr(prompt_session, "app", None)
+    if app is None:
+        return
+    output = getattr(app, "output", None)
+    if output is None or isinstance(output, _WindowsSafeCursorOutput):
+        return
+    if getattr(output, "vt100_output", None) is None:
+        return
+    wrapped = _WindowsSafeCursorOutput(output)
+    app.output = wrapped
+    renderer = getattr(app, "renderer", None)
+    if renderer is not None:
+        renderer.output = wrapped
+    if hasattr(prompt_session, "_output"):
+        prompt_session._output = wrapped
 
 
 class OpenAgentCompleter(Completer):
@@ -336,7 +523,7 @@ def create_prompt_session(
             return
         event.app.exit(exception=KeyboardInterrupt())
 
-    return PromptSession(
+    prompt_session = PromptSession(
         history=FileHistory(str(_history_file(workspace_root))),
         auto_suggest=AutoSuggestFromHistory(),
         completer=OpenAgentCompleter(workspace_root, skill_names_getter=skill_names_getter),
@@ -346,6 +533,8 @@ def create_prompt_session(
         key_bindings=bindings,
         erase_when_done=True,
     )
+    _wrap_windows_prompt_output(prompt_session)
+    return prompt_session
 
 
 def styled_prompt_message():
