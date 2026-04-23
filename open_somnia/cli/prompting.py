@@ -68,6 +68,7 @@ TOKEN_PATTERN = re.compile(r"(?:^|\s)([@/])([^\s]*)$")
 PROMPT_BORDER = "\u2500" * 58
 PROMPT_TEXT = "\u276f "
 PROMPT_ANSI = "\u276f "
+PASTED_NEWLINE_GRACE_SECONDS = 0.05
 PROMPT_FORMATTED = FormattedText(
     [
         ("#38bdf8 bold", "\u276f "),
@@ -450,6 +451,36 @@ def _handle_tab_action(buffer) -> bool:
     return _apply_current_completion(buffer)
 
 
+def _create_multiline_paste_guard(monotonic: Callable[[], float] | None = None):
+    """
+    Detect Enter presses that are most likely newline characters from a paste.
+
+    Some terminals don't emit a bracketed-paste event for multiline clipboard
+    content and instead stream the pasted text line by line. In that case,
+    prompt_toolkit sees the pasted newline as an Enter keypress and submits
+    each line separately. If Enter arrives almost immediately after a text
+    insertion, treat it as a pasted newline and keep the text in the current
+    buffer.
+    """
+
+    clock = monotonic or time.monotonic
+    last_text_insert_at = 0.0
+
+    def note_text_insert(_buffer) -> None:
+        nonlocal last_text_insert_at
+        last_text_insert_at = clock()
+
+    def should_insert_newline(buffer) -> bool:
+        if not getattr(buffer, "text", ""):
+            return False
+        inserted_at = last_text_insert_at
+        if inserted_at <= 0.0:
+            return False
+        return clock() - inserted_at <= PASTED_NEWLINE_GRACE_SECONDS
+
+    return note_text_insert, should_insert_newline
+
+
 def create_prompt_session(
     workspace_root: Path,
     *,
@@ -460,6 +491,7 @@ def create_prompt_session(
     skill_names_getter: Callable[[], list[str]] | None = None,
 ) -> PromptSession[str]:
     bindings = KeyBindings()
+    note_text_insert, should_insert_newline = _create_multiline_paste_guard()
 
     @bindings.add("enter")
     def _handle_enter(event) -> None:
@@ -471,6 +503,9 @@ def create_prompt_session(
             if completion is not None:
                 buffer.apply_completion(completion)
                 return
+        if should_insert_newline(buffer):
+            buffer.insert_text("\n", fire_event=False)
+            return
         buffer.validate_and_handle()
 
     @bindings.add("escape")
@@ -533,6 +568,10 @@ def create_prompt_session(
         key_bindings=bindings,
         erase_when_done=True,
     )
+    default_buffer = getattr(prompt_session, "default_buffer", None)
+    on_text_insert = getattr(default_buffer, "on_text_insert", None)
+    if on_text_insert is not None:
+        on_text_insert += note_text_insert
     _wrap_windows_prompt_output(prompt_session)
     return prompt_session
 

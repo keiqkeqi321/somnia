@@ -15,6 +15,19 @@ from open_somnia.cli.prompting import (
 )
 
 
+class _FakeEvent:
+    def __init__(self) -> None:
+        self._handlers = []
+
+    def __iadd__(self, handler):
+        self._handlers.append(handler)
+        return self
+
+    def fire(self, sender) -> None:
+        for handler in self._handlers:
+            handler(sender)
+
+
 class _FakeVtOutput:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
@@ -140,6 +153,8 @@ class PromptingTests(unittest.TestCase):
             def __init__(self, *args, **session_kwargs):
                 self.args = args
                 self.kwargs = session_kwargs
+                self.default_buffer = SimpleNamespace(on_text_insert=_FakeEvent())
+                self.app = SimpleNamespace(output=None, renderer=SimpleNamespace(output=None))
 
         with patch("open_somnia.cli.prompting.PromptSession", _FakePromptSession):
             return create_prompt_session(Path("."), **kwargs)
@@ -150,6 +165,13 @@ class PromptingTests(unittest.TestCase):
             if binding.keys and getattr(binding.keys[0], "value", "") == "escape":
                 return binding.handler
         self.fail("escape binding not found")
+
+    def _enter_handler(self, prompt_session):
+        bindings = prompt_session.kwargs["key_bindings"]
+        for binding in bindings.bindings:
+            if binding.keys and getattr(binding.keys[0], "value", "") in {"enter", "c-m"}:
+                return binding.handler
+        self.fail("enter binding not found")
 
     def test_tab_accepts_inline_history_suggestion(self) -> None:
         inserted: list[str] = []
@@ -252,6 +274,48 @@ class PromptingTests(unittest.TestCase):
         handler(SimpleNamespace(current_buffer=SimpleNamespace(complete_state=None, text="")))
 
         self.assertEqual(events, ["promote", "promote"])
+
+    def test_enter_treats_immediate_post_insert_return_as_pasted_newline(self) -> None:
+        inserted: list[tuple[str, dict[str, object]]] = []
+        validated: list[bool] = []
+
+        def _insert_text(text: str, **kwargs) -> None:
+            inserted.append((text, kwargs))
+
+        with patch("open_somnia.cli.prompting.time.monotonic", side_effect=[1.0, 1.02]):
+            prompt_session = self._capture_prompt_session()
+            buffer = SimpleNamespace(
+                complete_state=None,
+                text="first line",
+                insert_text=_insert_text,
+                validate_and_handle=lambda: validated.append(True),
+            )
+            prompt_session.default_buffer.on_text_insert.fire(buffer)
+            self._enter_handler(prompt_session)(SimpleNamespace(current_buffer=buffer))
+
+        self.assertEqual(inserted, [("\n", {"fire_event": False})])
+        self.assertEqual(validated, [])
+
+    def test_enter_still_submits_after_normal_human_delay(self) -> None:
+        inserted: list[tuple[str, dict[str, object]]] = []
+        validated: list[bool] = []
+
+        def _insert_text(text: str, **kwargs) -> None:
+            inserted.append((text, kwargs))
+
+        with patch("open_somnia.cli.prompting.time.monotonic", side_effect=[1.0, 1.2]):
+            prompt_session = self._capture_prompt_session()
+            buffer = SimpleNamespace(
+                complete_state=None,
+                text="first line",
+                insert_text=_insert_text,
+                validate_and_handle=lambda: validated.append(True),
+            )
+            prompt_session.default_buffer.on_text_insert.fire(buffer)
+            self._enter_handler(prompt_session)(SimpleNamespace(current_buffer=buffer))
+
+        self.assertEqual(inserted, [])
+        self.assertEqual(validated, [True])
 
     def test_windows_safe_output_reanchors_horizontal_moves_using_display_width(self) -> None:
         output = _FakeVtOutput()
