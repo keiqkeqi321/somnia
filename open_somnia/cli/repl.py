@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import inspect
 import json
+import os
 from pathlib import Path
 import random
+import shutil
+import subprocess
 import sys
 import time
 from queue import Empty, Queue
@@ -79,6 +82,8 @@ HOOK_EVENT_ORDER = (
     "UserChoiceRequested",
 )
 AUTHORIZATION_PROMPT_SENTINEL = "__open_somnia_authorization__"
+CLIPBOARD_TEMP_DIRNAME = "temp"
+SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def _parse_skill_command(query: str) -> tuple[str, str] | None:
@@ -155,6 +160,376 @@ def _build_image_query(runtime, command: str) -> str:
         ],
     )
     return encode_embedded_user_message(message)
+
+
+def _format_image_command(relative_path: str) -> str:
+    normalized = str(relative_path or "").replace("\\", "/")
+    if any(char.isspace() for char in normalized):
+        return f'/image "{normalized}" '
+    return f"/image {normalized} "
+
+
+def _powershell_single_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _clipboard_temp_dir(runtime) -> Path:
+    return Path(runtime.settings.storage.data_dir) / CLIPBOARD_TEMP_DIRNAME
+
+
+def _clipboard_temp_stem() -> str:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    token = f"{time.time_ns() % 1_000_000_000:09d}"
+    return f"clipboard-{stamp}-{token}"
+
+
+def _clipboard_image_command(runtime) -> str | None:
+    saved_path = _save_clipboard_image(runtime)
+    if saved_path is None:
+        return None
+    workspace_root = Path(runtime.settings.workspace_root).resolve()
+    relative_path = saved_path.resolve().relative_to(workspace_root).as_posix()
+    return _format_image_command(relative_path)
+
+
+def _save_clipboard_image(runtime) -> Path | None:
+    temp_dir = _clipboard_temp_dir(runtime)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    stem = _clipboard_temp_stem()
+    if sys.platform.startswith("win"):
+        return _save_windows_clipboard_image(temp_dir, stem)
+    if sys.platform == "darwin":
+        return _save_macos_clipboard_image(temp_dir, stem)
+    return None
+
+
+def _build_clipboard_image_query(runtime, prompt: str = "") -> str:
+    saved_path = _save_clipboard_image(runtime)
+    if saved_path is None:
+        raise ValueError("No image found in the clipboard.")
+    workspace_root = Path(runtime.settings.workspace_root).resolve()
+    relative_path = saved_path.resolve().relative_to(workspace_root).as_posix()
+    command = _format_image_command(relative_path)
+    if prompt.strip():
+        command += prompt.strip()
+    return _build_image_query(runtime, command)
+
+
+def _save_windows_clipboard_image(temp_dir: Path, stem: str) -> Path | None:
+    copied_path = _copy_windows_clipboard_image_file(temp_dir, stem)
+    if copied_path is not None:
+        return copied_path
+    dib_bytes = _read_windows_clipboard_dib_bytes()
+    if not dib_bytes:
+        return None
+    bmp_path = temp_dir / f"{stem}.bmp"
+    png_path = temp_dir / f"{stem}.png"
+    try:
+        bmp_path.write_bytes(_dib_to_bmp_bytes(dib_bytes))
+        return _convert_bmp_file_to_png(bmp_path, png_path)
+    finally:
+        try:
+            bmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@contextmanager
+def _open_windows_clipboard(*, attempts: int = 8, delay_seconds: float = 0.05):
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    opened = False
+    for attempt in range(max(1, int(attempts))):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    try:
+        yield user32 if opened else None
+    finally:
+        if opened:
+            try:
+                user32.CloseClipboard()
+            except Exception:
+                pass
+
+
+def _copy_windows_clipboard_image_file(temp_dir: Path, stem: str) -> Path | None:
+    for source_path in _read_windows_clipboard_file_drop_paths():
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        suffix = source_path.suffix.lower()
+        if suffix not in SUPPORTED_IMAGE_SUFFIXES:
+            continue
+        destination = temp_dir / f"{stem}{suffix}"
+        shutil.copy2(source_path, destination)
+        return destination
+    return None
+
+
+def _read_windows_clipboard_file_drop_paths() -> list[Path]:
+    import ctypes
+    from ctypes import wintypes
+
+    clipboard_paths: list[Path] = []
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+    shell32.DragQueryFileW.restype = wintypes.UINT
+    with _open_windows_clipboard() as user32:
+        if user32 is None:
+            return clipboard_paths
+        hdrop = user32.GetClipboardData(15)  # CF_HDROP
+        if not hdrop:
+            return clipboard_paths
+        item_count = int(shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0))
+        for index in range(item_count):
+            path_length = int(shell32.DragQueryFileW(hdrop, index, None, 0))
+            if path_length <= 0:
+                continue
+            buffer = ctypes.create_unicode_buffer(path_length + 1)
+            shell32.DragQueryFileW(hdrop, index, buffer, path_length + 1)
+            raw_path = buffer.value.strip()
+            if raw_path:
+                clipboard_paths.append(Path(raw_path))
+    return clipboard_paths
+
+
+def _read_windows_clipboard_dib_bytes() -> bytes | None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    with _open_windows_clipboard() as user32:
+        if user32 is None:
+            return None
+        for clipboard_format in (17, 8):  # CF_DIBV5, CF_DIB
+            handle = user32.GetClipboardData(clipboard_format)
+            if not handle:
+                continue
+            size = int(kernel32.GlobalSize(handle) or 0)
+            if size <= 0:
+                continue
+            pointer = kernel32.GlobalLock(handle)
+            if not pointer:
+                continue
+            try:
+                payload = ctypes.string_at(pointer, size)
+            finally:
+                try:
+                    kernel32.GlobalUnlock(handle)
+                except Exception:
+                    pass
+            if payload:
+                return payload
+    return None
+
+
+def _dib_to_bmp_bytes(dib_bytes: bytes) -> bytes:
+    import struct
+
+    if len(dib_bytes) < 16:
+        raise ValueError("Clipboard image is missing a valid DIB header.")
+    header_size = struct.unpack_from("<I", dib_bytes, 0)[0]
+    if header_size < 12 or len(dib_bytes) < header_size:
+        raise ValueError("Clipboard image uses an unsupported DIB header.")
+    if header_size == 12:
+        bits_per_pixel = struct.unpack_from("<H", dib_bytes, 10)[0]
+        compression = 0
+        colors_used = 0
+    else:
+        if len(dib_bytes) < 36:
+            raise ValueError("Clipboard image header is truncated.")
+        bits_per_pixel = struct.unpack_from("<H", dib_bytes, 14)[0]
+        compression = struct.unpack_from("<I", dib_bytes, 16)[0]
+        colors_used = struct.unpack_from("<I", dib_bytes, 32)[0]
+    color_table_size = 0
+    if header_size == 12 and bits_per_pixel <= 8:
+        color_table_size = (colors_used or (1 << bits_per_pixel)) * 3
+    elif bits_per_pixel <= 8:
+        color_table_size = (colors_used or (1 << bits_per_pixel)) * 4
+    elif compression == 3 and header_size == 40:
+        color_table_size = 12
+    elif compression == 6 and header_size == 40:
+        color_table_size = 16
+    pixel_offset = 14 + header_size + color_table_size
+    file_size = 14 + len(dib_bytes)
+    header = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, pixel_offset)
+    return header + dib_bytes
+
+
+def _convert_bmp_file_to_png(source_path: Path, destination: Path) -> Path | None:
+    script = """
+Add-Type -AssemblyName System.Drawing
+$sourcePath = __SOURCE_PATH__
+$destinationPath = __DESTINATION_PATH__
+$bitmap = $null
+try {
+    $bitmap = New-Object System.Drawing.Bitmap($sourcePath)
+    $bitmap.Save($destinationPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    Write-Output $destinationPath
+    exit 0
+} catch {
+    exit 4
+} finally {
+    if ($bitmap -ne $null) {
+        $bitmap.Dispose()
+    }
+}
+""".strip()
+    script = script.replace("__SOURCE_PATH__", _powershell_single_quote(str(source_path)))
+    script = script.replace("__DESTINATION_PATH__", _powershell_single_quote(str(destination)))
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return _clipboard_command_result_path(completed, no_image_codes={4})
+
+
+def _save_macos_clipboard_image(temp_dir: Path, stem: str) -> Path | None:
+    copied_path = _copy_macos_clipboard_image_file(temp_dir, stem)
+    if copied_path is not None:
+        return copied_path
+
+    destination = temp_dir / f"{stem}.png"
+    png_script = [
+        f'set outPath to POSIX file "{destination.as_posix()}"',
+        "try",
+        "set imageData to the clipboard as «class PNGf»",
+        "set fileHandle to open for access outPath with write permission",
+        "set eof fileHandle to 0",
+        "write imageData to fileHandle",
+        "close access fileHandle",
+        "return POSIX path of outPath",
+        "on error errMsg number errNum",
+        "try",
+        "close access outPath",
+        "end try",
+        "error errMsg number errNum",
+        "end try",
+    ]
+    completed = _run_osascript(png_script)
+    saved_path = _clipboard_command_result_path(completed, no_image_codes=set())
+    if saved_path is not None:
+        return saved_path
+
+    tiff_path = temp_dir / f"{stem}.tiff"
+    tiff_script = [
+        f'set outPath to POSIX file "{tiff_path.as_posix()}"',
+        "try",
+        "set imageData to the clipboard as TIFF picture",
+        "set fileHandle to open for access outPath with write permission",
+        "set eof fileHandle to 0",
+        "write imageData to fileHandle",
+        "close access fileHandle",
+        "return POSIX path of outPath",
+        "on error errMsg number errNum",
+        "try",
+        "close access outPath",
+        "end try",
+        "error errMsg number errNum",
+        "end try",
+    ]
+    completed = _run_osascript(tiff_script)
+    exported_tiff = _clipboard_command_result_path(completed, no_image_codes=set())
+    if exported_tiff is None:
+        return None
+    converted = subprocess.run(
+        ["sips", "-s", "format", "png", str(exported_tiff), "--out", str(destination)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        exported_tiff.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if converted.returncode != 0 or not destination.exists():
+        details = (converted.stderr or converted.stdout).strip()
+        raise RuntimeError(details or "Failed to convert clipboard TIFF image to PNG.")
+    return destination
+
+
+def _copy_macos_clipboard_image_file(temp_dir: Path, stem: str) -> Path | None:
+    file_list_script = [
+        "try",
+        "set aliasItems to the clipboard as alias list",
+        "set AppleScript's text item delimiters to linefeed",
+        "set posixItems to {}",
+        "repeat with currentAlias in aliasItems",
+        "copy POSIX path of currentAlias to end of posixItems",
+        "end repeat",
+        "set joinedText to posixItems as string",
+        "set AppleScript's text item delimiters to \"\"",
+        "return joinedText",
+        "on error",
+        "set AppleScript's text item delimiters to \"\"",
+        "return \"\"",
+        "end try",
+    ]
+    completed = _run_osascript(file_list_script)
+    if completed.returncode != 0:
+        return None
+    for raw_path in (completed.stdout or "").splitlines():
+        source_path = Path(raw_path.strip())
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        suffix = source_path.suffix.lower()
+        if suffix not in SUPPORTED_IMAGE_SUFFIXES:
+            continue
+        destination = temp_dir / f"{stem}{suffix}"
+        shutil.copy2(source_path, destination)
+        return destination
+    return None
+
+
+def _run_osascript(lines: list[str]) -> subprocess.CompletedProcess[str]:
+    args = ["osascript"]
+    for line in lines:
+        args.extend(["-e", line])
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _clipboard_command_result_path(
+    completed: subprocess.CompletedProcess[str],
+    *,
+    no_image_codes: set[int],
+) -> Path | None:
+    if completed.returncode == 0:
+        output = (completed.stdout or "").strip().splitlines()
+        if not output:
+            return None
+        saved_path = Path(output[-1].strip())
+        if saved_path.exists():
+            return saved_path
+        return None
+    if completed.returncode in no_image_codes:
+        return None
+    details = (completed.stderr or completed.stdout).strip()
+    if "clipboard" in details.lower() or "PNGf" in details or "TIFF" in details:
+        return None
+    return None
 
 
 def _assistant_tool_calls(content: object) -> list[dict[str, object]]:
@@ -1505,6 +1880,7 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
             is_busy=runner.has_inflight_work,
             on_cycle_mode=runner.cycle_execution_mode,
             skill_names_getter=lambda: runtime.skill_loader.names(),
+            clipboard_image_command_getter=lambda: _clipboard_image_command(runtime),
         )
     except Exception:
         prompt_session = None
@@ -1516,6 +1892,8 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
         )
     runner.start()
     print(f"[session {session.id}]")
+    if sys.platform.startswith("win") and os.environ.get("TERM_PROGRAM") == "vscode":
+        print("[paste hint] VS Code terminal may intercept Ctrl+V. Use Alt+V, Shift+Insert, or /paste-image.")
     if resumed:
         _print_resumed_history(session, runtime)
     prompt_context = patch_stdout(raw=True) if prompt_session is not None and patch_stdout is not None else nullcontext()
@@ -1620,6 +1998,22 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         continue
                     try:
                         encoded_query = _build_image_query(runtime, stripped)
+                    except ValueError as exc:
+                        print(str(exc))
+                        continue
+                    was_active, queued_before = runner.enqueue(encoded_query)
+                    if runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(query)
+                    if not runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(query)
+                    continue
+                if stripped == "/paste-image" or stripped.startswith("/paste-image "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /paste-image]")
+                        continue
+                    clipboard_prompt = stripped[len("/paste-image") :].strip()
+                    try:
+                        encoded_query = _build_clipboard_image_query(runtime, clipboard_prompt)
                     except ValueError as exc:
                         print(str(exc))
                         continue

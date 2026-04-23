@@ -12,6 +12,8 @@ from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     TurnQueueRunner,
     _build_image_query,
+    _build_clipboard_image_query,
+    _clipboard_image_command,
     _ensure_accept_edits_for_command,
     _expand_skill_command,
     _handle_hooks_command,
@@ -26,6 +28,7 @@ from open_somnia.cli.repl import (
     _handle_undo_command,
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
+    _save_windows_clipboard_image,
 )
 from open_somnia.runtime.compact import ContextWindowUsage
 from open_somnia.runtime.messages import decode_embedded_user_message
@@ -63,6 +66,76 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(decoded["content"][0], {"type": "text", "text": "describe this"})
         self.assertEqual(decoded["content"][1]["type"], "input_image")
         self.assertEqual(decoded["content"][1]["media_type"], "image/png")
+
+    def test_clipboard_image_command_targets_workspace_temp_image(self) -> None:
+        workspace_root = Path.cwd()
+        saved_path = workspace_root / ".open_somnia" / "temp" / "clipboard-test.png"
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=workspace_root,
+                storage=SimpleNamespace(data_dir=workspace_root / ".open_somnia"),
+            )
+        )
+
+        with patch("open_somnia.cli.repl._save_clipboard_image", return_value=saved_path):
+            command = _clipboard_image_command(runtime)
+
+        self.assertEqual(command, "/image .open_somnia/temp/clipboard-test.png ")
+
+    def test_build_clipboard_image_query_uses_saved_clipboard_path(self) -> None:
+        workspace_root = Path.cwd()
+        saved_path = workspace_root / ".open_somnia" / "temp" / "clipboard-test.png"
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=workspace_root,
+                storage=SimpleNamespace(data_dir=workspace_root / ".open_somnia"),
+            )
+        )
+
+        with patch("open_somnia.cli.repl._save_clipboard_image", return_value=saved_path):
+            with patch(
+                "open_somnia.cli.repl._build_image_query",
+                side_effect=lambda _runtime, command: command,
+            ):
+                query = _build_clipboard_image_query(runtime, "describe this")
+
+        self.assertEqual(query, "/image .open_somnia/temp/clipboard-test.png describe this")
+
+    def test_save_windows_clipboard_image_prefers_file_copy_when_available(self) -> None:
+        temp_root = Path.cwd() / ".tmp-tests" / f"repl-clipboard-copy-{time.time_ns()}"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        copied_path = temp_root / "clipboard-test.png"
+        copied_path.write_bytes(self._TINY_PNG_BYTES)
+
+        with patch("open_somnia.cli.repl._copy_windows_clipboard_image_file", return_value=copied_path):
+            with patch(
+                "open_somnia.cli.repl._read_windows_clipboard_dib_bytes",
+                side_effect=AssertionError("bitmap fallback should not run after file copy"),
+            ):
+                saved_path = _save_windows_clipboard_image(temp_root, "clipboard-test")
+
+        self.assertEqual(saved_path, copied_path)
+
+    def test_save_windows_clipboard_image_converts_dib_bytes_and_cleans_up_bmp(self) -> None:
+        temp_root = Path.cwd() / ".tmp-tests" / f"repl-clipboard-dib-{time.time_ns()}"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        expected_png = temp_root / "clipboard-test.png"
+
+        def _fake_convert(source_path: Path, destination: Path) -> Path:
+            self.assertEqual(source_path.name, "clipboard-test.bmp")
+            self.assertTrue(source_path.exists())
+            destination.write_bytes(self._TINY_PNG_BYTES)
+            return destination
+
+        with patch("open_somnia.cli.repl._copy_windows_clipboard_image_file", return_value=None):
+            with patch("open_somnia.cli.repl._read_windows_clipboard_dib_bytes", return_value=b"fake-dib"):
+                with patch("open_somnia.cli.repl._dib_to_bmp_bytes", return_value=b"fake-bmp"):
+                    with patch("open_somnia.cli.repl._convert_bmp_file_to_png", side_effect=_fake_convert):
+                        saved_path = _save_windows_clipboard_image(temp_root, "clipboard-test")
+
+        self.assertEqual(saved_path, expected_png)
+        self.assertTrue(expected_png.exists())
+        self.assertFalse((temp_root / "clipboard-test.bmp").exists())
 
     def test_current_model_label_uses_active_provider_model_and_auto_reasoning(self) -> None:
         runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))

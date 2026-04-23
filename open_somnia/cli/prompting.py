@@ -9,6 +9,7 @@ import time
 from typing import Callable
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.clipboard import ClipboardData
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completion, Completer
@@ -31,6 +32,7 @@ VISIBLE_COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory"),
     ("/symbols", "Find symbols and inspect matching source locations"),
     ("/image", "Send a local image to the active multimodal model"),
+    ("/paste-image", "Read an image from the system clipboard"),
     ("/model", "Choose the active provider and model"),
     ("/reasoning", "Set the active provider reasoning level"),
     ("/providers", "Add or edit shared provider profiles"),
@@ -482,6 +484,44 @@ def _create_multiline_paste_guard(monotonic: Callable[[], float] | None = None):
     return note_text_insert, should_insert_newline
 
 
+def _paste_text_from_clipboard(event) -> None:
+    clipboard = getattr(event.app, "clipboard", None)
+    get_data = getattr(clipboard, "get_data", None)
+    if not callable(get_data):
+        return
+    data = get_data()
+    if not isinstance(data, ClipboardData):
+        return
+    event.current_buffer.paste_clipboard_data(data)
+
+
+def _apply_image_command_to_buffer(buffer, command_text: str) -> None:
+    normalized_command = str(command_text or "")
+    existing_text = str(getattr(buffer, "text", "") or "")
+    if not existing_text.strip():
+        buffer.insert_text(normalized_command)
+        return
+    stripped_existing = existing_text.strip()
+    if stripped_existing.startswith("/image"):
+        buffer.insert_text(normalized_command)
+        return
+    updated_text = normalized_command + stripped_existing
+    setattr(buffer, "text", updated_text)
+    try:
+        setattr(buffer, "cursor_position", len(updated_text))
+    except Exception:
+        pass
+
+
+def _handle_clipboard_paste(event, clipboard_image_command_getter: Callable[[], str | None] | None = None) -> None:
+    if callable(clipboard_image_command_getter):
+        command_text = clipboard_image_command_getter()
+        if command_text:
+            _apply_image_command_to_buffer(event.current_buffer, command_text)
+            return
+    _paste_text_from_clipboard(event)
+
+
 def create_prompt_session(
     workspace_root: Path,
     *,
@@ -490,6 +530,7 @@ def create_prompt_session(
     is_busy=None,
     on_cycle_mode=None,
     skill_names_getter: Callable[[], list[str]] | None = None,
+    clipboard_image_command_getter: Callable[[], str | None] | None = None,
 ) -> PromptSession[str]:
     bindings = KeyBindings()
     note_text_insert, should_insert_newline = _create_multiline_paste_guard()
@@ -544,6 +585,21 @@ def create_prompt_session(
         if _handle_tab_action(buffer):
             return
         buffer.insert_text("    ")
+
+    def _handle_image_paste_key(event) -> None:
+        _handle_clipboard_paste(event, clipboard_image_command_getter)
+
+    @bindings.add("c-v", eager=True)
+    def _handle_ctrl_v(event) -> None:
+        _handle_image_paste_key(event)
+
+    @bindings.add("s-insert", eager=True)
+    def _handle_shift_insert(event) -> None:
+        _handle_image_paste_key(event)
+
+    @bindings.add("escape", "v", eager=True)
+    def _handle_alt_v(event) -> None:
+        _handle_image_paste_key(event)
 
     @bindings.add("s-tab")
     def _handle_shift_tab(event) -> None:

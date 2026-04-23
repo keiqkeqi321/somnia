@@ -5,11 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from prompt_toolkit.clipboard import ClipboardData
 from prompt_toolkit.document import Document
 
 from open_somnia.cli.prompting import (
     OpenAgentCompleter,
     _WindowsSafeCursorOutput,
+    _apply_image_command_to_buffer,
     _handle_tab_action,
     create_prompt_session,
 )
@@ -173,6 +175,18 @@ class PromptingTests(unittest.TestCase):
                 return binding.handler
         self.fail("enter binding not found")
 
+    def _ctrl_v_handler(self, prompt_session):
+        return self._binding_handler(prompt_session, ["c-v"])
+
+    def _binding_handler(self, prompt_session, keys: list[str]):
+        bindings = prompt_session.kwargs["key_bindings"]
+        target = tuple(keys)
+        for binding in bindings.bindings:
+            actual = tuple(getattr(key, "value", key) for key in getattr(binding, "keys", ()))
+            if actual == target:
+                return binding.handler
+        self.fail(f"binding not found: {target!r}")
+
     def test_tab_accepts_inline_history_suggestion(self) -> None:
         inserted: list[str] = []
         buffer = SimpleNamespace(
@@ -316,6 +330,69 @@ class PromptingTests(unittest.TestCase):
 
         self.assertEqual(inserted, [])
         self.assertEqual(validated, [True])
+
+    def test_apply_image_command_to_buffer_prefixes_existing_prompt(self) -> None:
+        buffer = SimpleNamespace(text="describe this", cursor_position=0)
+
+        _apply_image_command_to_buffer(buffer, "/image .open_somnia/temp/clipboard.png ")
+
+        self.assertEqual(buffer.text, "/image .open_somnia/temp/clipboard.png describe this")
+        self.assertEqual(buffer.cursor_position, len(buffer.text))
+
+    def test_ctrl_v_inserts_image_command_when_clipboard_image_is_available(self) -> None:
+        prompt_session = self._capture_prompt_session(
+            clipboard_image_command_getter=lambda: "/image .open_somnia/temp/clipboard.png "
+        )
+        inserted: list[str] = []
+        buffer = SimpleNamespace(
+            text="",
+            insert_text=lambda text: inserted.append(text),
+            paste_clipboard_data=lambda data: self.fail("text paste fallback should not run"),
+        )
+        event = SimpleNamespace(
+            current_buffer=buffer,
+            app=SimpleNamespace(clipboard=SimpleNamespace(get_data=lambda: ClipboardData("plain text"))),
+        )
+
+        self._ctrl_v_handler(prompt_session)(event)
+
+        self.assertEqual(inserted, ["/image .open_somnia/temp/clipboard.png "])
+
+    def test_ctrl_v_falls_back_to_text_clipboard_when_no_image_is_available(self) -> None:
+        prompt_session = self._capture_prompt_session(clipboard_image_command_getter=lambda: None)
+        pasted: list[str] = []
+        buffer = SimpleNamespace(
+            text="",
+            insert_text=lambda text: self.fail("image command should not be inserted"),
+            paste_clipboard_data=lambda data: pasted.append(data.text),
+        )
+        event = SimpleNamespace(
+            current_buffer=buffer,
+            app=SimpleNamespace(clipboard=SimpleNamespace(get_data=lambda: ClipboardData("plain text"))),
+        )
+
+        self._ctrl_v_handler(prompt_session)(event)
+
+        self.assertEqual(pasted, ["plain text"])
+
+    def test_alt_v_inserts_image_command_when_clipboard_image_is_available(self) -> None:
+        prompt_session = self._capture_prompt_session(
+            clipboard_image_command_getter=lambda: "/image .open_somnia/temp/clipboard.png "
+        )
+        inserted: list[str] = []
+        buffer = SimpleNamespace(
+            text="",
+            insert_text=lambda text: inserted.append(text),
+            paste_clipboard_data=lambda data: self.fail("text paste fallback should not run"),
+        )
+        event = SimpleNamespace(
+            current_buffer=buffer,
+            app=SimpleNamespace(clipboard=SimpleNamespace(get_data=lambda: ClipboardData("plain text"))),
+        )
+
+        self._binding_handler(prompt_session, ["escape", "v"])(event)
+
+        self.assertEqual(inserted, ["/image .open_somnia/temp/clipboard.png "])
 
     def test_windows_safe_output_reanchors_horizontal_moves_using_display_width(self) -> None:
         output = _FakeVtOutput()
