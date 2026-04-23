@@ -5,6 +5,7 @@ import threading
 import time
 
 from open_somnia.runtime.events import ToolExecutionContext
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.registry import ToolRegistry
@@ -341,7 +342,13 @@ class TeammateRuntimeManager:
                     self._append_log(name, "assistant_message", {"content": assistant_message.get("content")})
                     if not turn.has_tool_calls():
                         break
-                    ctx = ToolExecutionContext(runtime=self.runtime, session=None, actor=name, trace_id=f"{name}-{int(time.time())}")
+                    ctx = ToolExecutionContext(
+                        runtime=self.runtime,
+                        session=None,
+                        actor=name,
+                        trace_id=f"{name}-{int(time.time())}",
+                        should_interrupt=lambda: self._stop_reason(name) is not None,
+                    )
                     tool_results: list[dict] = []
                     idle_requested = False
                     for tool_call in turn.tool_calls:
@@ -358,6 +365,10 @@ class TeammateRuntimeManager:
                                 if tool_call.name == "claim_task":
                                     task_id = int(tool_call.input["task_id"])
                                     self._update_member(name, current_task_id=task_id)
+                            except TurnInterrupted:
+                                if self._shutdown_if_stop_requested(name, activity="interrupted_during_tool"):
+                                    return
+                                raise
                             except Exception as exc:
                                 output = tool_error_from_exception(tool_call.name, exc)
                                 self._update_member(name, last_error=str(exc))

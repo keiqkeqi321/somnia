@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.tools.tool_errors import (
     make_tool_error,
     normalize_tool_output,
@@ -71,6 +72,8 @@ class ToolRegistry:
             return validation_error
         try:
             output = tool.handler(ctx, payload)
+        except TurnInterrupted:
+            raise
         except Exception as exc:
             if hook_manager is not None:
                 hook_manager.after_tool_use(ctx, name, payload, error=exc)

@@ -93,6 +93,7 @@ def run_shell(ctx: Any, payload: dict[str, Any]) -> str:
             shell=use_shell,
             cwd=ctx.runtime.settings.workspace_root,
             timeout=int(payload.get("timeout", ctx.runtime.settings.runtime.command_timeout_seconds)),
+            stop_checker=getattr(ctx, "should_interrupt", None),
         )
     except subprocess.TimeoutExpired:
         return f"Error: Timeout ({ctx.runtime.settings.runtime.command_timeout_seconds}s)"

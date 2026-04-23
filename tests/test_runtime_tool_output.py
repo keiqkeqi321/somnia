@@ -3347,6 +3347,49 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(streamed, [])
         self.assertIsInstance(result.get("value"), TurnInterrupted)
 
+    def test_agent_loop_reraises_turn_interrupted_from_tool_execution(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
+        runtime._run_automatic_context_janitor = lambda session: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = lambda messages, **kwargs: messages
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=0, max_tokens=1000)
+        runtime._agent_loop_result = lambda final_text, status="completed", session=None, **kwargs: SimpleNamespace(
+            final_text=final_text,
+            status=status,
+        )
+        runtime.interrupt_active_teammates = lambda reason="lead_interrupt": 0
+        runtime.registry = SimpleNamespace(
+            execute=lambda ctx, name, payload: (_ for _ in ()).throw(TurnInterrupted("Interrupted by user."))
+        )
+        runtime.complete = lambda *args, **kwargs: AssistantTurn(
+            stop_reason="tool_use",
+            text_blocks=["Searching..."],
+            tool_calls=[ToolCall("call-1", "grep", {"pattern": "needle"})],
+        )
+
+        session = AgentSession(id="session-1")
+
+        with self.assertRaises(TurnInterrupted):
+            OpenAgentRuntime.run_turn(runtime, session, "search the repo")
+
     def test_agent_loop_stops_turn_after_request_authorization_and_replans(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

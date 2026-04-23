@@ -3,9 +3,12 @@ from __future__ import annotations
 import locale
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
+
+from open_somnia.runtime.interrupts import TurnInterrupted
 
 
 @dataclass(slots=True)
@@ -57,19 +60,59 @@ def run_command(
     cwd: Path,
     timeout: int,
     env: Mapping[str, str] | None = None,
+    stop_checker: Callable[[], bool] | None = None,
 ) -> CommandResult:
-    completed = subprocess.run(
+    if stop_checker is None:
+        completed = subprocess.run(
+            command,
+            shell=shell,
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            capture_output=True,
+            text=False,
+            timeout=timeout,
+        )
+        return CommandResult(
+            args=completed.args,
+            returncode=completed.returncode,
+            stdout=decode_output(completed.stdout),
+            stderr=decode_output(completed.stderr),
+        )
+
+    process = subprocess.Popen(
         command,
         shell=shell,
         cwd=cwd,
         env=dict(env) if env is not None else None,
-        capture_output=True,
-        text=False,
-        timeout=timeout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    return CommandResult(
-        args=completed.args,
-        returncode=completed.returncode,
-        stdout=decode_output(completed.stdout),
-        stderr=decode_output(completed.stderr),
-    )
+    deadline = time.monotonic() + timeout
+    poll_interval_seconds = 0.1
+
+    while True:
+        if stop_checker():
+            process.terminate()
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=1)
+            raise TurnInterrupted("Interrupted by user.")
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+
+        try:
+            stdout, stderr = process.communicate(timeout=min(poll_interval_seconds, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+        return CommandResult(
+            args=command,
+            returncode=int(process.returncode or 0),
+            stdout=decode_output(stdout),
+            stderr=decode_output(stderr),
+        )

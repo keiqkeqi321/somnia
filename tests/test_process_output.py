@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.tools.background import BackgroundManager
 from open_somnia.tools.process import CommandResult, decode_output, run_command
 from open_somnia.tools.shell import run_shell
@@ -52,6 +56,28 @@ class ProcessOutputTests(unittest.TestCase):
 
         self.assertEqual(result.stdout, "submit git chinese infor")
         self.assertFalse(mock_run.call_args.kwargs["text"])
+
+    def test_run_command_raises_turn_interrupted_when_stop_requested(self) -> None:
+        interrupt_requested = threading.Event()
+
+        def request_interrupt() -> None:
+            time.sleep(0.2)
+            interrupt_requested.set()
+
+        interrupter = threading.Thread(target=request_interrupt, daemon=True)
+        interrupter.start()
+        started_at = time.monotonic()
+
+        with self.assertRaises(TurnInterrupted):
+            run_command(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                shell=False,
+                cwd=Path.cwd(),
+                timeout=10,
+                stop_checker=interrupt_requested.is_set,
+            )
+
+        self.assertLess(time.monotonic() - started_at, 2.0)
 
     def test_run_shell_returns_unicode_output(self) -> None:
         ctx = SimpleNamespace(

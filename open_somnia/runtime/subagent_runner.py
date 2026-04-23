@@ -4,6 +4,7 @@ import uuid
 from typing import Any
 
 from open_somnia.runtime.events import ToolExecutionContext
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message, make_user_text_message
 from open_somnia.tools.filesystem import (
     GREP_TOOL_DESCRIPTION,
@@ -71,6 +72,8 @@ class SubagentRunner:
             for tool_call in turn.tool_calls:
                 try:
                     output = registry.execute(ctx, tool_call.name, tool_call.input)
+                except TurnInterrupted:
+                    raise
                 except Exception as exc:
                     output = tool_error_from_exception(tool_call.name, exc)
                 repair_hint = extract_transient_repair_hint(output)

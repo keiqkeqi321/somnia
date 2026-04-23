@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.tools.filesystem import (
     edit_file,
     find_symbol,
@@ -21,6 +22,34 @@ from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 
 
 class FilesystemToolTests(unittest.TestCase):
+    def test_tool_registry_reraises_turn_interrupted(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="probe",
+                description="Interruptible test tool.",
+                input_schema={"type": "object", "properties": {}},
+                handler=lambda ctx, payload: (_ for _ in ()).throw(TurnInterrupted("Interrupted by user.")),
+            )
+        )
+
+        with self.assertRaises(TurnInterrupted):
+            registry.execute(SimpleNamespace(runtime=None), "probe", {})
+
+    def test_grep_search_raises_turn_interrupted_when_context_requests_stop(self) -> None:
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=Path.cwd(),
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            should_interrupt=lambda: True,
+        )
+
+        with self.assertRaises(TurnInterrupted):
+            grep_search(ctx, {"pattern": "beta", "glob": "*.py"})
+
     def test_safe_path_normalizes_workspace_root_before_boundary_check(self) -> None:
         class _FakeResolvedPath:
             def __init__(self, value: str) -> None:

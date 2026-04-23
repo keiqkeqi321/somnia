@@ -2662,11 +2662,14 @@ class OpenAgentRuntime:
                         session=session,
                         actor="lead",
                         trace_id=f"{session.id}-{session.latest_turn_id}",
+                        should_interrupt=should_interrupt,
                     )
                     if tool_call.name == "compress":
                         manual_compact = True
                     try:
                         output = self.registry.execute(ctx, tool_call.name, tool_call.input)
+                    except TurnInterrupted:
+                        raise
                     except Exception as exc:
                         output = tool_error_from_exception(tool_call.name, exc)
                     repair_hint = extract_transient_repair_hint(output)

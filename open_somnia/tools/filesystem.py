@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import guess_image_media_type
 from open_somnia.tools.registry import ToolDefinition
 
@@ -185,8 +186,20 @@ def _should_skip_name(name: str, *, include_hidden: bool) -> bool:
     return name in EXPLORATION_IGNORED_DIR_NAMES
 
 
-def _filtered_walk(base_path: Path, *, include_hidden: bool = False):
+def _raise_if_tool_interrupted(ctx: Any) -> None:
+    checker = getattr(ctx, "raise_if_interrupted", None)
+    if callable(checker):
+        checker()
+        return
+    fallback_checker = getattr(ctx, "should_interrupt", None)
+    if callable(fallback_checker) and fallback_checker():
+        raise TurnInterrupted("Interrupted by user.")
+
+
+def _filtered_walk(base_path: Path, *, include_hidden: bool = False, ctx: Any | None = None):
     for current_root, dir_names, file_names in os.walk(base_path):
+        if ctx is not None:
+            _raise_if_tool_interrupted(ctx)
         dir_names[:] = sorted(
             [
                 name
@@ -486,6 +499,7 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
             return _format_missing_file_message(workspace_root, requested_path, path, candidates)
         path = candidates[0]
         prefix = _format_missing_file_message(workspace_root, requested_path, path, candidates) + "\n\n"
+    _raise_if_tool_interrupted(ctx)
     text = _read_text_with_fallback(path)
     lines = text.splitlines()
     if lines and start_line > len(lines):
@@ -581,10 +595,16 @@ def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
 
     def walk(current: Path, prefix: str, current_depth: int) -> None:
         nonlocal shown, truncated
+        _raise_if_tool_interrupted(ctx)
         if current_depth >= depth or truncated:
             return
         try:
-            entries = [entry for entry in current.iterdir() if not _should_skip_name(entry.name, include_hidden=include_hidden)]
+            entries = []
+            for entry in current.iterdir():
+                _raise_if_tool_interrupted(ctx)
+                if _should_skip_name(entry.name, include_hidden=include_hidden):
+                    continue
+                entries.append(entry)
         except OSError as exc:
             lines.append(f"{prefix}└── [error: {exc}]")
             return
@@ -593,6 +613,7 @@ def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
         else:
             entries.sort(key=lambda item: item.name.lower())
         for index, entry in enumerate(entries):
+            _raise_if_tool_interrupted(ctx)
             connector = "└── " if index == len(entries) - 1 else "├── "
             child_prefix = prefix + ("    " if index == len(entries) - 1 else "│   ")
             label = entry.name + ("/" if entry.is_dir() else "")
@@ -642,13 +663,14 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     elif base_path.is_dir():
         candidates = [
             current_root / file_name
-            for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden)
+            for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx)
             for file_name in file_names
         ]
     else:
         return f"Error: Unsupported path type: {payload.get('path', '.')}"
 
     for candidate in candidates:
+        _raise_if_tool_interrupted(ctx)
         extension = candidate.suffix.lower()
         patterns = SYMBOL_PATTERNS.get(extension, [])
         if not patterns:
@@ -659,6 +681,8 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
             continue
         relative = candidate.relative_to(workspace_root).as_posix()
         for line_number, line in enumerate(lines, start=1):
+            if line_number == 1 or line_number % 128 == 0:
+                _raise_if_tool_interrupted(ctx)
             for pattern, default_kind, name_group in patterns:
                 match = pattern.search(line)
                 if not match:
@@ -707,11 +731,13 @@ def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
     file_count = 0
     dir_count = 0
 
-    for current_root, dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden):
+    for current_root, dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx):
+        _raise_if_tool_interrupted(ctx)
         current_path = Path(current_root)
         rel_parts = current_path.relative_to(base_path).parts if current_path != base_path else ()
         dir_count += len(dir_names)
         for file_name in file_names:
+            _raise_if_tool_interrupted(ctx)
             file_count += 1
             relative = (current_path / file_name).relative_to(workspace_root).as_posix()
             suffix = Path(file_name).suffix.lower()
@@ -727,7 +753,12 @@ def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
 
     top_level_dirs: list[str] = []
     top_level_files: list[str] = []
-    for entry in sorted(base_path.iterdir(), key=lambda item: (0 if item.is_dir() else 1, item.name.lower())):
+    top_level_entries = []
+    for entry in base_path.iterdir():
+        _raise_if_tool_interrupted(ctx)
+        top_level_entries.append(entry)
+    for entry in sorted(top_level_entries, key=lambda item: (0 if item.is_dir() else 1, item.name.lower())):
+        _raise_if_tool_interrupted(ctx)
         if _should_skip_name(entry.name, include_hidden=include_hidden):
             continue
         relative = entry.relative_to(workspace_root).as_posix()
@@ -902,6 +933,7 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     truncated = False
     for iterator in iterators:
         for candidate in iterator:
+            _raise_if_tool_interrupted(ctx)
             if candidate in seen:
                 continue
             seen.add(candidate)
@@ -970,6 +1002,7 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     matches: list[str] = []
     truncated = False
     for candidate in iterator:
+        _raise_if_tool_interrupted(ctx)
         if not candidate.is_file():
             continue
         relative = candidate.relative_to(workspace_root).as_posix()
@@ -979,10 +1012,13 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
         ):
             continue
         try:
+            _raise_if_tool_interrupted(ctx)
             lines = _read_text_with_fallback(candidate).splitlines()
         except Exception:
             continue
         for line_number, line in enumerate(lines, start=1):
+            if line_number == 1 or line_number % 128 == 0:
+                _raise_if_tool_interrupted(ctx)
             haystack = line if case_sensitive else line.lower()
             found = bool(matcher.search(line)) if matcher is not None else needle in haystack
             if not found:
