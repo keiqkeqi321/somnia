@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 import inspect
 import json
+from pathlib import Path
 import random
 import sys
 import time
@@ -37,7 +38,15 @@ from open_somnia.runtime.execution_mode import (
     next_execution_mode,
     normalize_execution_mode,
 )
-from open_somnia.runtime.messages import render_markdown_text, render_message_content, render_text_content
+from open_somnia.runtime.messages import (
+    encode_embedded_user_message,
+    guess_image_media_type,
+    make_user_multimodal_message,
+    render_markdown_text,
+    render_message_content,
+    render_text_content,
+)
+from open_somnia.tools.filesystem import safe_path
 from open_somnia.tools.todo import TODO_CLOSED_STATUSES, TODO_STATUS_MARKERS, TODO_VISIBLE_STATUSES
 
 try:
@@ -99,6 +108,53 @@ def _expand_skill_command(runtime, query: str) -> str:
     if remainder:
         return f"{skill_payload}\n\n{instruction}\n\n{remainder}"
     return f"{skill_payload}\n\n{instruction}"
+
+
+def _parse_image_command(command: str) -> tuple[str, str] | None:
+    payload = command[len("/image") :].strip()
+    if not payload:
+        return None
+    if payload.startswith('"'):
+        closing_quote = payload.find('"', 1)
+        if closing_quote < 0:
+            return None
+        image_path = payload[1:closing_quote].strip()
+        prompt = payload[closing_quote + 1 :].strip()
+    else:
+        parts = payload.split(maxsplit=1)
+        image_path = parts[0].strip()
+        prompt = parts[1].strip() if len(parts) > 1 else ""
+    if not image_path:
+        return None
+    return image_path, prompt
+
+
+def _build_image_query(runtime, command: str) -> str:
+    parsed = _parse_image_command(command)
+    if parsed is None:
+        raise ValueError('Usage: /image <path> [prompt]. Use double quotes if the path contains spaces.')
+    requested_path, prompt = parsed
+    workspace_root = Path(runtime.settings.workspace_root)
+    image_path = safe_path(workspace_root, requested_path)
+    if not image_path.exists() or not image_path.is_file():
+        raise ValueError(f"Image file not found: {requested_path}")
+    media_type = guess_image_media_type(image_path)
+    if media_type is None:
+        raise ValueError(
+            "Unsupported image format. Supported formats: png, jpg/jpeg, webp, gif."
+        )
+    message = make_user_multimodal_message(
+        prompt or "Look at this image.",
+        [
+            {
+                "type": "input_image",
+                "path": requested_path.replace("\\", "/"),
+                "absolute_path": str(image_path),
+                "media_type": media_type,
+            }
+        ],
+    )
+    return encode_embedded_user_message(message)
 
 
 def _assistant_tool_calls(content: object) -> list[dict[str, object]]:
@@ -1557,6 +1613,21 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                         print("[busy; wait for queued responses before /symbols]")
                         continue
                     _handle_symbols_command(runtime, session, stripped)
+                    continue
+                if stripped == "/image" or stripped.startswith("/image "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /image]")
+                        continue
+                    try:
+                        encoded_query = _build_image_query(runtime, stripped)
+                    except ValueError as exc:
+                        print(str(exc))
+                        continue
+                    was_active, queued_before = runner.enqueue(encoded_query)
+                    if runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(query)
+                    if not runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(query)
                     continue
                 if stripped == "/skills":
                     skill_prefix = _handle_skills_command(runtime)

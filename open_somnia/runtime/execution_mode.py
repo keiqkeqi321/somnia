@@ -15,6 +15,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "glob",
         "grep",
         "read_file",
+        "read_image",
         "load_skill",
         "compress",
         AUTHORIZATION_TOOL_NAME,

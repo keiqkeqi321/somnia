@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import time
 import unittest
+from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,6 +11,7 @@ from unittest.mock import patch
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     TurnQueueRunner,
+    _build_image_query,
     _ensure_accept_edits_for_command,
     _expand_skill_command,
     _handle_hooks_command,
@@ -25,6 +28,7 @@ from open_somnia.cli.repl import (
     _resolve_mode_switch_requests,
 )
 from open_somnia.runtime.compact import ContextWindowUsage
+from open_somnia.runtime.messages import decode_embedded_user_message
 from open_somnia.tools.todo import TodoManager
 
 
@@ -33,6 +37,10 @@ def _render_prompt_text(fragments) -> str:
 
 
 class ReplTodoTests(unittest.TestCase):
+    _TINY_PNG_BYTES = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
+    )
+
     def test_is_exit_command_requires_explicit_exit_text(self) -> None:
         self.assertFalse(_is_exit_command(""))
         self.assertFalse(_is_exit_command("   "))
@@ -40,6 +48,21 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(_is_exit_command("q"))
         self.assertTrue(_is_exit_command(" exit "))
         self.assertTrue(_is_exit_command("/exit"))
+
+    def test_build_image_query_embeds_structured_user_message(self) -> None:
+        image_root = Path.cwd() / ".tmp-tests" / f"repl-image-{time.time_ns()}"
+        image_root.mkdir(parents=True, exist_ok=True)
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+        runtime = SimpleNamespace(settings=SimpleNamespace(workspace_root=Path.cwd()))
+
+        query = _build_image_query(runtime, f'/image ".tmp-tests/{image_root.name}/tiny.png" describe this')
+        decoded = decode_embedded_user_message(query)
+
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded["content"][0], {"type": "text", "text": "describe this"})
+        self.assertEqual(decoded["content"][1]["type"], "input_image")
+        self.assertEqual(decoded["content"][1]["media_type"], "image/png")
 
     def test_current_model_label_uses_active_provider_model_and_auto_reasoning(self) -> None:
         runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))

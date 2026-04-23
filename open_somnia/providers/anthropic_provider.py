@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from typing import Any
 
 from anthropic import Anthropic
@@ -8,7 +10,59 @@ from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
 from open_somnia.reasoning import anthropic_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
+from open_somnia.runtime.messages import (
+    active_tool_result_content_blocks,
+    AssistantTurn,
+    ToolCall,
+    normalize_tool_importance,
+    parse_image_data_url,
+    prepare_image_bytes_for_model,
+)
+
+
+def _anthropic_image_block(item: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = str(item.get("type", "")).strip()
+    if block_type == "image_url":
+        image_payload = item.get("image_url", {})
+        if isinstance(image_payload, dict):
+            url = str(image_payload.get("url", "")).strip()
+        else:
+            url = str(image_payload).strip()
+        parsed = parse_image_data_url(url)
+        if parsed is None:
+            raise ProviderError(
+                "Anthropic-compatible vision input requires embedded data URLs or local image files.",
+                retryable=False,
+            )
+        media_type, data = parsed
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            },
+        }
+    if block_type != "input_image":
+        return None
+    image_path = str(item.get("absolute_path") or item.get("path") or "").strip()
+    if not image_path:
+        raise ProviderError("Image input is missing a file path.", retryable=False)
+    path = Path(image_path)
+    if not path.exists() or not path.is_file():
+        raise ProviderError(f"Image file not found: {image_path}", retryable=False)
+    try:
+        media_type, prepared_bytes = prepare_image_bytes_for_model(path, fallback=item.get("media_type"))
+    except ValueError as exc:
+        raise ProviderError(str(exc), retryable=False) from exc
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": base64.b64encode(prepared_bytes).decode("ascii"),
+        },
+    }
 
 
 def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -23,6 +77,10 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
         for item in content:
             if item["type"] == "text":
                 blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            elif item["type"] in {"image_url", "input_image"}:
+                image_block = _anthropic_image_block(item)
+                if image_block is not None:
+                    blocks.append(image_block)
             elif item["type"] == "thinking":
                 blocks.append(
                     {
@@ -48,16 +106,32 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     }
                 )
             elif item["type"] == "tool_result":
+                tool_result_content = _anthropic_tool_result_content(item)
                 blocks.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": item["tool_call_id"],
-                        "content": str(item.get("content", "")),
+                        "content": tool_result_content or str(item.get("content", "")),
                         "is_error": bool(item.get("is_error", False)),
                     }
                 )
         converted.append({"role": role, "content": blocks})
     return converted
+
+
+def _anthropic_tool_result_content(value: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for item in active_tool_result_content_blocks(value):
+        block_type = str(item.get("type", "")).strip()
+        if block_type == "text":
+            blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            continue
+        if block_type not in {"image_url", "input_image"}:
+            continue
+        image_block = _anthropic_image_block(item)
+        if image_block is not None:
+            blocks.append(image_block)
+    return blocks
 
 
 def _anthropic_exception_retryable(exc: Exception) -> bool:

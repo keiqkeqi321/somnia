@@ -30,6 +30,7 @@ from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 VISIBLE_COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory"),
     ("/symbols", "Find symbols and inspect matching source locations"),
+    ("/image", "Send a local image to the active multimodal model"),
     ("/model", "Choose the active provider and model"),
     ("/reasoning", "Set the active provider reasoning level"),
     ("/providers", "Add or edit shared provider profiles"),

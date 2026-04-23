@@ -4,7 +4,7 @@ import uuid
 from typing import Any
 
 from open_somnia.runtime.events import ToolExecutionContext
-from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message
+from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message, make_user_text_message
 from open_somnia.tools.filesystem import (
     GREP_TOOL_DESCRIPTION,
     edit_file,
@@ -12,6 +12,7 @@ from open_somnia.tools.filesystem import (
     glob_search,
     grep_search,
     project_scan,
+    read_image,
     read_file,
     tree_view,
     write_file,
@@ -34,7 +35,7 @@ class SubagentRunner:
     def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
         registry = self._build_registry(agent_type)
         capability_guidance = (
-            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, and `load_skill`. "
+            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, and `load_skill`. "
             "Do not attempt workspace edits."
             if agent_type == "Explore"
             else "You are in general-purpose mode. In addition to read-only tools, you may use `write_file` and `edit_file` when needed."
@@ -54,7 +55,8 @@ class SubagentRunner:
                 pending_tool_repair_hints = []
                 if repair_message:
                     messages.append(make_user_text_message(repair_message))
-            turn = self.runtime.complete(system_prompt, messages, registry.schemas())
+            payload_messages = self.runtime._build_payload_messages(messages, session=None)
+            turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
             messages.append(turn.as_message())
             if not turn.has_tool_calls():
                 text = "\n".join(turn.text_blocks).strip()
@@ -76,11 +78,11 @@ class SubagentRunner:
                     pending_tool_repair_hints.append(repair_hint)
                 persisted_output = sanitize_tool_output_for_persistence(output)
                 results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": tool_call.id,
-                        "content": serialize_tool_output(persisted_output),
-                    }
+                    make_tool_result_item(
+                        tool_call.id,
+                        persisted_output,
+                        rendered_output=serialize_tool_output(persisted_output),
+                    )
                 )
             messages.append(make_tool_result_message(results))
             final_text = "\n".join(turn.text_blocks).strip() or final_text
@@ -184,6 +186,18 @@ class SubagentRunner:
                     "required": ["path"],
                 },
                 handler=read_file,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="read_image",
+                description="Load a local image from the workspace so the model can inspect it on the next turn.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                handler=read_image,
             )
         )
         if agent_type != "Explore":

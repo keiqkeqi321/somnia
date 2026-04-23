@@ -5,7 +5,7 @@ import threading
 import time
 
 from open_somnia.runtime.events import ToolExecutionContext
-from open_somnia.runtime.messages import make_tool_result_message
+from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.registry import ToolRegistry
 from open_somnia.tools.tool_errors import (
@@ -327,9 +327,10 @@ class TeammateRuntimeManager:
                         self._append_log(name, "user_message", {"content": message, "source": "inbox"})
 
                     self._update_member(name, status="working", activity="waiting_for_model")
+                    payload_messages = self.runtime._build_payload_messages(messages, session=None)
                     turn = self.runtime.complete(
                         system_prompt,
-                        messages,
+                        payload_messages,
                         registry.schemas(),
                         should_interrupt=lambda: self._stop_reason(name) is not None,
                     )
@@ -378,11 +379,11 @@ class TeammateRuntimeManager:
                             },
                         )
                         tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_call_id": tool_call.id,
-                                "content": rendered_output,
-                            }
+                            make_tool_result_item(
+                                tool_call.id,
+                                persisted_output,
+                                rendered_output=rendered_output,
+                            )
                         )
                     messages.append(make_tool_result_message(tool_results))
                     self._append_log(name, "tool_result_message", {"content": tool_results})

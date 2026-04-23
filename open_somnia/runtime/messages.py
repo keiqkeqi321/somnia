@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import io
+import json
+import mimetypes
+from pathlib import Path
 import re
 from typing import Any
+
+try:
+    from PIL import Image, ImageOps
+except Exception:  # pragma: no cover - optional dependency in some environments
+    Image = None
+    ImageOps = None
 
 
 NormalizedMessage = dict[str, Any]
@@ -26,6 +36,23 @@ INLINE_CODE_PATTERN = re.compile(r"`([^`\n]+)`")
 INLINE_BOLD_PATTERN = re.compile(r"(\*\*|__)(.+?)\1")
 INLINE_ITALIC_PATTERN = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
 ALLOWED_TOOL_IMPORTANCE = {"glance", "investigate", "foundation"}
+EMBEDDED_USER_MESSAGE_PREFIX = "<open_somnia:user-message>"
+EMBEDDED_USER_MESSAGE_SUFFIX = "</open_somnia:user-message>"
+SUPPORTED_IMAGE_MEDIA_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+IMAGE_DATA_URL_PATTERN = re.compile(
+    r"^data:(image/(?:gif|jpeg|png|webp));base64,([a-z0-9+/=\s]+)$",
+    re.IGNORECASE,
+)
+MODEL_IMAGE_TARGET_BYTES = 120_000
+MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW = 768_000
+MODEL_IMAGE_HARD_MAX_BYTES = 1_500_000
+MODEL_IMAGE_MAX_EDGE_STEPS = (1280, 1024, 768, 512)
+MODEL_IMAGE_JPEG_QUALITIES = (85, 75, 65, 55)
 
 
 def normalize_tool_importance(value: Any) -> str | None:
@@ -33,6 +60,139 @@ def normalize_tool_importance(value: Any) -> str | None:
     if normalized in ALLOWED_TOOL_IMPORTANCE:
         return normalized
     return None
+
+
+def guess_image_media_type(path: str | Path, *, fallback: str | None = None) -> str | None:
+    if fallback:
+        normalized_fallback = str(fallback).strip().lower()
+        if normalized_fallback in SUPPORTED_IMAGE_MEDIA_TYPES:
+            return normalized_fallback
+    guessed, _ = mimetypes.guess_type(str(path))
+    normalized = str(guessed or "").strip().lower()
+    if normalized in SUPPORTED_IMAGE_MEDIA_TYPES:
+        return normalized
+    return None
+
+
+def parse_image_data_url(url: str) -> tuple[str, str] | None:
+    match = IMAGE_DATA_URL_PATTERN.match(str(url or "").strip())
+    if match is None:
+        return None
+    media_type = match.group(1).strip().lower()
+    data = re.sub(r"\s+", "", match.group(2))
+    if media_type not in SUPPORTED_IMAGE_MEDIA_TYPES or not data:
+        return None
+    return media_type, data
+
+
+def prepare_image_bytes_for_model(
+    path: str | Path,
+    *,
+    fallback: str | None = None,
+    target_bytes: int = MODEL_IMAGE_TARGET_BYTES,
+) -> tuple[str, bytes]:
+    image_path = Path(path)
+    media_type = guess_image_media_type(image_path, fallback=fallback)
+    if media_type is None:
+        raise ValueError(f"Unsupported image format for model input: {image_path.name}")
+    source_bytes = image_path.read_bytes()
+    if len(source_bytes) <= target_bytes:
+        return media_type, source_bytes
+    if Image is None:
+        if len(source_bytes) > MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW:
+            raise ValueError(
+                "Image is too large to inline safely without Pillow installed "
+                f"({len(source_bytes)} bytes > {MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW} bytes). "
+                "Install Pillow or shrink the image before reading it."
+            )
+        return media_type, source_bytes
+    return _prepare_image_bytes_with_pillow(
+        image_path,
+        source_bytes=source_bytes,
+        media_type=media_type,
+        target_bytes=target_bytes,
+    )
+
+
+def _prepare_image_bytes_with_pillow(
+    path: Path,
+    *,
+    source_bytes: bytes,
+    media_type: str,
+    target_bytes: int,
+) -> tuple[str, bytes]:
+    if Image is None:
+        return media_type, source_bytes
+    with Image.open(path) as opened:
+        image = ImageOps.exif_transpose(opened) if ImageOps is not None else opened.copy()
+        has_alpha = "A" in image.getbands()
+        working = image.copy()
+    best_media_type = media_type
+    best_bytes = source_bytes
+    for max_edge in MODEL_IMAGE_MAX_EDGE_STEPS:
+        resized = _resize_image_to_max_edge(working, max_edge)
+        for candidate_media_type, candidate_bytes in _encode_image_candidates(resized, preserve_alpha=has_alpha):
+            if len(candidate_bytes) < len(best_bytes):
+                best_media_type = candidate_media_type
+                best_bytes = candidate_bytes
+            if len(candidate_bytes) <= target_bytes:
+                return candidate_media_type, candidate_bytes
+    if len(best_bytes) > MODEL_IMAGE_HARD_MAX_BYTES:
+        raise ValueError(
+            f"Image is still too large after preprocessing ({len(best_bytes)} bytes). "
+            "Shrink it before reading it."
+        )
+    return best_media_type, best_bytes
+
+
+def _resize_image_to_max_edge(image: Any, max_edge: int):
+    width, height = image.size
+    current_max_edge = max(width, height)
+    if current_max_edge <= max_edge:
+        return image.copy()
+    scale = max_edge / float(current_max_edge)
+    new_size = (
+        max(1, int(round(width * scale))),
+        max(1, int(round(height * scale))),
+    )
+    resample = getattr(Image, "Resampling", Image).LANCZOS if Image is not None else None
+    return image.resize(new_size, resample)
+
+
+def _encode_image_candidates(image: Any, *, preserve_alpha: bool) -> list[tuple[str, bytes]]:
+    candidates: list[tuple[str, bytes]] = []
+    if preserve_alpha:
+        png_buffer = io.BytesIO()
+        image.save(png_buffer, format="PNG", optimize=True)
+        candidates.append(("image/png", png_buffer.getvalue()))
+
+    flattened = image
+    if flattened.mode not in {"RGB", "L"}:
+        if preserve_alpha:
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            alpha_channel = image.getchannel("A") if "A" in image.getbands() else None
+            if alpha_channel is not None:
+                background.paste(image.convert("RGBA"), mask=alpha_channel)
+                flattened = background
+            else:
+                flattened = image.convert("RGB")
+        else:
+            flattened = image.convert("RGB")
+
+    if flattened.mode != "RGB":
+        flattened = flattened.convert("RGB")
+
+    for quality in MODEL_IMAGE_JPEG_QUALITIES:
+        jpeg_buffer = io.BytesIO()
+        flattened.save(
+            jpeg_buffer,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=True,
+        )
+        candidates.append(("image/jpeg", jpeg_buffer.getvalue()))
+    return candidates
 
 
 @dataclass(slots=True)
@@ -103,8 +263,128 @@ def make_user_text_message(text: str) -> NormalizedMessage:
     return {"role": "user", "content": text}
 
 
+def make_user_content_message(content: Any) -> NormalizedMessage:
+    return {"role": "user", "content": content}
+
+
+def make_user_multimodal_message(text: str, blocks: list[dict[str, Any]]) -> NormalizedMessage:
+    content_blocks: list[dict[str, Any]] = []
+    normalized_text = str(text or "").strip()
+    if normalized_text:
+        content_blocks.append({"type": "text", "text": normalized_text})
+    for block in blocks:
+        if isinstance(block, dict):
+            content_blocks.append(dict(block))
+    if not content_blocks:
+        content_blocks.append({"type": "text", "text": ""})
+    return make_user_content_message(content_blocks)
+
+
 def make_tool_result_message(results: list[dict[str, Any]]) -> NormalizedMessage:
     return {"role": "user", "content": results}
+
+
+def normalize_tool_result_content_blocks(value: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(value, list):
+        return normalized
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        block_type = str(item.get("type", "")).strip()
+        if block_type == "text":
+            normalized.append({"type": "text", "text": str(item.get("text", ""))})
+            continue
+        if block_type in {"image_url", "input_image"}:
+            block = dict(item)
+            block["type"] = block_type
+            normalized.append(block)
+    return normalized
+
+
+def active_tool_result_content_blocks(item: Any) -> list[dict[str, Any]]:
+    if not isinstance(item, dict):
+        return []
+    stored_tool_result_text = item.get("tool_result_text")
+    if isinstance(stored_tool_result_text, str) and stored_tool_result_text:
+        current_content = str(item.get("content", ""))
+        if current_content != stored_tool_result_text:
+            return []
+    return normalize_tool_result_content_blocks(item.get("content_blocks"))
+
+
+def make_tool_result_item(
+    tool_call_id: str,
+    output: Any,
+    *,
+    rendered_output: str,
+    max_content_chars: int | None = None,
+    raw_output: Any = None,
+    log_id: str | None = None,
+) -> dict[str, Any]:
+    content = rendered_output
+    tool_result_blocks: list[dict[str, Any]] = []
+    explicit_tool_result_text = False
+    if isinstance(output, dict):
+        value = output.get("tool_result_text")
+        if isinstance(value, str) and value.strip():
+            content = value.strip()
+            explicit_tool_result_text = True
+        tool_result_blocks = normalize_tool_result_content_blocks(output.get("tool_result_content"))
+    if max_content_chars is not None:
+        content = content[: max(0, int(max_content_chars))]
+    item = {
+        "type": "tool_result",
+        "tool_call_id": str(tool_call_id),
+        "content": content,
+    }
+    if explicit_tool_result_text:
+        item["tool_result_text"] = content
+    if tool_result_blocks:
+        item["content_blocks"] = tool_result_blocks
+    if raw_output is not None:
+        item["raw_output"] = raw_output
+    if log_id is not None:
+        item["log_id"] = str(log_id)
+    if isinstance(output, dict):
+        status = str(output.get("status", "")).strip().lower()
+        if bool(output.get("is_error")) or status in {"error", "failed", "denied"}:
+            item["is_error"] = True
+    return item
+
+
+def encode_embedded_user_message(message: NormalizedMessage) -> str:
+    if str(message.get("role", "")).strip() != "user":
+        raise ValueError("Only user messages can be embedded for transport.")
+    return (
+        EMBEDDED_USER_MESSAGE_PREFIX
+        + json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+        + EMBEDDED_USER_MESSAGE_SUFFIX
+    )
+
+
+def decode_embedded_user_message(value: Any) -> NormalizedMessage | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped.startswith(EMBEDDED_USER_MESSAGE_PREFIX) or not stripped.endswith(EMBEDDED_USER_MESSAGE_SUFFIX):
+        return None
+    payload = stripped[len(EMBEDDED_USER_MESSAGE_PREFIX) : -len(EMBEDDED_USER_MESSAGE_SUFFIX)]
+    try:
+        decoded = json.loads(payload)
+    except Exception:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    content = decoded.get("content", "")
+    if isinstance(content, list):
+        normalized_content = [dict(item) if isinstance(item, dict) else item for item in content]
+    else:
+        normalized_content = content
+    return {
+        "role": "user",
+        "content": normalized_content,
+    }
 
 
 def render_text_content(content: Any) -> str:

@@ -60,7 +60,13 @@ from open_somnia.runtime.execution_mode import (
 )
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import make_tool_result_message, make_user_text_message, render_text_content
+from open_somnia.runtime.messages import (
+    decode_embedded_user_message,
+    make_tool_result_item,
+    make_tool_result_message,
+    make_user_text_message,
+    render_text_content,
+)
 from open_somnia.runtime.permissions import PermissionManager
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
@@ -2458,10 +2464,27 @@ class OpenAgentRuntime:
             open_todo_count=self._count_open_todo_items(session),
         )
 
+    def _normalize_user_input_message(self, user_input: Any) -> tuple[dict[str, Any], str]:
+        if isinstance(user_input, dict):
+            message = {
+                "role": str(user_input.get("role", "user")).strip() or "user",
+                "content": user_input.get("content", ""),
+            }
+        else:
+            embedded_message = decode_embedded_user_message(user_input)
+            if embedded_message is not None:
+                message = embedded_message
+            else:
+                message = make_user_text_message(str(user_input))
+        if message["role"] != "user":
+            message["role"] = "user"
+        latest_user_message = render_text_content(message.get("content", ""))
+        return message, latest_user_message
+
     def run_turn(
         self,
         session: AgentSession,
-        user_input: str,
+        user_input: str | dict[str, Any],
         text_callback=None,
         should_interrupt=None,
         take_next_loop_user_message=None,
@@ -2469,10 +2492,10 @@ class OpenAgentRuntime:
     ) -> AgentLoopResult:
         session.pending_file_changes = []
         session.last_turn_file_changes = []
-        task_anchor_message = make_user_text_message(user_input)
+        task_anchor_message, latest_user_message = self._normalize_user_input_message(user_input)
         session.messages.append(task_anchor_message)
-        self.transcript_store.append(session.id, {"role": "user", "content": user_input})
-        self._run_topic_shift_assist(session, latest_user_message=user_input)
+        self.transcript_store.append(session.id, task_anchor_message)
+        self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
         self._run_automatic_context_janitor(session)
         return self._agent_loop(
             session,
@@ -2502,10 +2525,10 @@ class OpenAgentRuntime:
                 if callable(take_next_loop_user_message):
                     loop_user_message = take_next_loop_user_message()
                 if loop_user_message:
-                    task_anchor_message = make_user_text_message(loop_user_message)
+                    task_anchor_message, latest_user_message = self._normalize_user_input_message(loop_user_message)
                     session.messages.append(task_anchor_message)
-                    self.transcript_store.append(session.id, {"role": "user", "content": loop_user_message})
-                    self._run_topic_shift_assist(session, latest_user_message=loop_user_message)
+                    self.transcript_store.append(session.id, task_anchor_message)
+                    self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
                     self._run_automatic_context_janitor(session)
                 background_notifications = self.background_manager.drain()
                 if background_notifications:
@@ -2653,13 +2676,14 @@ class OpenAgentRuntime:
                     rendered_output = serialize_tool_output(persisted_output)
                     log_id = self.print_tool_event("lead", tool_call.name, tool_call.input, persisted_output)
                     executed_tool_calls.append(tool_call)
-                    result = {
-                        "type": "tool_result",
-                        "tool_call_id": tool_call.id,
-                        "content": rendered_output[: self.settings.runtime.max_tool_output_chars],
-                        "raw_output": persisted_output,
-                        "log_id": log_id,
-                    }
+                    result = make_tool_result_item(
+                        tool_call.id,
+                        persisted_output,
+                        rendered_output=rendered_output,
+                        max_content_chars=self.settings.runtime.max_tool_output_chars,
+                        raw_output=persisted_output,
+                        log_id=log_id,
+                    )
                     tool_results.append(result)
                     self.transcript_store.append(
                         session.id,

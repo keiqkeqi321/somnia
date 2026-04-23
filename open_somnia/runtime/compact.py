@@ -129,6 +129,19 @@ def _strip_tool_result_metadata(item: dict[str, Any]) -> None:
     item.pop("log_id", None)
 
 
+def _strip_stale_tool_result_content_blocks(payload_messages: list[dict[str, Any]]) -> None:
+    rounds = _tool_result_rounds(payload_messages)
+    if len(rounds) <= 1:
+        return
+    latest_message_index, _latest_tool_results = rounds[-1]
+    for message_index, tool_results in rounds:
+        if message_index == latest_message_index:
+            continue
+        for item in tool_results:
+            item.pop("content_blocks", None)
+            item.pop("tool_result_text", None)
+
+
 def _tool_call_lookup(messages: list[dict[str, Any]]) -> dict[str, tuple[str, dict[str, Any], str | None]]:
     lookup: dict[str, tuple[str, dict[str, Any], str | None]] = {}
     for message in messages:
@@ -654,6 +667,7 @@ def build_payload_messages(
     for _, tool_results in rounds:
         for item in tool_results:
             _strip_tool_result_metadata(item)
+    _strip_stale_tool_result_content_blocks(payload_messages)
     _dedupe_tool_results(payload_messages)
     _suppress_overlapping_read_file_results(
         payload_messages,

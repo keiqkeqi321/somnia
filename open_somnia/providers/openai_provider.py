@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import base64
 import json
 import socket
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
 from open_somnia.reasoning import openai_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import AssistantTurn, ToolCall, normalize_tool_importance
+from open_somnia.runtime.messages import (
+    active_tool_result_content_blocks,
+    AssistantTurn,
+    ToolCall,
+    normalize_tool_importance,
+    prepare_image_bytes_for_model,
+)
 
 try:
     import tiktoken
@@ -29,6 +37,42 @@ def _schema_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _openai_image_part(item: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = str(item.get("type", "")).strip()
+    if block_type == "image_url":
+        image_payload = item.get("image_url", {})
+        if isinstance(image_payload, dict):
+            url = str(image_payload.get("url", "")).strip()
+            detail = str(image_payload.get("detail", "")).strip()
+        else:
+            url = str(image_payload).strip()
+            detail = ""
+        if not url:
+            return None
+        image_url: dict[str, Any] = {"url": url}
+        if detail:
+            image_url["detail"] = detail
+        return {"type": "image_url", "image_url": image_url}
+    if block_type != "input_image":
+        return None
+    image_path = str(item.get("absolute_path") or item.get("path") or "").strip()
+    if not image_path:
+        raise ProviderError("Image input is missing a file path.", retryable=False)
+    path = Path(image_path)
+    if not path.exists() or not path.is_file():
+        raise ProviderError(f"Image file not found: {image_path}", retryable=False)
+    try:
+        media_type, prepared_bytes = prepare_image_bytes_for_model(path, fallback=item.get("media_type"))
+    except ValueError as exc:
+        raise ProviderError(str(exc), retryable=False) from exc
+    encoded = base64.b64encode(prepared_bytes).decode("ascii")
+    detail = str(item.get("detail", "")).strip()
+    image_url = {"url": f"data:{media_type};base64,{encoded}"}
+    if detail:
+        image_url["detail"] = detail
+    return {"type": "image_url", "image_url": image_url}
+
+
 def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     converted: list[dict[str, Any]] = []
     for message in messages:
@@ -38,13 +82,24 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             converted.append({"role": role, "content": content})
             continue
         text_parts: list[str] = []
+        content_parts: list[dict[str, Any]] = []
+        has_non_text_parts = False
         tool_results: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
+        tool_result_followup_blocks: list[dict[str, Any]] = []
         for item in content:
             if item["type"] == "text":
-                text_parts.append(str(item.get("text", "")))
+                text = str(item.get("text", ""))
+                text_parts.append(text)
+                content_parts.append({"type": "text", "text": text})
+            elif item["type"] in {"image_url", "input_image"}:
+                image_part = _openai_image_part(item)
+                if image_part is not None:
+                    content_parts.append(image_part)
+                    has_non_text_parts = True
             elif item["type"] == "tool_result":
                 tool_results.append(item)
+                tool_result_followup_blocks.extend(active_tool_result_content_blocks(item))
             elif item["type"] == "tool_call":
                 tool_calls.append(
                     {
@@ -65,8 +120,11 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
             continue
-        if text_parts:
-            converted.append({"role": role, "content": "\n".join(text_parts)})
+        if content_parts:
+            if has_non_text_parts:
+                converted.append({"role": role, "content": content_parts})
+            else:
+                converted.append({"role": role, "content": "\n".join(text_parts)})
         for tool_result in tool_results:
             converted.append(
                 {
@@ -75,7 +133,36 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "content": str(tool_result.get("content", "")),
                 }
             )
+        followup_content = _openai_multimodal_content(tool_result_followup_blocks)
+        if followup_content is not None:
+            converted.append({"role": "user", "content": followup_content})
     return converted
+
+
+def _openai_multimodal_content(blocks: list[dict[str, Any]]) -> str | list[dict[str, Any]] | None:
+    if not blocks:
+        return None
+    text_parts: list[str] = []
+    content_parts: list[dict[str, Any]] = []
+    has_non_text_parts = False
+    for item in blocks:
+        block_type = str(item.get("type", "")).strip()
+        if block_type == "text":
+            text = str(item.get("text", ""))
+            text_parts.append(text)
+            content_parts.append({"type": "text", "text": text})
+            continue
+        if block_type not in {"image_url", "input_image"}:
+            continue
+        image_part = _openai_image_part(item)
+        if image_part is not None:
+            content_parts.append(image_part)
+            has_non_text_parts = True
+    if not content_parts:
+        return None
+    if has_non_text_parts:
+        return content_parts
+    return "\n".join(part for part in text_parts if part)
 
 
 def _encoding_for_openai_model(model: str):

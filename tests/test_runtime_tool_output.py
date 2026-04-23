@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -24,11 +25,24 @@ from open_somnia.runtime.compact import (
     ToolResultLocator,
     build_payload_messages,
 )
-from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.runtime.messages import (
+    MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW,
+    active_tool_result_content_blocks,
+    AssistantTurn,
+    ToolCall,
+    encode_embedded_user_message,
+    make_user_multimodal_message,
+    prepare_image_bytes_for_model,
+)
 from open_somnia.runtime.session import AgentSession
+from open_somnia.tools.filesystem import read_image
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
+    _TINY_PNG_BYTES = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
+    )
+
     def _stable_test_dir(self, name: str) -> Path:
         root = Path.cwd() / ".tmp-tests" / f"{name}-{time.time_ns()}"
         root.mkdir(parents=True, exist_ok=True)
@@ -1205,10 +1219,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         blocked = OpenAgentRuntime.authorize_tool_call(runtime, "bash", {"command": "git status"})
         allowed = OpenAgentRuntime.authorize_tool_call(runtime, "write_file", {"path": "demo.txt", "content": "ok"})
+        read_image_allowed = OpenAgentRuntime.authorize_tool_call(runtime, "read_image", {"path": "scripts/image.png"})
 
         self.assertIn("requires explicit user approval", blocked)
         self.assertNotIn("! Yolo", blocked)
         self.assertIsNone(allowed)
+        self.assertIsNone(read_image_allowed)
 
     def test_authorize_tool_call_blocks_file_edits_in_plan_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -1798,6 +1814,147 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result, "loop-result")
         self.assertEqual(detection_calls, [])
         self.assertEqual(transcript_entries, [{"role": "user", "content": "new question"}])
+
+    def test_run_turn_accepts_embedded_user_multimodal_message(self) -> None:
+        detection_calls: list[str] = []
+        transcript_entries: list[dict] = []
+        loop_messages: list[dict] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
+        runtime._run_topic_shift_assist = lambda session, latest_user_message: detection_calls.append(latest_user_message)
+        runtime._run_automatic_context_janitor = lambda session: None
+        runtime._agent_loop = lambda session, **kwargs: loop_messages.extend(session.messages) or "loop-result"
+
+        session = AgentSession(id="session-1", messages=[{"role": "assistant", "content": "Ready."}])
+        encoded_message = encode_embedded_user_message(
+            make_user_multimodal_message(
+                "look at this image",
+                [
+                    {
+                        "type": "input_image",
+                        "path": "images/tiny.png",
+                        "absolute_path": str(Path.cwd() / "images" / "tiny.png"),
+                        "media_type": "image/png",
+                    }
+                ],
+            )
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, encoded_message)
+
+        self.assertEqual(result, "loop-result")
+        self.assertEqual(detection_calls, ["look at this image"])
+        self.assertEqual(transcript_entries[0]["role"], "user")
+        self.assertEqual(transcript_entries[0]["content"][0], {"type": "text", "text": "look at this image"})
+        self.assertEqual(transcript_entries[0]["content"][1]["type"], "input_image")
+        self.assertEqual(loop_messages[-1]["content"][1]["type"], "input_image")
+
+    def test_read_image_tool_returns_structured_tool_result_content(self) -> None:
+        image_root = self._stable_test_dir("read-image-tool")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+        ctx = SimpleNamespace(runtime=SimpleNamespace(settings=SimpleNamespace(workspace_root=Path.cwd())))
+
+        result = read_image(ctx, {"path": image_path.relative_to(Path.cwd()).as_posix()})
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["media_type"], "image/png")
+        self.assertEqual(result["tool_result_text"], result["message"])
+        self.assertEqual(result["tool_result_content"][0]["type"], "text")
+        self.assertEqual(result["tool_result_content"][1]["type"], "input_image")
+
+    def test_prepare_image_bytes_for_model_rejects_large_input_without_pillow(self) -> None:
+        image_root = self._stable_test_dir("read-image-limit")
+        image_path = image_root / "large.png"
+        image_path.write_bytes(b"x" * (MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW + 1))
+
+        with (
+            patch("open_somnia.runtime.messages.Image", None),
+            patch("open_somnia.runtime.messages.ImageOps", None),
+        ):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                prepare_image_bytes_for_model(image_path)
+
+    def test_prepare_image_bytes_for_model_allows_medium_input_without_pillow(self) -> None:
+        image_root = self._stable_test_dir("read-image-medium")
+        image_path = image_root / "medium.png"
+        image_path.write_bytes(b"x" * 360_000)
+
+        with (
+            patch("open_somnia.runtime.messages.Image", None),
+            patch("open_somnia.runtime.messages.ImageOps", None),
+        ):
+            media_type, prepared_bytes = prepare_image_bytes_for_model(image_path)
+
+        self.assertEqual(media_type, "image/png")
+        self.assertEqual(len(prepared_bytes), 360_000)
+
+    def test_build_payload_messages_strips_image_blocks_from_older_tool_rounds(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-1", "name": "read_image", "input": {"path": "one.png"}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": "Loaded image one.png (image/png) for model inspection.",
+                        "tool_result_text": "Loaded image one.png (image/png) for model inspection.",
+                        "content_blocks": [
+                            {"type": "text", "text": "Tool read_image loaded one.png."},
+                            {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                        ],
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-2", "name": "read_image", "input": {"path": "two.png"}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-2",
+                        "content": "Loaded image two.png (image/png) for model inspection.",
+                        "tool_result_text": "Loaded image two.png (image/png) for model inspection.",
+                        "content_blocks": [
+                            {"type": "text", "text": "Tool read_image loaded two.png."},
+                            {"type": "input_image", "path": "two.png", "absolute_path": "D:/workspace/two.png", "media_type": "image/png"},
+                        ],
+                    }
+                ],
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        first_result = payload_messages[1]["content"][0]
+        second_result = payload_messages[3]["content"][0]
+        self.assertNotIn("content_blocks", first_result)
+        self.assertNotIn("tool_result_text", first_result)
+        self.assertIn("content_blocks", second_result)
+
+    def test_active_tool_result_content_blocks_ignores_compacted_image_results(self) -> None:
+        blocks = active_tool_result_content_blocks(
+            {
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "content": "[Duplicate tool result omitted | read_image] Identical output appears later.",
+                "tool_result_text": "Loaded image one.png (image/png) for model inspection.",
+                "content_blocks": [
+                    {"type": "text", "text": "Tool read_image loaded one.png."},
+                    {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                ],
+            }
+        )
+
+        self.assertEqual(blocks, [])
 
     def test_run_turn_topic_shift_detection_can_trigger_janitor_without_polluting_transcript(self) -> None:
         detection_calls: list[str] = []
@@ -2726,6 +2883,145 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(payload["body"]["reasoning"], {"effort": "high"})
 
+    def test_openai_provider_debug_request_payload_supports_local_input_image_blocks(self) -> None:
+        image_root = self._stable_test_dir("vision-openai")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this image"},
+                        {"type": "input_image", "absolute_path": str(image_path), "media_type": "image/png"},
+                    ],
+                }
+            ],
+            [],
+            1024,
+            stream=False,
+        )
+
+        content = payload["body"]["messages"][1]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "describe this image"})
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_openai_provider_debug_request_payload_supports_image_tool_results(self) -> None:
+        image_root = self._stable_test_dir("vision-openai-tool-result")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_call", "id": "call-1", "name": "read_image", "input": {"path": "tiny.png"}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call-1",
+                            "content": "Loaded image tiny.png (image/png) for model inspection.",
+                            "tool_result_text": "Loaded image tiny.png (image/png) for model inspection.",
+                            "content_blocks": [
+                                {"type": "text", "text": "Tool read_image loaded local workspace image tiny.png (image/png) for inspection."},
+                                {"type": "input_image", "absolute_path": str(image_path), "path": "tiny.png", "media_type": "image/png"},
+                            ],
+                        }
+                    ],
+                },
+            ],
+            [],
+            1024,
+            stream=False,
+        )
+
+        messages = payload["body"]["messages"]
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertEqual(messages[1]["tool_calls"][0]["function"]["name"], "read_image")
+        self.assertEqual(messages[2]["role"], "tool")
+        self.assertEqual(messages[2]["content"], "Loaded image tiny.png (image/png) for model inspection.")
+        self.assertEqual(messages[3]["role"], "user")
+        self.assertEqual(messages[3]["content"][0]["type"], "text")
+        self.assertEqual(messages[3]["content"][1]["type"], "image_url")
+        self.assertTrue(messages[3]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_openai_provider_ignores_compacted_image_tool_results(self) -> None:
+        image_root = self._stable_test_dir("vision-openai-tool-result-compacted")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_call", "id": "call-1", "name": "read_image", "input": {"path": "tiny.png"}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call-1",
+                            "content": "[Duplicate tool result omitted | read_image] Identical output appears later.",
+                            "tool_result_text": "Loaded image tiny.png (image/png) for model inspection.",
+                            "content_blocks": [
+                                {"type": "text", "text": "Tool read_image loaded local workspace image tiny.png (image/png) for inspection."},
+                                {"type": "input_image", "absolute_path": str(image_path), "path": "tiny.png", "media_type": "image/png"},
+                            ],
+                        }
+                    ],
+                },
+            ],
+            [],
+            1024,
+            stream=False,
+        )
+
+        messages = payload["body"]["messages"]
+        self.assertEqual(len(messages), 3)
+        self.assertEqual(messages[2]["role"], "tool")
+
     def test_anthropic_provider_debug_request_payload_uses_adaptive_effort_for_supported_models(self) -> None:
         provider = AnthropicProvider(
             ProviderSettings(
@@ -2743,6 +3039,97 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(payload["thinking"], {"type": "adaptive"})
         self.assertEqual(payload["output_config"], {"effort": "max"})
+
+    def test_anthropic_provider_debug_request_payload_supports_local_input_image_blocks(self) -> None:
+        image_root = self._stable_test_dir("vision-anthropic")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this image"},
+                        {"type": "input_image", "absolute_path": str(image_path), "media_type": "image/png"},
+                    ],
+                }
+            ],
+            [],
+            4096,
+            stream=False,
+        )
+
+        content = payload["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "describe this image"})
+        self.assertEqual(content[1]["type"], "image")
+        self.assertEqual(content[1]["source"]["type"], "base64")
+        self.assertEqual(content[1]["source"]["media_type"], "image/png")
+        self.assertTrue(content[1]["source"]["data"])
+
+    def test_anthropic_provider_debug_request_payload_supports_image_tool_results(self) -> None:
+        image_root = self._stable_test_dir("vision-anthropic-tool-result")
+        image_path = image_root / "tiny.png"
+        image_path.write_bytes(self._TINY_PNG_BYTES)
+
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_call", "id": "call-1", "name": "read_image", "input": {"path": "tiny.png"}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_call_id": "call-1",
+                            "content": "Loaded image tiny.png (image/png) for model inspection.",
+                            "tool_result_text": "Loaded image tiny.png (image/png) for model inspection.",
+                            "content_blocks": [
+                                {"type": "text", "text": "Tool read_image loaded local workspace image tiny.png (image/png) for inspection."},
+                                {"type": "input_image", "absolute_path": str(image_path), "path": "tiny.png", "media_type": "image/png"},
+                            ],
+                        }
+                    ],
+                },
+            ],
+            [],
+            4096,
+            stream=False,
+        )
+
+        tool_result_block = payload["messages"][1]["content"][0]
+        self.assertEqual(tool_result_block["type"], "tool_result")
+        self.assertIsInstance(tool_result_block["content"], list)
+        self.assertEqual(tool_result_block["content"][0]["type"], "text")
+        self.assertEqual(tool_result_block["content"][1]["type"], "image")
+        self.assertEqual(tool_result_block["content"][1]["source"]["media_type"], "image/png")
+        self.assertTrue(tool_result_block["content"][1]["source"]["data"])
 
     def test_anthropic_provider_debug_request_payload_clamps_legacy_budget(self) -> None:
         provider = AnthropicProvider(

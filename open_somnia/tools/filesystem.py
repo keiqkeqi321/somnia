@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from open_somnia.runtime.messages import guess_image_media_type
 from open_somnia.tools.registry import ToolDefinition
 
 READ_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "cp936")
@@ -521,6 +522,45 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
         f"{prefix}{content}",
         max_chars=ctx.runtime.settings.runtime.max_tool_output_chars,
     )
+
+
+def read_image(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
+    workspace_root = ctx.runtime.settings.workspace_root
+    requested_path = str(payload["path"])
+    path = safe_path(workspace_root, requested_path)
+    if not path.exists():
+        return f"Error: Image not found: {requested_path}"
+    if not path.is_file():
+        return f"Error: Path is not a file: {requested_path}"
+    media_type = guess_image_media_type(path)
+    if media_type is None:
+        return (
+            "Error: Unsupported image format. "
+            "Supported formats: .gif, .jpg, .jpeg, .png, .webp."
+        )
+    relative_path = _relative_label(workspace_root, path)
+    summary = f"Loaded image {relative_path} ({media_type}) for model inspection."
+    return {
+        "status": "ok",
+        "action": "read_image",
+        "path": relative_path,
+        "absolute_path": str(path),
+        "media_type": media_type,
+        "message": summary,
+        "tool_result_text": summary,
+        "tool_result_content": [
+            {
+                "type": "text",
+                "text": f"Tool read_image loaded local workspace image {relative_path} ({media_type}) for inspection.",
+            },
+            {
+                "type": "input_image",
+                "path": relative_path,
+                "absolute_path": str(path),
+                "media_type": media_type,
+            },
+        ],
+    }
 
 
 def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
@@ -1342,6 +1382,20 @@ def register_filesystem_tools(registry) -> None:
                 "required": ["path"],
             },
             handler=read_file,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="read_image",
+            description="Load a local image from the workspace so a multimodal model can inspect it on the next turn. Use this for .png, .jpg, .jpeg, .gif, or .webp files instead of `read_file`.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                },
+                "required": ["path"],
+            },
+            handler=read_image,
         )
     )
     registry.register(
