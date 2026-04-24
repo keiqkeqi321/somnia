@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -39,6 +38,11 @@ class _FakeJobStore:
 
 
 class ProcessOutputTests(unittest.TestCase):
+    def _stable_test_dir(self, name: str) -> Path:
+        root = Path.cwd() / ".tmp-tests" / f"{name}-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
     def test_decode_output_prefers_utf8_for_chinese_bytes(self) -> None:
         text = "submit git chinese infor"
         self.assertEqual(decode_output(text.encode("utf-8")), text)
@@ -175,19 +179,19 @@ class ProcessOutputTests(unittest.TestCase):
 
     def test_background_manager_records_unicode_result(self) -> None:
         store = _FakeJobStore()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manager = BackgroundManager(store, Path(tmpdir), default_timeout=30, max_output_chars=500)
-            store.create("job1", {"id": "job1", "command": "git status", "status": "running", "result": None})
+        root = self._stable_test_dir("process-output-bg")
+        manager = BackgroundManager(store, root, default_timeout=30, max_output_chars=500)
+        store.create("job1", {"id": "job1", "command": "git status", "status": "running", "result": None})
 
-            with patch("open_somnia.tools.background.run_command") as mock_run:
-                mock_run.return_value = CommandResult(
-                    args="git status",
-                    returncode=0,
-                    stdout="submit git chinese infor",
-                    stderr="",
-                )
+        with patch("open_somnia.tools.background.run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                args="git status",
+                returncode=0,
+                stdout="submit git chinese infor",
+                stderr="",
+            )
 
-                manager._execute("job1", "git status", 30)
+            manager._execute("job1", "git status", 30)
 
         self.assertEqual(store.jobs["job1"]["status"], "completed")
         self.assertEqual(store.jobs["job1"]["result"], "submit git chinese infor")

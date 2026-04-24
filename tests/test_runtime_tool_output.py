@@ -4,7 +4,6 @@ import base64
 import io
 import json
 import os
-import tempfile
 import time
 import urllib.error
 import unittest
@@ -1410,33 +1409,33 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(OpenAgentRuntime.authorize_tool_call(runtime, "edit_file", {"path": "demo.txt"}))
 
     def test_workspace_authorization_is_persisted_under_openagent_directory(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
-            data_dir = Path(tmpdir) / ".open_somnia"
-            runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-            runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
-            runtime.execution_mode = "plan"
-            runtime._workspace_authorized_tools = set()
-            runtime._once_authorized_tools = {}
-            runtime.authorization_request_handler = lambda **kwargs: {
-                "status": "approved",
-                "scope": "workspace",
-                "reason": "Allowed in this workspace.",
-            }
+        root = self._stable_test_dir("workspace-auth")
+        data_dir = root / ".open_somnia"
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
+        runtime.execution_mode = "plan"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: {
+            "status": "approved",
+            "scope": "workspace",
+            "reason": "Allowed in this workspace.",
+        }
 
-            result = OpenAgentRuntime.request_authorization(runtime, "edit_file", "Need to patch a file")
+        result = OpenAgentRuntime.request_authorization(runtime, "edit_file", "Need to patch a file")
 
-            self.assertIn('"scope": "workspace"', result)
-            permissions_path = data_dir / "permissions.json"
-            self.assertTrue(permissions_path.exists())
-            self.assertIn('"authorized_tools"', permissions_path.read_text(encoding="utf-8"))
-            self.assertIn('"edit_file"', permissions_path.read_text(encoding="utf-8"))
+        self.assertIn('"scope": "workspace"', result)
+        permissions_path = data_dir / "permissions.json"
+        self.assertTrue(permissions_path.exists())
+        self.assertIn('"authorized_tools"', permissions_path.read_text(encoding="utf-8"))
+        self.assertIn('"edit_file"', permissions_path.read_text(encoding="utf-8"))
 
-            resumed_runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-            resumed_runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
+        resumed_runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        resumed_runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
 
-            loaded = OpenAgentRuntime._load_workspace_authorizations(resumed_runtime)
+        loaded = OpenAgentRuntime._load_workspace_authorizations(resumed_runtime)
 
-            self.assertEqual(loaded, {"edit_file"})
+        self.assertEqual(loaded, {"edit_file"})
 
     def test_request_mode_switch_rejects_yolo_target(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -2528,37 +2527,36 @@ class RuntimeToolOutputTests(unittest.TestCase):
         mock_anthropic.assert_not_called()
 
     def test_undo_last_turn_restores_previous_file_content(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
-            root = Path(tmpdir)
-            target = root / "greet.py"
-            target.write_text("new\n", encoding="utf-8")
-            runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-            runtime.settings = SimpleNamespace(workspace_root=root)
-            runtime.session_manager = SimpleNamespace(save=lambda session: None)
-            session = AgentSession(
-                id="session-1",
-                undo_stack=[
-                    {
-                        "turn_id": "turn-1",
-                        "files": [
-                            {
-                                "path": "greet.py",
-                                "absolute_path": str(target),
-                                "existed_before": True,
-                                "previous_content": "old\n",
-                            }
-                        ],
-                    }
-                ],
-                last_turn_file_changes=[{"path": "greet.py", "added_lines": 1, "removed_lines": 1}],
-            )
+        root = self._stable_test_dir("undo-last-turn")
+        target = root / "greet.py"
+        target.write_text("new\n", encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(workspace_root=root)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        session = AgentSession(
+            id="session-1",
+            undo_stack=[
+                {
+                    "turn_id": "turn-1",
+                    "files": [
+                        {
+                            "path": "greet.py",
+                            "absolute_path": str(target),
+                            "existed_before": True,
+                            "previous_content": "old\n",
+                        }
+                    ],
+                }
+            ],
+            last_turn_file_changes=[{"path": "greet.py", "added_lines": 1, "removed_lines": 1}],
+        )
 
-            message = OpenAgentRuntime.undo_last_turn(runtime, session)
+        message = OpenAgentRuntime.undo_last_turn(runtime, session)
 
-            self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
-            self.assertEqual(session.undo_stack, [])
-            self.assertEqual(session.last_turn_file_changes, [])
-            self.assertIn("Undid 1 file change", message)
+        self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(session.undo_stack, [])
+        self.assertEqual(session.last_turn_file_changes, [])
+        self.assertIn("Undid 1 file change", message)
 
     def test_dump_provider_payload_if_enabled_writes_hidden_debug_artifact(self) -> None:
         root = self._stable_test_dir("provider-payload")
