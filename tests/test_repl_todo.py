@@ -4,12 +4,14 @@ import base64
 import time
 import unittest
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
+    AuthorizationRequest,
+    ModeSwitchRequest,
     TurnQueueRunner,
     _build_image_query,
     _build_clipboard_image_query,
@@ -784,6 +786,24 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(requested)
         self.assertEqual(reasons, ["lead_interrupt"])
 
+    def test_request_interrupt_uses_service_for_active_turn(self) -> None:
+        interrupted_turns: list[str] = []
+        service = SimpleNamespace(interrupt_turn=lambda turn_id: interrupted_turns.append(turn_id) or True)
+        runtime = SimpleNamespace(
+            interrupt_active_teammates=lambda reason="lead_interrupt": (_ for _ in ()).throw(
+                AssertionError("runtime teammate interrupt should not run in service mode")
+            )
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
+        runner._active = True
+        runner._active_turn_handle = SimpleNamespace(turn_id="turn-1")
+
+        requested = runner.request_interrupt()
+
+        self.assertTrue(requested)
+        self.assertTrue(runner.should_interrupt())
+        self.assertEqual(interrupted_turns, ["turn-1"])
+
     def test_status_for_response_marks_open_todo_max_round_stop_explicitly(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
 
@@ -841,6 +861,45 @@ class ReplTodoTests(unittest.TestCase):
         runner.close(drain=True)
 
         self.assertEqual(events, ["compact", "turn:follow-up prompt"])
+
+    def test_service_backed_runner_uses_service_turn_path(self) -> None:
+        captured: list[tuple[object, str, bool, bool]] = []
+
+        class _DoneHandle:
+            def __init__(self, result) -> None:
+                self.turn_id = "turn-1"
+                self.result = result
+
+            def is_done(self) -> bool:
+                return True
+
+            def drain_events(self, *, block: bool = False, timeout: float | None = None):
+                return []
+
+        service = SimpleNamespace(
+            run_turn=lambda session, query, **kwargs: captured.append(
+                (
+                    session,
+                    query,
+                    callable(kwargs.get("take_next_loop_user_message")),
+                    callable(kwargs.get("prepare_next_loop_user_message")),
+                )
+            )
+            or _DoneHandle(SimpleNamespace(status="completed", text="Done.", interrupted=False)),
+        )
+        runtime = SimpleNamespace(
+            compact_session=lambda session: None,
+            run_turn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime.run_turn should not be used")),
+            print_last_turn_file_summary=lambda session: False,
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
+
+        with patch("builtins.print"):
+            runner.start()
+            runner.enqueue("service prompt")
+            runner.close(drain=True)
+
+        self.assertEqual(captured, [(runner.session, "service prompt", True, True)])
 
     def test_expand_skill_command_wraps_loaded_skill_and_user_request(self) -> None:
         runtime = SimpleNamespace(
@@ -911,6 +970,33 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(result["value"]["status"], "approved")
         self.assertEqual(result["value"]["scope"], "once")
 
+    def test_service_authorization_request_is_resolved_through_app_service(self) -> None:
+        resolved: list[tuple[str, str, bool, str]] = []
+        service = SimpleNamespace(
+            resolve_authorization=lambda request_id, *, scope, approved=True, reason="": resolved.append(
+                (request_id, scope, approved, reason)
+            )
+            or True
+        )
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
+        runner._authorization_requests.append(
+            AuthorizationRequest(
+                tool_name="bash",
+                reason="Need git status",
+                argument_summary="git status",
+                execution_mode="accept_edits",
+                completed=Event(),
+                request_id="auth-1",
+            )
+        )
+
+        with patch("open_somnia.cli.repl.choose_authorization_interactively", return_value="workspace"):
+            handled = _resolve_authorization_requests(runner)
+
+        self.assertTrue(handled)
+        self.assertEqual(resolved, [("auth-1", "workspace", True, "Allowed in this workspace.")])
+
     def test_request_mode_switch_is_resolved_on_main_thread(self) -> None:
         runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
@@ -940,6 +1026,36 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(result["value"]["approved"])
         self.assertEqual(result["value"]["active_mode"], "accept_edits")
         self.assertEqual(runtime.execution_mode, "accept_edits")
+
+    def test_service_mode_switch_request_is_resolved_through_app_service(self) -> None:
+        resolved: list[tuple[str, bool, str, str]] = []
+        service = SimpleNamespace(
+            resolve_mode_switch=lambda request_id, *, approved, active_mode=None, reason="": resolved.append(
+                (request_id, approved, active_mode, reason)
+            )
+            or True
+        )
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")),
+            execution_mode="plan",
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
+        runner._mode_switch_requests.append(
+            ModeSwitchRequest(
+                target_mode="accept_edits",
+                current_mode="plan",
+                reason="Ready to implement",
+                completed=Event(),
+                request_id="mode-1",
+            )
+        )
+
+        with patch("open_somnia.cli.repl.choose_mode_switch_interactively", return_value="switch"):
+            handled = _resolve_mode_switch_requests(runner)
+
+        self.assertTrue(handled)
+        self.assertEqual(resolved[0][:3], ("mode-1", True, "accept_edits"))
+        self.assertIn("accept edits on", resolved[0][3])
 
     def test_undo_command_confirms_before_running(self) -> None:
         runtime = SimpleNamespace(undo_last_turn=lambda session: "undid last change set")

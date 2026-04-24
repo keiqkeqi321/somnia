@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia import __version__
-from open_somnia.cli.commands import _build_session_choices, cmd_chat, print_user_message
+from open_somnia.cli.commands import _build_session_choices, cmd_chat, cmd_run, print_user_message
 from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.config.settings import NoConfiguredProvidersError, NoUsableProvidersError
@@ -215,6 +215,20 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(mock_repl.call_args.args[1].id, "new-session")
         self.assertFalse(mock_repl.call_args.kwargs["resumed"])
 
+    def test_cmd_chat_passes_service_to_repl_when_app_service_is_available(self) -> None:
+        session = SimpleNamespace(id="service-session", messages=[])
+        service = SimpleNamespace(create_session=lambda: session)
+        runtime = SimpleNamespace()
+
+        with patch("open_somnia.cli.commands._build_app_service", return_value=service), patch(
+            "open_somnia.cli.repl.run_repl", return_value=0
+        ) as mock_repl:
+            result = cmd_chat(runtime, resume=False)
+
+        self.assertEqual(result, 0)
+        self.assertIs(mock_repl.call_args.kwargs["service"], service)
+        self.assertEqual(mock_repl.call_args.args[1].id, "service-session")
+
     def test_cmd_chat_continue_loads_latest_visible_session(self) -> None:
         latest = SimpleNamespace(
             id="latest",
@@ -303,6 +317,54 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(mock_repl.call_args.args[1].id, "fresh")
         self.assertFalse(mock_repl.call_args.kwargs["resumed"])
+
+    def test_cmd_run_uses_service_turn_pipeline_when_available(self) -> None:
+        session = SimpleNamespace(id="service-run", messages=[])
+
+        class _StdoutCapture:
+            def __init__(self) -> None:
+                self.parts: list[str] = []
+
+            def write(self, text: str) -> int:
+                self.parts.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                return None
+
+            def isatty(self) -> bool:
+                return False
+
+            def getvalue(self) -> str:
+                return "".join(self.parts)
+
+        class _FakeHandle:
+            def __init__(self) -> None:
+                self.turn_id = "turn-1"
+                self.result = SimpleNamespace(status="completed", text="Hello")
+                self._drained = 0
+
+            def is_done(self) -> bool:
+                return self._drained > 0
+
+            def drain_events(self, *, block: bool = False, timeout: float | None = None):
+                self._drained += 1
+                if self._drained == 1:
+                    return [SimpleNamespace(type="assistant_delta", payload={"delta": "Hello"})]
+                return []
+
+        service = SimpleNamespace(
+            create_session=lambda: session,
+            run_turn=lambda current_session, prompt: _FakeHandle(),
+        )
+        runtime = SimpleNamespace(run_turn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime.run_turn should not be used")))
+
+        fake_stdout = _StdoutCapture()
+        with patch("open_somnia.cli.commands._build_app_service", return_value=service), patch("sys.stdout", fake_stdout):
+            result = cmd_run(runtime, "hello")
+
+        self.assertEqual(result, 0)
+        self.assertIn("● Hello", fake_stdout.getvalue())
 
     def test_session_history_ignores_empty_or_incomplete_sessions(self) -> None:
         empty = SimpleNamespace(id="empty", updated_at=10.0, created_at=10.0, messages=[])

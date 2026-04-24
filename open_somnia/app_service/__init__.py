@@ -43,8 +43,20 @@ class AppService:
     def load_session(self, session_id: str) -> AgentSession:
         return self.session_service.load_session(session_id)
 
-    def run_turn(self, session: AgentSession, user_input: str | dict[str, Any]) -> TurnHandle:
-        return self.turn_service.run_turn(session, user_input)
+    def run_turn(
+        self,
+        session: AgentSession,
+        user_input: str | dict[str, Any],
+        *,
+        take_next_loop_user_message=None,
+        prepare_next_loop_user_message=None,
+    ) -> TurnHandle:
+        return self.turn_service.run_turn(
+            session,
+            user_input,
+            take_next_loop_user_message=take_next_loop_user_message,
+            prepare_next_loop_user_message=prepare_next_loop_user_message,
+        )
 
     def interrupt_turn(self, turn_id: str) -> bool:
         return self.turn_service.interrupt_turn(turn_id)

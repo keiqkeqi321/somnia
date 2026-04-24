@@ -14,7 +14,7 @@ from open_somnia.config.models import (
     RuntimeSettings,
     StorageSettings,
 )
-from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.agent import AgentLoopResult, OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 
@@ -293,6 +293,46 @@ class AppServiceTests(unittest.TestCase):
             self.assertTrue(openai_models[0].is_default)
             self.assertTrue(openai_models[0].is_active)
             self.assertEqual(openai_models[1].context_window_tokens, 128_000)
+        finally:
+            service.close()
+
+    def test_run_turn_forwards_loop_injection_callbacks(self) -> None:
+        root = self._stable_test_dir("app-service-loop-injection")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        take_calls: list[str] = []
+        prepare_calls: list[str] = []
+
+        def take_next_loop_user_message() -> str | None:
+            take_calls.append("take")
+            return None
+
+        def prepare_next_loop_user_message() -> bool:
+            prepare_calls.append("prepare")
+            return False
+
+        def fake_run_turn(session, user_input, **kwargs):
+            self.assertEqual(user_input, "phase 2")
+            kwargs["prepare_next_loop_user_message"]()
+            kwargs["take_next_loop_user_message"]()
+            return AgentLoopResult("Done.", status="completed")
+
+        runtime.run_turn = fake_run_turn
+        try:
+            session = service.create_session()
+
+            handle = service.run_turn(
+                session,
+                "phase 2",
+                take_next_loop_user_message=take_next_loop_user_message,
+                prepare_next_loop_user_message=prepare_next_loop_user_message,
+            )
+            result = handle.wait(timeout=2.0)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.text, "Done.")
+            self.assertEqual(take_calls, ["take"])
+            self.assertEqual(prepare_calls, ["prepare"])
         finally:
             service.close()
 

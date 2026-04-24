@@ -75,6 +75,8 @@ class _ActiveTurn:
     handle: TurnHandle
     thread: Thread | None = None
     last_todo_items: list[dict[str, Any]] = field(default_factory=list)
+    take_next_loop_user_message: Any = None
+    prepare_next_loop_user_message: Any = None
 
 
 class RuntimeHost:
@@ -85,7 +87,14 @@ class RuntimeHost:
         self._run_lock = Lock()
         self._active_turn: _ActiveTurn | None = None
 
-    def run_turn(self, session: AgentSession, user_input: str | dict[str, Any]) -> TurnHandle:
+    def run_turn(
+        self,
+        session: AgentSession,
+        user_input: str | dict[str, Any],
+        *,
+        take_next_loop_user_message=None,
+        prepare_next_loop_user_message=None,
+    ) -> TurnHandle:
         with self._state_lock:
             active_turn = self._active_turn
             if active_turn is not None and not active_turn.done_event.is_set():
@@ -109,6 +118,8 @@ class RuntimeHost:
                 interrupt_event=interrupt_event,
                 handle=handle,
                 last_todo_items=_clone_value(list(getattr(session, "todo_items", []) or [])),
+                take_next_loop_user_message=take_next_loop_user_message,
+                prepare_next_loop_user_message=prepare_next_loop_user_message,
             )
             worker = Thread(
                 target=self._run_turn_worker,
@@ -258,6 +269,8 @@ class RuntimeHost:
                             active_turn.user_input,
                             text_callback=lambda text: self._emit_for_turn(active_turn, ASSISTANT_DELTA, delta=text),
                             should_interrupt=active_turn.interrupt_event.is_set,
+                            take_next_loop_user_message=active_turn.take_next_loop_user_message,
+                            prepare_next_loop_user_message=active_turn.prepare_next_loop_user_message,
                         )
             turn_result = TurnRunResult(
                 session=active_turn.session,

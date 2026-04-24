@@ -3,7 +3,16 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from typing import Any
 
+from open_somnia.app_service import AppService
+from open_somnia.app_service.events import (
+    ASSISTANT_DELTA,
+    AUTHORIZATION_REQUESTED,
+    MODE_SWITCH_REQUESTED,
+    TOOL_FINISHED,
+)
+from open_somnia.app_service.models import TurnRunResult
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.messages import MarkdownStreamRenderer, render_markdown_text, render_message_content, render_text_content
 from open_somnia.cli.prompting import choose_session_interactively, format_session_timestamp
@@ -145,7 +154,7 @@ def _session_preview(session) -> str:
     return "[no visible messages]"
 
 
-def _build_session_choices(runtime: OpenAgentRuntime) -> list[SessionChoice]:
+def _build_session_choices(runtime) -> list[SessionChoice]:
     choices: list[SessionChoice] = []
     for session in runtime.list_sessions():
         if not _has_visible_exchange(session):
@@ -157,7 +166,7 @@ def _build_session_choices(runtime: OpenAgentRuntime) -> list[SessionChoice]:
     return choices
 
 
-def _select_session(runtime: OpenAgentRuntime):
+def _select_session(runtime):
     choices = _build_session_choices(runtime)
     if not choices:
         print("No saved sessions. Starting a new chat.")
@@ -170,7 +179,7 @@ def _select_session(runtime: OpenAgentRuntime):
     return runtime.load_session(selected_id), True
 
 
-def _select_latest_session(runtime: OpenAgentRuntime):
+def _select_latest_session(runtime):
     choices = _build_session_choices(runtime)
     if not choices:
         print("No saved sessions. Starting a new chat.")
@@ -178,19 +187,106 @@ def _select_latest_session(runtime: OpenAgentRuntime):
     return runtime.load_session(choices[0].session_id), True
 
 
+def _build_app_service(runtime) -> AppService | None:
+    if isinstance(runtime, OpenAgentRuntime):
+        return AppService(runtime)
+    return None
+
+
+def _print_service_tool_event(payload: dict[str, Any]) -> None:
+    tool_name = str(payload.get("tool_name", "")).strip()
+    actor = str(payload.get("actor", "")).strip() or "lead"
+    if tool_name == "TodoWrite" or actor != "lead" or not sys.stdout.isatty():
+        return
+    rendered_lines = payload.get("rendered_lines")
+    if not isinstance(rendered_lines, list) or not rendered_lines:
+        return
+    print()
+    for line in rendered_lines:
+        print(str(line))
+    print()
+
+
+def _run_service_turn_to_console(runtime: OpenAgentRuntime, service: AppService, session, prompt: str) -> TurnRunResult:
+    streamer = ConsoleStreamer()
+    handle = service.run_turn(session, prompt)
+
+    while True:
+        batch = handle.drain_events(block=not handle.is_done(), timeout=0.05)
+        if batch:
+            for event in batch:
+                payload = getattr(event, "payload", {}) or {}
+                if event.type == ASSISTANT_DELTA:
+                    streamer(str(payload.get("delta", "")))
+                elif event.type == TOOL_FINISHED:
+                    _print_service_tool_event(payload)
+                elif event.type == AUTHORIZATION_REQUESTED:
+                    request_id = str(payload.get("request_id", "")).strip()
+                    if request_id:
+                        service.resolve_authorization(
+                            request_id,
+                            scope="deny",
+                            approved=False,
+                            reason="Interactive approvals are unavailable in this session.",
+                        )
+                elif event.type == MODE_SWITCH_REQUESTED:
+                    request_id = str(payload.get("request_id", "")).strip()
+                    if request_id:
+                        service.resolve_mode_switch(
+                            request_id,
+                            approved=False,
+                            active_mode=getattr(runtime, "execution_mode", None),
+                            reason="Interactive mode switching is unavailable in this session.",
+                        )
+            continue
+        if handle.is_done():
+            trailing = handle.drain_events()
+            if trailing:
+                batch = trailing
+                for event in batch:
+                    payload = getattr(event, "payload", {}) or {}
+                    if event.type == ASSISTANT_DELTA:
+                        streamer(str(payload.get("delta", "")))
+                    elif event.type == TOOL_FINISHED:
+                        _print_service_tool_event(payload)
+                continue
+            break
+
+    result = handle.result or TurnRunResult(session=session, text="", status="failed", error="Turn failed.")
+    result_status = str(getattr(result, "status", "")).strip()
+    if result_status == "failed":
+        raise RuntimeError(str(getattr(result, "error", "")).strip() or "Turn failed.")
+    if streamer.has_output:
+        streamer.finish()
+        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and result.text:
+            print()
+            print(_prefix_first_line(render_markdown_text(result.text, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
+    elif result.text:
+        print(_prefix_first_line(render_markdown_text(result.text, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
+    return result
+
+
 def cmd_chat(runtime: OpenAgentRuntime, resume: bool = False, continue_session: bool = False) -> int:
     from open_somnia.cli.repl import run_repl
 
+    service = _build_app_service(runtime)
+    session_api = service or runtime
     if resume:
-        session, resumed = _select_session(runtime)
+        session, resumed = _select_session(session_api)
     elif continue_session:
-        session, resumed = _select_latest_session(runtime)
+        session, resumed = _select_latest_session(session_api)
     else:
-        session, resumed = runtime.create_session(), False
-    return run_repl(runtime, session, resumed=resumed)
+        session, resumed = session_api.create_session(), False
+    return run_repl(runtime, session, resumed=resumed, service=service)
 
 
 def cmd_run(runtime: OpenAgentRuntime, prompt: str) -> int:
+    service = _build_app_service(runtime)
+    if service is not None:
+        session = service.create_session()
+        _run_service_turn_to_console(runtime, service, session, prompt)
+        return 0
+
     session = runtime.create_session()
     streamer = ConsoleStreamer()
     result = runtime.run_turn(session, prompt, text_callback=streamer)

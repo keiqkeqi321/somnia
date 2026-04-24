@@ -14,6 +14,15 @@ import time
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 
+from open_somnia.app_service import AppService
+from open_somnia.app_service.events import (
+    ASSISTANT_DELTA,
+    AUTHORIZATION_REQUESTED,
+    MODE_SWITCH_REQUESTED,
+    SESSION_UPDATED,
+    TODO_UPDATED,
+    TOOL_FINISHED,
+)
 from open_somnia.cli.commands import ConsoleStreamer, _assistant_prefix, _prefix_first_line, print_user_message
 from open_somnia.cli.prompting import (
     COMMAND_SPECS,
@@ -631,6 +640,7 @@ class AuthorizationRequest:
     execution_mode: str
     completed: Event
     response: dict[str, str] | None = None
+    request_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -640,6 +650,7 @@ class ModeSwitchRequest:
     reason: str
     completed: Event
     response: dict[str, str] | None = None
+    request_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -671,9 +682,10 @@ class TurnQueueRunner:
     CONTEXT_REDUCING_STYLE = "fg:#f59e0b"
     CONTEXT_CRITICAL_STYLE = "fg:#ef4444"
 
-    def __init__(self, runtime, session, *, stable_prompt: bool = False) -> None:
+    def __init__(self, runtime, session, *, stable_prompt: bool = False, service: AppService | None = None) -> None:
         self.runtime = runtime
         self.session = session
+        self.service = service
         self.stable_prompt = stable_prompt
         self._execution_mode = normalize_execution_mode(getattr(runtime, "execution_mode", DEFAULT_EXECUTION_MODE))
         setattr(self.runtime, "execution_mode", self._execution_mode)
@@ -695,6 +707,7 @@ class TurnQueueRunner:
         self._interrupt_requested = False
         self._authorization_requests: list[AuthorizationRequest] = []
         self._mode_switch_requests: list[ModeSwitchRequest] = []
+        self._active_turn_handle = None
 
     def start(self) -> None:
         self._worker.start()
@@ -742,6 +755,56 @@ class TurnQueueRunner:
         active, queued = self.stats()
         return active or queued > 0
 
+    def _notify_request_available(self) -> None:
+        self._invalidate_ui()
+        if self._prompt_interrupter is not None:
+            try:
+                self._prompt_interrupter()
+            except Exception:
+                pass
+
+    def _enqueue_authorization_request(
+        self,
+        *,
+        tool_name: str,
+        reason: str,
+        argument_summary: str = "",
+        execution_mode: str = DEFAULT_EXECUTION_MODE,
+        request_id: str | None = None,
+    ) -> AuthorizationRequest:
+        request = AuthorizationRequest(
+            tool_name=tool_name,
+            reason=reason,
+            argument_summary=argument_summary,
+            execution_mode=execution_mode,
+            completed=Event(),
+            request_id=request_id,
+        )
+        with self._lock:
+            self._authorization_requests.append(request)
+        self._notify_request_available()
+        return request
+
+    def _enqueue_mode_switch_request(
+        self,
+        *,
+        target_mode: str,
+        reason: str = "",
+        current_mode: str = DEFAULT_EXECUTION_MODE,
+        request_id: str | None = None,
+    ) -> ModeSwitchRequest:
+        request = ModeSwitchRequest(
+            target_mode=target_mode,
+            current_mode=current_mode,
+            reason=reason,
+            completed=Event(),
+            request_id=request_id,
+        )
+        with self._lock:
+            self._mode_switch_requests.append(request)
+        self._notify_request_available()
+        return request
+
     def request_authorization(
         self,
         *,
@@ -750,21 +813,12 @@ class TurnQueueRunner:
         argument_summary: str = "",
         execution_mode: str = DEFAULT_EXECUTION_MODE,
     ) -> dict[str, str]:
-        request = AuthorizationRequest(
+        request = self._enqueue_authorization_request(
             tool_name=tool_name,
             reason=reason,
             argument_summary=argument_summary,
             execution_mode=execution_mode,
-            completed=Event(),
         )
-        with self._lock:
-            self._authorization_requests.append(request)
-        self._invalidate_ui()
-        if self._prompt_interrupter is not None:
-            try:
-                self._prompt_interrupter()
-            except Exception:
-                pass
         if not request.completed.wait(timeout=300):
             return {"status": "denied", "scope": "deny", "reason": "Authorization request timed out."}
         return request.response or {"status": "denied", "scope": "deny", "reason": "Authorization denied."}
@@ -776,20 +830,11 @@ class TurnQueueRunner:
         return pending
 
     def request_mode_switch(self, *, target_mode: str, reason: str = "", current_mode: str = DEFAULT_EXECUTION_MODE) -> dict[str, str]:
-        request = ModeSwitchRequest(
+        request = self._enqueue_mode_switch_request(
             target_mode=target_mode,
-            current_mode=current_mode,
             reason=reason,
-            completed=Event(),
+            current_mode=current_mode,
         )
-        with self._lock:
-            self._mode_switch_requests.append(request)
-        self._invalidate_ui()
-        if self._prompt_interrupter is not None:
-            try:
-                self._prompt_interrupter()
-            except Exception:
-                pass
         if not request.completed.wait(timeout=300):
             return {
                 "approved": False,
@@ -817,12 +862,19 @@ class TurnQueueRunner:
             if not self._active or self._interrupt_requested:
                 return False
             self._interrupt_requested = True
-        interrupter = getattr(self.runtime, "interrupt_active_teammates", None)
-        if callable(interrupter):
-            try:
-                interrupter(reason="lead_interrupt")
-            except Exception:
-                pass
+            active_turn_handle = self._active_turn_handle
+        if self.service is not None and active_turn_handle is not None:
+            if not self.service.interrupt_turn(active_turn_handle.turn_id):
+                with self._lock:
+                    self._interrupt_requested = False
+                return False
+        elif self.service is None:
+            interrupter = getattr(self.runtime, "interrupt_active_teammates", None)
+            if callable(interrupter):
+                try:
+                    interrupter(reason="lead_interrupt")
+                except Exception:
+                    pass
         self._set_status("interrupting")
         return True
 
@@ -935,6 +987,180 @@ class TurnQueueRunner:
                 return item
         return None
 
+    def _run_runtime_task(self, task: QueueTask):
+        if task.echo_on_start:
+            print_user_message(task.payload)
+        streamer = ConsoleStreamer(
+            start_on_new_line=True,
+            line_buffered=self.stable_prompt,
+            on_first_output=None,
+        )
+        run_turn = getattr(self.runtime, "run_turn")
+        turn_kwargs = {
+            "text_callback": streamer,
+            "should_interrupt": self.should_interrupt,
+        }
+        try:
+            run_turn_parameters = inspect.signature(run_turn).parameters
+        except (TypeError, ValueError):
+            run_turn_parameters = {}
+        accepts_var_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in run_turn_parameters.values()
+        )
+        if "take_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
+            turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
+        if "prepare_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
+            turn_kwargs["prepare_next_loop_user_message"] = self.prepare_next_loop_injection
+        response = run_turn(self.session, task.payload, **turn_kwargs)
+        response_status = str(getattr(response, "status", "")).strip()
+        if streamer.has_output:
+            streamer.finish()
+            print()
+            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
+                print(
+                    _prefix_first_line(
+                        render_markdown_text(response, ansi=sys.stdout.isatty()),
+                        _assistant_prefix(ansi=sys.stdout.isatty()),
+                    )
+                )
+                print()
+        elif response:
+            print()
+            print(
+                _prefix_first_line(
+                    render_markdown_text(response, ansi=sys.stdout.isatty()),
+                    _assistant_prefix(ansi=sys.stdout.isatty()),
+                )
+            )
+            print()
+        self.runtime.print_last_turn_file_summary(self.session)
+        return response
+
+    def _run_service_task(self, task: QueueTask):
+        if self.service is None:
+            raise RuntimeError("App service is not available.")
+        if task.echo_on_start:
+            print_user_message(task.payload)
+        streamer = ConsoleStreamer(
+            start_on_new_line=True,
+            line_buffered=self.stable_prompt,
+            on_first_output=None,
+        )
+        run_turn = getattr(self.service, "run_turn")
+        turn_kwargs = {}
+        try:
+            run_turn_parameters = inspect.signature(run_turn).parameters
+        except (TypeError, ValueError):
+            run_turn_parameters = {}
+        accepts_var_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in run_turn_parameters.values()
+        )
+        if "take_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
+            turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
+        if "prepare_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
+            turn_kwargs["prepare_next_loop_user_message"] = self.prepare_next_loop_injection
+        handle = run_turn(self.session, task.payload, **turn_kwargs)
+        with self._lock:
+            self._active_turn_handle = handle
+        if self.should_interrupt():
+            try:
+                self.service.interrupt_turn(handle.turn_id)
+            except Exception:
+                pass
+
+        while True:
+            batch = handle.drain_events(block=not handle.is_done(), timeout=0.05)
+            if batch:
+                for event in batch:
+                    self._process_service_event(event, streamer)
+                continue
+            if handle.is_done():
+                trailing = handle.drain_events()
+                if trailing:
+                    for event in trailing:
+                        self._process_service_event(event, streamer)
+                    continue
+                break
+
+        response = handle.result
+        response_status = str(getattr(response, "status", "")).strip()
+        if response_status == "interrupted" or bool(getattr(response, "interrupted", False)):
+            print()
+            print("[interrupted]")
+            print()
+            return response
+        if response_status == "failed":
+            message = str(getattr(response, "error", "")).strip() or "unknown error"
+            print(f"[turn failed] {message}")
+            print()
+            return response
+        if streamer.has_output:
+            streamer.finish()
+            print()
+            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
+                print(
+                    _prefix_first_line(
+                        render_markdown_text(response.text, ansi=sys.stdout.isatty()),
+                        _assistant_prefix(ansi=sys.stdout.isatty()),
+                    )
+                )
+                print()
+        elif response and getattr(response, "text", ""):
+            print()
+            print(
+                _prefix_first_line(
+                    render_markdown_text(response.text, ansi=sys.stdout.isatty()),
+                    _assistant_prefix(ansi=sys.stdout.isatty()),
+                )
+            )
+            print()
+        self.runtime.print_last_turn_file_summary(self.session)
+        return response
+
+    def _process_service_event(self, event, streamer: ConsoleStreamer) -> None:
+        event_type = str(getattr(event, "type", "")).strip()
+        payload = getattr(event, "payload", {}) or {}
+        if event_type == ASSISTANT_DELTA:
+            streamer(str(payload.get("delta", "")))
+            return
+        if event_type == TOOL_FINISHED:
+            self._print_service_tool_event(payload)
+            return
+        if event_type == AUTHORIZATION_REQUESTED:
+            self._enqueue_authorization_request(
+                tool_name=str(payload.get("tool_name", "")).strip(),
+                reason=str(payload.get("reason", "")).strip(),
+                argument_summary=str(payload.get("argument_summary", "")).strip(),
+                execution_mode=normalize_execution_mode(payload.get("execution_mode", DEFAULT_EXECUTION_MODE)),
+                request_id=str(payload.get("request_id", "")).strip() or None,
+            )
+            return
+        if event_type == MODE_SWITCH_REQUESTED:
+            self._enqueue_mode_switch_request(
+                target_mode=normalize_execution_mode(payload.get("target_mode", DEFAULT_EXECUTION_MODE)),
+                reason=str(payload.get("reason", "")).strip(),
+                current_mode=normalize_execution_mode(payload.get("current_mode", DEFAULT_EXECUTION_MODE)),
+                request_id=str(payload.get("request_id", "")).strip() or None,
+            )
+            return
+        if event_type in {TODO_UPDATED, SESSION_UPDATED}:
+            self._invalidate_ui()
+
+    def _print_service_tool_event(self, payload: dict[str, object]) -> None:
+        tool_name = str(payload.get("tool_name", "")).strip()
+        actor = str(payload.get("actor", "")).strip() or "lead"
+        if tool_name == "TodoWrite" or actor != "lead" or not sys.stdout.isatty():
+            return
+        rendered_lines = payload.get("rendered_lines")
+        if not isinstance(rendered_lines, list) or not rendered_lines:
+            return
+        print()
+        for line in rendered_lines:
+            print(str(line))
+        print()
+
     def _worker_loop(self) -> None:
         while True:
             task = self._queue.get()
@@ -945,64 +1171,25 @@ class TurnQueueRunner:
                 self._queued = max(0, self._queued - 1)
                 self._active = True
                 self._thinking_phrase = random.choice(self.THINKING_PHRASES)
+                self._interrupt_requested = False
                 self._queued_previews = [
                     (preview_id, preview)
                     for preview_id, preview in self._queued_previews
                     if preview_id != task.id
                 ]
+                self._active_turn_handle = None
             self._set_status("compacting" if task.kind == "compact" else "thinking")
             response = None
             try:
-                with self._lock:
-                    self._interrupt_requested = False
                 if task.kind == "compact":
                     self.runtime.compact_session(self.session)
                     print("[manual compact complete]")
                     print()
                 else:
-                    if task.echo_on_start:
-                        print_user_message(task.payload)
-                    streamer = ConsoleStreamer(
-                        start_on_new_line=True,
-                        line_buffered=self.stable_prompt,
-                        on_first_output=None,
-                    )
-                    run_turn = getattr(self.runtime, "run_turn")
-                    turn_kwargs = {
-                        "text_callback": streamer,
-                        "should_interrupt": self.should_interrupt,
-                    }
-                    try:
-                        run_turn_parameters = inspect.signature(run_turn).parameters
-                    except (TypeError, ValueError):
-                        run_turn_parameters = {}
-                    if "take_next_loop_user_message" in run_turn_parameters:
-                        turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
-                    if "prepare_next_loop_user_message" in run_turn_parameters:
-                        turn_kwargs["prepare_next_loop_user_message"] = self.prepare_next_loop_injection
-                    response = run_turn(self.session, task.payload, **turn_kwargs)
-                    response_status = str(getattr(response, "status", "")).strip()
-                    if streamer.has_output:
-                        streamer.finish()
-                        print()
-                        if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
-                            print(
-                                _prefix_first_line(
-                                    render_markdown_text(response, ansi=sys.stdout.isatty()),
-                                    _assistant_prefix(ansi=sys.stdout.isatty()),
-                                )
-                            )
-                            print()
-                    elif response:
-                        print()
-                        print(
-                            _prefix_first_line(
-                                render_markdown_text(response, ansi=sys.stdout.isatty()),
-                                _assistant_prefix(ansi=sys.stdout.isatty()),
-                            )
-                        )
-                        print()
-                    self.runtime.print_last_turn_file_summary(self.session)
+                    if self.service is not None:
+                        response = self._run_service_task(task)
+                    else:
+                        response = self._run_runtime_task(task)
             except TurnInterrupted:
                 print()
                 print("[interrupted]")
@@ -1017,6 +1204,7 @@ class TurnQueueRunner:
                     self._loop_injection_requests = 0
                     self._ready_loop_injections = []
                     self._ready_loop_injection_previews = []
+                    self._active_turn_handle = None
                 self._set_status(self._status_for_response(response))
                 self._queue.task_done()
 
@@ -1835,6 +2023,13 @@ def _resolve_authorization_requests(runner: TurnQueueRunner) -> bool:
             request.response = {"status": "approved", "scope": "once", "reason": "Allowed once."}
         else:
             request.response = {"status": "denied", "scope": "deny", "reason": "Not allowed."}
+        if request.request_id and runner.service is not None:
+            runner.service.resolve_authorization(
+                request.request_id,
+                scope=request.response["scope"],
+                approved=request.response["status"] == "approved",
+                reason=request.response["reason"],
+            )
         request.completed.set()
     return True
 
@@ -1862,14 +2057,22 @@ def _resolve_mode_switch_requests(runner: TurnQueueRunner) -> bool:
                 "active_mode": runner.current_execution_mode().key,
                 "reason": "Stayed in the current mode.",
             }
+        if request.request_id and runner.service is not None:
+            runner.service.resolve_mode_switch(
+                request.request_id,
+                approved=bool(request.response["approved"]),
+                active_mode=str(request.response["active_mode"]),
+                reason=str(request.response["reason"]),
+            )
         request.completed.set()
     return True
 
 
-def run_repl(runtime, session, resumed: bool = False) -> int:
-    runner = TurnQueueRunner(runtime, session, stable_prompt=False)
-    runtime.authorization_request_handler = runner.request_authorization
-    runtime.mode_switch_request_handler = runner.request_mode_switch
+def run_repl(runtime, session, resumed: bool = False, service: AppService | None = None) -> int:
+    runner = TurnQueueRunner(runtime, session, stable_prompt=False, service=service)
+    if service is None:
+        runtime.authorization_request_handler = runner.request_authorization
+        runtime.mode_switch_request_handler = runner.request_mode_switch
     prompt_session = None
     pending_query_prefix = ""
     try:
@@ -2143,6 +2346,7 @@ def run_repl(runtime, session, resumed: bool = False) -> int:
                     ahead = queued_before + (1 if was_active else 0)
                     print(f"[queued; {ahead} item(s) ahead]")
     finally:
-        runtime.authorization_request_handler = None
-        runtime.mode_switch_request_handler = None
+        if service is None:
+            runtime.authorization_request_handler = None
+            runtime.mode_switch_request_handler = None
     return 0
