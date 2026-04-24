@@ -18,6 +18,17 @@ if [[ -z "$TARGET_TRIPLE" ]]; then
   exit 1
 fi
 
+if [[ "$BUNDLES" == "all" ]]; then
+  case "${TARGET_TRIPLE,,}" in
+    *windows*)
+      BUNDLES="msi"
+      ;;
+    *darwin*|*apple*)
+      BUNDLES="app,dmg"
+      ;;
+  esac
+fi
+
 echo "==> Building bundled sidecar for $TARGET_TRIPLE"
 "$PYTHON_BIN" scripts/release/build_desktop_sidecar.py --target-triple "$TARGET_TRIPLE"
 
