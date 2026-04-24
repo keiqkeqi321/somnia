@@ -44,6 +44,12 @@ export interface SidecarStatus {
   open_session_count?: number;
 }
 
+export interface ManagedSidecarConnection {
+  baseUrl: string;
+  wsUrl: string;
+  workspaceRoot: string;
+}
+
 export interface ProviderDescriptor {
   name: string;
   provider_type: string;

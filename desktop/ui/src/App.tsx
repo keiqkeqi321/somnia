@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
+import { ensureManagedSidecar } from "./lib/desktop";
 import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatTodoLabel, sortSessions } from "./lib/messages";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
   ConversationRow,
   InteractionRequestState,
+  ManagedSidecarConnection,
   ModelDescriptor,
   ProviderDescriptor,
   SidecarEvent,
@@ -19,8 +21,8 @@ const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
 
 function App() {
-  const initialBaseUrl =
-    (typeof window !== "undefined" && window.localStorage.getItem(STORAGE_KEY)) || DEFAULT_SIDECAR_URL;
+  const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
+  const initialBaseUrl = normalizeBaseUrl(initialSavedUrl ?? DEFAULT_SIDECAR_URL);
   const [baseUrlInput, setBaseUrlInput] = useState(initialBaseUrl);
   const [connectionState, setConnectionState] = useState<"connecting" | "connected" | "disconnected" | "error">(
     "disconnected",
@@ -42,6 +44,7 @@ function App() {
   const [inspectorTab, setInspectorTab] = useState<"todos" | "logs" | "approvals">("todos");
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [managedBaseUrl, setManagedBaseUrl] = useState<string | null>(null);
 
   const clientRef = useRef<SidecarClient | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -52,7 +55,7 @@ function App() {
   currentSessionRef.current = currentSession;
 
   useEffect(() => {
-    void connectToSidecar(initialBaseUrl);
+    void initializeConnection();
     return () => {
       socketRef.current?.close();
     };
@@ -60,9 +63,44 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function connectToSidecar(nextBaseUrl = baseUrlInput) {
+  async function initializeConnection() {
+    const savedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
+    const normalizedSavedUrl = savedUrl ? normalizeBaseUrl(savedUrl) : null;
+    const shouldPreferManagedSidecar = normalizedSavedUrl === null || normalizedSavedUrl === DEFAULT_SIDECAR_URL;
+
+    if (shouldPreferManagedSidecar) {
+      try {
+        const managedConnection = await ensureManagedSidecar();
+        if (managedConnection) {
+          await connectToSidecar(managedConnection.baseUrl, {
+            managedConnection,
+            persistBaseUrl: false,
+          });
+          return;
+        }
+      } catch (error) {
+        await connectToSidecar(normalizedSavedUrl ?? DEFAULT_SIDECAR_URL, {
+          errorPrefix: `Bundled sidecar unavailable: ${formatErrorMessage(error)}. `,
+        });
+        return;
+      }
+    }
+
+    await connectToSidecar(normalizedSavedUrl ?? DEFAULT_SIDECAR_URL);
+  }
+
+  async function connectToSidecar(
+    nextBaseUrl = baseUrlInput,
+    options: {
+      errorPrefix?: string;
+      managedConnection?: ManagedSidecarConnection;
+      persistBaseUrl?: boolean;
+    } = {},
+  ) {
+    const { errorPrefix = "", managedConnection, persistBaseUrl = true } = options;
     const normalizedBaseUrl = normalizeBaseUrl(nextBaseUrl);
     setConnectionState("connecting");
+    setBaseUrlInput(normalizedBaseUrl);
     setBannerMessage("Connecting to sidecar...");
     socketRef.current?.close();
 
@@ -83,8 +121,16 @@ function App() {
       setToolLogs(logList);
       setProviders(providerList);
       setSelectedProvider(runtimeStatus.provider);
-      setBannerMessage(`Connected to ${runtimeStatus.base_url}`);
-      if (typeof window !== "undefined") {
+      setBannerMessage(
+        managedConnection ? `Connected to bundled sidecar at ${runtimeStatus.base_url}` : `Connected to ${runtimeStatus.base_url}`,
+      );
+      setManagedBaseUrl((current) => {
+        if (managedConnection) {
+          return normalizedBaseUrl;
+        }
+        return current === normalizedBaseUrl ? current : null;
+      });
+      if (persistBaseUrl && typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, normalizedBaseUrl);
       }
 
@@ -104,7 +150,8 @@ function App() {
     } catch (error) {
       clientRef.current = null;
       setConnectionState("error");
-      setBannerMessage(formatErrorMessage(error));
+      setManagedBaseUrl((current) => (current === normalizedBaseUrl ? null : current));
+      setBannerMessage(`${errorPrefix}${formatErrorMessage(error)}`);
       setStatus(null);
     }
   }
@@ -481,11 +528,25 @@ function App() {
             <span>Sidecar</span>
             <input
               value={baseUrlInput}
-              onChange={(event) => setBaseUrlInput(event.target.value)}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setBaseUrlInput(nextValue);
+                if (managedBaseUrl && normalizeBaseUrl(nextValue) !== managedBaseUrl) {
+                  setManagedBaseUrl(null);
+                }
+              }}
               placeholder={DEFAULT_SIDECAR_URL}
             />
           </label>
-          <button className="action secondary" onClick={() => void connectToSidecar()} disabled={busyAction !== null}>
+          <button
+            className="action secondary"
+            onClick={() =>
+              void connectToSidecar(baseUrlInput, {
+                persistBaseUrl: managedBaseUrl !== normalizeBaseUrl(baseUrlInput),
+              })
+            }
+            disabled={busyAction !== null}
+          >
             {connectionState === "connecting" ? "Connecting..." : "Reconnect"}
           </button>
         </div>
