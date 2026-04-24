@@ -26,6 +26,8 @@ from desktop.backend.ipc import (
     serialize_model,
     serialize_provider,
     serialize_session,
+    serialize_tool_log_detail,
+    serialize_tool_log_index_entry,
     serialize_turn_result,
     websocket_accept_value,
 )
@@ -33,6 +35,7 @@ from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.execution_mode import execution_mode_spec
 
 
 class SidecarAPIError(RuntimeError):
@@ -96,6 +99,7 @@ class SidecarServer:
             return self._closed
 
     def ready_payload(self) -> dict[str, Any]:
+        execution_mode = getattr(self.runtime, "execution_mode", None)
         return {
             "status": "ready",
             "version": __version__,
@@ -104,6 +108,9 @@ class SidecarServer:
             "ws_url": self.ws_url,
             "provider": str(self.runtime.settings.provider.name),
             "model": str(self.runtime.settings.provider.model),
+            "reasoning_level": self.runtime.settings.provider.reasoning_level,
+            "execution_mode": execution_mode,
+            "execution_mode_title": execution_mode_spec(execution_mode).title,
         }
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
@@ -236,6 +243,24 @@ class SidecarServer:
 
     def pending_interactions(self) -> list[dict[str, Any]]:
         return [serialize_interaction(interaction) for interaction in self.service.pending_interactions()]
+
+    def runtime_status(self) -> dict[str, Any]:
+        payload = self.ready_payload()
+        payload["pending_interaction_count"] = len(self.service.pending_interactions())
+        payload["open_session_count"] = len(self.service.list_sessions())
+        return payload
+
+    def list_tool_logs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        entries = self.runtime.tool_log_store.list_recent(limit=max(1, int(limit)))
+        return [serialize_tool_log_index_entry(entry) for entry in entries]
+
+    def get_tool_log(self, log_id: str) -> dict[str, Any]:
+        entry = self.runtime.tool_log_store.get(log_id)
+        if entry is None:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Tool log '{log_id}' was not found.")
+        payload = serialize_tool_log_detail(entry)
+        payload["rendered"] = self.runtime.render_tool_log(log_id)
+        return payload
 
     def resolve_authorization(
         self,
@@ -376,6 +401,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if path_parts == ["health"]:
             return self.sidecar.ready_payload()
+        if path_parts == ["runtime", "status"]:
+            return self.sidecar.runtime_status()
         if path_parts == ["sessions"]:
             return {"sessions": self.sidecar.list_sessions()}
         if len(path_parts) == 2 and path_parts[0] == "sessions":
@@ -387,6 +414,15 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"models": self.sidecar.list_models(provider_name)}
         if path_parts == ["interactions"]:
             return {"interactions": self.sidecar.pending_interactions()}
+        if path_parts == ["tool-logs"]:
+            raw_limit = (query.get("limit") or [20])[0]
+            try:
+                limit = max(1, int(raw_limit))
+            except (TypeError, ValueError):
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "limit must be an integer.")
+            return {"tool_logs": self.sidecar.list_tool_logs(limit=limit)}
+        if len(path_parts) == 2 and path_parts[0] == "tool-logs":
+            return {"tool_log": self.sidecar.get_tool_log(path_parts[1])}
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
 
     def _route_post(self, parsed, body: dict[str, Any]) -> tuple[dict[str, Any], int]:

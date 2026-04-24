@@ -21,3 +21,5 @@ pip-wheel-metadata/
 Thumbs.db
 node_modules/
 scripts/node_modules/
+desktop/ui/.npm-cache/
+*.tsbuildinfo

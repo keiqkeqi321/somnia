@@ -65,6 +65,28 @@ def serialize_turn_result(result: Any) -> dict[str, Any]:
     }
 
 
+def serialize_tool_log_index_entry(entry: Any) -> dict[str, Any]:
+    return {
+        "id": str(entry.get("id", "")).strip(),
+        "timestamp": float(entry.get("timestamp", 0.0) or 0.0),
+        "actor": str(entry.get("actor", "")).strip(),
+        "tool_name": str(entry.get("tool_name", "")).strip(),
+        "category": str(entry.get("category", "")).strip(),
+        "path": str(entry.get("path", "")).strip(),
+    }
+
+
+def serialize_tool_log_detail(entry: Any) -> dict[str, Any]:
+    payload = deepcopy(dict(entry or {}))
+    payload["id"] = str(payload.get("id", "")).strip()
+    payload["actor"] = str(payload.get("actor", "")).strip()
+    payload["tool_name"] = str(payload.get("tool_name", "")).strip()
+    payload["category"] = str(payload.get("category", "")).strip()
+    payload["timestamp"] = float(payload.get("timestamp", 0.0) or 0.0)
+    payload["tool_input"] = deepcopy(dict(payload.get("tool_input", {}) or {}))
+    return payload
+
+
 def serialize_app_event(event: Any) -> dict[str, Any]:
     return {
         "type": str(getattr(event, "type", "")).strip(),

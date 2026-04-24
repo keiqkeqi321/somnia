@@ -1,0 +1,27 @@
+{
+  "name": "somnia-desktop-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "python scripts/esbuild_ui.py dev",
+    "build": "tsc --noEmit && python scripts/esbuild_ui.py build",
+    "preview": "python -m http.server 4173 --directory dist",
+    "typecheck": "tsc --noEmit",
+    "dev:sidecar": "python -m desktop.backend.bootstrap --workspace ../..",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
