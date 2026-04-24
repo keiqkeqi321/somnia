@@ -1,6 +1,6 @@
 ﻿{
     "name":  "somnia",
-    "version":  "0.4.9",
+    "version":  "0.5.0",
     "description":  "A modular AI agent CLI — npm wrapper that calls the Python open_somnia package",
     "main":  "index.js",
     "bin":  {

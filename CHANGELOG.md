@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 (2026-04-24)
+
+- Unify persisted image references across history (da8f075)
+- feat(cli): add clipboard image paste support (3bfd0ba)
+- Improve interrupt responsiveness for tool execution (5c505ec)
+- Add multimodal image reading support (c0ba6fe)
+- Handle multiline paste as one REPL input (30a3e69)
+
 ## 0.4.9 (2026-04-22)
 
 - Fix Windows CJK prompt cursor drift (030b199)
