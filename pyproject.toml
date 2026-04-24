@@ -36,13 +36,14 @@ Issues = "https://github.com/your-org/somnia/issues"
 
 [project.scripts]
 somnia = "open_somnia.cli.main:main"
+somnia-sidecar = "desktop.backend.bootstrap:main"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["open_somnia*"]
+include = ["open_somnia*", "desktop*"]
 
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}
