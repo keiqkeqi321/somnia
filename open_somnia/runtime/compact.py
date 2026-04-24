@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from open_somnia.providers.base import ProviderError
-from open_somnia.runtime.messages import normalize_tool_importance
+from open_somnia.runtime.messages import image_source_block_to_reference, normalize_tool_importance
 
 
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
@@ -127,6 +127,52 @@ def _tool_result_length(item: dict[str, Any]) -> int:
 def _strip_tool_result_metadata(item: dict[str, Any]) -> None:
     item.pop("raw_output", None)
     item.pop("log_id", None)
+
+
+def _is_tool_result_message(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(item, dict) and item.get("type") == "tool_result" for item in content)
+
+
+def _message_contains_image_blocks(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(item, dict) and str(item.get("type", "")).strip() in {"image_url", "input_image"}
+        for item in content
+    )
+
+
+def _stale_user_image_placeholder(item: dict[str, Any]) -> dict[str, Any]:
+    return image_source_block_to_reference(item, origin="user_input")
+
+
+def _strip_stale_user_image_blocks(payload_messages: list[dict[str, Any]]) -> None:
+    latest_user_message_index: int | None = None
+    latest_user_message_has_images = False
+    for index, message in enumerate(payload_messages):
+        if message.get("role") != "user" or _is_tool_result_message(message):
+            continue
+        latest_user_message_index = index
+        latest_user_message_has_images = _message_contains_image_blocks(message)
+    keep_image_blocks_index = latest_user_message_index if latest_user_message_has_images else None
+    for index, message in enumerate(payload_messages):
+        if message.get("role") != "user" or _is_tool_result_message(message):
+            continue
+        if index == keep_image_blocks_index or not _message_contains_image_blocks(message):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        message["content"] = [
+            _stale_user_image_placeholder(item)
+            if isinstance(item, dict) and str(item.get("type", "")).strip() in {"image_url", "input_image"}
+            else item
+            for item in content
+        ]
 
 
 def _strip_stale_tool_result_content_blocks(payload_messages: list[dict[str, Any]]) -> None:
@@ -663,6 +709,7 @@ def build_payload_messages(
 ) -> list[dict[str, Any]]:
     payload_messages = _clone_messages_for_payload(messages)
     apply_semantic_compression(payload_messages, semantic_decisions)
+    _strip_stale_user_image_blocks(payload_messages)
     rounds = _tool_result_rounds(payload_messages)
     for _, tool_results in rounds:
         for item in tool_results:

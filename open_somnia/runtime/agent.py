@@ -61,6 +61,7 @@ from open_somnia.runtime.execution_mode import (
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
+    consume_ephemeral_image_blocks,
     decode_embedded_user_message,
     make_tool_result_item,
     make_tool_result_message,
@@ -689,6 +690,29 @@ class OpenAgentRuntime:
             system_prompt=system_prompt,
             tools=tools,
         )
+
+    def _consume_ephemeral_image_history(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        changed = consume_ephemeral_image_blocks(messages)
+        if not changed:
+            return False
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return True
+        payload_cache = getattr(self, "_payload_message_cache", None)
+        if isinstance(payload_cache, dict):
+            payload_cache.pop(normalized_session_id, None)
+        usage_cache = getattr(self, "_context_usage_cache", None)
+        if isinstance(usage_cache, dict):
+            usage_cache.pop(normalized_session_id, None)
+        recent_usage = getattr(self, "_recent_context_usage", None)
+        if isinstance(recent_usage, dict):
+            recent_usage.pop(normalized_session_id, None)
+        return True
 
     def _note_context_governance(self, session_id: str, kind: str, label: str) -> None:
         events = getattr(self, "_context_governance_events", None)
@@ -2481,6 +2505,12 @@ class OpenAgentRuntime:
         latest_user_message = render_text_content(message.get("content", ""))
         return message, latest_user_message
 
+    def _append_transcript_entry(self, session_id: str, entry: dict[str, Any]) -> None:
+        transcript_entry = deepcopy(entry)
+        if isinstance(transcript_entry, dict):
+            consume_ephemeral_image_blocks([transcript_entry])
+        self.transcript_store.append(session_id, transcript_entry)
+
     def run_turn(
         self,
         session: AgentSession,
@@ -2494,7 +2524,7 @@ class OpenAgentRuntime:
         session.last_turn_file_changes = []
         task_anchor_message, latest_user_message = self._normalize_user_input_message(user_input)
         session.messages.append(task_anchor_message)
-        self.transcript_store.append(session.id, task_anchor_message)
+        self._append_transcript_entry(session.id, task_anchor_message)
         self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
         self._run_automatic_context_janitor(session)
         return self._agent_loop(
@@ -2527,7 +2557,7 @@ class OpenAgentRuntime:
                 if loop_user_message:
                     task_anchor_message, latest_user_message = self._normalize_user_input_message(loop_user_message)
                     session.messages.append(task_anchor_message)
-                    self.transcript_store.append(session.id, task_anchor_message)
+                    self._append_transcript_entry(session.id, task_anchor_message)
                     self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
                     self._run_automatic_context_janitor(session)
                 background_notifications = self.background_manager.drain()
@@ -2581,6 +2611,7 @@ class OpenAgentRuntime:
                     system_prompt=system_prompt,
                     tools=tool_schemas,
                 )
+                self._consume_ephemeral_image_history(session.messages, session_id=session.id)
                 dump_path = self._dump_provider_payload_if_enabled(
                     session=session,
                     system_prompt=system_prompt,
@@ -2628,7 +2659,7 @@ class OpenAgentRuntime:
                 if not turn.has_tool_calls():
                     assistant_message = turn.as_message()
                     session.messages.append(assistant_message)
-                    self.transcript_store.append(session.id, assistant_message)
+                    self._append_transcript_entry(session.id, assistant_message)
                     final_text = "\n\n".join(turn.text_blocks).strip()
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
@@ -2688,7 +2719,7 @@ class OpenAgentRuntime:
                         log_id=log_id,
                     )
                     tool_results.append(result)
-                    self.transcript_store.append(
+                    self._append_transcript_entry(
                         session.id,
                         {
                             "role": "tool",
@@ -2710,7 +2741,7 @@ class OpenAgentRuntime:
 
                 assistant_message = turn.as_message(executed_tool_calls)
                 session.messages.append(assistant_message)
-                self.transcript_store.append(session.id, assistant_message)
+                self._append_transcript_entry(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
                 tool_result_message = make_tool_result_message(tool_results)
                 session.messages.append(tool_result_message)

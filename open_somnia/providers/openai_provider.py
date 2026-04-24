@@ -13,8 +13,10 @@ from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, 
 from open_somnia.reasoning import openai_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
+    IMAGE_REFERENCE_BLOCK_TYPE,
     active_tool_result_content_blocks,
     AssistantTurn,
+    render_image_reference_text,
     ToolCall,
     normalize_tool_importance,
     prepare_image_bytes_for_model,
@@ -92,6 +94,10 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 text = str(item.get("text", ""))
                 text_parts.append(text)
                 content_parts.append({"type": "text", "text": text})
+            elif item["type"] == IMAGE_REFERENCE_BLOCK_TYPE:
+                text = render_image_reference_text(item)
+                text_parts.append(text)
+                content_parts.append({"type": "text", "text": text})
             elif item["type"] in {"image_url", "input_image"}:
                 image_part = _openai_image_part(item)
                 if image_part is not None:
@@ -149,6 +155,11 @@ def _openai_multimodal_content(blocks: list[dict[str, Any]]) -> str | list[dict[
         block_type = str(item.get("type", "")).strip()
         if block_type == "text":
             text = str(item.get("text", ""))
+            text_parts.append(text)
+            content_parts.append({"type": "text", "text": text})
+            continue
+        if block_type == IMAGE_REFERENCE_BLOCK_TYPE:
+            text = render_image_reference_text(item)
             text_parts.append(text)
             content_parts.append({"type": "text", "text": text})
             continue

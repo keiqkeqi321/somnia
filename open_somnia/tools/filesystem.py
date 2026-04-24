@@ -15,7 +15,11 @@ import re
 from typing import Any
 
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import guess_image_media_type
+from open_somnia.runtime.messages import (
+    guess_image_media_type,
+    make_image_reference_block,
+    render_image_reference_text,
+)
 from open_somnia.tools.registry import ToolDefinition
 
 READ_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "cp936")
@@ -553,7 +557,13 @@ def read_image(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
             "Supported formats: .gif, .jpg, .jpeg, .png, .webp."
         )
     relative_path = _relative_label(workspace_root, path)
-    summary = f"Loaded image {relative_path} ({media_type}) for model inspection."
+    reference_block = make_image_reference_block(
+        path=relative_path,
+        absolute_path=str(path),
+        media_type=media_type,
+        origin="tool_result",
+    )
+    summary = render_image_reference_text(reference_block, delivery=True)
     return {
         "status": "ok",
         "action": "read_image",
@@ -565,7 +575,7 @@ def read_image(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
         "tool_result_content": [
             {
                 "type": "text",
-                "text": f"Tool read_image loaded local workspace image {relative_path} ({media_type}) for inspection.",
+                "text": summary,
             },
             {
                 "type": "input_image",

@@ -5,7 +5,12 @@ from typing import Any
 
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message, make_user_text_message
+from open_somnia.runtime.messages import (
+    consume_ephemeral_image_blocks,
+    make_tool_result_item,
+    make_tool_result_message,
+    make_user_text_message,
+)
 from open_somnia.tools.filesystem import (
     GREP_TOOL_DESCRIPTION,
     edit_file,
@@ -57,6 +62,7 @@ class SubagentRunner:
                 if repair_message:
                     messages.append(make_user_text_message(repair_message))
             payload_messages = self.runtime._build_payload_messages(messages, session=None)
+            consume_ephemeral_image_blocks(messages)
             turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
             messages.append(turn.as_message())
             if not turn.has_tool_calls():

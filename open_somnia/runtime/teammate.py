@@ -6,7 +6,11 @@ import time
 
 from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import make_tool_result_item, make_tool_result_message
+from open_somnia.runtime.messages import (
+    consume_ephemeral_image_blocks,
+    make_tool_result_item,
+    make_tool_result_message,
+)
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.registry import ToolRegistry
 from open_somnia.tools.tool_errors import (
@@ -329,6 +333,7 @@ class TeammateRuntimeManager:
 
                     self._update_member(name, status="working", activity="waiting_for_model")
                     payload_messages = self.runtime._build_payload_messages(messages, session=None)
+                    consume_ephemeral_image_blocks(messages)
                     turn = self.runtime.complete(
                         system_prompt,
                         payload_messages,

@@ -29,8 +29,10 @@ from open_somnia.runtime.messages import (
     MODEL_IMAGE_INLINE_MAX_BYTES_WITHOUT_PILLOW,
     active_tool_result_content_blocks,
     AssistantTurn,
+    consume_ephemeral_image_blocks,
     ToolCall,
     encode_embedded_user_message,
+    IMAGE_REFERENCE_BLOCK_TYPE,
     make_user_multimodal_message,
     prepare_image_bytes_for_model,
 )
@@ -1846,7 +1848,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(detection_calls, ["look at this image"])
         self.assertEqual(transcript_entries[0]["role"], "user")
         self.assertEqual(transcript_entries[0]["content"][0], {"type": "text", "text": "look at this image"})
-        self.assertEqual(transcript_entries[0]["content"][1]["type"], "input_image")
+        self.assertEqual(transcript_entries[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(transcript_entries[0]["content"][1]["path"], "images/tiny.png")
         self.assertEqual(loop_messages[-1]["content"][1]["type"], "input_image")
 
     def test_read_image_tool_returns_structured_tool_result_content(self) -> None:
@@ -1863,6 +1866,61 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result["tool_result_text"], result["message"])
         self.assertEqual(result["tool_result_content"][0]["type"], "text")
         self.assertEqual(result["tool_result_content"][1]["type"], "input_image")
+        self.assertIn("Visual data attached for the next model turn only", result["tool_result_text"])
+
+    def test_consume_ephemeral_image_blocks_rewrites_user_image_inputs_to_references(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {
+                        "type": "input_image",
+                        "path": "one.png",
+                        "absolute_path": "D:/workspace/one.png",
+                        "media_type": "image/png",
+                    },
+                ],
+            }
+        ]
+
+        changed = consume_ephemeral_image_blocks(messages)
+
+        self.assertTrue(changed)
+        self.assertEqual(messages[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(messages[0]["content"][1]["path"], "one.png")
+
+    def test_consume_ephemeral_image_blocks_rewrites_tool_results_to_reference_text(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": "Loaded image one.png (image/png) for model inspection.",
+                        "tool_result_text": "Loaded image one.png (image/png) for model inspection.",
+                        "content_blocks": [
+                            {"type": "text", "text": "Loaded image one.png (image/png) for model inspection."},
+                            {
+                                "type": "input_image",
+                                "path": "one.png",
+                                "absolute_path": "D:/workspace/one.png",
+                                "media_type": "image/png",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        changed = consume_ephemeral_image_blocks(messages)
+
+        self.assertTrue(changed)
+        result = messages[0]["content"][0]
+        self.assertEqual(result["content_blocks"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(result["tool_result_text"], result["content"])
+        self.assertIn("Visual data omitted from active context", result["content"])
 
     def test_prepare_image_bytes_for_model_rejects_large_input_without_pillow(self) -> None:
         image_root = self._stable_test_dir("read-image-limit")
@@ -1940,6 +1998,87 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("tool_result_text", first_result)
         self.assertIn("content_blocks", second_result)
 
+    def test_build_payload_messages_keeps_only_latest_user_image_blocks_active(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first image"},
+                    {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Noted.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "second image"},
+                    {"type": "input_image", "path": "two.png", "absolute_path": "D:/workspace/two.png", "media_type": "image/png"},
+                ],
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        self.assertEqual(messages[0]["content"][1]["type"], "input_image")
+        self.assertEqual(payload_messages[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(payload_messages[2]["content"][1]["type"], "input_image")
+
+    def test_build_payload_messages_strips_all_user_image_blocks_when_latest_user_message_has_no_image(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "first image"},
+                    {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Noted.",
+            },
+            {
+                "role": "user",
+                "content": "Now answer using text only.",
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        self.assertEqual(payload_messages[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(payload_messages[0]["content"][1]["path"], "one.png")
+
+    def test_build_payload_messages_keeps_current_turn_user_image_blocks_after_tool_results(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "echo ok"}}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call-1",
+                        "content": "ok",
+                    }
+                ],
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        self.assertEqual(payload_messages[0]["content"][1]["type"], "input_image")
+
     def test_active_tool_result_content_blocks_ignores_compacted_image_results(self) -> None:
         blocks = active_tool_result_content_blocks(
             {
@@ -1950,6 +2089,26 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 "content_blocks": [
                     {"type": "text", "text": "Tool read_image loaded one.png."},
                     {"type": "input_image", "path": "one.png", "absolute_path": "D:/workspace/one.png", "media_type": "image/png"},
+                ],
+            }
+        )
+
+        self.assertEqual(blocks, [])
+
+    def test_active_tool_result_content_blocks_ignores_consumed_image_references(self) -> None:
+        blocks = active_tool_result_content_blocks(
+            {
+                "type": "tool_result",
+                "tool_call_id": "call-1",
+                "content": '[Image reference | one.png (image/png)] Visual data omitted from active context. Re-read with read_image(path="one.png") if needed.',
+                "tool_result_text": '[Image reference | one.png (image/png)] Visual data omitted from active context. Re-read with read_image(path="one.png") if needed.',
+                "content_blocks": [
+                    {
+                        "type": IMAGE_REFERENCE_BLOCK_TYPE,
+                        "path": "one.png",
+                        "absolute_path": "D:/workspace/one.png",
+                        "media_type": "image/png",
+                    }
                 ],
             }
         )
@@ -2968,11 +3127,49 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(messages[1]["role"], "assistant")
         self.assertEqual(messages[1]["tool_calls"][0]["function"]["name"], "read_image")
         self.assertEqual(messages[2]["role"], "tool")
-        self.assertEqual(messages[2]["content"], "Loaded image tiny.png (image/png) for model inspection.")
+        self.assertIn("tiny.png", messages[2]["content"])
         self.assertEqual(messages[3]["role"], "user")
         self.assertEqual(messages[3]["content"][0]["type"], "text")
         self.assertEqual(messages[3]["content"][1]["type"], "image_url")
         self.assertTrue(messages[3]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"))
+
+    def test_openai_provider_debug_request_payload_renders_image_references_as_text(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "remember this image"},
+                        {
+                            "type": IMAGE_REFERENCE_BLOCK_TYPE,
+                            "path": "tiny.png",
+                            "absolute_path": "D:/workspace/tiny.png",
+                            "media_type": "image/png",
+                        },
+                    ],
+                }
+            ],
+            [],
+            1024,
+            stream=False,
+        )
+
+        content = payload["body"]["messages"][1]["content"]
+        self.assertIsInstance(content, str)
+        self.assertIn("remember this image", content)
+        self.assertIn("Visual data omitted from active context", content)
 
     def test_openai_provider_ignores_compacted_image_tool_results(self) -> None:
         image_root = self._stable_test_dir("vision-openai-tool-result-compacted")
@@ -3130,6 +3327,44 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(tool_result_block["content"][1]["type"], "image")
         self.assertEqual(tool_result_block["content"][1]["source"]["media_type"], "image/png")
         self.assertTrue(tool_result_block["content"][1]["source"]["data"])
+
+    def test_anthropic_provider_debug_request_payload_renders_image_references_as_text(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "remember this image"},
+                        {
+                            "type": IMAGE_REFERENCE_BLOCK_TYPE,
+                            "path": "tiny.png",
+                            "absolute_path": "D:/workspace/tiny.png",
+                            "media_type": "image/png",
+                        },
+                    ],
+                }
+            ],
+            [],
+            4096,
+            stream=False,
+        )
+
+        content = payload["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "remember this image"})
+        self.assertEqual(content[1]["type"], "text")
+        self.assertIn("Visual data omitted from active context", content[1]["text"])
 
     def test_anthropic_provider_debug_request_payload_clamps_legacy_budget(self) -> None:
         provider = AnthropicProvider(
@@ -3389,6 +3624,73 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         with self.assertRaises(TurnInterrupted):
             OpenAgentRuntime.run_turn(runtime, session, "search the repo")
+
+    def test_agent_loop_consumes_ephemeral_images_after_payload_build_and_clears_caches(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
+        runtime._run_automatic_context_janitor = lambda session: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = (
+            lambda messages, **kwargs: json.loads(json.dumps(messages, ensure_ascii=False))
+        )
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=0, max_tokens=1000)
+        runtime._agent_loop_result = lambda final_text, status="completed", session=None, **kwargs: final_text
+        runtime.interrupt_active_teammates = lambda reason="lead_interrupt": 0
+        runtime._hook_manager = lambda: SimpleNamespace(
+            on_assistant_response=lambda *args, **kwargs: None,
+            on_turn_failed=lambda *args, **kwargs: None,
+        )
+        runtime.registry = SimpleNamespace(execute=lambda ctx, name, payload: "ok")
+        runtime._payload_message_cache = {"session-1": (("stale",), [{"role": "user", "content": "stale"}])}
+        runtime._context_usage_cache = {"session-1": (("stale",), ContextWindowUsage(used_tokens=1, max_tokens=10))}
+        runtime._recent_context_usage = {"session-1": ContextWindowUsage(used_tokens=1, max_tokens=10)}
+
+        payloads: list[list[dict[str, object]]] = []
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+
+        runtime.complete = fake_complete
+
+        session = AgentSession(id="session-1")
+        user_message = make_user_multimodal_message(
+            "look at this image",
+            [
+                {
+                    "type": "input_image",
+                    "path": "scripts/image.png",
+                    "absolute_path": "D:/workspace/scripts/image.png",
+                    "media_type": "image/png",
+                }
+            ],
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, encode_embedded_user_message(user_message))
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(payloads[0][0]["content"][1]["type"], "input_image")
+        self.assertEqual(session.messages[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertNotIn("session-1", runtime._payload_message_cache)
+        self.assertNotIn("session-1", runtime._context_usage_cache)
+        self.assertNotIn("session-1", runtime._recent_context_usage)
 
     def test_agent_loop_stops_turn_after_request_authorization_and_replans(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

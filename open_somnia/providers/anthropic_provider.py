@@ -11,8 +11,10 @@ from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, 
 from open_somnia.reasoning import anthropic_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
+    IMAGE_REFERENCE_BLOCK_TYPE,
     active_tool_result_content_blocks,
     AssistantTurn,
+    render_image_reference_text,
     ToolCall,
     normalize_tool_importance,
     parse_image_data_url,
@@ -77,6 +79,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
         for item in content:
             if item["type"] == "text":
                 blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            elif item["type"] == IMAGE_REFERENCE_BLOCK_TYPE:
+                blocks.append({"type": "text", "text": render_image_reference_text(item)})
             elif item["type"] in {"image_url", "input_image"}:
                 image_block = _anthropic_image_block(item)
                 if image_block is not None:
@@ -125,6 +129,9 @@ def _anthropic_tool_result_content(value: Any) -> list[dict[str, Any]]:
         block_type = str(item.get("type", "")).strip()
         if block_type == "text":
             blocks.append({"type": "text", "text": str(item.get("text", ""))})
+            continue
+        if block_type == IMAGE_REFERENCE_BLOCK_TYPE:
+            blocks.append({"type": "text", "text": render_image_reference_text(item)})
             continue
         if block_type not in {"image_url", "input_image"}:
             continue

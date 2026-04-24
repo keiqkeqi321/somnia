@@ -44,6 +44,7 @@ SUPPORTED_IMAGE_MEDIA_TYPES = {
     "image/png",
     "image/webp",
 }
+IMAGE_REFERENCE_BLOCK_TYPE = "image_reference"
 IMAGE_DATA_URL_PATTERN = re.compile(
     r"^data:(image/(?:gif|jpeg|png|webp));base64,([a-z0-9+/=\s]+)$",
     re.IGNORECASE,
@@ -280,6 +281,157 @@ def make_user_multimodal_message(text: str, blocks: list[dict[str, Any]]) -> Nor
     return make_user_content_message(content_blocks)
 
 
+def make_image_reference_block(
+    *,
+    path: str | None = None,
+    absolute_path: str | None = None,
+    media_type: str | None = None,
+    image_url: str | None = None,
+    origin: str | None = None,
+) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": IMAGE_REFERENCE_BLOCK_TYPE}
+    normalized_path = str(path or "").strip().replace("\\", "/")
+    normalized_absolute_path = str(absolute_path or "").strip()
+    normalized_media_type = str(media_type or "").strip().lower()
+    normalized_image_url = str(image_url or "").strip()
+    normalized_origin = str(origin or "").strip().lower()
+    if normalized_path:
+        block["path"] = normalized_path
+    if normalized_absolute_path:
+        block["absolute_path"] = normalized_absolute_path
+    if normalized_media_type:
+        block["media_type"] = normalized_media_type
+    if normalized_image_url:
+        block["image_url"] = normalized_image_url
+    if normalized_origin:
+        block["origin"] = normalized_origin
+    return block
+
+
+def image_source_block_to_reference(item: dict[str, Any], *, origin: str | None = None) -> dict[str, Any]:
+    block_type = str(item.get("type", "")).strip()
+    if block_type == IMAGE_REFERENCE_BLOCK_TYPE:
+        return dict(item)
+    if block_type == "input_image":
+        return make_image_reference_block(
+            path=item.get("path"),
+            absolute_path=item.get("absolute_path"),
+            media_type=item.get("media_type"),
+            origin=origin,
+        )
+    if block_type == "image_url":
+        image_payload = item.get("image_url", {})
+        if isinstance(image_payload, dict):
+            url = image_payload.get("url")
+        else:
+            url = image_payload
+        media_type = None
+        parsed = parse_image_data_url(str(url or "").strip())
+        if parsed is not None:
+            media_type = parsed[0]
+            url = ""
+        return make_image_reference_block(
+            media_type=media_type,
+            image_url=str(url or "").strip(),
+            origin=origin,
+        )
+    return dict(item)
+
+
+def _image_reference_label(block: dict[str, Any]) -> str:
+    image_url = str(block.get("image_url", "")).strip()
+    if image_url and parse_image_data_url(image_url) is not None:
+        image_url = ""
+    path = str(block.get("path") or block.get("absolute_path") or image_url or "image").strip()
+    media_type = str(block.get("media_type", "")).strip().lower()
+    if media_type:
+        return f"{path} ({media_type})"
+    return path or "image"
+
+
+def _image_reference_read_hint(block: dict[str, Any]) -> str:
+    command_path = str(block.get("path") or "").strip().replace("\\", "/")
+    if command_path:
+        return f'Re-read with read_image(path="{command_path}") if needed.'
+    return "Re-send the image if you need to inspect it again."
+
+
+def render_image_reference_text(block: dict[str, Any], *, delivery: bool = False) -> str:
+    prefix = "Image ready" if delivery else "Image reference"
+    status = (
+        "Visual data attached for the next model turn only."
+        if delivery
+        else "Visual data omitted from active context."
+    )
+    return f"[{prefix} | {_image_reference_label(block)}] {status} {_image_reference_read_hint(block)}"
+
+
+def consume_ephemeral_image_blocks(messages: list[dict[str, Any]]) -> bool:
+    changed = False
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            updated_content: list[Any] = []
+            message_changed = False
+            for item in content:
+                if not isinstance(item, dict):
+                    updated_content.append(item)
+                    continue
+                block_type = str(item.get("type", "")).strip()
+                if block_type in {"input_image", "image_url"}:
+                    updated_content.append(
+                        image_source_block_to_reference(
+                            item,
+                            origin="user_input",
+                        )
+                    )
+                    message_changed = True
+                    continue
+                if block_type == "tool_result":
+                    updated_item = dict(item)
+                    content_blocks = updated_item.get("content_blocks")
+                    if isinstance(content_blocks, list):
+                        updated_blocks: list[dict[str, Any]] = []
+                        block_changed = False
+                        image_references: list[dict[str, Any]] = []
+                        for block in content_blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            nested_block_type = str(block.get("type", "")).strip()
+                            if nested_block_type in {"input_image", "image_url"}:
+                                reference_block = image_source_block_to_reference(
+                                    block,
+                                    origin="tool_result",
+                                )
+                                updated_blocks.append(reference_block)
+                                image_references.append(reference_block)
+                                block_changed = True
+                            else:
+                                updated_blocks.append(dict(block))
+                        if block_changed:
+                            if image_references:
+                                reference_text = "\n".join(
+                                    render_image_reference_text(reference_block)
+                                    for reference_block in image_references
+                                )
+                                updated_item["content"] = reference_text
+                                updated_item["tool_result_text"] = reference_text
+                                updated_item["content_blocks"] = [
+                                    {"type": "text", "text": reference_text},
+                                    *image_references,
+                                ]
+                            else:
+                                updated_item["content_blocks"] = updated_blocks
+                            message_changed = True
+                    updated_content.append(updated_item)
+                    continue
+                updated_content.append(dict(item))
+            if message_changed:
+                message["content"] = updated_content
+                changed = True
+    return changed
+
+
 def make_tool_result_message(results: list[dict[str, Any]]) -> NormalizedMessage:
     return {"role": "user", "content": results}
 
@@ -295,7 +447,7 @@ def normalize_tool_result_content_blocks(value: Any) -> list[dict[str, Any]]:
         if block_type == "text":
             normalized.append({"type": "text", "text": str(item.get("text", ""))})
             continue
-        if block_type in {"image_url", "input_image"}:
+        if block_type in {"image_url", "input_image", IMAGE_REFERENCE_BLOCK_TYPE}:
             block = dict(item)
             block["type"] = block_type
             normalized.append(block)
@@ -310,7 +462,10 @@ def active_tool_result_content_blocks(item: Any) -> list[dict[str, Any]]:
         current_content = str(item.get("content", ""))
         if current_content != stored_tool_result_text:
             return []
-    return normalize_tool_result_content_blocks(item.get("content_blocks"))
+    blocks = normalize_tool_result_content_blocks(item.get("content_blocks"))
+    if not any(str(block.get("type", "")).strip() in {"image_url", "input_image"} for block in blocks):
+        return []
+    return blocks
 
 
 def make_tool_result_item(
@@ -396,6 +551,8 @@ def render_text_content(content: Any) -> str:
             if isinstance(item, dict):
                 if item.get("type") == "text":
                     parts.append(str(item.get("text", "")))
+                elif item.get("type") == IMAGE_REFERENCE_BLOCK_TYPE:
+                    parts.append(render_image_reference_text(item))
                 elif item.get("type") == "tool_result":
                     parts.append(str(item.get("content", "")))
         return "\n".join(part for part in parts if part).strip()
