@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="148" y1="112" x2="876" y2="920" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#152b4a" />
+      <stop offset="0.54" stop-color="#0b1425" />
+      <stop offset="1" stop-color="#08101b" />
+    </linearGradient>
+    <radialGradient
+      id="blueGlow"
+      cx="0"
+      cy="0"
+      r="1"
+      gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(286 216) rotate(38) scale(458 396)"
+    >
+      <stop stop-color="#5fb6ff" stop-opacity="0.34" />
+      <stop offset="1" stop-color="#5fb6ff" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient
+      id="warmGlow"
+      cx="0"
+      cy="0"
+      r="1"
+      gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(770 806) rotate(224) scale(408 376)"
+    >
+      <stop stop-color="#ffb05c" stop-opacity="0.3" />
+      <stop offset="1" stop-color="#ffb05c" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="moon" x1="282" y1="248" x2="650" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a8ebff" />
+      <stop offset="0.52" stop-color="#5fb6ff" />
+      <stop offset="1" stop-color="#3d8fde" />
+    </linearGradient>
+    <linearGradient id="spark" x1="652" y1="264" x2="810" y2="432" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe1b3" />
+      <stop offset="1" stop-color="#ffab55" />
+    </linearGradient>
+  </defs>
+
+  <rect x="80" y="80" width="864" height="864" rx="236" fill="url(#bg)" />
+  <rect x="80" y="80" width="864" height="864" rx="236" fill="url(#blueGlow)" />
+  <rect x="80" y="80" width="864" height="864" rx="236" fill="url(#warmGlow)" />
+  <rect
+    x="80"
+    y="80"
+    width="864"
+    height="864"
+    rx="236"
+    stroke="#8ec4ff"
+    stroke-opacity="0.08"
+    stroke-width="2"
+  />
+
+  <mask id="moonMask" maskUnits="userSpaceOnUse" x="248" y="248" width="520" height="520">
+    <rect x="248" y="248" width="520" height="520" fill="black" />
+    <circle cx="468" cy="524" r="220" fill="white" />
+    <circle cx="612" cy="432" r="188" fill="black" />
+  </mask>
+  <g mask="url(#moonMask)">
+    <rect x="248" y="248" width="520" height="520" fill="url(#moon)" />
+  </g>
+
+  <path
+    d="M734 252L760 326L834 352L760 378L734 452L708 378L634 352L708 326L734 252Z"
+    fill="url(#spark)"
+  />
+  <circle cx="660" cy="500" r="26" fill="#ffd7a1" fill-opacity="0.9" />
+</svg>

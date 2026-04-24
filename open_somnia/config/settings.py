@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tomllib
 from pathlib import Path
@@ -534,6 +535,11 @@ def _builtin_notify_target_script() -> Path:
     return _builtin_notify_install_dir() / "notify_user.py"
 
 
+def _skip_builtin_notify_bootstrap() -> bool:
+    raw = os.getenv("OPEN_SOMNIA_SKIP_BUILTIN_NOTIFY_BOOTSTRAP", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _install_builtin_notify_assets() -> Path:
     source = _builtin_notify_source_path()
     target = _builtin_notify_target_script()
@@ -644,6 +650,8 @@ def _builtin_notify_items(raw: dict) -> dict[str, dict[str, object]]:
 
 
 def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> None:
+    if _skip_builtin_notify_bootstrap():
+        return
     config_path = config_path or global_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []

@@ -24,6 +24,13 @@ from open_somnia.runtime.messages import AssistantTurn, ToolCall
 
 
 class SidecarServerTests(unittest.TestCase):
+    def _socket_buffer(self, client: socket.socket) -> bytearray:
+        buffers = getattr(self, "_socket_buffers", None)
+        if buffers is None:
+            buffers = {}
+            self._socket_buffers = buffers
+        return buffers.setdefault(id(client), bytearray())
+
     def _stable_test_dir(self, name: str) -> Path:
         root = Path.cwd() / ".tmp-tests" / f"{name}-{time.time_ns()}"
         root.mkdir(parents=True, exist_ok=True)
@@ -125,15 +132,24 @@ class SidecarServerTests(unittest.TestCase):
         return client
 
     def _read_http_header(self, client: socket.socket) -> str:
-        chunks: list[bytes] = []
+        buffer = self._socket_buffer(client)
         while True:
             chunk = client.recv(1024)
             if not chunk:
                 break
-            chunks.append(chunk)
-            if b"\r\n\r\n" in b"".join(chunks):
+            buffer.extend(chunk)
+            marker = buffer.find(b"\r\n\r\n")
+            if marker >= 0:
                 break
-        return b"".join(chunks).decode("latin-1")
+        marker = buffer.find(b"\r\n\r\n")
+        if marker < 0:
+            header = bytes(buffer)
+            buffer.clear()
+            return header.decode("latin-1")
+        header_end = marker + 4
+        header = bytes(buffer[:header_end])
+        del buffer[:header_end]
+        return header.decode("latin-1")
 
     def _read_ws_event(self, client: socket.socket, timeout: float = 2.0) -> dict:
         client.settimeout(timeout)
@@ -154,6 +170,12 @@ class SidecarServerTests(unittest.TestCase):
     def _recv_exact(self, client: socket.socket, size: int) -> bytes:
         remaining = size
         chunks: list[bytes] = []
+        buffer = self._socket_buffer(client)
+        if buffer:
+            take = min(len(buffer), remaining)
+            chunks.append(bytes(buffer[:take]))
+            del buffer[:take]
+            remaining -= take
         while remaining > 0:
             chunk = client.recv(remaining)
             if not chunk:
@@ -167,6 +189,9 @@ class SidecarServerTests(unittest.TestCase):
             client.sendall(b"\x88\x00")
         except Exception:
             pass
+        buffers = getattr(self, "_socket_buffers", None)
+        if buffers is not None:
+            buffers.pop(id(client), None)
         client.close()
 
     def _collect_events_until(self, client: socket.socket, predicate, timeout: float = 2.0) -> list[dict]:
@@ -345,6 +370,50 @@ class SidecarServerTests(unittest.TestCase):
             self.assertEqual(switch_payload["model"], "claude-sonnet-4-5")
             self.assertEqual(server.runtime.settings.provider.name, "anthropic")
             self.assertEqual(server.runtime.settings.provider.model, "claude-sonnet-4-5")
+        finally:
+            server.close()
+
+    def test_sidecar_exposes_runtime_status_and_tool_logs(self) -> None:
+        root = self._stable_test_dir("sidecar-status")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+
+            status, runtime_payload = self._request_json("GET", f"{server.base_url}/runtime/status")
+            self.assertEqual(status, 200)
+            self.assertEqual(runtime_payload["status"], "ready")
+            self.assertIn("execution_mode", runtime_payload)
+            self.assertIn("execution_mode_title", runtime_payload)
+            self.assertEqual(runtime_payload["open_session_count"], 0)
+            self.assertEqual(runtime_payload["pending_interaction_count"], 0)
+
+            session_status, session_response = self._request_json("POST", f"{server.base_url}/sessions", {})
+            self.assertEqual(session_status, 201)
+            self.assertIn("id", session_response["session"])
+
+            _, updated_runtime_payload = self._request_json("GET", f"{server.base_url}/runtime/status")
+            self.assertEqual(updated_runtime_payload["open_session_count"], 1)
+
+            log_entry = server.runtime.tool_log_store.write(
+                actor="lead",
+                tool_name="bash",
+                tool_input={"command": "git status"},
+                output="clean",
+                category="TOOL",
+            )
+
+            list_status, list_payload = self._request_json("GET", f"{server.base_url}/tool-logs?limit=10")
+            self.assertEqual(list_status, 200)
+            self.assertEqual(len(list_payload["tool_logs"]), 1)
+            self.assertEqual(list_payload["tool_logs"][0]["id"], log_entry["id"])
+            self.assertEqual(list_payload["tool_logs"][0]["tool_name"], "bash")
+
+            detail_status, detail_payload = self._request_json("GET", f"{server.base_url}/tool-logs/{log_entry['id']}")
+            self.assertEqual(detail_status, 200)
+            self.assertEqual(detail_payload["tool_log"]["id"], log_entry["id"])
+            self.assertEqual(detail_payload["tool_log"]["tool_input"]["command"], "git status")
+            self.assertIn("rendered", detail_payload["tool_log"])
         finally:
             server.close()
 

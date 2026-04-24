@@ -22,4 +22,7 @@ Thumbs.db
 node_modules/
 scripts/node_modules/
 desktop/ui/.npm-cache/
+desktop/ui/src-tauri/gen/
+desktop/ui/src-tauri/target/
+.local-tools/
 *.tsbuildinfo
