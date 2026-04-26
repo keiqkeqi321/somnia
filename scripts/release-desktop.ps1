@@ -21,6 +21,11 @@ $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:WebRequestHeaders = @{
     "User-Agent" = "somnia-desktop-release"
 }
+if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+    $script:WebRequestHeaders["Authorization"] = ("Bearer {0}" -f $env:GITHUB_TOKEN.Trim())
+} elseif (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+    $script:WebRequestHeaders["Authorization"] = ("Bearer {0}" -f $env:GH_TOKEN.Trim())
+}
 
 try {
     $securityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
@@ -123,19 +128,35 @@ function Invoke-DownloadFile {
         return $DestinationPath
     }
 
-    Write-Host ("==> Downloading {0}" -f $Label) -ForegroundColor Cyan
-    Write-Host ("    {0}" -f $Url) -ForegroundColor DarkCyan
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        Write-Host ("==> Downloading {0} (attempt {1}/3)" -f $Label, $attempt) -ForegroundColor Cyan
+        Write-Host ("    {0}" -f $Url) -ForegroundColor DarkCyan
 
-    $request = @{
-        Uri     = $Url
-        OutFile = $DestinationPath
-        Headers = $script:WebRequestHeaders
-    }
-    if ($PSVersionTable.PSVersion.Major -lt 6) {
-        $request.UseBasicParsing = $true
+        $request = @{
+            Uri     = $Url
+            OutFile = $DestinationPath
+            Headers = $script:WebRequestHeaders
+        }
+        if ($PSVersionTable.PSVersion.Major -lt 6) {
+            $request.UseBasicParsing = $true
+        }
+
+        try {
+            Invoke-WebRequest @request
+            return $DestinationPath
+        }
+        catch {
+            Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+            if ($attempt -ge 3) {
+                throw
+            }
+
+            $delaySeconds = 2 * $attempt
+            Write-Host ("Download failed for {0}; retrying in {1}s." -f $Label, $delaySeconds) -ForegroundColor DarkYellow
+            Start-Sleep -Seconds $delaySeconds
+        }
     }
 
-    Invoke-WebRequest @request
     return $DestinationPath
 }
 
@@ -151,6 +172,54 @@ function Invoke-JsonRequest {
     }
 
     return Invoke-RestMethod @request
+}
+
+function Resolve-GitHubLatestReleaseTag {
+    param(
+        [string]$Repository,
+        [string]$FallbackTag = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Repository)) {
+        throw "Repository is required."
+    }
+
+    $latestReleaseUrl = "https://github.com/{0}/releases/latest" -f $Repository.Trim()
+    $request = @{
+        Uri     = $latestReleaseUrl
+        Headers = $script:WebRequestHeaders
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        $request.UseBasicParsing = $true
+    }
+
+    try {
+        $response = Invoke-WebRequest @request
+        $responseUri = $null
+        if ($response.BaseResponse -and $response.BaseResponse.ResponseUri) {
+            $responseUri = $response.BaseResponse.ResponseUri
+        } elseif ($response.Headers -and $response.Headers.Location) {
+            $responseUri = [System.Uri]$response.Headers.Location
+        }
+
+        if ($responseUri) {
+            $segments = @($responseUri.AbsolutePath.TrimEnd("/") -split "/")
+            if ($segments.Length -ge 2 -and $segments[-2] -eq "tag" -and -not [string]::IsNullOrWhiteSpace($segments[-1])) {
+                return $segments[-1]
+            }
+        }
+    }
+    catch {
+        if ([string]::IsNullOrWhiteSpace($FallbackTag)) {
+            throw
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FallbackTag)) {
+        return $FallbackTag.Trim()
+    }
+
+    throw ("Unable to resolve latest GitHub release tag for {0}." -f $Repository)
 }
 
 function Resolve-LocalCargoCommand {
@@ -236,12 +305,65 @@ function Resolve-LlvmMingw {
     }
 }
 
-function Get-RustupInitUrl {
-    if (-not [string]::IsNullOrWhiteSpace($env:SOMNIA_RUSTUP_INIT_URL)) {
-        return $env:SOMNIA_RUSTUP_INIT_URL.Trim()
+function Get-WindowsNativeArchitecture {
+    $architecture = $null
+
+    try {
+        $processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        if ($processor) {
+            switch ([int]$processor.Architecture) {
+                12 { return "arm64" }
+                9 { return "x86_64" }
+                0 { return "i686" }
+            }
+        }
+    } catch {
     }
 
-    return "https://win.rustup.rs/x86_64"
+    foreach ($value in @($env:PROCESSOR_ARCHITEW6432, $env:PROCESSOR_ARCHITECTURE)) {
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+
+        switch ($value.Trim().ToUpperInvariant()) {
+            "ARM64" { return "arm64" }
+            "AMD64" { return "x86_64" }
+            "X86" { return "i686" }
+        }
+    }
+
+    return "x86_64"
+}
+
+function Resolve-RustupInitDownload {
+    if (-not [string]::IsNullOrWhiteSpace($env:SOMNIA_RUSTUP_INIT_URL)) {
+        $url = $env:SOMNIA_RUSTUP_INIT_URL.Trim()
+        $fileName = [System.IO.Path]::GetFileName(([System.Uri]$url).AbsolutePath)
+        if ([string]::IsNullOrWhiteSpace($fileName)) {
+            $fileName = "rustup-init-custom.exe"
+        }
+
+        return [PSCustomObject]@{
+            Url          = $url
+            FileName     = $fileName
+            Architecture = "custom"
+            Source       = "SOMNIA_RUSTUP_INIT_URL"
+        }
+    }
+
+    $architecture = Get-WindowsNativeArchitecture
+    $urlSegment = switch ($architecture) {
+        "arm64" { "aarch64" }
+        "i686" { "i686" }
+        default { "x86_64" }
+    }
+
+    return [PSCustomObject]@{
+        Url          = ("https://win.rustup.rs/{0}" -f $urlSegment)
+        FileName     = ("rustup-init-{0}.exe" -f $urlSegment)
+        Architecture = $architecture
+        Source       = ("rustup-init {0}" -f $urlSegment)
+    }
 }
 
 function Resolve-LlvmMingwDownload {
@@ -259,16 +381,13 @@ function Resolve-LlvmMingwDownload {
         }
     }
 
-    $release = Invoke-JsonRequest -Url "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
-    $asset = @($release.assets | Where-Object { $_.name -like "llvm-mingw-*-ucrt-x86_64.zip" } | Select-Object -First 1)
-    if (-not $asset) {
-        throw "Unable to locate an llvm-mingw x86_64 UCRT asset from the latest GitHub release."
-    }
+    $tag = Resolve-GitHubLatestReleaseTag -Repository "mstorsjo/llvm-mingw"
+    $fileName = "llvm-mingw-{0}-ucrt-x86_64.zip" -f $tag
 
     return [PSCustomObject]@{
-        Url      = $asset.browser_download_url
-        FileName = $asset.name
-        Source   = ("llvm-mingw {0}" -f $release.tag_name)
+        Url      = ("https://github.com/mstorsjo/llvm-mingw/releases/download/{0}/{1}" -f $tag, $fileName)
+        FileName = $fileName
+        Source   = ("llvm-mingw {0}" -f $tag)
     }
 }
 
@@ -280,8 +399,9 @@ function Install-WorkspaceRustToolchain {
     New-Directory -Path $script:LocalToolsRoot | Out-Null
     New-Directory -Path $script:DownloadCacheRoot | Out-Null
 
-    $rustupInitExe = Join-Path $script:DownloadCacheRoot "rustup-init-x86_64.exe"
-    Invoke-DownloadFile -Url (Get-RustupInitUrl) -DestinationPath $rustupInitExe -Label "rustup-init.exe" | Out-Null
+    $rustupInitDownload = Resolve-RustupInitDownload
+    $rustupInitExe = Join-Path $script:DownloadCacheRoot $rustupInitDownload.FileName
+    Invoke-DownloadFile -Url $rustupInitDownload.Url -DestinationPath $rustupInitExe -Label $rustupInitDownload.Source | Out-Null
 
     if ((Test-Path $script:LocalCargoHome) -or (Test-Path $script:LocalRustupHome)) {
         Write-Host "Removing incomplete workspace-local Rust toolchain before reinstall." -ForegroundColor DarkYellow
@@ -302,14 +422,29 @@ function Install-WorkspaceRustToolchain {
         $env:RUSTUP_INIT_SKIP_PATH_CHECK = "yes"
 
         Write-Host "==> Bootstrapping workspace-local Rust toolchain" -ForegroundColor Cyan
-        & $rustupInitExe `
-            -y `
-            --no-modify-path `
-            --profile minimal `
-            --default-host x86_64-pc-windows-gnullvm `
-            --default-toolchain stable-x86_64-pc-windows-gnullvm
-        if ($LASTEXITCODE -ne 0) {
-            throw ("rustup-init.exe failed with exit code {0}." -f $LASTEXITCODE)
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            try {
+                & $rustupInitExe `
+                    -y `
+                    --no-modify-path `
+                    --profile minimal `
+                    --default-host x86_64-pc-windows-gnullvm `
+                    --default-toolchain stable-x86_64-pc-windows-gnullvm
+                if ($LASTEXITCODE -ne 0) {
+                    throw ("rustup-init.exe failed with exit code {0}." -f $LASTEXITCODE)
+                }
+
+                break
+            }
+            catch {
+                if (($attempt -ge 2) -or -not (Test-Path $rustupInitExe)) {
+                    throw
+                }
+
+                Write-Host ("Cached {0} appears unusable; re-downloading." -f $rustupInitDownload.Source) -ForegroundColor DarkYellow
+                Remove-Item -LiteralPath $rustupInitExe -Force -ErrorAction SilentlyContinue
+                Invoke-DownloadFile -Url $rustupInitDownload.Url -DestinationPath $rustupInitExe -Label $rustupInitDownload.Source | Out-Null
+            }
         }
     }
     finally {
@@ -350,29 +485,45 @@ function Install-WorkspaceLlvmMingw {
     $archivePath = Join-Path $script:DownloadCacheRoot $download.FileName
     Invoke-DownloadFile -Url $download.Url -DestinationPath $archivePath -Label ("{0} archive" -f $download.Source) | Out-Null
 
-    $extractRoot = Join-Path $script:TempRoot ("llvm-mingw-extract-{0}" -f [System.Guid]::NewGuid().ToString("N"))
-    New-Directory -Path $extractRoot | Out-Null
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $extractRoot = Join-Path $script:TempRoot ("llvm-mingw-extract-{0}" -f [System.Guid]::NewGuid().ToString("N"))
+        New-Directory -Path $extractRoot | Out-Null
 
-    try {
-        if (Test-Path $script:LocalLlvmMingwRoot) {
-            Remove-TreeSafely -Path $script:LocalLlvmMingwRoot -AllowedParent $script:LocalToolsRoot
+        try {
+            if (Test-Path $script:LocalLlvmMingwRoot) {
+                Remove-TreeSafely -Path $script:LocalLlvmMingwRoot -AllowedParent $script:LocalToolsRoot
+            }
+
+            Write-Host "==> Bootstrapping workspace-local llvm-mingw" -ForegroundColor Cyan
+            Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+
+            $entries = @(Get-ChildItem -LiteralPath $extractRoot -Force)
+            $payloadRoot = if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {
+                $entries[0].FullName
+            } else {
+                $extractRoot
+            }
+
+            New-Directory -Path $script:LocalLlvmMingwRoot | Out-Null
+            Copy-Item -Path (Join-Path $payloadRoot "*") -Destination $script:LocalLlvmMingwRoot -Recurse -Force
+            break
         }
+        catch {
+            if (Test-Path $script:LocalLlvmMingwRoot) {
+                Remove-TreeSafely -Path $script:LocalLlvmMingwRoot -AllowedParent $script:LocalToolsRoot
+            }
 
-        Write-Host "==> Bootstrapping workspace-local llvm-mingw" -ForegroundColor Cyan
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+            if (($attempt -ge 2) -or -not (Test-Path $archivePath)) {
+                throw
+            }
 
-        $entries = @(Get-ChildItem -LiteralPath $extractRoot -Force)
-        $payloadRoot = if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {
-            $entries[0].FullName
-        } else {
-            $extractRoot
+            Write-Host ("Cached {0} archive appears unusable; re-downloading." -f $download.Source) -ForegroundColor DarkYellow
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+            Invoke-DownloadFile -Url $download.Url -DestinationPath $archivePath -Label ("{0} archive" -f $download.Source) | Out-Null
         }
-
-        New-Directory -Path $script:LocalLlvmMingwRoot | Out-Null
-        Copy-Item -Path (Join-Path $payloadRoot "*") -Destination $script:LocalLlvmMingwRoot -Recurse -Force
-    }
-    finally {
-        Remove-TreeSafely -Path $extractRoot -AllowedParent $script:TempRoot
+        finally {
+            Remove-TreeSafely -Path $extractRoot -AllowedParent $script:TempRoot
+        }
     }
 
     if (-not (Resolve-LlvmMingw)) {
