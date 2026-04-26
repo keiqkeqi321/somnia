@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 (2026-04-26)
+
+- Improve desktop chat send feedback (d3dc5bd)
+- Refine desktop chat interactions (07a7009)
+- Support multi-project desktop sessions (f8f9eca)
+- Fix retired macOS GitHub Actions runner labels (dc21338)
+
 ## 0.5.1 (2026-04-26)
 
 - 妗岄潰绔疌D 鍜?鏂囨。 (6e3957e)
