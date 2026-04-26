@@ -389,7 +389,8 @@ function Start-Sidecar {
         "--host",
         $HostName,
         "--port",
-        $PortNumber.ToString()
+        $PortNumber.ToString(),
+        "--quiet"
     )
 
     if ($Provider.Trim()) {
@@ -431,20 +432,45 @@ function Wait-ForSidecarReady {
             return
         }
 
-        if ($ManagedSidecar -and $ManagedSidecar.Process -and $ManagedSidecar.Process.HasExited) {
-            break
-        }
-
         Start-Sleep -Milliseconds 400
     }
 
     $stderrTail = ""
+    $stdoutTail = ""
+    $processSummary = ""
+    if ($ManagedSidecar -and $ManagedSidecar.Process) {
+        try {
+            $ManagedSidecar.Process.Refresh()
+            if ($ManagedSidecar.Process.HasExited) {
+                $processSummary = ("Sidecar launcher process exited with code {0}." -f $ManagedSidecar.Process.ExitCode)
+            }
+        } catch {
+        }
+    }
+
     if ($ManagedSidecar -and (Test-Path $ManagedSidecar.StderrPath)) {
         $stderrTail = ((Get-Content -Path $ManagedSidecar.StderrPath -Tail 40) -join [Environment]::NewLine).Trim()
     }
+    if ($ManagedSidecar -and (Test-Path $ManagedSidecar.StdoutPath)) {
+        $stdoutTail = ((Get-Content -Path $ManagedSidecar.StdoutPath -Tail 40) -join [Environment]::NewLine).Trim()
+    }
 
     if ($stderrTail) {
+        if ($processSummary) {
+            throw ("Sidecar failed to become ready.`n`n{0}`n`n{1}" -f $processSummary, $stderrTail)
+        }
         throw ("Sidecar failed to become ready.`n`n{0}" -f $stderrTail)
+    }
+
+    if ($stdoutTail) {
+        if ($processSummary) {
+            throw ("Sidecar failed to become ready.`n`n{0}`n`nStdout:`n{1}" -f $processSummary, $stdoutTail)
+        }
+        throw ("Sidecar failed to become ready.`n`nStdout:`n{0}" -f $stdoutTail)
+    }
+
+    if ($processSummary) {
+        throw ("Sidecar failed to become ready at {0}.`n`n{1}" -f $BaseUrl, $processSummary)
     }
 
     throw ("Sidecar failed to become ready at {0}." -f $BaseUrl)
@@ -519,6 +545,8 @@ try {
 
     # Keep desktop acceptance launches from mutating the user's global hook bootstrap state.
     $env:OPEN_SOMNIA_SKIP_BUILTIN_NOTIFY_BOOTSTRAP = "1"
+    $env:PYTHON = $script:Python.FilePath
+    $env:SOMNIA_DESKTOP_PYTHON_ARGS = ($script:Python.BaseArgs -join [char]0x1f)
 
     $baseUrl = "http://{0}:{1}" -f $BindHost, $Port
     $managedSidecar = $null

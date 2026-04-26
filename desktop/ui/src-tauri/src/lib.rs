@@ -6,7 +6,9 @@ pub fn run() {
         .manage(sidecar::ManagedSidecar::default())
         .invoke_handler(tauri::generate_handler![
             sidecar::ensure_managed_sidecar,
-            sidecar::stop_managed_sidecar
+            sidecar::stop_managed_sidecar,
+            sidecar::choose_project_folder,
+            sidecar::open_workspace_root
         ])
         .build(tauri::generate_context!())
         .expect("error while building Somnia desktop shell")

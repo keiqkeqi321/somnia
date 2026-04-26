@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::{
+    collections::{hash_map::DefaultHasher, HashMap},
     fs::{self, OpenOptions},
+    hash::{Hash, Hasher},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
@@ -37,25 +39,40 @@ struct ManagedSidecarState {
     stderr_log_path: Option<PathBuf>,
 }
 
+enum SidecarLauncher {
+    Bundled(PathBuf),
+    PythonModule {
+        python: String,
+        python_args: Vec<String>,
+        repo_root: PathBuf,
+    },
+}
+
 #[derive(Default)]
 pub struct ManagedSidecar {
-    inner: Mutex<ManagedSidecarState>,
+    inner: Mutex<HashMap<String, ManagedSidecarState>>,
 }
 
 impl ManagedSidecar {
-    pub fn ensure(&self, app: &tauri::AppHandle) -> Result<ManagedSidecarConnection, String> {
-        let mut state = self.lock()?;
-        if let Some(connection) = refresh_existing_connection(&mut state)? {
+    pub fn ensure(
+        &self,
+        app: &tauri::AppHandle,
+        workspace_path: Option<String>,
+    ) -> Result<ManagedSidecarConnection, String> {
+        let workspace_root = resolve_workspace_root(app, workspace_path)?;
+        let workspace_key = workspace_key(&workspace_root)?;
+        let mut states = self.lock()?;
+        let state = states.entry(workspace_key.clone()).or_default();
+        if let Some(connection) = refresh_existing_connection(state)? {
             return Ok(connection);
         }
 
-        let sidecar_path = resolve_sidecar_executable(app)?;
-        let workspace_root = resolve_workspace_root(app)?;
-        let (stdout_log_path, stderr_log_path) = resolve_log_paths(app)?;
+        let launcher = resolve_sidecar_launcher(app)?;
+        let (stdout_log_path, stderr_log_path) = resolve_log_paths(app, &workspace_key)?;
         let port = pick_available_port()?;
         let connection = build_connection(port, &workspace_root);
         let child = spawn_sidecar(
-            &sidecar_path,
+            &launcher,
             port,
             &workspace_root,
             &stdout_log_path,
@@ -68,20 +85,25 @@ impl ManagedSidecar {
         state.stdout_log_path = Some(stdout_log_path);
         state.stderr_log_path = Some(stderr_log_path);
 
-        if let Err(error) = wait_for_sidecar_ready(&mut state) {
-            stop_locked(&mut state);
+        if let Err(error) = wait_for_sidecar_ready(state) {
+            stop_locked(state);
             return Err(error);
         }
 
         Ok(connection)
     }
 
-    pub fn stop(&self) -> Result<bool, String> {
-        let mut state = self.lock()?;
-        Ok(stop_locked(&mut state))
+    pub fn stop_all(&self) -> Result<bool, String> {
+        let mut states = self.lock()?;
+        let mut stopped = false;
+        for state in states.values_mut() {
+            stopped |= stop_locked(state);
+        }
+        states.clear();
+        Ok(stopped)
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, ManagedSidecarState>, String> {
+    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, ManagedSidecarState>>, String> {
         self.inner
             .lock()
             .map_err(|_| "Managed sidecar state is unavailable.".to_string())
@@ -120,33 +142,67 @@ fn refresh_existing_connection(
     Ok(None)
 }
 
-fn resolve_sidecar_executable(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn resolve_sidecar_launcher(app: &tauri::AppHandle) -> Result<SidecarLauncher, String> {
     let resource_dir = app
         .path()
         .resource_dir()
         .map_err(|error| format!("Unable to resolve the Tauri resource directory: {error}"))?;
     let sidecar_path = resource_dir.join(sidecar_binary_name());
     if sidecar_path.is_file() {
-        return Ok(sidecar_path);
+        return Ok(SidecarLauncher::Bundled(sidecar_path));
     }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(repo_root) = manifest_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+    {
+        let bootstrap_path = repo_root.join("desktop").join("backend").join("bootstrap.py");
+        if bootstrap_path.is_file() {
+            return Ok(SidecarLauncher::PythonModule {
+                python: std::env::var("PYTHON").unwrap_or_else(|_| "python".to_string()),
+                python_args: std::env::var("SOMNIA_DESKTOP_PYTHON_ARGS")
+                    .ok()
+                    .map(|value| {
+                        value
+                            .split('\u{1f}')
+                            .filter(|item| !item.is_empty())
+                            .map(|item| item.to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                repo_root: repo_root.to_path_buf(),
+            });
+        }
+    }
+
     Err(format!(
-        "Bundled sidecar executable is missing at '{}'. Build desktop bundles with src-tauri/tauri.bundle.conf.json.",
+        "Bundled sidecar executable is missing at '{}' and the development Python sidecar could not be resolved.",
         sidecar_path.display()
     ))
 }
 
-fn resolve_workspace_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let workspace_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Unable to resolve the desktop data directory: {error}"))?
-        .join("workspace");
+fn resolve_workspace_root(
+    app: &tauri::AppHandle,
+    workspace_path: Option<String>,
+) -> Result<PathBuf, String> {
+    let workspace_root = match workspace_path {
+        Some(path) if !path.trim().is_empty() => PathBuf::from(path.trim()),
+        _ => app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Unable to resolve the desktop data directory: {error}"))?
+            .join("workspace"),
+    };
     fs::create_dir_all(&workspace_root)
         .map_err(|error| format!("Unable to create the managed workspace at '{}': {error}", workspace_root.display()))?;
-    Ok(workspace_root)
+    workspace_root
+        .canonicalize()
+        .map_err(|error| format!("Unable to resolve workspace path '{}': {error}", workspace_root.display()))
 }
 
-fn resolve_log_paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+fn resolve_log_paths(app: &tauri::AppHandle, workspace_key: &str) -> Result<(PathBuf, PathBuf), String> {
     let log_dir = app
         .path()
         .app_log_dir()
@@ -154,14 +210,15 @@ fn resolve_log_paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), Strin
         .map_err(|error| format!("Unable to resolve the desktop log directory: {error}"))?;
     fs::create_dir_all(&log_dir)
         .map_err(|error| format!("Unable to create the desktop log directory at '{}': {error}", log_dir.display()))?;
+    let log_stem = format!("managed-sidecar-{}", stable_workspace_id(workspace_key));
     Ok((
-        log_dir.join("managed-sidecar.stdout.log"),
-        log_dir.join("managed-sidecar.stderr.log"),
+        log_dir.join(format!("{log_stem}.stdout.log")),
+        log_dir.join(format!("{log_stem}.stderr.log")),
     ))
 }
 
 fn spawn_sidecar(
-    sidecar_path: &PathBuf,
+    launcher: &SidecarLauncher,
     port: u16,
     workspace_root: &PathBuf,
     stdout_log_path: &PathBuf,
@@ -178,7 +235,26 @@ fn spawn_sidecar(
         .open(stderr_log_path)
         .map_err(|error| format!("Unable to open sidecar stderr log '{}': {error}", stderr_log_path.display()))?;
 
-    let mut command = Command::new(sidecar_path);
+    let mut command = match launcher {
+        SidecarLauncher::Bundled(sidecar_path) => {
+            let mut command = Command::new(sidecar_path);
+            command.current_dir(workspace_root);
+            command
+        }
+        SidecarLauncher::PythonModule {
+            python,
+            python_args,
+            repo_root,
+        } => {
+            let mut command = Command::new(python);
+            command
+                .args(python_args)
+                .arg("-m")
+                .arg("desktop.backend.bootstrap")
+                .current_dir(repo_root);
+            command
+        }
+    };
     command
         .arg("--workspace")
         .arg(workspace_root)
@@ -187,7 +263,6 @@ fn spawn_sidecar(
         .arg("--port")
         .arg(port.to_string())
         .arg("--quiet")
-        .current_dir(workspace_root)
         .env("OPEN_SOMNIA_SKIP_BUILTIN_NOTIFY_BOOTSTRAP", "1")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
@@ -197,8 +272,8 @@ fn spawn_sidecar(
 
     command.spawn().map_err(|error| {
         format!(
-            "Unable to launch bundled sidecar '{}': {error}",
-            sidecar_path.display()
+            "Unable to launch sidecar for workspace '{}': {error}",
+            workspace_root.display()
         )
     })
 }
@@ -330,20 +405,79 @@ fn sidecar_binary_name() -> &'static str {
     }
 }
 
+fn workspace_key(workspace_root: &PathBuf) -> Result<String, String> {
+    workspace_root
+        .canonicalize()
+        .map(|path| path.display().to_string())
+        .map_err(|error| format!("Unable to resolve workspace path '{}': {error}", workspace_root.display()))
+}
+
+fn stable_workspace_id(workspace_key: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    workspace_key.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 #[tauri::command]
 pub fn ensure_managed_sidecar(
     app: tauri::AppHandle,
     sidecar: State<'_, ManagedSidecar>,
+    workspace_path: Option<String>,
 ) -> Result<ManagedSidecarConnection, String> {
-    sidecar.ensure(&app)
+    sidecar.ensure(&app, workspace_path)
 }
 
 #[tauri::command]
 pub fn stop_managed_sidecar(sidecar: State<'_, ManagedSidecar>) -> Result<bool, String> {
-    sidecar.stop()
+    sidecar.stop_all()
+}
+
+#[tauri::command]
+pub fn choose_project_folder() -> Result<Option<String>, String> {
+    Ok(rfd::FileDialog::new()
+        .set_title("Choose Somnia project folder")
+        .pick_folder()
+        .map(|path| path.display().to_string()))
+}
+
+#[tauri::command]
+pub fn open_workspace_root(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path.trim());
+    if !target.exists() {
+        return Err(format!(
+            "Workspace path '{}' does not exist.",
+            target.display()
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&target)
+            .spawn()
+            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&target)
+            .spawn()
+            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+    }
+
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&target)
+            .spawn()
+            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+    }
+
+    Ok(())
 }
 
 pub fn shutdown_managed_sidecar(app: &tauri::AppHandle) {
     let sidecar = app.state::<ManagedSidecar>();
-    let _ = sidecar.stop();
+    let _ = sidecar.stop_all();
 }

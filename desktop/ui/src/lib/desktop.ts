@@ -16,11 +16,25 @@ function isTauriEnvironment(): boolean {
   return typeof tauriWindow.__TAURI_INTERNALS__?.invoke === "function";
 }
 
-async function ensureManagedSidecar(): Promise<ManagedSidecarConnection | null> {
+async function ensureManagedSidecar(workspacePath?: string): Promise<ManagedSidecarConnection | null> {
   if (!isTauriEnvironment()) {
     return null;
   }
-  return invoke<ManagedSidecarConnection>("ensure_managed_sidecar");
+  return invoke<ManagedSidecarConnection>("ensure_managed_sidecar", { workspacePath: workspacePath ?? null });
 }
 
-export { ensureManagedSidecar, isTauriEnvironment };
+async function chooseProjectFolder(): Promise<string | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+  return invoke<string | null>("choose_project_folder");
+}
+
+async function openWorkspaceRoot(path: string): Promise<void> {
+  if (!isTauriEnvironment()) {
+    return;
+  }
+  await invoke("open_workspace_root", { path });
+}
+
+export { chooseProjectFolder, ensureManagedSidecar, isTauriEnvironment, openWorkspaceRoot };

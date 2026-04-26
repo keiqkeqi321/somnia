@@ -1,11 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { ensureManagedSidecar } from "./lib/desktop";
+import { chooseProjectFolder, ensureManagedSidecar, openWorkspaceRoot } from "./lib/desktop";
 import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatTodoLabel, sortSessions } from "./lib/messages";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
-  ConversationRow,
   InteractionRequestState,
   ManagedSidecarConnection,
   ModelDescriptor,
@@ -17,8 +16,21 @@ import type {
 } from "./types";
 
 const STORAGE_KEY = "somnia.desktop.sidecar-url";
+const PROJECTS_STORAGE_KEY = "somnia.desktop.project-paths";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
+const REASONING_LEVEL_OPTIONS = ["auto", "low", "medium", "high", "deep"] as const;
+
+type ReasoningLevelOption = (typeof REASONING_LEVEL_OPTIONS)[number];
+type ProjectState = {
+  path: string;
+  label: string;
+  connection: ManagedSidecarConnection;
+  status: SidecarStatus;
+  sessions: AgentSession[];
+  pendingInteractions: InteractionRequestState[];
+  toolLogs: ToolLogIndexEntry[];
+};
 
 function App() {
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
@@ -27,6 +39,8 @@ function App() {
   const [connectionState, setConnectionState] = useState<"connecting" | "connected" | "disconnected" | "error">(
     "disconnected",
   );
+  const [projects, setProjects] = useState<ProjectState[]>([]);
+  const [selectedProjectPath, setSelectedProjectPath] = useState<string | null>(null);
   const [status, setStatus] = useState<SidecarStatus | null>(null);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -39,28 +53,105 @@ function App() {
   const [models, setModels] = useState<ModelDescriptor[]>([]);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevelOption>("auto");
   const [toolLogs, setToolLogs] = useState<ToolLogIndexEntry[]>([]);
   const [activeToolLog, setActiveToolLog] = useState<ToolLogDetail | null>(null);
-  const [inspectorTab, setInspectorTab] = useState<"todos" | "logs" | "approvals">("todos");
+  const [sidebarSection, setSidebarSection] = useState<"sessions">("sessions");
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
+  const [contextPanelOpen, setContextPanelOpen] = useState(true);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [managedBaseUrl, setManagedBaseUrl] = useState<string | null>(null);
 
   const clientRef = useRef<SidecarClient | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const projectClientsRef = useRef<Record<string, SidecarClient>>({});
+  const projectSocketsRef = useRef<Record<string, WebSocket>>({});
+  const selectedProjectPathRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
+  const projectMenuRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
+  selectedProjectPathRef.current = selectedProjectPath;
   currentSessionRef.current = currentSession;
 
   useEffect(() => {
     void initializeConnection();
     return () => {
       socketRef.current?.close();
+      Object.values(projectSocketsRef.current).forEach((socket) => socket.close());
     };
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!modelPickerOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!modelPickerRef.current?.contains(event.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setModelPickerOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [modelPickerOpen]);
+
+  useEffect(() => {
+    if (!projectMenuOpenKey) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!projectMenuRef.current?.contains(event.target as Node)) {
+        setProjectMenuOpenKey(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setProjectMenuOpenKey(null);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [projectMenuOpenKey]);
+
+  useLayoutEffect(() => {
+    resizeComposerTextarea();
+  }, [draft]);
+
+  useEffect(() => {
+    function handleResize() {
+      resizeComposerTextarea();
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
   }, []);
 
   async function initializeConnection() {
@@ -70,12 +161,23 @@ function App() {
 
     if (shouldPreferManagedSidecar) {
       try {
+        const savedProjectPaths = readStoredProjectPaths();
         const managedConnection = await ensureManagedSidecar();
         if (managedConnection) {
-          await connectToSidecar(managedConnection.baseUrl, {
-            managedConnection,
-            persistBaseUrl: false,
-          });
+          await connectManagedProject(managedConnection, { selectProject: true });
+          for (const projectPath of savedProjectPaths) {
+            if (projectPath === managedConnection.workspaceRoot) {
+              continue;
+            }
+            try {
+              const projectConnection = await ensureManagedSidecar(projectPath);
+              if (projectConnection) {
+                await connectManagedProject(projectConnection, { selectProject: false });
+              }
+            } catch (error) {
+              setBannerMessage(`Unable to restore project '${projectPath}': ${formatErrorMessage(error)}`);
+            }
+          }
           return;
         }
       } catch (error) {
@@ -87,6 +189,72 @@ function App() {
     }
 
     await connectToSidecar(normalizedSavedUrl ?? DEFAULT_SIDECAR_URL);
+  }
+
+  async function connectManagedProject(
+    managedConnection: ManagedSidecarConnection,
+    options: { selectProject: boolean } = { selectProject: true },
+  ) {
+    const client = new SidecarClient(managedConnection.baseUrl);
+    setConnectionState("connecting");
+    setBannerMessage(`Connecting to ${managedConnection.workspaceRoot}...`);
+
+    const [runtimeStatus, sessionList, providerList, interactionList, logList] = await Promise.all([
+      client.runtimeStatus(),
+      client.listSessions(),
+      client.listProviders(),
+      client.listInteractions(),
+      client.listToolLogs(TOOL_LIMIT),
+    ]);
+    const projectPath = runtimeStatus.workspace_root || managedConnection.workspaceRoot;
+    const project: ProjectState = {
+      path: projectPath,
+      label: getPathLeafName(projectPath),
+      connection: managedConnection,
+      status: runtimeStatus,
+      sessions: sortSessions(sessionList),
+      pendingInteractions: interactionList,
+      toolLogs: logList,
+    };
+
+    projectClientsRef.current[projectPath] = client;
+    setProjects((previous) => upsertProject(previous, project));
+    persistProjectPath(projectPath);
+    openEventSocket(client, runtimeStatus.ws_url, projectPath);
+    setConnectionState("connected");
+
+    if (options.selectProject) {
+      await activateProject(projectPath, client, project);
+    }
+  }
+
+  async function activateProject(projectPath: string, client = projectClientsRef.current[projectPath], project?: ProjectState) {
+    const nextProject = project ?? projects.find((item) => item.path === projectPath);
+    if (!client || !nextProject) {
+      return;
+    }
+    clientRef.current = client;
+    socketRef.current = projectSocketsRef.current[projectPath] ?? null;
+    setSelectedProjectPath(projectPath);
+    setStatus(nextProject.status);
+    setSessions(nextProject.sessions);
+    setPendingInteractions(nextProject.pendingInteractions);
+    setToolLogs(nextProject.toolLogs);
+    setProviders(await client.listProviders());
+    setSelectedProvider(nextProject.status.provider);
+    setSelectedReasoningLevel(normalizeReasoningLevel(nextProject.status.reasoning_level));
+    await refreshModels(nextProject.status.provider, client, nextProject.status.model);
+
+    const nextSessionId =
+      nextProject.sessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? nextProject.sessions[0]?.id ?? null;
+    if (nextSessionId) {
+      await selectSession(nextSessionId, client, nextProject.sessions, projectPath);
+    } else {
+      setSelectedSessionId(null);
+      setCurrentSession(null);
+      setStreamingText("");
+    }
+    setBannerMessage(`Active project: ${projectPath}`);
   }
 
   async function connectToSidecar(
@@ -121,44 +289,59 @@ function App() {
       setToolLogs(logList);
       setProviders(providerList);
       setSelectedProvider(runtimeStatus.provider);
+      setSelectedReasoningLevel(normalizeReasoningLevel(runtimeStatus.reasoning_level));
       setBannerMessage(
         managedConnection ? `Connected to bundled sidecar at ${runtimeStatus.base_url}` : `Connected to ${runtimeStatus.base_url}`,
       );
-      setManagedBaseUrl((current) => {
-        if (managedConnection) {
-          return normalizedBaseUrl;
-        }
-        return current === normalizedBaseUrl ? current : null;
-      });
       if (persistBaseUrl && typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, normalizedBaseUrl);
       }
 
       const sortedSessions = sortSessions(sessionList);
+      const projectPath = runtimeStatus.workspace_root;
+      const project: ProjectState = {
+        path: projectPath,
+        label: getPathLeafName(projectPath),
+        connection: managedConnection ?? {
+          baseUrl: normalizedBaseUrl,
+          wsUrl: runtimeStatus.ws_url,
+          workspaceRoot: projectPath,
+        },
+        status: runtimeStatus,
+        sessions: sortedSessions,
+        pendingInteractions: interactionList,
+        toolLogs: logList,
+      };
+      projectClientsRef.current[projectPath] = nextClient;
+      setProjects((previous) => upsertProject(previous, project));
+      setSelectedProjectPath(projectPath);
       setSessions(sortedSessions);
       const nextSessionId =
         sortedSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? sortedSessions[0]?.id ?? null;
       if (nextSessionId) {
-        await selectSession(nextSessionId, nextClient, sortedSessions);
+        await selectSession(nextSessionId, nextClient, sortedSessions, projectPath);
       } else {
         setSelectedSessionId(null);
         setCurrentSession(null);
         setStreamingText("");
       }
       await refreshModels(runtimeStatus.provider, nextClient, runtimeStatus.model);
-      openEventSocket(nextClient, runtimeStatus.ws_url);
+      openEventSocket(nextClient, runtimeStatus.ws_url, runtimeStatus.workspace_root);
     } catch (error) {
       clientRef.current = null;
       setConnectionState("error");
-      setManagedBaseUrl((current) => (current === normalizedBaseUrl ? null : current));
       setBannerMessage(`${errorPrefix}${formatErrorMessage(error)}`);
       setStatus(null);
     }
   }
 
-  function openEventSocket(client: SidecarClient, wsUrl: string) {
+  function openEventSocket(client: SidecarClient, wsUrl: string, projectPath: string) {
+    projectSocketsRef.current[projectPath]?.close();
     const socket = client.createEventSocket(wsUrl);
-    socketRef.current = socket;
+    projectSocketsRef.current[projectPath] = socket;
+    if (selectedProjectPathRef.current === projectPath || !selectedProjectPathRef.current) {
+      socketRef.current = socket;
+    }
 
     socket.onopen = () => {
       setConnectionState("connected");
@@ -179,35 +362,40 @@ function App() {
     socket.onmessage = (messageEvent) => {
       try {
         const event = JSON.parse(String(messageEvent.data)) as SidecarEvent;
-        void handleSidecarEvent(event);
+        void handleSidecarEvent(projectPath, event);
       } catch (error) {
         setBannerMessage(`Ignored malformed sidecar event: ${formatErrorMessage(error)}`);
       }
     };
   }
 
-  async function handleSidecarEvent(event: SidecarEvent) {
+  async function handleSidecarEvent(projectPath: string, event: SidecarEvent) {
+    const isActiveProject = selectedProjectPathRef.current === projectPath;
     if (event.type === "sidecar_ready") {
       return;
     }
     if (event.type === "session_created") {
       const payloadSession = readSessionFromPayload(event.payload.session);
       if (payloadSession) {
-        upsertSession(payloadSession);
-        setSelectedSessionId(payloadSession.id);
-        setCurrentSession(payloadSession);
+        upsertProjectSession(projectPath, payloadSession);
+        if (isActiveProject) {
+          setSelectedSessionId(payloadSession.id);
+          setCurrentSession(payloadSession);
+        }
       }
       return;
     }
     if (event.type === "turn_started") {
-      if (event.session_id && event.session_id === selectedSessionIdRef.current) {
+      if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
         setStreamingText("");
       }
-      setActiveTurnId(event.turn_id ?? null);
+      if (isActiveProject) {
+        setActiveTurnId(event.turn_id ?? null);
+      }
       return;
     }
     if (event.type === "assistant_delta") {
-      if (!selectedSessionIdRef.current || event.session_id !== selectedSessionIdRef.current) {
+      if (!isActiveProject || !selectedSessionIdRef.current || event.session_id !== selectedSessionIdRef.current) {
         return;
       }
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
@@ -219,8 +407,8 @@ function App() {
     if (event.type === "session_updated") {
       const payloadSession = readSessionFromPayload(event.payload.session);
       if (payloadSession) {
-        upsertSession(payloadSession);
-        if (payloadSession.id === selectedSessionIdRef.current) {
+        upsertProjectSession(projectPath, payloadSession);
+        if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
         }
       }
@@ -229,47 +417,59 @@ function App() {
     if (event.type === "todo_updated") {
       const items = Array.isArray(event.payload.items) ? event.payload.items : null;
       const session = currentSessionRef.current;
-      if (!items || !session || event.session_id !== session.id) {
+      if (!isActiveProject || !items || !session || event.session_id !== session.id) {
         return;
       }
       const nextSession = { ...session, todo_items: items } as AgentSession;
       setCurrentSession(nextSession);
-      upsertSession(nextSession);
+      upsertProjectSession(projectPath, nextSession);
       return;
     }
     if (event.type === "tool_finished") {
-      void refreshToolLogs();
+      if (isActiveProject) {
+        void refreshToolLogs();
+      }
       return;
     }
     if (event.type === "provider_switched" || event.type === "reasoning_level_updated") {
-      void refreshStatusAndProviders();
+      if (isActiveProject) {
+        void refreshStatusAndProviders();
+      }
       return;
     }
     if (event.type === "authorization_requested" || event.type === "mode_switch_requested") {
-      setInspectorTab("approvals");
-      void refreshInteractions();
+      if (isActiveProject) {
+        setContextPanelOpen(true);
+        void refreshInteractions();
+      }
       return;
     }
     if (event.type === "interrupt_completed" || event.type === "error") {
-      setActiveTurnId((current) => (current === event.turn_id ? null : current));
-      setStreamingText("");
-      void refreshInteractions();
-      void refreshStatusAndProviders();
+      if (isActiveProject) {
+        setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        setStreamingText("");
+        void refreshInteractions();
+        void refreshStatusAndProviders();
+      }
       return;
     }
     if (event.type === "turn_result") {
-      setActiveTurnId((current) => (current === event.turn_id ? null : current));
-      setStreamingText("");
+      if (isActiveProject) {
+        setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        setStreamingText("");
+      }
       const payloadSession = readSessionFromPayload(event.payload.session);
       if (payloadSession) {
-        upsertSession(payloadSession);
-        if (payloadSession.id === selectedSessionIdRef.current) {
+        upsertProjectSession(projectPath, payloadSession);
+        if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
         }
       }
-      void refreshInteractions();
-      void refreshToolLogs();
-      void refreshStatusAndProviders();
+      if (isActiveProject) {
+        void refreshInteractions();
+        void refreshToolLogs();
+        void refreshStatusAndProviders();
+      }
     }
   }
 
@@ -287,6 +487,8 @@ function App() {
     setProviders(providerList);
     setPendingInteractions(interactionList);
     setSelectedProvider(runtimeStatus.provider);
+    setSelectedReasoningLevel(normalizeReasoningLevel(runtimeStatus.reasoning_level));
+    updateActiveProject({ status: runtimeStatus, pendingInteractions: interactionList });
     await refreshModels(runtimeStatus.provider, client, runtimeStatus.model);
   }
 
@@ -305,7 +507,9 @@ function App() {
     if (!client) {
       return;
     }
-    setPendingInteractions(await client.listInteractions());
+    const interactionList = await client.listInteractions();
+    setPendingInteractions(interactionList);
+    updateActiveProject({ pendingInteractions: interactionList });
   }
 
   async function refreshToolLogs() {
@@ -315,6 +519,7 @@ function App() {
     }
     const nextLogs = await client.listToolLogs(TOOL_LIMIT);
     setToolLogs(nextLogs);
+    updateActiveProject({ toolLogs: nextLogs });
     if (activeToolLog) {
       try {
         setActiveToolLog(await client.getToolLog(activeToolLog.id));
@@ -337,10 +542,16 @@ function App() {
     upsertSession(created);
     setSelectedSessionId(created.id);
     setCurrentSession(created);
+    setSidebarSection("sessions");
     return created;
   }
 
-  async function selectSession(sessionId: string, client = clientRef.current, knownSessions?: AgentSession[]) {
+  async function selectSession(
+    sessionId: string,
+    client = clientRef.current,
+    knownSessions?: AgentSession[],
+    projectPath = selectedProjectPathRef.current,
+  ) {
     if (!client) {
       return;
     }
@@ -351,29 +562,80 @@ function App() {
     if (knownSessions) {
       setSessions(sortSessions(knownSessions.map((session) => (session.id === loadedSession.id ? loadedSession : session))));
     } else {
-      upsertSession(loadedSession);
+      upsertProjectSession(projectPath, loadedSession);
     }
   }
 
   function upsertSession(session: AgentSession) {
+    upsertProjectSession(selectedProjectPathRef.current, session);
+  }
+
+  function upsertProjectSession(projectPath: string | null, session: AgentSession) {
     setSessions((previous) => {
       const others = previous.filter((item) => item.id !== session.id);
       return sortSessions([session, ...others]);
     });
+    if (!projectPath) {
+      return;
+    }
+    setProjects((previous) =>
+      previous.map((project) => {
+        if (project.path !== projectPath) {
+          return project;
+        }
+        const others = project.sessions.filter((item) => item.id !== session.id);
+        return { ...project, sessions: sortSessions([session, ...others]) };
+      }),
+    );
   }
 
-  async function handleCreateSession() {
-    const client = clientRef.current;
+  function updateActiveProject(patch: Partial<Pick<ProjectState, "status" | "pendingInteractions" | "toolLogs" | "sessions">>) {
+    const projectPath = selectedProjectPathRef.current;
+    if (!projectPath) {
+      return;
+    }
+    setProjects((previous) => previous.map((project) => (project.path === projectPath ? { ...project, ...patch } : project)));
+  }
+
+  async function handleCreateProject() {
+    setBusyAction("create-project");
+    try {
+      const projectPath = await chooseProjectFolder();
+      if (!projectPath) {
+        setBannerMessage("No project folder selected.");
+        return;
+      }
+      const managedConnection = await ensureManagedSidecar(projectPath);
+      if (!managedConnection) {
+        setBannerMessage("Project folder selection is only available in the desktop app.");
+        return;
+      }
+      await connectManagedProject(managedConnection, { selectProject: true });
+      setContextPanelOpen(true);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleCreateSession(projectPath = selectedProjectPathRef.current) {
+    const client = projectPath ? projectClientsRef.current[projectPath] ?? clientRef.current : clientRef.current;
     if (!client) {
       setBannerMessage("Connect to a sidecar before creating a session.");
       return;
     }
     setBusyAction("create-session");
     try {
+      if (projectPath && projectPath !== selectedProjectPathRef.current) {
+        await activateProject(projectPath, client);
+      }
       const session = await client.createSession();
-      upsertSession(session);
+      upsertProjectSession(projectPath, session);
       setSelectedSessionId(session.id);
       setCurrentSession(session);
+      setSidebarSection("sessions");
+      setContextPanelOpen(true);
       setDraft("");
       setStreamingText("");
     } catch (error) {
@@ -425,6 +687,7 @@ function App() {
 
   async function handleProviderChange(nextProvider: string) {
     setSelectedProvider(nextProvider);
+    setSelectedReasoningLevel(normalizeReasoningLevel(providers.find((provider) => provider.name === nextProvider)?.reasoning_level));
     try {
       await refreshModels(nextProvider);
     } catch (error) {
@@ -439,9 +702,10 @@ function App() {
     }
     setBusyAction("switch-provider");
     try {
-      const result = await client.switchProviderModel(selectedProvider, selectedModel);
-      setBannerMessage(result.message);
+      await client.switchProviderModel(selectedProvider, selectedModel);
+      await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
       await refreshStatusAndProviders();
+      setModelPickerOpen(false);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     } finally {
@@ -454,7 +718,8 @@ function App() {
     if (!client) {
       return;
     }
-    setInspectorTab("logs");
+    setSidebarSection("sessions");
+    setContextPanelOpen(true);
     setBusyAction("load-tool-log");
     try {
       setActiveToolLog(await client.getToolLog(logId));
@@ -493,7 +758,7 @@ function App() {
       return;
     }
     const targetMode = typeof interaction.payload.target_mode === "string" ? interaction.payload.target_mode : undefined;
-    const currentMode = typeof interaction.payload.current_mode === "string" ? interaction.payload.current_mode : status?.execution_mode ?? undefined;
+    const currentMode = typeof interaction.payload.current_mode === "string" ? interaction.payload.current_mode : "unknown";
     setBusyAction("resolve-mode-switch");
     try {
       await client.resolveModeSwitch(interaction.id, {
@@ -510,139 +775,179 @@ function App() {
     }
   }
 
+  function resizeComposerTextarea() {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const computedStyle = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 24;
+    const paddingTop = Number.parseFloat(computedStyle.paddingTop) || 0;
+    const paddingBottom = Number.parseFloat(computedStyle.paddingBottom) || 0;
+    const borderTop = Number.parseFloat(computedStyle.borderTopWidth) || 0;
+    const borderBottom = Number.parseFloat(computedStyle.borderBottomWidth) || 0;
+    const chromeHeight = paddingTop + paddingBottom + borderTop + borderBottom;
+    const minHeight = lineHeight + chromeHeight;
+    const maxHeight = lineHeight * 10 + chromeHeight;
+
+    textarea.style.height = "auto";
+    const contentHeight = textarea.scrollHeight + borderTop + borderBottom;
+    const nextHeight = Math.max(minHeight, Math.min(contentHeight, maxHeight));
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  }
+
   const conversationRows = buildConversationRows(currentSession, streamingText);
   const firstPendingInteraction = pendingInteractions[0] ?? null;
-  const todos = currentSession?.todo_items ?? [];
-
+  const activeProviderLabel = status?.provider ?? selectedProvider ?? "Provider";
+  const activeModelLabel = status?.model ?? selectedModel ?? "Model";
+  const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
+  const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
+  const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || "New conversation");
+  const workspaceRootPath = status?.workspace_root ?? "";
+  const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : "workspace";
+  const sessionProjectGroups = projects.map((project) => ({
+    key: project.path,
+    label: project.label,
+    path: project.path,
+    sessions: project.sessions,
+  }));
+  const visibleProjectCount = sessionProjectGroups.length;
   return (
     <div className="shell">
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Somnia Desktop MVP</p>
-          <h1>Sidecar-native desktop workspace</h1>
-        </div>
-        <div className="connection-strip">
-          <label className="field sidecar-url">
-            <span>Sidecar</span>
-            <input
-              value={baseUrlInput}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setBaseUrlInput(nextValue);
-                if (managedBaseUrl && normalizeBaseUrl(nextValue) !== managedBaseUrl) {
-                  setManagedBaseUrl(null);
-                }
-              }}
-              placeholder={DEFAULT_SIDECAR_URL}
-            />
-          </label>
-          <button
-            className="action secondary"
-            onClick={() =>
-              void connectToSidecar(baseUrlInput, {
-                persistBaseUrl: managedBaseUrl !== normalizeBaseUrl(baseUrlInput),
-              })
-            }
-            disabled={busyAction !== null}
-          >
-            {connectionState === "connecting" ? "Connecting..." : "Reconnect"}
-          </button>
-        </div>
-      </header>
-
-      <main className="workspace">
-        <aside className="panel session-panel">
+      <main className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"}`}>
+        <aside className="panel sidebar-panel">
           <div className="panel-header">
             <div>
-              <p className="panel-kicker">Resume history</p>
-              <h2>Sessions</h2>
+              <p className="panel-kicker">Projects</p>
+              <h2>Projects</h2>
             </div>
-            <button className="action primary" onClick={() => void handleCreateSession()} disabled={busyAction !== null}>
-              New Session
-            </button>
+            <div className="panel-header-actions">
+              <span className="panel-count">{visibleProjectCount} total</span>
+              <button className="action primary sidebar-new" onClick={() => void handleCreateProject()} disabled={busyAction !== null}>
+                New Project
+              </button>
+            </div>
           </div>
+
           <div className="session-list">
-            {sessions.length === 0 ? (
+            {sessionProjectGroups.length === 0 ? (
               <div className="empty-card">
-                <p>No sessions yet.</p>
-                <span>Create one here or send a prompt to auto-create the first session.</span>
+                <p>No projects yet.</p>
+                <span>Choose a folder to add a project and run its own Somnia sidecar.</span>
               </div>
             ) : (
-              sessions.map((session) => (
-                <button
-                  key={session.id}
-                  className={`session-card ${selectedSessionId === session.id ? "selected" : ""}`}
-                  onClick={() => void selectSession(session.id)}
-                >
-                  <div className="session-card-head">
-                    <strong>{session.id}</strong>
-                    <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
-                  </div>
-                  <p>{buildSessionPreview(session)}</p>
-                  <div className="session-card-meta">
-                    <span>{session.todo_items.filter((item) => item.status !== "completed").length} open todos</span>
-                    <span>{session.messages.length} msgs</span>
-                  </div>
-                </button>
-              ))
+              <div className="project-groups">
+                {sessionProjectGroups.map((group) => {
+                  const isCollapsed = Boolean(collapsedProjects[group.key]);
+                  return (
+                    <section key={group.key} className="project-group">
+                      <div className={`project-toggle ${isCollapsed ? "collapsed" : ""}`}>
+                        <button
+                          className="project-toggle-button"
+                          onClick={() =>
+                            setCollapsedProjects((previous) => ({
+                              ...previous,
+                              [group.key]: !previous[group.key],
+                            }))
+                          }
+                        >
+                          <span className="project-toggle-main">
+                            <span className="project-toggle-caret">{isCollapsed ? ">" : "v"}</span>
+                            <strong>{group.label}</strong>
+                          </span>
+                          <span className="project-toggle-count">{group.sessions.length}</span>
+                        </button>
+                        <div className="project-menu" ref={projectMenuOpenKey === group.key ? projectMenuRef : null}>
+                          <button
+                            className="project-menu-trigger"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setProjectMenuOpenKey((current) => (current === group.key ? null : group.key));
+                            }}
+                            aria-label={`Project options for ${group.label}`}
+                            title="Project options"
+                          >
+                            ...
+                          </button>
+                          {projectMenuOpenKey === group.key ? (
+                            <div className="project-menu-panel">
+                              <button
+                                className="project-menu-item"
+                                onClick={() => {
+                                  setProjectMenuOpenKey(null);
+                                  void handleCreateSession(group.path);
+                                }}
+                                disabled={busyAction !== null}
+                              >
+                                New Session
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      {isCollapsed ? null : (
+                        <div className="project-session-list">
+                          {group.sessions.map((session) => (
+                            <button
+                              key={session.id}
+                              className={`session-card ${selectedProjectPath === group.path && selectedSessionId === session.id ? "selected" : ""}`}
+                              onClick={() => {
+                                setContextPanelOpen(true);
+                                void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
+                                  selectSession(session.id, projectClientsRef.current[group.path], group.sessions, group.path),
+                                );
+                              }}
+                            >
+                              <div className="session-card-head">
+                                <strong>{session.id}</strong>
+                                <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
+                              </div>
+                              <p>{buildSessionPreview(session)}</p>
+                              <div className="session-card-meta">
+                                <span>{session.messages.length} msgs</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
             )}
           </div>
         </aside>
 
         <section className="panel conversation-panel">
           <div className="panel-header conversation-header">
-            <div>
-              <p className="panel-kicker">Dialogue</p>
-              <h2>{selectedSessionId ?? "No session selected"}</h2>
+            <div className="conversation-heading">
+              <h2 title={conversationPreview || selectedSessionId || "New conversation"}>{conversationTitle}</h2>
+              <button
+                className="workspace-link"
+                onClick={() => {
+                  if (workspaceRootPath) {
+                    void openWorkspaceRoot(workspaceRootPath);
+                  }
+                }}
+                disabled={!workspaceRootPath}
+                title={workspaceRootPath || "Workspace unavailable"}
+              >
+                {workspaceRootName}
+              </button>
             </div>
             <div className="status-cluster">
-              <span className={`status-pill ${connectionState}`}>{connectionState}</span>
-              <span className="mode-pill">{status?.execution_mode_title ?? "Execution mode unavailable"}</span>
-              <button className="action danger" onClick={() => void handleInterrupt()} disabled={!activeTurnId || busyAction !== null}>
-                Interrupt
+              <button
+                className="action ghost detail-toggle"
+                onClick={() => setContextPanelOpen((current) => !current)}
+                title={contextPanelOpen ? "Hide details" : "Show details"}
+                aria-label={contextPanelOpen ? "Hide details" : "Show details"}
+              >
+                ...
               </button>
-            </div>
-          </div>
-
-          <div className="toolbar">
-            <div className="toolbar-group">
-              <label className="field compact">
-                <span>Provider</span>
-                <select
-                  value={selectedProvider}
-                  onChange={(event) => void handleProviderChange(event.target.value)}
-                  disabled={providers.length === 0 || busyAction !== null}
-                >
-                  {providers.map((provider) => (
-                    <option key={provider.name} value={provider.name}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field compact">
-                <span>Model</span>
-                <select
-                  value={selectedModel}
-                  onChange={(event) => setSelectedModel(event.target.value)}
-                  disabled={models.length === 0 || busyAction !== null}
-                >
-                  {models.map((model) => (
-                    <option key={model.name} value={model.name}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="action secondary" onClick={() => void handleApplyProviderModel()} disabled={!selectedModel || busyAction !== null}>
-                Apply model
-              </button>
-            </div>
-            <div className="toolbar-meta">
-              <span>{status?.workspace_root ?? "workspace unavailable"}</span>
-              <span>{status?.provider ? `${status.provider} / ${status.model}` : "runtime unavailable"}</span>
             </div>
           </div>
 
@@ -667,146 +972,150 @@ function App() {
 
           <div className="composer">
             <textarea
+              ref={composerTextareaRef}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder="Ask Somnia to inspect, plan, or implement against the current workspace."
-              rows={5}
+              rows={1}
             />
             <div className="composer-actions">
-              <span>{bannerMessage}</span>
-              <button className="action primary" onClick={() => void handleSendPrompt()} disabled={!draft.trim() || busyAction !== null}>
-                Send
-              </button>
+              <div className="composer-meta">
+                <div className="composer-controls">
+                  <span className="mode-pill">{status?.execution_mode_title ?? "Execution mode unavailable"}</span>
+                  <div className="model-picker" ref={modelPickerRef}>
+                    <button
+                      className={`model-trigger ${modelPickerOpen ? "open" : ""}`}
+                      onClick={() => setModelPickerOpen((current) => !current)}
+                      disabled={providers.length === 0 || busyAction !== null}
+                    >
+                      <span>{`${activeProviderLabel} / ${activeModelLabel}`}</span>
+                      <span className="model-trigger-meta">
+                        <span className="model-trigger-caret">{activeReasoningLabel}</span>
+                        <span
+                          className={`connection-dot ${connectionState === "connected" ? "connected" : "attention"}`}
+                          aria-label={connectionState}
+                          title={connectionState}
+                        />
+                      </span>
+                    </button>
+                    {modelPickerOpen ? (
+                      <div className="model-picker-panel">
+                        <div className="model-picker-grid">
+                          <div className="picker-column">
+                            <span className="picker-label">Provider</span>
+                            <div className="picker-options">
+                              {providers.map((provider) => (
+                                <button
+                                  key={provider.name}
+                                  className={`picker-option ${selectedProvider === provider.name ? "selected" : ""}`}
+                                  onClick={() => void handleProviderChange(provider.name)}
+                                  disabled={busyAction !== null}
+                                >
+                                  {provider.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="picker-column">
+                            <span className="picker-label">Model</span>
+                            <div className="picker-options">
+                              {models.map((model) => (
+                                <button
+                                  key={model.name}
+                                  className={`picker-option ${selectedModel === model.name ? "selected" : ""}`}
+                                  onClick={() => setSelectedModel(model.name)}
+                                  disabled={busyAction !== null}
+                                >
+                                  {model.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="model-picker-footer">
+                          <div className="reasoning-levels" role="group" aria-label="Reasoning level">
+                            {REASONING_LEVEL_OPTIONS.map((level) => (
+                              <button
+                                key={level}
+                                className={`reasoning-option ${selectedReasoningLevel === level ? "selected" : ""}`}
+                                onClick={() => setSelectedReasoningLevel(level)}
+                                disabled={busyAction !== null}
+                              >
+                                {formatReasoningLevel(level)}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            className="action secondary picker-apply"
+                            onClick={() => void handleApplyProviderModel()}
+                            disabled={!selectedProvider || !selectedModel || busyAction !== null}
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <div className="composer-cta">
+                <button className="action primary" onClick={() => void handleSendPrompt()} disabled={!draft.trim() || busyAction !== null}>
+                  Send
+                </button>
+                {activeTurnId ? (
+                  <button className="action danger" onClick={() => void handleInterrupt()} disabled={busyAction !== null}>
+                    Interrupt
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
         </section>
 
-        <aside className="panel inspector-panel">
-          <div className="panel-header">
-            <div>
-              <p className="panel-kicker">Inspector</p>
-              <h2>State surfaces</h2>
+        {contextPanelOpen ? (
+          <aside className="panel context-panel">
+            <div className="panel-header">
+              <div>
+                <p className="panel-kicker">Context</p>
+                <h2>Session Details</h2>
+              </div>
+              <button className="action ghost" onClick={() => setContextPanelOpen(false)}>
+                Collapse
+              </button>
             </div>
-          </div>
-
-          <div className="tab-strip">
-            <button className={inspectorTab === "todos" ? "selected" : ""} onClick={() => setInspectorTab("todos")}>
-              Todos
-            </button>
-            <button className={inspectorTab === "logs" ? "selected" : ""} onClick={() => setInspectorTab("logs")}>
-              Tool Logs
-            </button>
-            <button className={inspectorTab === "approvals" ? "selected" : ""} onClick={() => setInspectorTab("approvals")}>
-              Approvals
-            </button>
-          </div>
-
-          {inspectorTab === "todos" ? (
-            <div className="inspector-section">
-              <div className="fact-row">
-                <span>Current mode</span>
-                <strong>{status?.execution_mode_title ?? "unknown"}</strong>
-              </div>
-              <div className="fact-row">
-                <span>Reasoning</span>
-                <strong>{status?.reasoning_level ?? "auto"}</strong>
-              </div>
-              <div className="todo-list">
-                {todos.length === 0 ? (
-                  <div className="empty-card">
-                    <p>No open todo data.</p>
-                    <span>TodoWrite output from the runtime will show up here as soon as a turn updates it.</span>
+            <div className="inspector-section context-scroll">
+              {currentSession ? (
+                <>
+                  <div className="fact-row">
+                    <span>Session</span>
+                    <strong>{currentSession.id}</strong>
                   </div>
-                ) : (
-                  todos.map((item, index) => (
-                    <div key={`${String(item.content)}-${index}`} className={`todo-card ${String(item.status ?? "pending").toLowerCase()}`}>
-                      <strong>{String(item.status ?? "pending")}</strong>
-                      <p>{formatTodoLabel(item)}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {inspectorTab === "logs" ? (
-            <div className="inspector-section logs-layout">
-              <div className="log-list">
-                {toolLogs.length === 0 ? (
-                  <div className="empty-card">
-                    <p>No tool logs yet.</p>
-                    <span>As soon as a turn calls tools, the recent log index will appear here.</span>
+                  <div className="fact-row">
+                    <span>Updated</span>
+                    <strong>{formatRelativeTime(currentSession.updated_at ?? currentSession.created_at)}</strong>
                   </div>
-                ) : (
-                  toolLogs.map((entry) => (
-                    <button key={entry.id} className={`log-card ${activeToolLog?.id === entry.id ? "selected" : ""}`} onClick={() => void handleSelectToolLog(entry.id)}>
-                      <div className="log-card-head">
-                        <strong>{entry.tool_name}</strong>
-                        <span>{formatRelativeTime(entry.timestamp)}</span>
-                      </div>
-                      <p>{entry.category} · {entry.actor}</p>
-                    </button>
-                  ))
-                )}
-              </div>
-              <div className="log-detail">
-                {activeToolLog ? (
-                  <>
-                    <div className="log-detail-head">
-                      <h3>{activeToolLog.tool_name}</h3>
-                      <span>{activeToolLog.id}</span>
-                    </div>
-                    <pre>{activeToolLog.rendered}</pre>
-                  </>
-                ) : (
-                  <div className="empty-card">
-                    <p>Select a tool log.</p>
-                    <span>The detail view renders the same log text the CLI exposes through `/toollog`.</span>
+                  <div className="fact-row">
+                    <span>Messages</span>
+                    <strong>{currentSession.messages.length}</strong>
                   </div>
-                )}
-              </div>
-            </div>
-          ) : null}
-
-          {inspectorTab === "approvals" ? (
-            <div className="inspector-section approvals-list">
-              {pendingInteractions.length === 0 ? (
-                <div className="empty-card">
-                  <p>No pending approvals.</p>
-                  <span>Authorization and mode-switch requests arrive here and also surface as modal prompts.</span>
-                </div>
+                  <div className="fact-row">
+                    <span>Current mode</span>
+                    <strong>{status?.execution_mode_title ?? "unknown"}</strong>
+                  </div>
+                  <div className="context-block">
+                    <h3>Preview</h3>
+                    <p>{buildSessionPreview(currentSession)}</p>
+                  </div>
+                </>
               ) : (
-                pendingInteractions.map((interaction) => (
-                  <div key={interaction.id} className="approval-card">
-                    <header>
-                      <strong>{interaction.kind === "authorization" ? "Authorization" : "Mode switch"}</strong>
-                      <span>{interaction.id}</span>
-                    </header>
-                    <p>{interactionSummary(interaction)}</p>
-                    {interaction.kind === "authorization" ? (
-                      <div className="approval-actions">
-                        <button onClick={() => void handleResolveAuthorization(interaction.id, "once", true, "Allowed once from desktop UI.")}>
-                          Allow once
-                        </button>
-                        <button onClick={() => void handleResolveAuthorization(interaction.id, "workspace", true, "Allowed in this workspace from desktop UI.")}>
-                          Allow workspace
-                        </button>
-                        <button className="danger-ghost" onClick={() => void handleResolveAuthorization(interaction.id, "deny", false, "Denied from desktop UI.")}>
-                          Deny
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="approval-actions">
-                        <button onClick={() => void handleResolveModeSwitch(interaction, true)}>Switch</button>
-                        <button className="danger-ghost" onClick={() => void handleResolveModeSwitch(interaction, false)}>Stay</button>
-                      </div>
-                    )}
-                  </div>
-                ))
+                <div className="empty-card">
+                  <p>No session selected.</p>
+                  <span>Choose a session from the sidebar to inspect its details.</span>
+                </div>
               )}
             </div>
-          ) : null}
-        </aside>
+          </aside>
+        ) : null}
       </main>
 
       {firstPendingInteraction ? (
@@ -844,6 +1153,33 @@ function App() {
   );
 }
 
+function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {
+  const others = projects.filter((project) => project.path !== nextProject.path);
+  return [...others, nextProject].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function readStoredProjectPaths(): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PROJECTS_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistProjectPath(projectPath: string) {
+  if (typeof window === "undefined" || !projectPath.trim()) {
+    return;
+  }
+  const paths = readStoredProjectPaths();
+  if (!paths.includes(projectPath)) {
+    window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([...paths, projectPath]));
+  }
+}
+
 function interactionTitle(interaction: InteractionRequestState): string {
   if (interaction.kind === "authorization") {
     const toolName = typeof interaction.payload.tool_name === "string" ? interaction.payload.tool_name : "tool";
@@ -878,6 +1214,38 @@ function readSessionFromPayload(value: unknown): AgentSession | null {
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeReasoningLevel(value: string | null | undefined): ReasoningLevelOption {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (REASONING_LEVEL_OPTIONS as readonly string[]).includes(normalized) ? (normalized as ReasoningLevelOption) : "auto";
+}
+
+function formatReasoningLevel(value: string | null | undefined): string {
+  const normalized = normalizeReasoningLevel(value);
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function truncateTopic(value: string, maxLength = 15): string {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "New conversation";
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function getPathLeafName(path: string): string {
+  const normalized = String(path || "").replace(/[\\/]+$/, "");
+  if (!normalized) {
+    return "workspace";
+  }
+  const segments = normalized.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] || normalized;
 }
 
 export default App;

@@ -126,6 +126,16 @@ export class SidecarClient {
     );
   }
 
+  async setReasoningLevel(reasoningLevel: string | null): Promise<{ message: string; provider: string; model: string; reasoning_level?: string | null }> {
+    return parseResponse<{ message: string; provider: string; model: string; reasoning_level?: string | null }>(
+      await fetch(`${this.baseUrl}/reasoning`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reasoning_level: reasoningLevel ?? "auto" }),
+      }),
+    );
+  }
+
   async listInteractions(): Promise<InteractionRequestState[]> {
     const payload = await parseResponse<{ interactions: InteractionRequestState[] }>(await fetch(`${this.baseUrl}/interactions`));
     return payload.interactions;
