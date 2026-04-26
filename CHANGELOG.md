@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1 (2026-04-26)
+
+- 妗岄潰绔疌D 鍜?鏂囨。 (6e3957e)
+- 鑷姩閰嶇疆CI 鏋勫缓鐜 (30848f8)
+- feat(desktop): bootstrap local Windows release toolchain (f903967)
+- 褰掓。desktop app (40163a7)
+- feat(desktop): add installer and distribution pipeline (a84a4ec)
+- feat(desktop): add acceptance launcher and Tauri assets (0e6751c)
+- 鍒濆鍖栦簡涓€涓熀浜?Tauri 鐨勬闈?UI 瀹㈡埛绔紝骞剁浉搴旀墿灞曚簡 Python 鍚庣 API锛堣繍琛屾椂鐘舵€併€佸伐鍏锋棩蹇楁煡璇€佹墽琛屾ā寮忎俊鎭級 (f72854c)
+- feat(sidecar): add desktop backend sidecar service (054d298)
+- feat(cli): adapt CLI to app service for phase 2 (f93f262)
+- feat: add phase 1 app service layer (21c3da1)
+
 ## 0.5.0 (2026-04-24)
 
 - Unify persisted image references across history (da8f075)
