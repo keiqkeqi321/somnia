@@ -9,9 +9,28 @@ param(
 $ErrorActionPreference = "Stop"
 
 $script:Root = Split-Path -Parent $PSScriptRoot
+$script:LocalToolsRoot = Join-Path $script:Root ".local-tools"
+$script:LocalCargoHome = Join-Path $script:LocalToolsRoot "cargo"
+$script:LocalRustupHome = Join-Path $script:LocalToolsRoot "rustup"
+$script:LocalLlvmMingwRoot = Join-Path $script:LocalToolsRoot "llvm-mingw"
+$script:DownloadCacheRoot = Join-Path $script:LocalToolsRoot "downloads"
+$script:TempRoot = Join-Path $script:Root ".tmp-tests\desktop-release"
 $script:Cargo = $null
 $script:LlvmMingw = $null
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$script:WebRequestHeaders = @{
+    "User-Agent" = "somnia-desktop-release"
+}
+
+try {
+    $securityProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+    $tls12 = [System.Net.SecurityProtocolType]::Tls12
+    if (($securityProtocol -band $tls12) -eq 0) {
+        [System.Net.ServicePointManager]::SecurityProtocol = $securityProtocol -bor $tls12
+    }
+} catch {
+}
+
 Set-Location $script:Root
 
 function Prepend-PathEntry {
@@ -33,31 +52,126 @@ function Prepend-PathEntry {
     }
 }
 
-function Resolve-CargoCommand {
-    $command = Get-Command cargo -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($command) {
-        return [PSCustomObject]@{
-            FilePath          = $command.Source
-            Label             = "cargo"
-            Scope             = "global"
-            CargoHome         = $null
-            RustupHome        = $null
-            ToolchainBin      = $null
-            SelfContainedBin  = $null
-            LinkerPath        = $null
-        }
-    }
+function New-Directory {
+    param([string]$Path)
 
-    $cargoHome = Join-Path $script:Root ".local-tools\cargo"
-    $rustupHome = Join-Path $script:Root ".local-tools\rustup"
-    $cargoExe = Join-Path $cargoHome "bin\cargo.exe"
-    if (-not (Test-Path $cargoExe) -or -not (Test-Path $rustupHome)) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
         return $null
     }
 
-    $toolchainsDir = Join-Path $rustupHome "toolchains"
+    if (-not (Test-Path $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+
+    return $Path
+}
+
+function Get-NormalizedPath {
+    param([string]$Path)
+
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
+}
+
+function Assert-PathWithin {
+    param(
+        [string]$Path,
+        [string]$Parent
+    )
+
+    $normalizedPath = Get-NormalizedPath -Path $Path
+    $normalizedParent = Get-NormalizedPath -Path $Parent
+    $parentPrefix = if ($normalizedParent.EndsWith("\")) { $normalizedParent } else { $normalizedParent + "\" }
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+
+    if ($normalizedPath -eq $normalizedParent) {
+        return
+    }
+
+    if (-not $normalizedPath.StartsWith($parentPrefix, $comparison)) {
+        throw ("Refusing to operate on path outside {0}: {1}" -f $normalizedParent, $normalizedPath)
+    }
+}
+
+function Remove-TreeSafely {
+    param(
+        [string]$Path,
+        [string]$AllowedParent
+    )
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    Assert-PathWithin -Path $Path -Parent $AllowedParent
+    Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Invoke-DownloadFile {
+    param(
+        [string]$Url,
+        [string]$DestinationPath,
+        [string]$Label
+    )
+
+    $destinationDir = Split-Path -Parent $DestinationPath
+    if ($destinationDir) {
+        New-Directory -Path $destinationDir | Out-Null
+    }
+
+    if (Test-Path $DestinationPath) {
+        Write-Host ("Using cached {0}: {1}" -f $Label, $DestinationPath) -ForegroundColor DarkCyan
+        return $DestinationPath
+    }
+
+    Write-Host ("==> Downloading {0}" -f $Label) -ForegroundColor Cyan
+    Write-Host ("    {0}" -f $Url) -ForegroundColor DarkCyan
+
+    $request = @{
+        Uri     = $Url
+        OutFile = $DestinationPath
+        Headers = $script:WebRequestHeaders
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        $request.UseBasicParsing = $true
+    }
+
+    Invoke-WebRequest @request
+    return $DestinationPath
+}
+
+function Invoke-JsonRequest {
+    param([string]$Url)
+
+    $request = @{
+        Uri     = $Url
+        Headers = $script:WebRequestHeaders
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        $request.UseBasicParsing = $true
+    }
+
+    return Invoke-RestMethod @request
+}
+
+function Resolve-LocalCargoCommand {
+    $cargoExe = Join-Path $script:LocalCargoHome "bin\cargo.exe"
+    if (-not (Test-Path $cargoExe) -or -not (Test-Path $script:LocalRustupHome)) {
+        return $null
+    }
+
+    $toolchainsDir = Join-Path $script:LocalRustupHome "toolchains"
+    if (-not (Test-Path $toolchainsDir)) {
+        return $null
+    }
+
     $toolchain = Get-ChildItem -LiteralPath $toolchainsDir -Directory -ErrorAction SilentlyContinue |
-        Sort-Object @{ Expression = { if ($_.Name -like "stable*") { 0 } else { 1 } } }, Name |
+        Sort-Object @{
+            Expression = {
+                if ($_.Name -eq "stable-x86_64-pc-windows-gnullvm") { 0 }
+                elseif ($_.Name -like "stable*") { 1 }
+                else { 2 }
+            }
+        }, Name |
         Select-Object -First 1
     if (-not $toolchain) {
         return $null
@@ -71,16 +185,43 @@ function Resolve-CargoCommand {
         FilePath         = $cargoExe
         Label            = "workspace-local cargo"
         Scope            = "local"
-        CargoHome        = $cargoHome
-        RustupHome       = $rustupHome
+        CargoHome        = $script:LocalCargoHome
+        RustupHome       = $script:LocalRustupHome
         ToolchainBin     = $(if (Test-Path $toolchainBin) { $toolchainBin } else { $null })
         SelfContainedBin = $(if (Test-Path $selfContainedBin) { $selfContainedBin } else { $null })
         LinkerPath       = $(if (Test-Path $linkerPath) { $linkerPath } else { $null })
     }
 }
 
+function Resolve-GlobalCargoCommand {
+    $command = Get-Command cargo -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $command) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        FilePath         = $command.Source
+        Label            = "cargo"
+        Scope            = "global"
+        CargoHome        = $null
+        RustupHome       = $null
+        ToolchainBin     = $null
+        SelfContainedBin = $null
+        LinkerPath       = $null
+    }
+}
+
+function Resolve-CargoCommand {
+    $local = Resolve-LocalCargoCommand
+    if ($local) {
+        return $local
+    }
+
+    return Resolve-GlobalCargoCommand
+}
+
 function Resolve-LlvmMingw {
-    $root = Join-Path $script:Root ".local-tools\llvm-mingw"
+    $root = $script:LocalLlvmMingwRoot
     $binDir = Join-Path $root "bin"
     $clangPath = Join-Path $binDir "x86_64-w64-mingw32-clang.exe"
     if (-not (Test-Path $clangPath)) {
@@ -92,6 +233,150 @@ function Resolve-LlvmMingw {
         BinDir    = $binDir
         ClangPath = $clangPath
         Label     = "workspace-local llvm-mingw"
+    }
+}
+
+function Get-RustupInitUrl {
+    if (-not [string]::IsNullOrWhiteSpace($env:SOMNIA_RUSTUP_INIT_URL)) {
+        return $env:SOMNIA_RUSTUP_INIT_URL.Trim()
+    }
+
+    return "https://win.rustup.rs/x86_64"
+}
+
+function Resolve-LlvmMingwDownload {
+    if (-not [string]::IsNullOrWhiteSpace($env:SOMNIA_LLVM_MINGW_URL)) {
+        $url = $env:SOMNIA_LLVM_MINGW_URL.Trim()
+        $fileName = [System.IO.Path]::GetFileName(([System.Uri]$url).AbsolutePath)
+        if ([string]::IsNullOrWhiteSpace($fileName)) {
+            $fileName = "llvm-mingw-ucrt-x86_64.zip"
+        }
+
+        return [PSCustomObject]@{
+            Url      = $url
+            FileName = $fileName
+            Source   = "SOMNIA_LLVM_MINGW_URL"
+        }
+    }
+
+    $release = Invoke-JsonRequest -Url "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
+    $asset = @($release.assets | Where-Object { $_.name -like "llvm-mingw-*-ucrt-x86_64.zip" } | Select-Object -First 1)
+    if (-not $asset) {
+        throw "Unable to locate an llvm-mingw x86_64 UCRT asset from the latest GitHub release."
+    }
+
+    return [PSCustomObject]@{
+        Url      = $asset.browser_download_url
+        FileName = $asset.name
+        Source   = ("llvm-mingw {0}" -f $release.tag_name)
+    }
+}
+
+function Install-WorkspaceRustToolchain {
+    if (Resolve-LocalCargoCommand) {
+        return
+    }
+
+    New-Directory -Path $script:LocalToolsRoot | Out-Null
+    New-Directory -Path $script:DownloadCacheRoot | Out-Null
+
+    $rustupInitExe = Join-Path $script:DownloadCacheRoot "rustup-init-x86_64.exe"
+    Invoke-DownloadFile -Url (Get-RustupInitUrl) -DestinationPath $rustupInitExe -Label "rustup-init.exe" | Out-Null
+
+    if ((Test-Path $script:LocalCargoHome) -or (Test-Path $script:LocalRustupHome)) {
+        Write-Host "Removing incomplete workspace-local Rust toolchain before reinstall." -ForegroundColor DarkYellow
+        Remove-TreeSafely -Path $script:LocalCargoHome -AllowedParent $script:LocalToolsRoot
+        Remove-TreeSafely -Path $script:LocalRustupHome -AllowedParent $script:LocalToolsRoot
+    }
+
+    New-Directory -Path $script:LocalCargoHome | Out-Null
+    New-Directory -Path $script:LocalRustupHome | Out-Null
+
+    $previousCargoHome = $env:CARGO_HOME
+    $previousRustupHome = $env:RUSTUP_HOME
+    $previousRustupInitSkipPathCheck = $env:RUSTUP_INIT_SKIP_PATH_CHECK
+
+    try {
+        $env:CARGO_HOME = $script:LocalCargoHome
+        $env:RUSTUP_HOME = $script:LocalRustupHome
+        $env:RUSTUP_INIT_SKIP_PATH_CHECK = "yes"
+
+        Write-Host "==> Bootstrapping workspace-local Rust toolchain" -ForegroundColor Cyan
+        & $rustupInitExe `
+            -y `
+            --no-modify-path `
+            --profile minimal `
+            --default-host x86_64-pc-windows-gnullvm `
+            --default-toolchain stable-x86_64-pc-windows-gnullvm
+        if ($LASTEXITCODE -ne 0) {
+            throw ("rustup-init.exe failed with exit code {0}." -f $LASTEXITCODE)
+        }
+    }
+    finally {
+        if ($null -eq $previousCargoHome) {
+            Remove-Item Env:CARGO_HOME -ErrorAction SilentlyContinue
+        } else {
+            $env:CARGO_HOME = $previousCargoHome
+        }
+
+        if ($null -eq $previousRustupHome) {
+            Remove-Item Env:RUSTUP_HOME -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTUP_HOME = $previousRustupHome
+        }
+
+        if ($null -eq $previousRustupInitSkipPathCheck) {
+            Remove-Item Env:RUSTUP_INIT_SKIP_PATH_CHECK -ErrorAction SilentlyContinue
+        } else {
+            $env:RUSTUP_INIT_SKIP_PATH_CHECK = $previousRustupInitSkipPathCheck
+        }
+    }
+
+    if (-not (Resolve-LocalCargoCommand)) {
+        throw "Workspace-local Rust toolchain bootstrap completed, but cargo.exe is still unavailable."
+    }
+}
+
+function Install-WorkspaceLlvmMingw {
+    if (Resolve-LlvmMingw) {
+        return
+    }
+
+    New-Directory -Path $script:LocalToolsRoot | Out-Null
+    New-Directory -Path $script:DownloadCacheRoot | Out-Null
+    New-Directory -Path $script:TempRoot | Out-Null
+
+    $download = Resolve-LlvmMingwDownload
+    $archivePath = Join-Path $script:DownloadCacheRoot $download.FileName
+    Invoke-DownloadFile -Url $download.Url -DestinationPath $archivePath -Label ("{0} archive" -f $download.Source) | Out-Null
+
+    $extractRoot = Join-Path $script:TempRoot ("llvm-mingw-extract-{0}" -f [System.Guid]::NewGuid().ToString("N"))
+    New-Directory -Path $extractRoot | Out-Null
+
+    try {
+        if (Test-Path $script:LocalLlvmMingwRoot) {
+            Remove-TreeSafely -Path $script:LocalLlvmMingwRoot -AllowedParent $script:LocalToolsRoot
+        }
+
+        Write-Host "==> Bootstrapping workspace-local llvm-mingw" -ForegroundColor Cyan
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractRoot -Force
+
+        $entries = @(Get-ChildItem -LiteralPath $extractRoot -Force)
+        $payloadRoot = if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) {
+            $entries[0].FullName
+        } else {
+            $extractRoot
+        }
+
+        New-Directory -Path $script:LocalLlvmMingwRoot | Out-Null
+        Copy-Item -Path (Join-Path $payloadRoot "*") -Destination $script:LocalLlvmMingwRoot -Recurse -Force
+    }
+    finally {
+        Remove-TreeSafely -Path $extractRoot -AllowedParent $script:TempRoot
+    }
+
+    if (-not (Resolve-LlvmMingw)) {
+        throw "Workspace-local llvm-mingw bootstrap completed, but x86_64-w64-mingw32-clang.exe is still unavailable."
     }
 }
 
@@ -134,6 +419,25 @@ function Enable-CargoEnvironment {
             $env:CC_x86_64_pc_windows_gnu = $CargoCommand.LinkerPath
         }
     }
+}
+
+function Should-BootstrapWorkspaceWindowsToolchain {
+    param([string]$RequestedTargetTriple)
+
+    if ($env:OS -ne "Windows_NT") {
+        return $false
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RequestedTargetTriple)) {
+        return $true
+    }
+
+    return ("$RequestedTargetTriple".Trim().ToLowerInvariant() -eq "x86_64-pc-windows-gnullvm")
+}
+
+function Ensure-WorkspaceWindowsToolchain {
+    Install-WorkspaceRustToolchain
+    Install-WorkspaceLlvmMingw
 }
 
 function Get-DefaultTargetTriple {
@@ -266,6 +570,10 @@ function New-GeneratedBundleConfig {
     return $generatedConfigPath
 }
 
+if (Should-BootstrapWorkspaceWindowsToolchain -RequestedTargetTriple $TargetTriple) {
+    Ensure-WorkspaceWindowsToolchain
+}
+
 $script:LlvmMingw = Resolve-LlvmMingw
 $script:Cargo = Resolve-CargoCommand
 
@@ -273,8 +581,10 @@ if (-not $script:Cargo) {
     throw @"
 Rust/Cargo is required to build desktop bundles, but no usable cargo executable was found.
 
-Install Rust globally, or restore the workspace-local toolchain under:
-  D:\Project\Git\somnia\.local-tools
+Run this script on Windows without -TargetTriple to bootstrap the workspace-local toolchain under:
+  $script:LocalToolsRoot
+
+Or install Rust globally and pass a compatible -TargetTriple explicitly.
 "@
 }
 
