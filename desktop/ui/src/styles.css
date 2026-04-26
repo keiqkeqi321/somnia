@@ -639,6 +639,11 @@ button {
   background: rgba(36, 41, 50, 0.95);
 }
 
+.bubble.user.pending {
+  border-color: rgba(143, 180, 255, 0.28);
+  background: rgba(36, 41, 50, 0.78);
+}
+
 .bubble.assistant {
   align-self: flex-start;
   width: min(100%, 62rem);
@@ -649,6 +654,11 @@ button {
   border-radius: 0;
   background: linear-gradient(90deg, rgba(111, 183, 255, 0.1), rgba(111, 183, 255, 0));
   backdrop-filter: none;
+}
+
+.bubble.assistant.pending {
+  border-left-color: rgba(111, 183, 255, 0.5);
+  background: linear-gradient(90deg, rgba(111, 183, 255, 0.08), rgba(111, 183, 255, 0));
 }
 
 .bubble-status {
@@ -675,6 +685,43 @@ button {
   color: #ffffff;
   font-size: 0.98rem;
   line-height: 1.62;
+}
+
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  transform: translateY(-1px);
+}
+
+.typing-indicator span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(215, 227, 255, 0.78);
+  animation: typing-pulse 1s ease-in-out infinite;
+}
+
+.typing-indicator span:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.typing-indicator span:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+@keyframes typing-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.32;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
 }
 
 .tool-call-stack {

@@ -13,6 +13,7 @@ import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatT
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
+  ConversationPendingTurn,
   InteractionRequestState,
   ManagedSidecarConnection,
   ModelDescriptor,
@@ -91,6 +92,7 @@ function App() {
   const [currentSession, setCurrentSession] = useState<AgentSession | null>(null);
   const [draft, setDraft] = useState("");
   const [streamingText, setStreamingText] = useState("");
+  const [pendingTurn, setPendingTurn] = useState<ConversationPendingTurn | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
@@ -494,6 +496,7 @@ function App() {
         upsertProjectSession(projectPath, payloadSession);
         if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
+          setPendingTurn((current) => (current?.sessionId === payloadSession.id ? null : current));
         }
       }
       return;
@@ -532,6 +535,7 @@ function App() {
       if (isActiveProject) {
         setActiveTurnId((current) => (current === event.turn_id ? null : current));
         setStreamingText("");
+        setPendingTurn(null);
         void refreshInteractions();
         void refreshStatusAndProviders();
       }
@@ -547,6 +551,7 @@ function App() {
         upsertProjectSession(projectPath, payloadSession);
         if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
+          setPendingTurn((current) => (current?.sessionId === payloadSession.id ? null : current));
         }
       }
       if (isActiveProject) {
@@ -643,6 +648,7 @@ function App() {
     setSelectedSessionId(sessionId);
     setCurrentSession(loadedSession);
     setStreamingText("");
+    setPendingTurn(null);
     if (knownSessions) {
       setSessions(sortSessions(knownSessions.map((session) => (session.id === loadedSession.id ? loadedSession : session))));
     } else {
@@ -722,6 +728,7 @@ function App() {
       setContextPanelOpen(true);
       setDraft("");
       setStreamingText("");
+      setPendingTurn(null);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     } finally {
@@ -766,6 +773,7 @@ function App() {
           setPendingInteractions([]);
           setToolLogs([]);
           setStreamingText("");
+          setPendingTurn(null);
           setActiveTurnId(null);
         }
       }
@@ -783,23 +791,36 @@ function App() {
       return;
     }
     setBusyAction("send-prompt");
+    const prompt = draft;
+    const images = pendingImages;
+    const optimisticUserText = buildOptimisticUserText(prompt, images);
+    const optimisticTurnId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setPendingTurn({
+      id: optimisticTurnId,
+      sessionId: currentSessionRef.current?.id ?? null,
+      userText: optimisticUserText,
+      placeholderText: "Thinking",
+    });
     try {
       const session = await ensureSession();
       if (!session) {
+        setPendingTurn(null);
         return;
       }
-      const prompt = draft;
       rememberPrompt(prompt);
       setDraft("");
       setPendingImages([]);
       setHistoryCursor(null);
       setCommandPickerOpen(false);
       setStreamingText("");
-      const userInput = buildPromptPayload(prompt, pendingImages);
+      setPendingTurn((current) => (current?.id === optimisticTurnId ? { ...current, sessionId: session.id } : current));
+      const userInput = buildPromptPayload(prompt, images);
       const response = await client.startTurn(session.id, userInput);
+      setPendingTurn((current) => (current?.id === optimisticTurnId ? { ...current, id: response.turn_id, sessionId: session.id } : current));
       setActiveTurnId(response.turn_id);
       setBannerMessage("Turn started.");
     } catch (error) {
+      setPendingTurn(null);
       setBannerMessage(formatErrorMessage(error));
     } finally {
       setBusyAction(null);
@@ -1077,7 +1098,8 @@ function App() {
     textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
   }
 
-  const conversationRows = buildConversationRows(currentSession, streamingText);
+  const activePendingTurn = pendingTurn && pendingTurn.sessionId === (currentSession?.id ?? null) ? pendingTurn : null;
+  const conversationRows = buildConversationRows(currentSession, streamingText, activePendingTurn);
   const firstPendingInteraction = pendingInteractions[0] ?? null;
   const activeProviderLabel = status?.provider ?? selectedProvider ?? "Provider";
   const activeModelLabel = status?.model ?? selectedModel ?? "Model";
@@ -1272,9 +1294,16 @@ function App() {
               </div>
             ) : (
               conversationRows.map((row) => (
-                <article key={row.id} className={`bubble ${row.role}`}>
+                <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
                   {row.isStreaming ? <div className="bubble-status">Streaming</div> : null}
                   {row.text ? <pre>{row.text}</pre> : null}
+                  {row.isLoading ? (
+                    <span className="typing-indicator" aria-label="Waiting for assistant response">
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                  ) : null}
                   {row.toolCalls?.length ? (
                     <div className="tool-call-stack">
                       {row.toolCalls.map((toolCall) => (
@@ -1665,6 +1694,15 @@ function buildPromptPayload(prompt: string, images: PendingImage[]): string | Re
     });
   }
   return { role: "user", content };
+}
+
+function buildOptimisticUserText(prompt: string, images: PendingImage[]): string {
+  const text = prompt.trim() || (images.length > 0 ? "Look at this image." : "");
+  if (images.length === 0) {
+    return text;
+  }
+  const attachmentLabel = images.length === 1 ? "[1 image attached]" : `[${images.length} images attached]`;
+  return text ? `${text}\n\n${attachmentLabel}` : attachmentLabel;
 }
 
 function readClipboardImage(file: File): Promise<PendingImage> {

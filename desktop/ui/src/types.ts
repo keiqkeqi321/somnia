@@ -120,6 +120,8 @@ export interface ConversationRow {
   role: "user" | "assistant";
   text: string;
   isStreaming?: boolean;
+  isLoading?: boolean;
+  isPending?: boolean;
   toolCalls?: ConversationToolCall[];
 }
 
@@ -129,4 +131,11 @@ export interface ConversationToolCall {
   input: string;
   output: string;
   logId?: string | null;
+}
+
+export interface ConversationPendingTurn {
+  id: string;
+  sessionId: string | null;
+  userText: string;
+  placeholderText: string;
 }
