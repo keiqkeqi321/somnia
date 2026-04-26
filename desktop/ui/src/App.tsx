@@ -1,6 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 
-import { chooseProjectFolder, ensureManagedSidecar, openWorkspaceRoot } from "./lib/desktop";
+import { chooseProjectFolder, ensureManagedSidecar, openWorkspaceRoot, stopManagedSidecar } from "./lib/desktop";
 import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatTodoLabel, sortSessions } from "./lib/messages";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
@@ -17,11 +25,47 @@ import type {
 
 const STORAGE_KEY = "somnia.desktop.sidecar-url";
 const PROJECTS_STORAGE_KEY = "somnia.desktop.project-paths";
+const PROMPT_HISTORY_STORAGE_KEY = "somnia.desktop.prompt-history";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
 const REASONING_LEVEL_OPTIONS = ["auto", "low", "medium", "high", "deep"] as const;
+const COMMAND_SPECS = [
+  { command: "/scan", description: "Scan the repo or a subdirectory" },
+  { command: "/symbols", description: "Find symbols and inspect matching source locations" },
+  { command: "/image", description: "Send a local image to the active multimodal model" },
+  { command: "/paste-image", description: "Read an image from the system clipboard" },
+  { command: "/model", description: "Choose the active provider and model" },
+  { command: "/reasoning", description: "Set the active provider reasoning level" },
+  { command: "/providers", description: "Add or edit shared provider profiles" },
+  { command: "/hooks", description: "Browse hooks by event and toggle them on or off" },
+  { command: "/undo", description: "Undo the most recent file change set" },
+  { command: "/checkpoint", description: "Save a named checkpoint of the current session state" },
+  { command: "/rollback", description: "Roll back to a previous checkpoint" },
+  { command: "/compact", description: "Compact the current session context" },
+  { command: "/janitor", description: "Run semantic janitor on the current payload" },
+  { command: "/skills", description: "Choose a skill to apply to the next prompt" },
+  { command: "/tasks", description: "Show persistent tasks" },
+  { command: "/team", description: "Show teammate roster and states" },
+  { command: "/mcp", description: "Browse configured MCP servers and tools" },
+  { command: "/bg", description: "Show background jobs" },
+  { command: "/help", description: "Show available REPL commands" },
+  { command: "/exit", description: "Exit chat mode" },
+] as const;
+const EXECUTION_MODE_OPTIONS = [
+  { key: "shortcuts", title: "? for shortcuts", description: "Read-only shortcuts and lightweight inspection." },
+  { key: "plan", title: "⏸ plan mode on", description: "Read-only planning before edits." },
+  { key: "accept_edits", title: "⏵⏵ accept edits on", description: "Allow file edits and task updates." },
+  { key: "yolo", title: "! Yolo", description: "Full autonomy for this workspace." },
+] as const;
 
 type ReasoningLevelOption = (typeof REASONING_LEVEL_OPTIONS)[number];
+type ExecutionModeOption = (typeof EXECUTION_MODE_OPTIONS)[number]["key"];
+type PendingImage = {
+  id: string;
+  name: string;
+  mediaType: string;
+  dataUrl: string;
+};
 type ProjectState = {
   path: string;
   label: string;
@@ -54,6 +98,11 @@ function App() {
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevelOption>("auto");
+  const [promptHistory, setPromptHistory] = useState<string[]>(() => readStoredPromptHistory());
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+  const [commandPickerOpen, setCommandPickerOpen] = useState(false);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [toolLogs, setToolLogs] = useState<ToolLogIndexEntry[]>([]);
   const [activeToolLog, setActiveToolLog] = useState<ToolLogDetail | null>(null);
   const [sidebarSection, setSidebarSection] = useState<"sessions">("sessions");
@@ -61,6 +110,7 @@ function App() {
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modePickerOpen, setModePickerOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
@@ -72,8 +122,10 @@ function App() {
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
+  const modePickerRef = useRef<HTMLDivElement | null>(null);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
   selectedProjectPathRef.current = selectedProjectPath;
@@ -115,6 +167,31 @@ function App() {
   }, [modelPickerOpen]);
 
   useEffect(() => {
+    if (!modePickerOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!modePickerRef.current?.contains(event.target as Node)) {
+        setModePickerOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setModePickerOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [modePickerOpen]);
+
+  useEffect(() => {
     if (!projectMenuOpenKey) {
       return;
     }
@@ -141,6 +218,13 @@ function App() {
 
   useLayoutEffect(() => {
     resizeComposerTextarea();
+  }, [draft]);
+
+  useEffect(() => {
+    const trimmed = draft.trimStart();
+    const shouldOpen = /^\/[^\s]*$/.test(trimmed);
+    setCommandPickerOpen(shouldOpen);
+    setSelectedCommandIndex(0);
   }, [draft]);
 
   useEffect(() => {
@@ -431,7 +515,7 @@ function App() {
       }
       return;
     }
-    if (event.type === "provider_switched" || event.type === "reasoning_level_updated") {
+    if (event.type === "provider_switched" || event.type === "reasoning_level_updated" || event.type === "execution_mode_updated") {
       if (isActiveProject) {
         void refreshStatusAndProviders();
       }
@@ -645,9 +729,57 @@ function App() {
     }
   }
 
+  async function handleRemoveProject(projectPath: string) {
+    const project = projects.find((item) => item.path === projectPath);
+    if (!project) {
+      return;
+    }
+    setBusyAction("remove-project");
+    try {
+      projectSocketsRef.current[projectPath]?.close();
+      delete projectSocketsRef.current[projectPath];
+      delete projectClientsRef.current[projectPath];
+      await stopManagedSidecar(projectPath);
+      removeStoredProjectPath(projectPath);
+
+      const remainingProjects = projects.filter((item) => item.path !== projectPath);
+      setProjects(remainingProjects);
+      setCollapsedProjects((previous) => {
+        const next = { ...previous };
+        delete next[projectPath];
+        return next;
+      });
+      setProjectMenuOpenKey(null);
+
+      if (selectedProjectPathRef.current === projectPath) {
+        const nextProject = remainingProjects[0] ?? null;
+        if (nextProject) {
+          await activateProject(nextProject.path, projectClientsRef.current[nextProject.path], nextProject);
+        } else {
+          clientRef.current = null;
+          socketRef.current = null;
+          setSelectedProjectPath(null);
+          setStatus(null);
+          setSessions([]);
+          setSelectedSessionId(null);
+          setCurrentSession(null);
+          setPendingInteractions([]);
+          setToolLogs([]);
+          setStreamingText("");
+          setActiveTurnId(null);
+        }
+      }
+      setBannerMessage(`Removed project: ${project.label}`);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleSendPrompt() {
     const client = clientRef.current;
-    if (!client || !draft.trim()) {
+    if (!client || (!draft.trim() && pendingImages.length === 0)) {
       return;
     }
     setBusyAction("send-prompt");
@@ -657,9 +789,14 @@ function App() {
         return;
       }
       const prompt = draft;
+      rememberPrompt(prompt);
       setDraft("");
+      setPendingImages([]);
+      setHistoryCursor(null);
+      setCommandPickerOpen(false);
       setStreamingText("");
-      const response = await client.startTurn(session.id, prompt);
+      const userInput = buildPromptPayload(prompt, pendingImages);
+      const response = await client.startTurn(session.id, userInput);
       setActiveTurnId(response.turn_id);
       setBannerMessage("Turn started.");
     } catch (error) {
@@ -706,6 +843,148 @@ function App() {
       await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
       await refreshStatusAndProviders();
       setModelPickerOpen(false);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function rememberPrompt(prompt: string) {
+    const normalized = prompt.trim();
+    if (!normalized) {
+      return;
+    }
+    setPromptHistory((previous) => {
+      const deduped = previous.filter((item) => item !== normalized);
+      const next = [...deduped, normalized].slice(-100);
+      persistPromptHistory(next);
+      return next;
+    });
+  }
+
+  function handleComposerChange(value: string) {
+    setDraft(value);
+    setHistoryCursor(null);
+  }
+
+  async function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    try {
+      const images = await Promise.all(files.map((file) => readClipboardImage(file)));
+      setPendingImages((previous) => [...previous, ...images].slice(-8));
+      if (!draft.trim()) {
+        setDraft("Look at this image.");
+      }
+      setCommandPickerOpen(false);
+    } catch (error) {
+      setBannerMessage(`Unable to read pasted image: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  function removePendingImage(imageId: string) {
+    setPendingImages((previous) => previous.filter((image) => image.id !== imageId));
+  }
+
+  async function handleImageFilesSelected(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []).filter((file) => file.type.startsWith("image/"));
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    if (files.length === 0) {
+      return;
+    }
+    try {
+      const images = await Promise.all(files.map((file) => readClipboardImage(file)));
+      setPendingImages((previous) => [...previous, ...images].slice(-8));
+      if (!draft.trim()) {
+        setDraft("Look at this image.");
+      }
+      setCommandPickerOpen(false);
+      composerTextareaRef.current?.focus();
+    } catch (error) {
+      setBannerMessage(`Unable to read selected image: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    const suggestions = currentCommandSuggestions(draft);
+    if (commandPickerOpen && suggestions.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedCommandIndex((current) => (current + 1) % suggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedCommandIndex((current) => (current - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        applyCommandSuggestion(suggestions[selectedCommandIndex]?.command ?? suggestions[0].command);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCommandPickerOpen(false);
+        return;
+      }
+    }
+
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      return;
+    }
+    if (promptHistory.length === 0) {
+      return;
+    }
+    const textarea = event.currentTarget;
+    const atStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+    const atEnd = textarea.selectionStart === draft.length && textarea.selectionEnd === draft.length;
+    if (event.key === "ArrowUp" && !atStart) {
+      return;
+    }
+    if (event.key === "ArrowDown" && !atEnd) {
+      return;
+    }
+    event.preventDefault();
+    const nextCursor =
+      event.key === "ArrowUp"
+        ? historyCursor === null
+          ? promptHistory.length - 1
+          : Math.max(0, historyCursor - 1)
+        : historyCursor === null
+          ? null
+          : historyCursor >= promptHistory.length - 1
+            ? null
+            : historyCursor + 1;
+    setHistoryCursor(nextCursor);
+    setDraft(nextCursor === null ? "" : promptHistory[nextCursor]);
+  }
+
+  function applyCommandSuggestion(command: string) {
+    setDraft(`${command} `);
+    setCommandPickerOpen(false);
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+    });
+  }
+
+  async function handleExecutionModeChange(mode: ExecutionModeOption) {
+    const client = clientRef.current;
+    if (!client) {
+      setBannerMessage("Connect to a sidecar before changing execution mode.");
+      return;
+    }
+    setBusyAction("switch-execution-mode");
+    try {
+      await client.setExecutionMode(mode);
+      setModePickerOpen(false);
+      await refreshStatusAndProviders();
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     } finally {
@@ -803,6 +1082,26 @@ function App() {
   const activeProviderLabel = status?.provider ?? selectedProvider ?? "Provider";
   const activeModelLabel = status?.model ?? selectedModel ?? "Model";
   const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
+  const activeExecutionMode = normalizeExecutionMode(status?.execution_mode);
+  const activeExecutionModeLabel =
+    status?.execution_mode_title ?? EXECUTION_MODE_OPTIONS.find((mode) => mode.key === activeExecutionMode)?.title ?? "Execution mode unavailable";
+  const contextUsage = currentSession?.context_window_usage ?? null;
+  const contextPercent = normalizeContextPercent(contextUsage?.usage_percent);
+  const contextColor = contextUsageColor(contextPercent);
+  const contextFill = contextPercent ?? 0;
+  const contextLabel = contextUsage
+    ? contextUsage.max_tokens
+      ? `CTX ${contextPercent?.toFixed(1) ?? "0.0"}%`
+      : `CTX ${formatTokenCount(contextUsage.used_tokens)}`
+    : "CTX --";
+  const contextTitle = contextUsage
+    ? contextUsage.max_tokens
+      ? `Context: ${contextPercent?.toFixed(1) ?? "0.0"}% (${formatTokenCount(contextUsage.used_tokens)} / ${formatTokenCount(
+          contextUsage.max_tokens,
+        )} tokens)`
+      : `Context: ${formatTokenCount(contextUsage.used_tokens)} tokens`
+    : "Context usage unavailable";
+  const commandSuggestions = currentCommandSuggestions(draft);
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
   const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || "New conversation");
   const workspaceRootPath = status?.workspace_root ?? "";
@@ -822,13 +1121,18 @@ function App() {
         <aside className="panel sidebar-panel">
           <div className="panel-header">
             <div>
-              <p className="panel-kicker">Projects</p>
               <h2>Projects</h2>
             </div>
             <div className="panel-header-actions">
               <span className="panel-count">{visibleProjectCount} total</span>
-              <button className="action primary sidebar-new" onClick={() => void handleCreateProject()} disabled={busyAction !== null}>
-                New Project
+              <button
+                className="action primary sidebar-new"
+                onClick={() => void handleCreateProject()}
+                disabled={busyAction !== null}
+                title="New Project"
+                aria-label="New Project"
+              >
+                +
               </button>
             </div>
           </div>
@@ -856,8 +1160,11 @@ function App() {
                           }
                         >
                           <span className="project-toggle-main">
-                            <span className="project-toggle-caret">{isCollapsed ? ">" : "v"}</span>
-                            <strong>{group.label}</strong>
+                            <span className="project-toggle-caret">{isCollapsed ? "▸" : "▾"}</span>
+                            <span className="project-toggle-label">
+                              <strong>{group.label}</strong>
+                              <small>{group.path}</small>
+                            </span>
                           </span>
                           <span className="project-toggle-count">{group.sessions.length}</span>
                         </button>
@@ -871,7 +1178,7 @@ function App() {
                             aria-label={`Project options for ${group.label}`}
                             title="Project options"
                           >
-                            ...
+                            ⋯
                           </button>
                           {projectMenuOpenKey === group.key ? (
                             <div className="project-menu-panel">
@@ -883,7 +1190,16 @@ function App() {
                                 }}
                                 disabled={busyAction !== null}
                               >
-                                New Session
+                                New
+                              </button>
+                              <button
+                                className="project-menu-item danger"
+                                onClick={() => {
+                                  void handleRemoveProject(group.path);
+                                }}
+                                disabled={busyAction !== null}
+                              >
+                                Remove
                               </button>
                             </div>
                           ) : null}
@@ -907,9 +1223,6 @@ function App() {
                                 <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
                               </div>
                               <p>{buildSessionPreview(session)}</p>
-                              <div className="session-card-meta">
-                                <span>{session.messages.length} msgs</span>
-                              </div>
                             </button>
                           ))}
                         </div>
@@ -946,7 +1259,7 @@ function App() {
                 title={contextPanelOpen ? "Hide details" : "Show details"}
                 aria-label={contextPanelOpen ? "Hide details" : "Show details"}
               >
-                ...
+                ⋯
               </button>
             </div>
           </div>
@@ -960,11 +1273,28 @@ function App() {
             ) : (
               conversationRows.map((row) => (
                 <article key={row.id} className={`bubble ${row.role}`}>
-                  <header>
-                    <span>{row.role === "user" ? "User" : "Assistant"}</span>
-                    {row.isStreaming ? <em>streaming</em> : null}
-                  </header>
-                  <pre>{row.text}</pre>
+                  {row.isStreaming ? <div className="bubble-status">Streaming</div> : null}
+                  {row.text ? <pre>{row.text}</pre> : null}
+                  {row.toolCalls?.length ? (
+                    <div className="tool-call-stack">
+                      {row.toolCalls.map((toolCall) => (
+                        <details key={toolCall.id} className="tool-call-card">
+                          <summary>
+                            <span>{toolCall.name}</span>
+                            {toolCall.logId ? <em>{toolCall.logId}</em> : null}
+                          </summary>
+                          <div className="tool-call-detail">
+                            <span>Input</span>
+                            <pre>{toolCall.input}</pre>
+                          </div>
+                          <div className="tool-call-detail">
+                            <span>Output</span>
+                            <pre>{toolCall.output}</pre>
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               ))
             )}
@@ -974,14 +1304,64 @@ function App() {
             <textarea
               ref={composerTextareaRef}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => handleComposerChange(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              onPaste={(event) => void handleComposerPaste(event)}
               placeholder="Ask Somnia to inspect, plan, or implement against the current workspace."
               rows={1}
             />
+            {pendingImages.length > 0 ? (
+              <div className="pending-attachments">
+                {pendingImages.map((image) => (
+                  <button
+                    key={image.id}
+                    className="pending-attachment"
+                    onClick={() => removePendingImage(image.id)}
+                    title={`Remove ${image.name}`}
+                  >
+                    <span>{image.name}</span>
+                    <strong>x</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {commandPickerOpen && commandSuggestions.length > 0 ? (
+              <div className="command-picker">
+                {commandSuggestions.map((item, index) => (
+                  <button
+                    key={item.command}
+                    className={`command-option ${index === selectedCommandIndex ? "selected" : ""}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyCommandSuggestion(item.command);
+                    }}
+                  >
+                    <strong>{item.command}</strong>
+                    <span>{item.description}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="composer-actions">
+              <input
+                ref={fileInputRef}
+                className="file-input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                onChange={(event) => void handleImageFilesSelected(event.currentTarget.files)}
+              />
+              <button
+                className="action secondary composer-icon-action attachment-action"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busyAction !== null}
+                title="Attach image"
+                aria-label="Attach image"
+              >
+                +
+              </button>
               <div className="composer-meta">
                 <div className="composer-controls">
-                  <span className="mode-pill">{status?.execution_mode_title ?? "Execution mode unavailable"}</span>
                   <div className="model-picker" ref={modelPickerRef}>
                     <button
                       className={`model-trigger ${modelPickerOpen ? "open" : ""}`}
@@ -1056,15 +1436,65 @@ function App() {
                       </div>
                     ) : null}
                   </div>
+                  <div className="mode-picker" ref={modePickerRef}>
+                    <button
+                      className={`mode-pill ${modePickerOpen ? "open" : ""}`}
+                      onClick={() => setModePickerOpen((current) => !current)}
+                      disabled={!clientRef.current || busyAction !== null}
+                    >
+                      {activeExecutionModeLabel}
+                    </button>
+                    {modePickerOpen ? (
+                      <div className="mode-picker-panel">
+                        {EXECUTION_MODE_OPTIONS.map((mode) => (
+                          <button
+                            key={mode.key}
+                            className={`mode-option ${activeExecutionMode === mode.key ? "selected" : ""}`}
+                            onClick={() => void handleExecutionModeChange(mode.key)}
+                            disabled={busyAction !== null}
+                          >
+                            <strong>{mode.title}</strong>
+                            <span>{mode.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div
+                    className="ctx-meter"
+                    style={
+                      {
+                        "--ctx-color": contextColor,
+                        "--ctx-fill": `${contextFill}%`,
+                      } as CSSProperties
+                    }
+                    title={contextTitle}
+                    aria-label={contextTitle}
+                  >
+                    <span className="ctx-ring" />
+                    <span className="ctx-label">{contextLabel}</span>
+                  </div>
                 </div>
               </div>
               <div className="composer-cta">
-                <button className="action primary" onClick={() => void handleSendPrompt()} disabled={!draft.trim() || busyAction !== null}>
-                  Send
+                <button
+                  className="action primary composer-icon-action"
+                  onClick={() => void handleSendPrompt()}
+                  disabled={(!draft.trim() && pendingImages.length === 0) || busyAction !== null}
+                  title="Send"
+                  aria-label="Send"
+                >
+                  ↑
                 </button>
                 {activeTurnId ? (
-                  <button className="action danger" onClick={() => void handleInterrupt()} disabled={busyAction !== null}>
-                    Interrupt
+                  <button
+                    className="action danger composer-icon-action"
+                    onClick={() => void handleInterrupt()}
+                    disabled={busyAction !== null}
+                    title="Interrupt"
+                    aria-label="Interrupt"
+                  >
+                    ■
                   </button>
                 ) : null}
               </div>
@@ -1180,6 +1610,84 @@ function persistProjectPath(projectPath: string) {
   }
 }
 
+function removeStoredProjectPath(projectPath: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const paths = readStoredProjectPaths().filter((path) => path !== projectPath);
+  window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(paths));
+}
+
+function readStoredPromptHistory(): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PROMPT_HISTORY_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistPromptHistory(history: string[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(history));
+}
+
+function currentCommandSuggestions(value: string): Array<(typeof COMMAND_SPECS)[number]> {
+  const query = value.trimStart();
+  if (!/^\/[^\s]*$/.test(query)) {
+    return [];
+  }
+  return COMMAND_SPECS.filter((item) => item.command.startsWith(query)).slice(0, 8);
+}
+
+function buildPromptPayload(prompt: string, images: PendingImage[]): string | Record<string, unknown> {
+  if (images.length === 0) {
+    return prompt;
+  }
+  const content: Array<Record<string, unknown>> = [];
+  const text = prompt.trim() || "Look at this image.";
+  if (text) {
+    content.push({ type: "text", text });
+  }
+  for (const image of images) {
+    content.push({
+      type: "image_url",
+      image_url: {
+        url: image.dataUrl,
+      },
+      media_type: image.mediaType,
+      name: image.name,
+    });
+  }
+  return { role: "user", content };
+}
+
+function readClipboardImage(file: File): Promise<PendingImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image."));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUrl.startsWith("data:image/")) {
+        reject(new Error("Clipboard item is not a supported image."));
+        return;
+      }
+      resolve({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name || "pasted-image",
+        mediaType: file.type || dataUrl.slice(5, dataUrl.indexOf(";")) || "image/png",
+        dataUrl,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function interactionTitle(interaction: InteractionRequestState): string {
   if (interaction.kind === "authorization") {
     const toolName = typeof interaction.payload.tool_name === "string" ? interaction.payload.tool_name : "tool";
@@ -1223,9 +1731,52 @@ function normalizeReasoningLevel(value: string | null | undefined): ReasoningLev
   return (REASONING_LEVEL_OPTIONS as readonly string[]).includes(normalized) ? (normalized as ReasoningLevelOption) : "auto";
 }
 
+function normalizeExecutionMode(value: string | null | undefined): ExecutionModeOption {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (EXECUTION_MODE_OPTIONS as readonly { key: string }[]).some((mode) => mode.key === normalized)
+    ? (normalized as ExecutionModeOption)
+    : "accept_edits";
+}
+
 function formatReasoningLevel(value: string | null | undefined): string {
   const normalized = normalizeReasoningLevel(value);
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function normalizeContextPercent(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function contextUsageColor(percent: number | null): string {
+  if (percent === null) {
+    return "#7dd3fc";
+  }
+  if (percent <= 30) {
+    return "#22c55e";
+  }
+  if (percent <= 60) {
+    return "#84cc16";
+  }
+  if (percent <= 80) {
+    return "#f59e0b";
+  }
+  return "#ef4444";
+}
+
+function formatTokenCount(tokenCount: number | null | undefined): string {
+  const value = Math.max(0, Number(tokenCount) || 0);
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}k`;
+  }
+  return String(Math.round(value));
 }
 
 function truncateTopic(value: string, maxLength = 15): string {

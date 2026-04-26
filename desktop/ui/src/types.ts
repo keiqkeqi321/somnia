@@ -27,6 +27,14 @@ export interface AgentSession {
   latest_turn_id?: string | null;
   last_turn_file_changes?: Array<Record<string, unknown>>;
   undo_stack?: Array<Record<string, unknown>>;
+  context_window_usage?: ContextWindowUsage | null;
+}
+
+export interface ContextWindowUsage {
+  used_tokens: number;
+  max_tokens?: number | null;
+  usage_percent?: number | null;
+  counter_name?: string;
 }
 
 export interface SidecarStatus {
@@ -112,4 +120,13 @@ export interface ConversationRow {
   role: "user" | "assistant";
   text: string;
   isStreaming?: boolean;
+  toolCalls?: ConversationToolCall[];
+}
+
+export interface ConversationToolCall {
+  id: string;
+  name: string;
+  input: string;
+  output: string;
+  logId?: string | null;
 }

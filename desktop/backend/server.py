@@ -35,7 +35,7 @@ from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
-from open_somnia.runtime.execution_mode import execution_mode_spec
+from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 
 
 class SidecarAPIError(RuntimeError):
@@ -168,11 +168,11 @@ class SidecarServer:
             thread.join(timeout=1.0)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        return [serialize_session(session) for session in self.service.list_sessions()]
+        return [self._serialize_session(session) for session in self.service.list_sessions()]
 
     def create_session(self) -> dict[str, Any]:
         session = self.service.create_session()
-        payload = serialize_session(session)
+        payload = self._serialize_session(session)
         self.broadcast_event(make_sidecar_event("session_created", payload={"session": payload}, session_id=session.id))
         return payload
 
@@ -181,7 +181,38 @@ class SidecarServer:
             session = self.service.load_session(session_id)
         except FileNotFoundError as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
-        return serialize_session(session)
+        return self._serialize_session(session)
+
+    def _serialize_session(self, session: Any) -> dict[str, Any]:
+        payload = serialize_session(session)
+        usage = self._context_usage_payload(session)
+        if usage is not None:
+            payload["context_window_usage"] = usage
+        return payload
+
+    def _context_usage_payload(self, session: Any) -> dict[str, Any] | None:
+        usage = None
+        for method_name in ("recent_context_window_usage", "context_window_usage"):
+            getter = getattr(self.runtime, method_name, None)
+            if not callable(getter):
+                continue
+            try:
+                usage = getter(session)
+            except Exception:
+                usage = None
+            if usage is not None:
+                break
+        if usage is None:
+            return None
+        used_tokens = int(getattr(usage, "used_tokens", 0) or 0)
+        max_tokens = getattr(usage, "max_tokens", None)
+        usage_percent = getattr(usage, "usage_percent", None)
+        return {
+            "used_tokens": used_tokens,
+            "max_tokens": int(max_tokens) if max_tokens else None,
+            "usage_percent": float(usage_percent) if usage_percent is not None else None,
+            "counter_name": str(getattr(usage, "counter_name", "") or "estimate"),
+        }
 
     def list_providers(self) -> list[dict[str, Any]]:
         return [serialize_provider(provider) for provider in self.service.list_providers()]
@@ -214,6 +245,17 @@ class SidecarServer:
             "reasoning_level": self.runtime.settings.provider.reasoning_level,
         }
         self.broadcast_event(make_sidecar_event("reasoning_level_updated", payload=payload))
+        return payload
+
+    def set_execution_mode(self, mode: str) -> dict[str, Any]:
+        normalized_mode = normalize_execution_mode(mode)
+        self.runtime.execution_mode = normalized_mode
+        payload = {
+            "message": f"Execution mode set to {execution_mode_spec(normalized_mode).title}.",
+            "execution_mode": normalized_mode,
+            "execution_mode_title": execution_mode_spec(normalized_mode).title,
+        }
+        self.broadcast_event(make_sidecar_event("execution_mode_updated", payload=payload))
         return payload
 
     def start_turn(self, session_id: str, user_input: str | dict[str, Any]) -> dict[str, Any]:
@@ -343,12 +385,15 @@ class SidecarServer:
                         continue
                     break
             if handle.result is not None:
+                payload = serialize_turn_result(handle.result)
+                if payload.get("session") is not None:
+                    payload["session"] = self._serialize_session(handle.result.session)
                 self.broadcast_event(
                     make_sidecar_event(
                         "turn_result",
                         session_id=handle.session.id,
                         turn_id=handle.turn_id,
-                        payload=serialize_turn_result(handle.result),
+                        payload=payload,
                     )
                 )
         finally:
@@ -447,6 +492,11 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if path_parts == ["reasoning"]:
             raw_level = body.get("reasoning_level")
             return self.sidecar.set_reasoning_level(None if raw_level in {"", "auto"} else raw_level), HTTPStatus.OK
+        if path_parts == ["execution-mode"]:
+            mode = str(body.get("mode", "")).strip()
+            if not mode:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "mode is required.")
+            return self.sidecar.set_execution_mode(mode), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "interactions" and path_parts[2] == "authorization":
             scope = str(body.get("scope", "")).strip()
             if not scope:

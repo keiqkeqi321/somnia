@@ -30,6 +30,13 @@ async function chooseProjectFolder(): Promise<string | null> {
   return invoke<string | null>("choose_project_folder");
 }
 
+async function stopManagedSidecar(workspacePath?: string): Promise<boolean> {
+  if (!isTauriEnvironment()) {
+    return false;
+  }
+  return invoke<boolean>("stop_managed_sidecar", { workspacePath: workspacePath ?? null });
+}
+
 async function openWorkspaceRoot(path: string): Promise<void> {
   if (!isTauriEnvironment()) {
     return;
@@ -37,4 +44,4 @@ async function openWorkspaceRoot(path: string): Promise<void> {
   await invoke("open_workspace_root", { path });
 }
 
-export { chooseProjectFolder, ensureManagedSidecar, isTauriEnvironment, openWorkspaceRoot };
+export { chooseProjectFolder, ensureManagedSidecar, isTauriEnvironment, openWorkspaceRoot, stopManagedSidecar };

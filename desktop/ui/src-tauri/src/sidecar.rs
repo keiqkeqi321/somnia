@@ -103,6 +103,18 @@ impl ManagedSidecar {
         Ok(stopped)
     }
 
+    pub fn stop_workspace(&self, workspace_path: String) -> Result<bool, String> {
+        let workspace_root = PathBuf::from(workspace_path.trim())
+            .canonicalize()
+            .map_err(|error| format!("Unable to resolve workspace path '{}': {error}", workspace_path.trim()))?;
+        let workspace_key = workspace_key(&workspace_root)?;
+        let mut states = self.lock()?;
+        let Some(mut state) = states.remove(&workspace_key) else {
+            return Ok(false);
+        };
+        Ok(stop_locked(&mut state))
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, ManagedSidecarState>>, String> {
         self.inner
             .lock()
@@ -428,8 +440,14 @@ pub fn ensure_managed_sidecar(
 }
 
 #[tauri::command]
-pub fn stop_managed_sidecar(sidecar: State<'_, ManagedSidecar>) -> Result<bool, String> {
-    sidecar.stop_all()
+pub fn stop_managed_sidecar(
+    sidecar: State<'_, ManagedSidecar>,
+    workspace_path: Option<String>,
+) -> Result<bool, String> {
+    match workspace_path {
+        Some(path) if !path.trim().is_empty() => sidecar.stop_workspace(path),
+        _ => sidecar.stop_all(),
+    }
 }
 
 #[tauri::command]

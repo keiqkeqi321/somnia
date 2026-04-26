@@ -1,4 +1,4 @@
-import type { AgentSession, ConversationRow, SessionMessage } from "../types";
+import type { AgentSession, ConversationRow, ConversationToolCall, SessionMessage } from "../types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -24,8 +24,7 @@ export function extractTextContent(content: unknown): string {
       parts.push(item.text);
       continue;
     }
-    if (item.type === "tool_result" && typeof item.content === "string") {
-      parts.push(item.content);
+    if (item.type === "tool_call" || item.type === "tool_result") {
       continue;
     }
     if (typeof item.content === "string") {
@@ -37,6 +36,9 @@ export function extractTextContent(content: unknown): string {
 
 function isVisibleUserMessage(message: SessionMessage): boolean {
   if (message.role !== "user") {
+    return false;
+  }
+  if (hasToolResults(message.content)) {
     return false;
   }
   if (typeof message.content !== "string") {
@@ -59,20 +61,29 @@ export function buildConversationRows(session: AgentSession | null, streamingTex
       : [];
   }
   const rows: ConversationRow[] = [];
-  for (let index = 0; index < session.messages.length; index += 1) {
+  let index = 0;
+  while (index < session.messages.length) {
     const message = session.messages[index];
     if (message.role !== "assistant" && !isVisibleUserMessage(message)) {
+      index += 1;
       continue;
     }
     const text = extractTextContent(message.content).trim();
-    if (!text) {
-      continue;
-    }
     if (message.role === "assistant") {
-      rows.push({ id: `${session.id}-assistant-${index}`, role: "assistant", text });
+      const toolCalls = buildToolCalls(message.content, session.messages[index + 1]?.content);
+      if (toolCalls.length > 0 && session.messages[index + 1]?.role === "user" && hasToolResults(session.messages[index + 1]?.content)) {
+        index += 1;
+      }
+      if (text || toolCalls.length > 0) {
+        rows.push({ id: `${session.id}-assistant-${index}`, role: "assistant", text, toolCalls });
+      }
+      index += 1;
       continue;
     }
-    rows.push({ id: `${session.id}-user-${index}`, role: "user", text });
+    if (text) {
+      rows.push({ id: `${session.id}-user-${index}`, role: "user", text });
+    }
+    index += 1;
   }
   if (streamingText.trim()) {
     rows.push({
@@ -85,19 +96,81 @@ export function buildConversationRows(session: AgentSession | null, streamingTex
   return rows;
 }
 
+function hasToolResults(content: unknown): boolean {
+  return Array.isArray(content) && content.some((item) => isRecord(item) && item.type === "tool_result");
+}
+
+function buildToolCalls(assistantContent: unknown, nextUserContent: unknown): ConversationToolCall[] {
+  if (!Array.isArray(assistantContent)) {
+    return [];
+  }
+  const results = toolResultMap(nextUserContent);
+  const calls: ConversationToolCall[] = [];
+  for (const item of assistantContent) {
+    if (!isRecord(item) || item.type !== "tool_call") {
+      continue;
+    }
+    const id = String(item.id ?? "").trim();
+    const result = id ? results.get(id) : undefined;
+    calls.push({
+      id: id || `tool-${calls.length + 1}`,
+      name: String(item.name ?? "tool").trim() || "tool",
+      input: stringifyToolValue(item.input ?? {}),
+      output: stringifyToolValue(toolResultOutput(result)),
+      logId: isRecord(result) && typeof result.log_id === "string" ? result.log_id : null,
+    });
+  }
+  return calls;
+}
+
+function toolResultMap(content: unknown): Map<string, Record<string, unknown>> {
+  const results = new Map<string, Record<string, unknown>>();
+  if (!Array.isArray(content)) {
+    return results;
+  }
+  for (const item of content) {
+    if (!isRecord(item) || item.type !== "tool_result") {
+      continue;
+    }
+    const id = String(item.tool_call_id ?? "").trim();
+    if (id) {
+      results.set(id, item);
+    }
+  }
+  return results;
+}
+
+function toolResultOutput(result: Record<string, unknown> | undefined): unknown {
+  if (!result) {
+    return "(no output)";
+  }
+  return result.raw_output ?? result.content ?? "(no output)";
+}
+
+function stringifyToolValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim() || "(empty)";
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function buildSessionPreview(session: AgentSession): string {
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     const message = session.messages[index];
     if (message.role === "assistant") {
       const text = extractTextContent(message.content).trim();
       if (text) {
-        return compressWhitespace(text).slice(0, 84);
+        return compressWhitespace(text).slice(0, 56);
       }
     }
     if (isVisibleUserMessage(message)) {
       const text = extractTextContent(message.content).trim();
       if (text) {
-        return compressWhitespace(text).slice(0, 84);
+        return compressWhitespace(text).slice(0, 56);
       }
     }
   }
@@ -114,19 +187,19 @@ export function sortSessions(sessions: AgentSession[]): AgentSession[] {
 
 export function formatRelativeTime(timestamp: number | null | undefined): string {
   if (!timestamp) {
-    return "just now";
+    return "now";
   }
   const delta = Math.max(0, Math.round(Date.now() / 1000 - timestamp));
   if (delta < 45) {
-    return "just now";
+    return "now";
   }
   if (delta < 3600) {
-    return `${Math.round(delta / 60)} min ago`;
+    return `${Math.round(delta / 60)}m`;
   }
   if (delta < 86_400) {
-    return `${Math.round(delta / 3600)} hr ago`;
+    return `${Math.round(delta / 3600)}h`;
   }
-  return `${Math.round(delta / 86_400)} d ago`;
+  return `${Math.round(delta / 86_400)}d`;
 }
 
 export function formatTodoLabel(item: { content?: string; status?: string; activeForm?: string }): string {

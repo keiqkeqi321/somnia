@@ -136,6 +136,16 @@ export class SidecarClient {
     );
   }
 
+  async setExecutionMode(mode: string): Promise<{ message: string; execution_mode: string; execution_mode_title: string }> {
+    return parseResponse<{ message: string; execution_mode: string; execution_mode_title: string }>(
+      await fetch(`${this.baseUrl}/execution-mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }),
+    );
+  }
+
   async listInteractions(): Promise<InteractionRequestState[]> {
     const payload = await parseResponse<{ interactions: InteractionRequestState[] }>(await fetch(`${this.baseUrl}/interactions`));
     return payload.interactions;
