@@ -6,6 +6,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 
 import { chooseProjectFolder, ensureManagedSidecar, openWorkspaceRoot, stopManagedSidecar } from "./lib/desktop";
@@ -1312,7 +1313,7 @@ function App() {
               conversationRows.map((row) => (
                 <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
                   {row.isStreaming ? <div className="bubble-status">Streaming</div> : null}
-                  {row.text ? <pre>{row.text}</pre> : null}
+                  {row.text ? <MarkdownMessage text={row.text} /> : null}
                   {row.isLoading ? (
                     <span className="typing-indicator" aria-label="Waiting for assistant response">
                       <span />
@@ -1626,6 +1627,159 @@ function App() {
       ) : null}
     </div>
   );
+}
+
+function MarkdownMessage({ text }: { text: string }) {
+  return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
+}
+
+function renderMarkdownBlocks(text: string): ReactNode[] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  let key = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fenceMatch = line.match(/^\s*```([^`]*)\s*$/);
+    if (fenceMatch) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) {
+        index += 1;
+      }
+      const language = fenceMatch[1].trim();
+      blocks.push(
+        <pre key={`block-${key++}`} className="markdown-code-block">
+          {language ? <span className="markdown-code-language">{language}</span> : null}
+          <code>{codeLines.join("\n")}</code>
+        </pre>,
+      );
+      continue;
+    }
+
+    if (/^\s*---+\s*$/.test(line)) {
+      blocks.push(<hr key={`block-${key++}`} />);
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      const level = Math.min(headingMatch[1].length, 6);
+      const Tag = `h${level}` as keyof JSX.IntrinsicElements;
+      blocks.push(<Tag key={`block-${key++}`}>{renderInlineMarkdown(headingMatch[2])}</Tag>);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(<blockquote key={`block-${key++}`}>{renderInlineMarkdown(quoteLines.join("\n"))}</blockquote>);
+      continue;
+    }
+
+    const unorderedMatch = line.match(/^(\s*)[-*+]\s+(.+)$/);
+    if (unorderedMatch) {
+      const items: ReactNode[] = [];
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^\s*[-*+]\s+(.+)$/);
+        if (!itemMatch) {
+          break;
+        }
+        items.push(<li key={`item-${items.length}`}>{renderInlineMarkdown(itemMatch[1])}</li>);
+        index += 1;
+      }
+      blocks.push(<ul key={`block-${key++}`}>{items}</ul>);
+      continue;
+    }
+
+    const orderedMatch = line.match(/^(\s*)\d+[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      const items: ReactNode[] = [];
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^\s*\d+[.)]\s+(.+)$/);
+        if (!itemMatch) {
+          break;
+        }
+        items.push(<li key={`item-${items.length}`}>{renderInlineMarkdown(itemMatch[1])}</li>);
+        index += 1;
+      }
+      blocks.push(<ol key={`block-${key++}`}>{items}</ol>);
+      continue;
+    }
+
+    const paragraphLines = [line.trim()];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^\s*```/.test(lines[index]) &&
+      !/^\s*---+\s*$/.test(lines[index]) &&
+      !/^(#{1,6})\s+/.test(lines[index]) &&
+      !/^\s*>\s?/.test(lines[index]) &&
+      !/^\s*[-*+]\s+/.test(lines[index]) &&
+      !/^\s*\d+[.)]\s+/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(<p key={`block-${key++}`}>{renderInlineMarkdown(paragraphLines.join(" "))}</p>);
+  }
+
+  return blocks;
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\([^)]+\))/g;
+  let cursor = 0;
+  let key = 0;
+
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    if (start > cursor) {
+      nodes.push(text.slice(cursor, start));
+    }
+    const token = match[0];
+    if (token.startsWith("`")) {
+      nodes.push(<code key={`inline-${key++}`}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**") || token.startsWith("__")) {
+      nodes.push(<strong key={`inline-${key++}`}>{renderInlineMarkdown(token.slice(2, -2))}</strong>);
+    } else if (token.startsWith("*") || token.startsWith("_")) {
+      nodes.push(<em key={`inline-${key++}`}>{renderInlineMarkdown(token.slice(1, -1))}</em>);
+    } else {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch) {
+        nodes.push(
+          <a key={`inline-${key++}`} href={linkMatch[2]} target="_blank" rel="noreferrer">
+            {renderInlineMarkdown(linkMatch[1])}
+          </a>,
+        );
+      } else {
+        nodes.push(token);
+      }
+    }
+    cursor = start + token.length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+  return nodes;
 }
 
 function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {
