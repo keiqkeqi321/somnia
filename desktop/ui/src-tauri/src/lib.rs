@@ -8,8 +8,6 @@ pub fn run() {
             sidecar::ensure_managed_sidecar,
             sidecar::stop_managed_sidecar,
             sidecar::choose_project_folder,
-            sidecar::load_project_paths,
-            sidecar::save_project_paths,
             sidecar::open_workspace_root
         ])
         .build(tauri::generate_context!())
