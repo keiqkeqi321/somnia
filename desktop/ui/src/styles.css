@@ -114,15 +114,41 @@ button {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr) minmax(280px, 340px);
-  gap: 18px;
+  grid-template-columns: var(--sidebar-width, 250px) 10px minmax(430px, 1fr) 10px var(--context-width, 340px);
+  gap: 0;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
 .workspace.context-collapsed {
-  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width, 250px) 10px minmax(430px, 1fr);
+}
+
+.layout-resizer {
+  position: relative;
+  min-width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.layout-resizer::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  width: 1px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateX(-50%);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.layout-resizer:hover::before,
+.workspace.resizing .layout-resizer::before {
+  background: rgba(143, 180, 255, 0.52);
+  box-shadow: 0 0 0 3px rgba(143, 180, 255, 0.08);
 }
 
 .panel {
@@ -434,7 +460,7 @@ button {
 }
 
 .project-session-list {
-  gap: 8px;
+  gap: 6px;
   padding-left: 10px;
   border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -469,8 +495,16 @@ button {
 .session-card,
 .log-card {
   text-align: left;
-  padding: 11px 12px;
   color: inherit;
+}
+
+.session-card {
+  padding: 7px 9px;
+  border-radius: 10px;
+}
+
+.log-card {
+  padding: 11px 12px;
 }
 
 .session-card.selected,
@@ -478,6 +512,10 @@ button {
 .approval-card.selected {
   border-color: rgba(95, 182, 255, 0.6);
   box-shadow: inset 0 0 0 1px rgba(95, 182, 255, 0.3);
+}
+
+.session-card.answering {
+  border-color: rgba(99, 196, 143, 0.34);
 }
 
 .approval-card.interactive {
@@ -518,18 +556,71 @@ button {
   color: var(--text-subtle);
 }
 
+.session-card p {
+  margin-top: 4px;
+  line-height: 1.32;
+  font-size: 0.76rem;
+}
+
 .session-card-head strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.82rem;
+  font-size: 0.68rem;
+  line-height: 1.15;
 }
 
-.session-card-head span {
+.session-card-status {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.session-card-status > span:first-child {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.64rem;
+  line-height: 1.15;
+}
+
+.session-answering-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 8px;
+}
+
+.session-answering-indicator span {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--success);
+  opacity: 0.42;
+  animation: session-thinking 900ms ease-in-out infinite;
+}
+
+.session-answering-indicator span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.session-answering-indicator span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+@keyframes session-thinking {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
 .session-card-meta {
@@ -1653,16 +1744,6 @@ button {
   color: var(--text-subtle);
 }
 
-@media (max-width: 1440px) {
-  .workspace {
-    grid-template-columns: minmax(190px, 230px) minmax(0, 1fr) minmax(260px, 320px);
-  }
-
-  .workspace.context-collapsed {
-    grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
-  }
-}
-
 @media (max-width: 1120px) {
   html,
   body,
@@ -1688,6 +1769,10 @@ button {
 
   .workspace.context-collapsed {
     grid-template-columns: 1fr;
+  }
+
+  .layout-resizer {
+    display: none;
   }
 
   .panel {

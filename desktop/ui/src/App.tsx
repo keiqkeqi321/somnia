@@ -6,6 +6,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 
@@ -34,8 +35,15 @@ import type {
 const STORAGE_KEY = "somnia.desktop.sidecar-url";
 const PROJECTS_STORAGE_KEY = "somnia.desktop.project-paths";
 const PROMPT_HISTORY_STORAGE_KEY = "somnia.desktop.prompt-history";
+const LAYOUT_STORAGE_KEY = "somnia.desktop.layout";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
+const SIDEBAR_MIN_WIDTH = 210;
+const SIDEBAR_MAX_WIDTH = 430;
+const CONTEXT_MIN_WIDTH = 280;
+const CONTEXT_MAX_WIDTH = 540;
+const CONVERSATION_MIN_WIDTH = 430;
+const RESIZER_WIDTH = 10;
 const REASONING_LEVEL_OPTIONS = ["auto", "low", "medium", "high", "deep"] as const;
 const COMMAND_SPECS = [
   { command: "/scan", description: "Scan the repo or a subdirectory" },
@@ -90,6 +98,20 @@ type TodoSummary = {
   activeItem: TodoItem | null;
   nextItem: TodoItem | null;
 };
+type LayoutState = {
+  sidebarWidth: number;
+  contextWidth: number;
+};
+type LayoutDragState = {
+  target: "sidebar" | "context";
+  startX: number;
+  startSidebarWidth: number;
+  startContextWidth: number;
+};
+type ActiveProjectTurn = {
+  sessionId: string;
+  turnId: string | null;
+};
 
 function App() {
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
@@ -108,6 +130,7 @@ function App() {
   const [streamingText, setStreamingText] = useState("");
   const [pendingTurn, setPendingTurn] = useState<ConversationPendingTurn | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
+  const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn>>({});
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
@@ -126,6 +149,8 @@ function App() {
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [todoExpanded, setTodoExpanded] = useState(false);
+  const [layout, setLayout] = useState<LayoutState>(() => readStoredLayout());
+  const [layoutDragging, setLayoutDragging] = useState<LayoutDragState | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -138,6 +163,7 @@ function App() {
   const selectedProjectPathRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
@@ -247,6 +273,36 @@ function App() {
   useEffect(() => {
     setTodoExpanded(false);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!layoutDragging) {
+      return;
+    }
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    function handlePointerMove(event: PointerEvent) {
+      updateLayoutDrag(event.clientX);
+    }
+
+    function handlePointerUp() {
+      setLayoutDragging(null);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [layoutDragging, contextPanelOpen]);
 
   useEffect(() => {
     function handleResize() {
@@ -491,6 +547,15 @@ function App() {
       return;
     }
     if (event.type === "turn_started") {
+      if (event.session_id) {
+        setActiveProjectTurns((previous) => ({
+          ...previous,
+          [projectPath]: {
+            sessionId: event.session_id ?? "",
+            turnId: event.turn_id ?? null,
+          },
+        }));
+      }
       if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
         setStreamingText("");
       }
@@ -551,6 +616,7 @@ function App() {
       return;
     }
     if (event.type === "interrupt_completed" || event.type === "error") {
+      clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       if (isActiveProject) {
         setActiveTurnId((current) => (current === event.turn_id ? null : current));
         setStreamingText("");
@@ -561,6 +627,7 @@ function App() {
       return;
     }
     if (event.type === "turn_result") {
+      clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       if (isActiveProject) {
         setActiveTurnId((current) => (current === event.turn_id ? null : current));
         setStreamingText("");
@@ -706,6 +773,18 @@ function App() {
     setProjects((previous) => previous.map((project) => (project.path === projectPath ? { ...project, ...patch } : project)));
   }
 
+  function clearActiveProjectTurn(projectPath: string, turnId: string | null) {
+    setActiveProjectTurns((previous) => {
+      const current = previous[projectPath];
+      if (!current || (turnId && current.turnId !== turnId)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[projectPath];
+      return next;
+    });
+  }
+
   async function handleCreateProject() {
     setBusyAction("create-project");
     try {
@@ -767,6 +846,11 @@ function App() {
       delete projectClientsRef.current[projectPath];
       await stopManagedSidecar(projectPath);
       removeStoredProjectPath(projectPath);
+      setActiveProjectTurns((previous) => {
+        const next = { ...previous };
+        delete next[projectPath];
+        return next;
+      });
 
       const remainingProjects = projects.filter((item) => item.path !== projectPath);
       setProjects(remainingProjects);
@@ -1012,6 +1096,32 @@ function App() {
     setDraft(nextCursor === null ? "" : promptHistory[nextCursor]);
   }
 
+  function beginLayoutDrag(target: LayoutDragState["target"], event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setLayoutDragging({
+      target,
+      startX: event.clientX,
+      startSidebarWidth: layout.sidebarWidth,
+      startContextWidth: layout.contextWidth,
+    });
+  }
+
+  function updateLayoutDrag(clientX: number) {
+    setLayoutDragging((drag) => {
+      if (!drag) {
+        return null;
+      }
+      const containerWidth = workspaceRef.current?.getBoundingClientRect().width ?? 0;
+      if (containerWidth <= 0) {
+        return drag;
+      }
+      const nextLayout = nextDraggedLayout(drag, clientX, containerWidth, contextPanelOpen);
+      setLayout(nextLayout);
+      persistLayout(nextLayout);
+      return drag;
+    });
+  }
+
   function applyCommandSuggestion(command: string) {
     setDraft(`${command} `);
     setCommandPickerOpen(false);
@@ -1161,11 +1271,19 @@ function App() {
     sessions: project.sessions,
   }));
   const visibleProjectCount = sessionProjectGroups.length;
+  const workspaceStyle = {
+    "--sidebar-width": `${layout.sidebarWidth}px`,
+    "--context-width": `${layout.contextWidth}px`,
+  } as CSSProperties;
   return (
     <div className="shell">
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
-      <main className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"}`}>
+      <main
+        ref={workspaceRef}
+        className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"} ${layoutDragging ? "resizing" : ""}`}
+        style={workspaceStyle}
+      >
         <aside className="panel sidebar-panel">
           <div className="panel-header">
             <div>
@@ -1255,24 +1373,37 @@ function App() {
                       </div>
                       {isCollapsed ? null : (
                         <div className="project-session-list">
-                          {group.sessions.map((session) => (
-                            <button
-                              key={session.id}
-                              className={`session-card ${selectedProjectPath === group.path && selectedSessionId === session.id ? "selected" : ""}`}
-                              onClick={() => {
-                                setContextPanelOpen(true);
-                                void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
-                                  selectSession(session.id, projectClientsRef.current[group.path], group.sessions, group.path),
-                                );
-                              }}
-                            >
-                              <div className="session-card-head">
-                                <strong>{session.id}</strong>
-                                <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
-                              </div>
-                              <p>{buildSessionPreview(session)}</p>
-                            </button>
-                          ))}
+                          {group.sessions.map((session) => {
+                            const isSelected = selectedProjectPath === group.path && selectedSessionId === session.id;
+                            const isAnswering = activeProjectTurns[group.path]?.sessionId === session.id;
+                            return (
+                              <button
+                                key={session.id}
+                                className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""}`}
+                                onClick={() => {
+                                  setContextPanelOpen(true);
+                                  void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
+                                    selectSession(session.id, projectClientsRef.current[group.path], group.sessions, group.path),
+                                  );
+                                }}
+                              >
+                                <div className="session-card-head">
+                                  <strong>{session.id}</strong>
+                                  <span className="session-card-status">
+                                    <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
+                                    {isAnswering ? (
+                                      <span className="session-answering-indicator" aria-label="Agent is responding">
+                                        <span aria-hidden="true" />
+                                        <span aria-hidden="true" />
+                                        <span aria-hidden="true" />
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </div>
+                                <p>{buildSessionPreview(session)}</p>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </section>
@@ -1282,6 +1413,14 @@ function App() {
             )}
           </div>
         </aside>
+
+        <div
+          className="layout-resizer sidebar-resizer"
+          role="separator"
+          aria-label="Resize projects panel"
+          aria-orientation="vertical"
+          onPointerDown={(event) => beginLayoutDrag("sidebar", event)}
+        />
 
         <section className="panel conversation-panel">
           <div className="panel-header conversation-header">
@@ -1560,6 +1699,14 @@ function App() {
         </section>
 
         {contextPanelOpen ? (
+          <>
+          <div
+            className="layout-resizer context-resizer"
+            role="separator"
+            aria-label="Resize session details panel"
+            aria-orientation="vertical"
+            onPointerDown={(event) => beginLayoutDrag("context", event)}
+          />
           <aside className="panel context-panel">
             <div className="panel-header">
               <div>
@@ -1602,6 +1749,7 @@ function App() {
               )}
             </div>
           </aside>
+          </>
         ) : null}
       </main>
 
@@ -1796,6 +1944,57 @@ function renderInlineMarkdown(text: string): ReactNode[] {
 function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {
   const others = projects.filter((project) => project.path !== nextProject.path);
   return [...others, nextProject].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function readStoredLayout(): LayoutState {
+  const fallback = { sidebarWidth: 250, contextWidth: 340 };
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) ?? "{}") as Partial<LayoutState>;
+    return {
+      sidebarWidth: clampNumber(Number(value.sidebarWidth) || fallback.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
+      contextWidth: clampNumber(Number(value.contextWidth) || fallback.contextWidth, CONTEXT_MIN_WIDTH, CONTEXT_MAX_WIDTH),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistLayout(layout: LayoutState) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+}
+
+function nextDraggedLayout(
+  drag: LayoutDragState,
+  clientX: number,
+  containerWidth: number,
+  contextPanelOpen: boolean,
+): LayoutState {
+  const delta = clientX - drag.startX;
+  const resizerSpace = contextPanelOpen ? RESIZER_WIDTH * 2 : RESIZER_WIDTH;
+  const maxSidebarByContainer = containerWidth - CONVERSATION_MIN_WIDTH - resizerSpace - (contextPanelOpen ? drag.startContextWidth : 0);
+  const maxContextByContainer = containerWidth - drag.startSidebarWidth - CONVERSATION_MIN_WIDTH - resizerSpace;
+
+  if (drag.target === "sidebar") {
+    return {
+      sidebarWidth: clampNumber(drag.startSidebarWidth + delta, SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, maxSidebarByContainer)),
+      contextWidth: drag.startContextWidth,
+    };
+  }
+
+  return {
+    sidebarWidth: drag.startSidebarWidth,
+    contextWidth: clampNumber(drag.startContextWidth - delta, CONTEXT_MIN_WIDTH, Math.min(CONTEXT_MAX_WIDTH, maxContextByContainer)),
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.round(Math.max(min, Math.min(value, Math.max(min, max))));
 }
 
 function TodoStatusBar({
