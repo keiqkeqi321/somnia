@@ -289,6 +289,71 @@ function Resolve-CargoCommand {
     return Resolve-GlobalCargoCommand
 }
 
+function Test-TcpEndpoint {
+    param(
+        [string]$HostName,
+        [int]$Port,
+        [int]$TimeoutMilliseconds = 1000
+    )
+
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $connect = $client.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $connect.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+            return $false
+        }
+
+        $client.EndConnect($connect)
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($client) {
+            $client.Close()
+        }
+    }
+}
+
+function Disable-UnavailableLocalCargoProxyConfig {
+    param([object]$CargoCommand)
+
+    if (-not $CargoCommand -or $CargoCommand.Scope -ne "local") {
+        return
+    }
+
+    if ($env:SOMNIA_KEEP_LOCAL_CARGO_CONFIG -eq "1") {
+        return
+    }
+
+    $configPath = Join-Path $CargoCommand.CargoHome "config.toml"
+    if (-not (Test-Path $configPath)) {
+        return
+    }
+
+    $content = Get-Content -LiteralPath $configPath -Raw
+    if ($content -notmatch 'replace-with\s*=\s*"local-proxy"') {
+        return
+    }
+
+    if ($content -notmatch 'registry\s*=\s*"sparse\+http://127\.0\.0\.1:(\d+)/index/"') {
+        return
+    }
+
+    $port = [int]$Matches[1]
+    if (Test-TcpEndpoint -HostName "127.0.0.1" -Port $port) {
+        return
+    }
+
+    $backupPath = "{0}.disabled-{1}" -f $configPath, (Get-Date -Format "yyyyMMddHHmmss")
+    Move-Item -LiteralPath $configPath -Destination $backupPath -Force
+    Write-Host ("Disabled unavailable workspace-local Cargo registry proxy config: {0}" -f $configPath) -ForegroundColor DarkYellow
+    Write-Host ("Backup written to: {0}" -f $backupPath) -ForegroundColor DarkYellow
+    Write-Host "Set SOMNIA_KEEP_LOCAL_CARGO_CONFIG=1 to keep this config unchanged." -ForegroundColor DarkYellow
+}
+
 function Resolve-LlvmMingw {
     $root = $script:LocalLlvmMingwRoot
     $binDir = Join-Path $root "bin"
@@ -746,6 +811,7 @@ if ($script:Cargo.Scope -eq "local") {
     }
 }
 
+Disable-UnavailableLocalCargoProxyConfig -CargoCommand $script:Cargo
 Enable-CargoEnvironment -CargoCommand $script:Cargo
 
 if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
