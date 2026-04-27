@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     fs::{self, OpenOptions},
@@ -21,6 +21,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const SIDECAR_HOST: &str = "127.0.0.1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
+const PROJECT_PATHS_FILE: &str = "project-paths.json";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +29,11 @@ pub struct ManagedSidecarConnection {
     pub base_url: String,
     pub ws_url: String,
     pub workspace_root: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ProjectPathsFile {
+    paths: Vec<String>,
 }
 
 #[derive(Default)]
@@ -227,6 +233,28 @@ fn resolve_log_paths(app: &tauri::AppHandle, workspace_key: &str) -> Result<(Pat
         log_dir.join(format!("{log_stem}.stdout.log")),
         log_dir.join(format!("{log_stem}.stderr.log")),
     ))
+}
+
+fn resolve_project_paths_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to resolve the desktop data directory: {error}"))?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| format!("Unable to create the desktop data directory at '{}': {error}", data_dir.display()))?;
+    Ok(data_dir.join(PROJECT_PATHS_FILE))
+}
+
+fn normalize_project_paths(paths: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() || normalized.iter().any(|item: &String| item.eq_ignore_ascii_case(trimmed)) {
+            continue;
+        }
+        normalized.push(trimmed.to_string());
+    }
+    normalized
 }
 
 fn spawn_sidecar(
@@ -456,6 +484,34 @@ pub fn choose_project_folder() -> Result<Option<String>, String> {
         .set_title("Choose Somnia project folder")
         .pick_folder()
         .map(|path| path.display().to_string()))
+}
+
+#[tauri::command]
+pub fn load_project_paths(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let path = resolve_project_paths_file(&app)?;
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|error| format!("Unable to read project list at '{}': {error}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed: ProjectPathsFile = serde_json::from_str(&content)
+        .map_err(|error| format!("Unable to parse project list at '{}': {error}", path.display()))?;
+    Ok(normalize_project_paths(parsed.paths))
+}
+
+#[tauri::command]
+pub fn save_project_paths(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let path = resolve_project_paths_file(&app)?;
+    let payload = ProjectPathsFile {
+        paths: normalize_project_paths(paths),
+    };
+    let content = serde_json::to_string_pretty(&payload)
+        .map_err(|error| format!("Unable to serialize project list: {error}"))?;
+    fs::write(&path, content)
+        .map_err(|error| format!("Unable to write project list at '{}': {error}", path.display()))
 }
 
 #[tauri::command]

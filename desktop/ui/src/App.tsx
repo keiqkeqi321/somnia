@@ -9,7 +9,14 @@ import {
   type ReactNode,
 } from "react";
 
-import { chooseProjectFolder, ensureManagedSidecar, openWorkspaceRoot, stopManagedSidecar } from "./lib/desktop";
+import {
+  chooseProjectFolder,
+  ensureManagedSidecar,
+  loadProjectPaths,
+  openWorkspaceRoot,
+  saveProjectPaths,
+  stopManagedSidecar,
+} from "./lib/desktop";
 import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatTodoLabel, sortSessions } from "./lib/messages";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
@@ -261,7 +268,7 @@ function App() {
 
     if (shouldPreferManagedSidecar) {
       try {
-        const savedProjectPaths = readStoredProjectPaths();
+        const savedProjectPaths = await readStoredProjectPaths();
         const managedConnection = await ensureManagedSidecar();
         if (managedConnection) {
           await connectManagedProject(managedConnection, { selectProject: true });
@@ -319,7 +326,7 @@ function App() {
 
     projectClientsRef.current[projectPath] = client;
     setProjects((previous) => upsertProject(previous, project));
-    persistProjectPath(projectPath);
+    await persistProjectPath(projectPath);
     openEventSocket(client, runtimeStatus.ws_url, projectPath);
     setConnectionState("connected");
 
@@ -761,7 +768,7 @@ function App() {
       delete projectSocketsRef.current[projectPath];
       delete projectClientsRef.current[projectPath];
       await stopManagedSidecar(projectPath);
-      removeStoredProjectPath(projectPath);
+      await removeStoredProjectPath(projectPath);
 
       const remainingProjects = projects.filter((item) => item.path !== projectPath);
       setProjects(remainingProjects);
@@ -969,6 +976,12 @@ function App() {
         setCommandPickerOpen(false);
         return;
       }
+    }
+
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void handleSendPrompt();
+      return;
     }
 
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
@@ -1882,7 +1895,7 @@ function todoStatusMarker(status: string): string {
   return "☐";
 }
 
-function readStoredProjectPaths(): string[] {
+function readLocalProjectPaths(): string[] {
   if (typeof window === "undefined") {
     return [];
   }
@@ -1894,22 +1907,56 @@ function readStoredProjectPaths(): string[] {
   }
 }
 
-function persistProjectPath(projectPath: string) {
-  if (typeof window === "undefined" || !projectPath.trim()) {
-    return;
-  }
-  const paths = readStoredProjectPaths();
-  if (!paths.includes(projectPath)) {
-    window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([...paths, projectPath]));
+async function readStoredProjectPaths(): Promise<string[]> {
+  const localPaths = readLocalProjectPaths();
+  try {
+    const desktopPaths = (await loadProjectPaths()) ?? [];
+    const paths = mergeProjectPaths([...desktopPaths, ...localPaths]);
+    if (paths.length !== desktopPaths.length || paths.some((path, index) => path !== desktopPaths[index])) {
+      await saveStoredProjectPaths(paths);
+    }
+    return paths;
+  } catch {
+    return localPaths;
   }
 }
 
-function removeStoredProjectPath(projectPath: string) {
+async function saveStoredProjectPaths(paths: string[]) {
+  const normalizedPaths = mergeProjectPaths(paths);
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(normalizedPaths));
+  }
+  await saveProjectPaths(normalizedPaths);
+}
+
+async function persistProjectPath(projectPath: string) {
+  if (typeof window === "undefined" || !projectPath.trim()) {
+    return;
+  }
+  const paths = await readStoredProjectPaths();
+  if (!paths.includes(projectPath)) {
+    await saveStoredProjectPaths([...paths, projectPath]);
+  }
+}
+
+async function removeStoredProjectPath(projectPath: string) {
   if (typeof window === "undefined") {
     return;
   }
-  const paths = readStoredProjectPaths().filter((path) => path !== projectPath);
-  window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(paths));
+  const paths = (await readStoredProjectPaths()).filter((path) => path !== projectPath);
+  await saveStoredProjectPaths(paths);
+}
+
+function mergeProjectPaths(paths: string[]): string[] {
+  const merged: string[] = [];
+  for (const path of paths) {
+    const trimmed = path.trim();
+    if (!trimmed || merged.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+      continue;
+    }
+    merged.push(trimmed);
+  }
+  return merged;
 }
 
 function readStoredPromptHistory(): string[] {
