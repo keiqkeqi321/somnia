@@ -897,6 +897,12 @@ button {
   font-size: 0.72rem;
 }
 
+.conversation-answering-indicator {
+  display: flex;
+  width: max-content;
+  margin-top: 10px;
+}
+
 .decision-card {
   align-self: stretch;
   width: min(100%, 62rem);

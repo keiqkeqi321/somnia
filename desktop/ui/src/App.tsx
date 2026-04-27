@@ -16,11 +16,19 @@ import {
   openWorkspaceRoot,
   stopManagedSidecar,
 } from "./lib/desktop";
-import { buildConversationRows, buildSessionPreview, formatRelativeTime, formatTodoLabel, sortSessions } from "./lib/messages";
+import {
+  buildConversationRows,
+  buildSessionPreview,
+  formatRelativeTime,
+  formatTodoLabel,
+  sortSessions,
+  stringifyToolValue,
+} from "./lib/messages";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
   ConversationPendingTurn,
+  ConversationRuntimeItem,
   InteractionRequestState,
   ManagedSidecarConnection,
   ModelDescriptor,
@@ -137,7 +145,7 @@ function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [currentSession, setCurrentSession] = useState<AgentSession | null>(null);
   const [draft, setDraft] = useState("");
-  const [streamingTexts, setStreamingTexts] = useState<Record<string, string>>({});
+  const [runtimeConversationItems, setRuntimeConversationItems] = useState<Record<string, ConversationRuntimeItem[]>>({});
   const [pendingTurns, setPendingTurns] = useState<Record<string, ConversationPendingTurn>>({});
   const [queuedPrompts, setQueuedPrompts] = useState<Record<string, QueuedPrompt[]>>({});
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
@@ -552,7 +560,7 @@ function App() {
     if (!key) {
       return;
     }
-    setStreamingTexts((previous) => {
+    setRuntimeConversationItems((previous) => {
       if (!(key in previous)) {
         return previous;
       }
@@ -567,6 +575,102 @@ function App() {
       const next = { ...previous };
       delete next[key];
       return next;
+    });
+  }
+
+  function resetConversationRuntimeItems(projectPath: string | null | undefined, sessionId: string | null | undefined) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setRuntimeConversationItems((previous) => ({ ...previous, [key]: [] }));
+  }
+
+  function appendAssistantRuntimeDelta(projectPath: string | null | undefined, sessionId: string | null | undefined, turnId: string | null | undefined, delta: string) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key || !delta) {
+      return;
+    }
+    setRuntimeConversationItems((previous) => {
+      const current = previous[key] ?? [];
+      const last = current[current.length - 1];
+      if (last?.type === "assistant_text") {
+        return {
+          ...previous,
+          [key]: [...current.slice(0, -1), { ...last, text: `${last.text}${delta}` }],
+        };
+      }
+      return {
+        ...previous,
+        [key]: [
+          ...current,
+          {
+            id: runtimeItemId("assistant", turnId),
+            type: "assistant_text",
+            text: delta,
+          },
+        ],
+      };
+    });
+  }
+
+  function appendRuntimeToolStarted(projectPath: string | null | undefined, event: SidecarEvent) {
+    const key = conversationStateKey(projectPath, event.session_id);
+    if (!key) {
+      return;
+    }
+    const toolName = readEventString(event.payload.tool_name, "tool");
+    setRuntimeConversationItems((previous) => ({
+      ...previous,
+      [key]: [
+        ...(previous[key] ?? []),
+        {
+          id: runtimeItemId("tool", event.turn_id),
+          type: "tool_call",
+          toolCall: {
+            id: runtimeItemId("tool-call", event.turn_id),
+            name: toolName,
+            input: stringifyToolValue(event.payload.tool_input ?? {}),
+            output: "(running)",
+            logId: null,
+            status: "running",
+          },
+        },
+      ],
+    }));
+  }
+
+  function applyRuntimeToolFinished(projectPath: string | null | undefined, event: SidecarEvent) {
+    const key = conversationStateKey(projectPath, event.session_id);
+    if (!key) {
+      return;
+    }
+    const toolName = readEventString(event.payload.tool_name, "tool");
+    const finishedTool = {
+      id: runtimeItemId("tool-call", event.turn_id),
+      name: toolName,
+      input: stringifyToolValue(event.payload.tool_input ?? {}),
+      output: stringifyToolValue(event.payload.output ?? "(no output)"),
+      logId: typeof event.payload.log_id === "string" ? event.payload.log_id : null,
+      status: "finished" as const,
+    };
+    setRuntimeConversationItems((previous) => {
+      const current = previous[key] ?? [];
+      const matchIndex = findLastRunningToolIndex(current, toolName);
+      if (matchIndex < 0) {
+        return {
+          ...previous,
+          [key]: [...current, { id: runtimeItemId("tool", event.turn_id), type: "tool_call", toolCall: finishedTool }],
+        };
+      }
+      return {
+        ...previous,
+        [key]: current.map((item, index) =>
+          index === matchIndex && item.type === "tool_call"
+            ? { ...item, toolCall: { ...item.toolCall, ...finishedTool, id: item.toolCall.id } }
+            : item,
+        ),
+      };
     });
   }
 
@@ -693,13 +797,9 @@ function App() {
       return;
     }
     if (event.type === "assistant_delta") {
-      const key = conversationStateKey(projectPath, event.session_id);
-      if (!key) {
-        return;
-      }
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (delta) {
-        setStreamingTexts((previous) => ({ ...previous, [key]: `${previous[key] ?? ""}${delta}` }));
+        appendAssistantRuntimeDelta(projectPath, event.session_id, event.turn_id, delta);
       }
       return;
     }
@@ -710,6 +810,7 @@ function App() {
         if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
         }
+        clearConversationRuntimeState(projectPath, payloadSession.id);
       }
       return;
     }
@@ -731,7 +832,12 @@ function App() {
       }
       return;
     }
+    if (event.type === "tool_started") {
+      appendRuntimeToolStarted(projectPath, event);
+      return;
+    }
     if (event.type === "tool_finished") {
+      applyRuntimeToolFinished(projectPath, event);
       if (isActiveProject) {
         void refreshToolLogs();
       }
@@ -1053,7 +1159,7 @@ function App() {
           placeholderText: "Thinking",
         },
       }));
-      setStreamingTexts((previous) => ({ ...previous, [key]: "" }));
+      resetConversationRuntimeItems(projectPath, session.id);
     }
     const userInput = buildPromptPayload(prompt, images);
     const response = await client.startTurn(session.id, userInput);
@@ -1470,9 +1576,11 @@ function App() {
 
   const activeConversationKey = conversationStateKey(selectedProjectPath, currentSession?.id);
   const activePendingTurn = activeConversationKey ? pendingTurns[activeConversationKey] ?? null : null;
-  const activeStreamingText = activeConversationKey ? streamingTexts[activeConversationKey] ?? "" : "";
+  const activeRuntimeConversationItems = activeConversationKey ? runtimeConversationItems[activeConversationKey] ?? [] : [];
   const activeQueuedPrompts = activeConversationKey ? queuedPrompts[activeConversationKey] ?? [] : [];
-  const conversationRows = buildConversationRows(currentSession, activeStreamingText, activePendingTurn);
+  const conversationRows = buildConversationRows(currentSession, activeRuntimeConversationItems, activePendingTurn);
+  const latestStreamingAssistantRowId =
+    [...conversationRows].reverse().find((row) => row.role === "assistant" && row.isStreaming)?.id ?? null;
   const currentSessionInteraction = currentSession ? findSessionInteraction(pendingInteractions, currentSession.id) : null;
   const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
   const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
@@ -1708,7 +1816,6 @@ function App() {
             ) : (
               conversationRows.map((row) => (
                 <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
-                  {row.isStreaming ? <div className="bubble-status">Streaming</div> : null}
                   {row.text ? <MarkdownMessage text={row.text} /> : null}
                   {row.isLoading ? (
                     <span className="typing-indicator" aria-label="Waiting for assistant response">
@@ -1736,6 +1843,13 @@ function App() {
                         </details>
                       ))}
                     </div>
+                  ) : null}
+                  {row.id === latestStreamingAssistantRowId ? (
+                    <span className="session-answering-indicator conversation-answering-indicator" aria-label="Agent is responding">
+                      <span aria-hidden="true" />
+                      <span aria-hidden="true" />
+                      <span aria-hidden="true" />
+                    </span>
                   ) : null}
                 </article>
               ))
@@ -2563,6 +2677,26 @@ function interactionSummary(interaction: InteractionRequestState): string {
 
 function findSessionInteraction(interactions: InteractionRequestState[], sessionId: string): InteractionRequestState | null {
   return interactions.find((interaction) => interaction.session_id === sessionId) ?? null;
+}
+
+function runtimeItemId(prefix: string, turnId: string | null | undefined): string {
+  const turn = String(turnId ?? "turn").trim() || "turn";
+  return `${turn}-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readEventString(value: unknown, fallback: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || fallback;
+}
+
+function findLastRunningToolIndex(items: ConversationRuntimeItem[], toolName: string): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type === "tool_call" && item.toolCall.name === toolName && item.toolCall.status === "running") {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function readSessionFromPayload(value: unknown): AgentSession | null {

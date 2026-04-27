@@ -1,4 +1,11 @@
-import type { AgentSession, ConversationPendingTurn, ConversationRow, ConversationToolCall, SessionMessage } from "../types";
+import type {
+  AgentSession,
+  ConversationPendingTurn,
+  ConversationRow,
+  ConversationRuntimeItem,
+  ConversationToolCall,
+  SessionMessage,
+} from "../types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -49,21 +56,16 @@ function isVisibleUserMessage(message: SessionMessage): boolean {
 
 export function buildConversationRows(
   session: AgentSession | null,
-  streamingText: string,
+  runtimeItems: ConversationRuntimeItem[],
   pendingTurn: ConversationPendingTurn | null = null,
 ): ConversationRow[] {
-  const streaming = streamingText.trim();
+  const hasRuntimeItems = runtimeItems.some((item) =>
+    item.type === "assistant_text" ? item.text.trim().length > 0 : true,
+  );
   if (!session) {
     const rows: ConversationRow[] = [];
-    appendPendingTurn(rows, pendingTurn, !streaming);
-    if (streaming) {
-      rows.push({
-        id: "streaming-only",
-        role: "assistant",
-        text: streamingText,
-        isStreaming: true,
-      });
-    }
+    appendPendingTurn(rows, pendingTurn, !hasRuntimeItems);
+    appendRuntimeItems(rows, runtimeItems);
     return rows;
   }
   const rows: ConversationRow[] = [];
@@ -93,16 +95,9 @@ export function buildConversationRows(
   }
   const shouldShowPendingTurn = pendingTurn !== null && pendingTurn.sessionId === session.id;
   if (shouldShowPendingTurn) {
-    appendPendingTurn(rows, pendingTurn, !streaming);
+    appendPendingTurn(rows, pendingTurn, !hasRuntimeItems);
   }
-  if (streaming) {
-    rows.push({
-      id: `${session.id}-streaming`,
-      role: "assistant",
-      text: streamingText,
-      isStreaming: true,
-    });
-  }
+  appendRuntimeItems(rows, runtimeItems);
   return rows;
 }
 
@@ -125,6 +120,30 @@ function appendPendingTurn(rows: ConversationRow[], pendingTurn: ConversationPen
       text: pendingTurn.placeholderText,
       isLoading: true,
       isPending: true,
+    });
+  }
+}
+
+function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationRuntimeItem[]) {
+  for (const item of runtimeItems) {
+    if (item.type === "assistant_text") {
+      if (!item.text.trim()) {
+        continue;
+      }
+      rows.push({
+        id: item.id,
+        role: "assistant",
+        text: item.text,
+        isStreaming: true,
+      });
+      continue;
+    }
+    rows.push({
+      id: item.id,
+      role: "assistant",
+      text: "",
+      toolCalls: [item.toolCall],
+      isStreaming: item.toolCall.status === "running",
     });
   }
 }
@@ -180,7 +199,7 @@ function toolResultOutput(result: Record<string, unknown> | undefined): unknown 
   return result.raw_output ?? result.content ?? "(no output)";
 }
 
-function stringifyToolValue(value: unknown): string {
+export function stringifyToolValue(value: unknown): string {
   if (typeof value === "string") {
     return value.trim() || "(empty)";
   }

@@ -131,12 +131,25 @@ export interface ConversationRow {
   toolCalls?: ConversationToolCall[];
 }
 
+export type ConversationRuntimeItem =
+  | {
+      id: string;
+      type: "assistant_text";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "tool_call";
+      toolCall: ConversationToolCall;
+    };
+
 export interface ConversationToolCall {
   id: string;
   name: string;
   input: string;
   output: string;
   logId?: string | null;
+  status?: "running" | "finished";
 }
 
 export interface ConversationPendingTurn {
