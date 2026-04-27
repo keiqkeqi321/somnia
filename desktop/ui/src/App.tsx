@@ -20,6 +20,7 @@ import type {
   ProviderDescriptor,
   SidecarEvent,
   SidecarStatus,
+  TodoItem,
   ToolLogDetail,
   ToolLogIndexEntry,
 } from "./types";
@@ -76,6 +77,13 @@ type ProjectState = {
   pendingInteractions: InteractionRequestState[];
   toolLogs: ToolLogIndexEntry[];
 };
+type TodoSummary = {
+  visibleItems: TodoItem[];
+  openItems: TodoItem[];
+  completedCount: number;
+  activeItem: TodoItem | null;
+  nextItem: TodoItem | null;
+};
 
 function App() {
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
@@ -111,6 +119,7 @@ function App() {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
+  const [todoExpanded, setTodoExpanded] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -228,6 +237,10 @@ function App() {
     setCommandPickerOpen(shouldOpen);
     setSelectedCommandIndex(0);
   }, [draft]);
+
+  useEffect(() => {
+    setTodoExpanded(false);
+  }, [selectedSessionId]);
 
   useEffect(() => {
     function handleResize() {
@@ -1126,6 +1139,7 @@ function App() {
   const commandSuggestions = currentCommandSuggestions(draft);
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
   const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || "New conversation");
+  const todoSummary = currentSession ? buildTodoSummary(currentSession.todo_items) : null;
   const workspaceRootPath = status?.workspace_root ?? "";
   const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : "workspace";
   const sessionProjectGroups = projects.map((project) => ({
@@ -1285,6 +1299,8 @@ function App() {
               </button>
             </div>
           </div>
+
+          <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
 
           <div className="conversation-body">
             {conversationRows.length === 0 ? (
@@ -1615,6 +1631,101 @@ function App() {
 function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {
   const others = projects.filter((project) => project.path !== nextProject.path);
   return [...others, nextProject].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function TodoStatusBar({
+  summary,
+  expanded,
+  onToggleExpanded,
+}: {
+  summary: TodoSummary | null;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+}) {
+  if (!summary || summary.openItems.length === 0) {
+    return null;
+  }
+
+  const focusItem = summary.activeItem ?? summary.nextItem ?? summary.openItems[0] ?? null;
+  const focusStatus = normalizeTodoStatus(focusItem?.status);
+  const focusPrefix = focusStatus === "in_progress" ? "In progress" : "Next";
+  const focusLabel = focusItem ? formatTodoLabel(focusItem) : "";
+  const shownItems = expanded ? summary.visibleItems.slice(0, 5) : [];
+  const hiddenCount = Math.max(0, summary.visibleItems.length - shownItems.length);
+
+  return (
+    <section className={`todo-status-bar ${expanded ? "expanded" : ""}`} aria-label="Todo progress">
+      <div className="todo-status-main">
+        <div className="todo-status-pulse" aria-hidden="true" />
+        <div className="todo-status-copy">
+          <div className="todo-status-line">
+            <strong>Todo</strong>
+            <span>
+              {summary.completedCount}/{summary.visibleItems.length} done
+            </span>
+          </div>
+          {focusLabel ? (
+            <p>
+              <span>{focusPrefix}:</span> {focusLabel}
+            </p>
+          ) : null}
+        </div>
+        <button className="todo-toggle" type="button" onClick={onToggleExpanded}>
+          {expanded ? "Hide" : "Show all"}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="todo-status-list">
+          {shownItems.map((item, index) => {
+            const status = normalizeTodoStatus(item.status);
+            const label = formatTodoLabel(item);
+            return (
+              <div key={`${status}-${index}-${label}`} className={`todo-status-item ${status}`}>
+                <span aria-hidden="true">{todoStatusMarker(status)}</span>
+                <p>{label || "(untitled todo)"}</p>
+              </div>
+            );
+          })}
+          {hiddenCount > 0 ? <div className="todo-status-more">+{hiddenCount} more</div> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function buildTodoSummary(items: TodoItem[] | undefined): TodoSummary | null {
+  const visibleItems = (items ?? []).filter((item) => TODO_VISIBLE_STATUSES.has(normalizeTodoStatus(item.status)));
+  const openItems = visibleItems.filter((item) => TODO_OPEN_STATUSES.has(normalizeTodoStatus(item.status)));
+  if (openItems.length === 0) {
+    return null;
+  }
+  return {
+    visibleItems,
+    openItems,
+    completedCount: visibleItems.filter((item) => normalizeTodoStatus(item.status) === "completed").length,
+    activeItem: visibleItems.find((item) => normalizeTodoStatus(item.status) === "in_progress") ?? null,
+    nextItem: visibleItems.find((item) => normalizeTodoStatus(item.status) === "pending") ?? null,
+  };
+}
+
+const TODO_OPEN_STATUSES = new Set(["pending", "in_progress"]);
+const TODO_VISIBLE_STATUSES = new Set(["pending", "in_progress", "completed"]);
+
+function normalizeTodoStatus(status: unknown): string {
+  const normalized = String(status ?? "pending")
+    .trim()
+    .toLowerCase();
+  return normalized || "pending";
+}
+
+function todoStatusMarker(status: string): string {
+  if (status === "in_progress") {
+    return "⏳";
+  }
+  if (status === "completed") {
+    return "✅";
+  }
+  return "☐";
 }
 
 function readStoredProjectPaths(): string[] {
