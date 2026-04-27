@@ -113,6 +113,8 @@ type ActiveProjectTurn = {
   turnId: string | null;
 };
 
+const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
+
 function App() {
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
   const initialBaseUrl = normalizeBaseUrl(initialSavedUrl ?? DEFAULT_SIDECAR_URL);
@@ -127,8 +129,8 @@ function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [currentSession, setCurrentSession] = useState<AgentSession | null>(null);
   const [draft, setDraft] = useState("");
-  const [streamingText, setStreamingText] = useState("");
-  const [pendingTurn, setPendingTurn] = useState<ConversationPendingTurn | null>(null);
+  const [streamingTexts, setStreamingTexts] = useState<Record<string, string>>({});
+  const [pendingTurns, setPendingTurns] = useState<Record<string, ConversationPendingTurn>>({});
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn[]>>({});
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
@@ -413,7 +415,6 @@ function App() {
     } else {
       setSelectedSessionId(null);
       setCurrentSession(null);
-      setStreamingText("");
     }
     setBannerMessage(`Active project: ${projectPath}`);
   }
@@ -484,7 +485,6 @@ function App() {
       } else {
         setSelectedSessionId(null);
         setCurrentSession(null);
-        setStreamingText("");
       }
       await refreshModels(runtimeStatus.provider, nextClient, runtimeStatus.model);
       openEventSocket(nextClient, runtimeStatus.ws_url, runtimeStatus.workspace_root);
@@ -530,6 +530,35 @@ function App() {
     };
   }
 
+  function conversationStateKey(projectPath: string | null | undefined, sessionId: string | null | undefined): string | null {
+    const project = String(projectPath ?? DEFAULT_CONVERSATION_PROJECT_KEY).trim();
+    const sessionIdValue = String(sessionId ?? "").trim();
+    return project && sessionIdValue ? `${project}\n${sessionIdValue}` : null;
+  }
+
+  function clearConversationRuntimeState(projectPath: string | null | undefined, sessionId: string | null | undefined) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setStreamingTexts((previous) => {
+      if (!(key in previous)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+    setPendingTurns((previous) => {
+      if (!(key in previous)) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  }
+
   async function handleSidecarEvent(projectPath: string, event: SidecarEvent) {
     const isActiveProject = selectedProjectPathRef.current === projectPath;
     if (event.type === "sidecar_ready") {
@@ -560,18 +589,18 @@ function App() {
         }));
       }
       if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
-        setStreamingText("");
         setActiveTurnId(event.turn_id ?? null);
       }
       return;
     }
     if (event.type === "assistant_delta") {
-      if (!isActiveProject || !selectedSessionIdRef.current || event.session_id !== selectedSessionIdRef.current) {
+      const key = conversationStateKey(projectPath, event.session_id);
+      if (!key) {
         return;
       }
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (delta) {
-        setStreamingText((previous) => previous + delta);
+        setStreamingTexts((previous) => ({ ...previous, [key]: `${previous[key] ?? ""}${delta}` }));
       }
       return;
     }
@@ -581,7 +610,6 @@ function App() {
         upsertProjectSession(projectPath, payloadSession);
         if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
-          setPendingTurn((current) => (current?.sessionId === payloadSession.id ? null : current));
         }
       }
       return;
@@ -611,19 +639,17 @@ function App() {
     }
     if (event.type === "authorization_requested" || event.type === "mode_switch_requested") {
       if (isActiveProject) {
-        setContextPanelOpen(true);
         void refreshInteractions();
       }
       return;
     }
     if (event.type === "interrupt_completed" || event.type === "error") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
+      clearConversationRuntimeState(projectPath, event.session_id);
       if (isActiveProject) {
         if (event.session_id === selectedSessionIdRef.current) {
           setActiveTurnId((current) => (current === event.turn_id ? null : current));
         }
-        setStreamingText("");
-        setPendingTurn(null);
         void refreshInteractions();
         void refreshStatusAndProviders();
       }
@@ -631,18 +657,18 @@ function App() {
     }
     if (event.type === "turn_result") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
+      clearConversationRuntimeState(projectPath, event.session_id);
       if (isActiveProject) {
         if (event.session_id === selectedSessionIdRef.current) {
           setActiveTurnId((current) => (current === event.turn_id ? null : current));
         }
-        setStreamingText("");
       }
       const payloadSession = readSessionFromPayload(event.payload.session);
       if (payloadSession) {
+        clearConversationRuntimeState(projectPath, payloadSession.id);
         upsertProjectSession(projectPath, payloadSession);
         if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
-          setPendingTurn((current) => (current?.sessionId === payloadSession.id ? null : current));
         }
       }
       if (isActiveProject) {
@@ -709,20 +735,25 @@ function App() {
     }
   }
 
-  async function ensureSession(): Promise<AgentSession | null> {
-    const client = clientRef.current;
+  async function ensureSession(
+    client = clientRef.current,
+    projectPath = selectedProjectPathRef.current,
+  ): Promise<AgentSession | null> {
     if (!client) {
       setBannerMessage("Connect to a sidecar first.");
       return null;
     }
-    if (currentSessionRef.current) {
+    const selectedProjectMatches = projectPath === selectedProjectPathRef.current;
+    if (selectedProjectMatches && currentSessionRef.current) {
       return currentSessionRef.current;
     }
     const created = await client.createSession();
-    upsertSession(created);
-    setSelectedSessionId(created.id);
-    setCurrentSession(created);
-    setSidebarSection("sessions");
+    upsertProjectSession(projectPath, created);
+    if (selectedProjectMatches) {
+      setSelectedSessionId(created.id);
+      setCurrentSession(created);
+      setSidebarSection("sessions");
+    }
     return created;
   }
 
@@ -738,17 +769,14 @@ function App() {
     const loadedSession = await client.loadSession(sessionId);
     setSelectedSessionId(sessionId);
     setCurrentSession(loadedSession);
-    setStreamingText("");
-    setPendingTurn(null);
+    setActiveTurnId(
+      projectPath ? (activeProjectTurns[projectPath] ?? []).find((turn) => turn.sessionId === sessionId)?.turnId ?? null : null,
+    );
     if (knownSessions) {
       setSessions(sortSessions(knownSessions.map((session) => (session.id === loadedSession.id ? loadedSession : session))));
     } else {
       upsertProjectSession(projectPath, loadedSession);
     }
-  }
-
-  function upsertSession(session: AgentSession) {
-    upsertProjectSession(selectedProjectPathRef.current, session);
   }
 
   function upsertProjectSession(projectPath: string | null, session: AgentSession) {
@@ -835,8 +863,7 @@ function App() {
       setSidebarSection("sessions");
       setContextPanelOpen(true);
       setDraft("");
-      setStreamingText("");
-      setPendingTurn(null);
+      clearConversationRuntimeState(projectPath, session.id);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     } finally {
@@ -885,8 +912,6 @@ function App() {
           setCurrentSession(null);
           setPendingInteractions([]);
           setToolLogs([]);
-          setStreamingText("");
-          setPendingTurn(null);
           setActiveTurnId(null);
         }
       }
@@ -903,7 +928,8 @@ function App() {
     if (!client || (!draft.trim() && pendingImages.length === 0)) {
       return;
     }
-    const activeProjectTurnList = selectedProjectPathRef.current ? (activeProjectTurns[selectedProjectPathRef.current] ?? []) : [];
+    const projectPath = selectedProjectPathRef.current;
+    const activeProjectTurnList = projectPath ? (activeProjectTurns[projectPath] ?? []) : [];
     const currentSessionId = currentSessionRef.current?.id ?? null;
     if (currentSessionId && activeProjectTurnList.some((turn) => turn.sessionId === currentSessionId)) {
       setBannerMessage("This session is already running. Wait for it to finish before sending another prompt.");
@@ -916,34 +942,50 @@ function App() {
     setBusyAction("send-prompt");
     const prompt = draft;
     const images = pendingImages;
-    const optimisticUserText = buildOptimisticUserText(prompt, images);
     const optimisticTurnId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setPendingTurn({
-      id: optimisticTurnId,
-      sessionId: currentSessionRef.current?.id ?? null,
-      userText: optimisticUserText,
-      placeholderText: "Thinking",
-    });
+    let promptSessionId: string | null = null;
     try {
-      const session = await ensureSession();
+      const session = await ensureSession(client, projectPath);
       if (!session) {
-        setPendingTurn(null);
         return;
+      }
+      promptSessionId = session.id;
+      const key = conversationStateKey(projectPath, session.id);
+      const optimisticUserText = buildOptimisticUserText(prompt, images);
+      if (key) {
+        setPendingTurns((previous) => ({
+          ...previous,
+          [key]: {
+            id: optimisticTurnId,
+            sessionId: session.id,
+            userText: optimisticUserText,
+            placeholderText: "Thinking",
+          },
+        }));
+        setStreamingTexts((previous) => ({ ...previous, [key]: "" }));
       }
       rememberPrompt(prompt);
       setDraft("");
       setPendingImages([]);
       setHistoryCursor(null);
       setCommandPickerOpen(false);
-      setStreamingText("");
-      setPendingTurn((current) => (current?.id === optimisticTurnId ? { ...current, sessionId: session.id } : current));
       const userInput = buildPromptPayload(prompt, images);
       const response = await client.startTurn(session.id, userInput);
-      setPendingTurn((current) => (current?.id === optimisticTurnId ? { ...current, id: response.turn_id, sessionId: session.id } : current));
-      setActiveTurnId(response.turn_id);
+      if (key) {
+        setPendingTurns((previous) => {
+          const current = previous[key];
+          if (!current || current.id !== optimisticTurnId) {
+            return previous;
+          }
+          return { ...previous, [key]: { ...current, id: response.turn_id, sessionId: session.id } };
+        });
+      }
+      if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
+        setActiveTurnId(response.turn_id);
+      }
       setBannerMessage("Turn started.");
     } catch (error) {
-      setPendingTurn(null);
+      clearConversationRuntimeState(projectPath, promptSessionId);
       setBannerMessage(formatErrorMessage(error));
     } finally {
       setBusyAction(null);
@@ -1256,9 +1298,11 @@ function App() {
     textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
   }
 
-  const activePendingTurn = pendingTurn && pendingTurn.sessionId === (currentSession?.id ?? null) ? pendingTurn : null;
-  const conversationRows = buildConversationRows(currentSession, streamingText, activePendingTurn);
-  const firstPendingInteraction = pendingInteractions[0] ?? null;
+  const activeConversationKey = conversationStateKey(selectedProjectPath, currentSession?.id);
+  const activePendingTurn = activeConversationKey ? pendingTurns[activeConversationKey] ?? null : null;
+  const activeStreamingText = activeConversationKey ? streamingTexts[activeConversationKey] ?? "" : "";
+  const conversationRows = buildConversationRows(currentSession, activeStreamingText, activePendingTurn);
+  const currentSessionInteraction = currentSession ? findSessionInteraction(pendingInteractions, currentSession.id) : null;
   const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
   const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
   const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
@@ -1296,6 +1340,7 @@ function App() {
     label: project.label,
     path: project.path,
     sessions: project.sessions,
+    pendingInteractions: project.path === selectedProjectPath ? pendingInteractions : project.pendingInteractions,
   }));
   const visibleProjectCount = sessionProjectGroups.length;
   const workspaceStyle = {
@@ -1403,10 +1448,11 @@ function App() {
                           {group.sessions.map((session) => {
                             const isSelected = selectedProjectPath === group.path && selectedSessionId === session.id;
                             const isAnswering = (activeProjectTurns[group.path] ?? []).some((turn) => turn.sessionId === session.id);
+                            const isWaitingForDecision = group.pendingInteractions.some((interaction) => interaction.session_id === session.id);
                             return (
                               <button
                                 key={session.id}
-                                className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""}`}
+                                className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""} ${isWaitingForDecision ? "waiting-decision" : ""}`}
                                 onClick={() => {
                                   setContextPanelOpen(true);
                                   void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
@@ -1418,7 +1464,9 @@ function App() {
                                   <strong>{session.id}</strong>
                                   <span className="session-card-status">
                                     <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
-                                    {isAnswering ? (
+                                    {isWaitingForDecision ? (
+                                      <span className="session-decision-indicator" aria-label="Waiting for your decision" />
+                                    ) : isAnswering ? (
                                       <span className="session-answering-indicator" aria-label="Agent is responding">
                                         <span aria-hidden="true" />
                                         <span aria-hidden="true" />
@@ -1481,7 +1529,7 @@ function App() {
           <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
 
           <div className="conversation-body">
-            {conversationRows.length === 0 ? (
+            {conversationRows.length === 0 && !currentSessionInteraction ? (
               <div className="empty-conversation">
                 <h3>Start a session</h3>
                 <p>Connect to a sidecar, choose a session, then send a prompt. Streaming output lands here.</p>
@@ -1521,6 +1569,14 @@ function App() {
                 </article>
               ))
             )}
+            {currentSessionInteraction ? (
+              <InteractionDecisionCard
+                interaction={currentSessionInteraction}
+                busy={busyAction !== null}
+                onResolveAuthorization={handleResolveAuthorization}
+                onResolveModeSwitch={handleResolveModeSwitch}
+              />
+            ) : null}
           </div>
 
           <div className="composer">
@@ -1786,38 +1842,69 @@ function App() {
         ) : null}
       </main>
 
-      {firstPendingInteraction ? (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <p className="eyebrow">{firstPendingInteraction.kind === "authorization" ? "Authorization request" : "Mode switch request"}</p>
-            <h2>{interactionTitle(firstPendingInteraction)}</h2>
-            <p>{interactionSummary(firstPendingInteraction)}</p>
-            {firstPendingInteraction.kind === "authorization" ? (
-              <div className="modal-actions">
-                <button className="action primary" onClick={() => void handleResolveAuthorization(firstPendingInteraction.id, "once", true, "Allowed once from desktop UI.")}>
-                  Allow once
-                </button>
-                <button className="action secondary" onClick={() => void handleResolveAuthorization(firstPendingInteraction.id, "workspace", true, "Allowed in this workspace from desktop UI.")}>
-                  Allow workspace
-                </button>
-                <button className="action danger" onClick={() => void handleResolveAuthorization(firstPendingInteraction.id, "deny", false, "Denied from desktop UI.")}>
-                  Deny
-                </button>
-              </div>
-            ) : (
-              <div className="modal-actions">
-                <button className="action primary" onClick={() => void handleResolveModeSwitch(firstPendingInteraction, true)}>
-                  Switch now
-                </button>
-                <button className="action danger" onClick={() => void handleResolveModeSwitch(firstPendingInteraction, false)}>
-                  Stay here
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
     </div>
+  );
+}
+
+function InteractionDecisionCard({
+  interaction,
+  busy,
+  onResolveAuthorization,
+  onResolveModeSwitch,
+}: {
+  interaction: InteractionRequestState;
+  busy: boolean;
+  onResolveAuthorization: (
+    interactionId: string,
+    scope: "once" | "workspace" | "deny",
+    approved: boolean,
+    reason: string,
+  ) => Promise<void>;
+  onResolveModeSwitch: (interaction: InteractionRequestState, approved: boolean) => Promise<void>;
+}) {
+  const isAuthorization = interaction.kind === "authorization";
+  return (
+    <section className="decision-card" aria-live="polite">
+      <div className="decision-copy">
+        <p className="eyebrow">{isAuthorization ? "Authorization request" : "Mode switch request"}</p>
+        <h3>{interactionTitle(interaction)}</h3>
+        <p>{interactionSummary(interaction)}</p>
+      </div>
+      {isAuthorization ? (
+        <div className="decision-actions">
+          <button
+            className="action primary"
+            onClick={() => void onResolveAuthorization(interaction.id, "once", true, "Allowed once from desktop UI.")}
+            disabled={busy}
+          >
+            Allow once
+          </button>
+          <button
+            className="action secondary"
+            onClick={() => void onResolveAuthorization(interaction.id, "workspace", true, "Allowed in this workspace from desktop UI.")}
+            disabled={busy}
+          >
+            Allow workspace
+          </button>
+          <button
+            className="action danger"
+            onClick={() => void onResolveAuthorization(interaction.id, "deny", false, "Denied from desktop UI.")}
+            disabled={busy}
+          >
+            Deny
+          </button>
+        </div>
+      ) : (
+        <div className="decision-actions">
+          <button className="action primary" onClick={() => void onResolveModeSwitch(interaction, true)} disabled={busy}>
+            Switch now
+          </button>
+          <button className="action danger" onClick={() => void onResolveModeSwitch(interaction, false)} disabled={busy}>
+            Stay here
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -2253,6 +2340,10 @@ function interactionSummary(interaction: InteractionRequestState): string {
   const currentMode = typeof interaction.payload.current_mode === "string" ? interaction.payload.current_mode : "unknown";
   const targetMode = typeof interaction.payload.target_mode === "string" ? interaction.payload.target_mode : "unknown";
   return `${reason} Requested transition: ${currentMode} -> ${targetMode}`;
+}
+
+function findSessionInteraction(interactions: InteractionRequestState[], sessionId: string): InteractionRequestState | null {
+  return interactions.find((interaction) => interaction.session_id === sessionId) ?? null;
 }
 
 function readSessionFromPayload(value: unknown): AgentSession | null {
