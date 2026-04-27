@@ -719,6 +719,64 @@ function Resolve-Bundles {
     }
 }
 
+function Assert-DesktopUiDependenciesCanBeReinstalled {
+    $nodeModulesDir = Join-Path $script:Root "desktop\ui\node_modules"
+    if (-not (Test-Path $nodeModulesDir)) {
+        return
+    }
+
+    $normalizedNodeModulesDir = Get-NormalizedPath -Path $nodeModulesDir
+    $nodeModulesPrefix = if ($normalizedNodeModulesDir.EndsWith("\")) { $normalizedNodeModulesDir } else { $normalizedNodeModulesDir + "\" }
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $blockingProcesses = @()
+
+    foreach ($process in Get-Process) {
+        $processPath = $null
+        try {
+            $processPath = $process.Path
+        }
+        catch {
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($processPath)) {
+            continue
+        }
+
+        try {
+            $normalizedProcessPath = Get-NormalizedPath -Path $processPath
+        }
+        catch {
+            continue
+        }
+
+        if ($normalizedProcessPath.StartsWith($nodeModulesPrefix, $comparison)) {
+            $blockingProcesses += [PSCustomObject]@{
+                Id   = $process.Id
+                Name = $process.ProcessName
+                Path = $normalizedProcessPath
+            }
+        }
+    }
+
+    if ($blockingProcesses.Count -eq 0) {
+        return
+    }
+
+    $details = ($blockingProcesses | ForEach-Object {
+        "  PID {0} {1}: {2}" -f $_.Id, $_.Name, $_.Path
+    }) -join [Environment]::NewLine
+
+    throw @"
+Cannot run npm ci because desktop UI node_modules contains executables that are currently running.
+
+$details
+
+Close the desktop dev server/app that owns these processes, or stop them manually, then rerun this script.
+If dependencies are already installed and you only need to build, rerun with -SkipNpmInstall.
+"@
+}
+
 function Write-TextFile {
     param(
         [string]$Path,
@@ -840,6 +898,7 @@ Push-Location "desktop/ui"
 try {
     if (-not $SkipNpmInstall) {
         Write-Host "==> Installing desktop UI dependencies" -ForegroundColor Cyan
+        Assert-DesktopUiDependenciesCanBeReinstalled
         & $Npm ci
         if ($LASTEXITCODE -ne 0) {
             throw ("npm ci failed with exit code {0}." -f $LASTEXITCODE)

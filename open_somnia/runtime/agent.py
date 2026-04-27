@@ -743,9 +743,11 @@ class OpenAgentRuntime:
     ) -> Path | None:
         if not self._provider_payload_dump_enabled():
             return None
-        logs_root = Path(getattr(getattr(self.settings, "storage", None), "logs_dir", ""))
-        if not str(logs_root).strip():
+        storage = getattr(self.settings, "storage", None)
+        logs_dir = getattr(storage, "logs_dir", None)
+        if not logs_dir:
             return None
+        logs_root = Path(logs_dir)
         provider = getattr(self, "provider", None)
         usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         provider_payload: dict[str, Any] | None = None
@@ -789,8 +791,8 @@ class OpenAgentRuntime:
             "response_text": None,
             "provider_error": None,
             "latency_ms": None,
-            "session_path": str(self.settings.storage.sessions_dir / f"{session.id}.json"),
-            "transcript_path": str(self.transcript_store.transcript_path(session.id)),
+            "session_path": str(getattr(storage, "sessions_dir", "") / f"{session.id}.json") if getattr(storage, "sessions_dir", None) else None,
+            "transcript_path": str(self.transcript_store.transcript_path(session.id)) if getattr(self, "transcript_store", None) else None,
         }
         dump_dir = logs_root / "provider_payloads"
         dump_name = f"{session.id}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}.json"
