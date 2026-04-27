@@ -67,6 +67,7 @@ def _user_input_text(user_input: str | dict[str, Any]) -> str:
 @dataclass(slots=True)
 class _ActiveTurn:
     id: str
+    runtime: OpenAgentRuntime
     session: AgentSession
     user_input: str | dict[str, Any]
     event_queue: Queue
@@ -80,12 +81,30 @@ class _ActiveTurn:
 
 
 class RuntimeHost:
+    MAX_ACTIVE_TURNS = 2
+
     def __init__(self, runtime: OpenAgentRuntime) -> None:
         self.runtime = runtime
         self.interaction_service = InteractionService(runtime, self._emit)
         self._state_lock = Lock()
-        self._run_lock = Lock()
-        self._active_turn: _ActiveTurn | None = None
+        self._active_turns: dict[str, _ActiveTurn] = {}
+        self._primary_runtime_in_use = False
+
+    def _new_turn_runtime(self) -> OpenAgentRuntime:
+        if not self._primary_runtime_in_use:
+            self._primary_runtime_in_use = True
+            return self.runtime
+        runtime = OpenAgentRuntime(self.runtime.settings)
+        runtime.execution_mode = getattr(self.runtime, "execution_mode", getattr(runtime, "execution_mode", None))
+        return runtime
+
+    def close(self) -> None:
+        with self._state_lock:
+            active_turns = list(self._active_turns.values())
+        for active_turn in active_turns:
+            active_turn.interrupt_event.set()
+            if active_turn.runtime is not self.runtime:
+                active_turn.runtime.close()
 
     def run_turn(
         self,
@@ -96,10 +115,13 @@ class RuntimeHost:
         prepare_next_loop_user_message=None,
     ) -> TurnHandle:
         with self._state_lock:
-            active_turn = self._active_turn
-            if active_turn is not None and not active_turn.done_event.is_set():
-                raise RuntimeError("A turn is already running for this runtime host.")
+            active_turns = [turn for turn in self._active_turns.values() if not turn.done_event.is_set()]
+            if len(active_turns) >= self.MAX_ACTIVE_TURNS:
+                raise RuntimeError("This project already has two turns running.")
+            if any(turn.session.id == session.id for turn in active_turns):
+                raise RuntimeError("This session already has a turn running.")
             turn_id = uuid.uuid4().hex[:8]
+            turn_runtime = self._new_turn_runtime()
             event_queue: Queue = Queue()
             done_event = Event()
             interrupt_event = Event()
@@ -111,6 +133,7 @@ class RuntimeHost:
             )
             active_turn = _ActiveTurn(
                 id=turn_id,
+                runtime=turn_runtime,
                 session=session,
                 user_input=user_input,
                 event_queue=event_queue,
@@ -128,14 +151,14 @@ class RuntimeHost:
                 daemon=True,
             )
             active_turn.thread = worker
-            self._active_turn = active_turn
+            self._active_turns[turn_id] = active_turn
         worker.start()
         return handle
 
     def interrupt_turn(self, turn_id: str) -> bool:
         with self._state_lock:
-            active_turn = self._active_turn
-            if active_turn is None or active_turn.id != turn_id or active_turn.done_event.is_set():
+            active_turn = self._active_turns.get(turn_id)
+            if active_turn is None or active_turn.done_event.is_set():
                 return False
             if active_turn.interrupt_event.is_set():
                 return False
@@ -159,7 +182,9 @@ class RuntimeHost:
         **payload: Any,
     ) -> None:
         with self._state_lock:
-            active_turn = self._active_turn
+            active_turn = self._active_turns.get(turn_id or "")
+            if active_turn is None and len(self._active_turns) == 1:
+                active_turn = next(iter(self._active_turns.values()))
         if active_turn is None:
             return
         if turn_id is not None and active_turn.id != turn_id:
@@ -192,7 +217,7 @@ class RuntimeHost:
 
     @contextmanager
     def _patched_registry_execute(self, active_turn: _ActiveTurn) -> Iterator[None]:
-        registry = self.runtime.registry
+        registry = active_turn.runtime.registry
         original_execute = registry.execute
 
         def wrapped_execute(ctx: Any, name: str, payload: dict[str, Any]) -> Any:
@@ -214,12 +239,12 @@ class RuntimeHost:
 
     @contextmanager
     def _patched_tool_logging(self, active_turn: _ActiveTurn) -> Iterator[None]:
-        original_print_tool_event = self.runtime.print_tool_event
-        renderer = self.runtime._tool_event_renderer()
+        original_print_tool_event = active_turn.runtime.print_tool_event
+        renderer = active_turn.runtime._tool_event_renderer()
 
         def wrapped_print_tool_event(actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
             category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
-            log_entry = self.runtime.tool_log_store.write(
+            log_entry = active_turn.runtime.tool_log_store.write(
                 actor=actor,
                 tool_name=tool_name,
                 tool_input=tool_input,
@@ -246,11 +271,11 @@ class RuntimeHost:
                 self._emit_todo_if_changed(active_turn)
             return log_entry["id"]
 
-        self.runtime.print_tool_event = wrapped_print_tool_event
+        active_turn.runtime.print_tool_event = wrapped_print_tool_event
         try:
             yield
         finally:
-            self.runtime.print_tool_event = original_print_tool_event
+            active_turn.runtime.print_tool_event = original_print_tool_event
 
     def _run_turn_worker(self, active_turn: _ActiveTurn) -> None:
         turn_result: TurnRunResult | None = None
@@ -261,17 +286,16 @@ class RuntimeHost:
             text=_user_input_text(active_turn.user_input),
         )
         try:
-            with self._run_lock:
-                with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id):
-                    with self._patched_registry_execute(active_turn), self._patched_tool_logging(active_turn):
-                        response = self.runtime.run_turn(
-                            active_turn.session,
-                            active_turn.user_input,
-                            text_callback=lambda text: self._emit_for_turn(active_turn, ASSISTANT_DELTA, delta=text),
-                            should_interrupt=active_turn.interrupt_event.is_set,
-                            take_next_loop_user_message=active_turn.take_next_loop_user_message,
-                            prepare_next_loop_user_message=active_turn.prepare_next_loop_user_message,
-                        )
+            with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=active_turn.runtime):
+                with self._patched_registry_execute(active_turn), self._patched_tool_logging(active_turn):
+                    response = active_turn.runtime.run_turn(
+                        active_turn.session,
+                        active_turn.user_input,
+                        text_callback=lambda text: self._emit_for_turn(active_turn, ASSISTANT_DELTA, delta=text),
+                        should_interrupt=active_turn.interrupt_event.is_set,
+                        take_next_loop_user_message=active_turn.take_next_loop_user_message,
+                        prepare_next_loop_user_message=active_turn.prepare_next_loop_user_message,
+                    )
             turn_result = TurnRunResult(
                 session=active_turn.session,
                 text=str(response),
@@ -330,5 +354,8 @@ class RuntimeHost:
             active_turn.handle._set_result(turn_result)
             active_turn.done_event.set()
             with self._state_lock:
-                if self._active_turn is active_turn:
-                    self._active_turn = None
+                self._active_turns.pop(active_turn.id, None)
+                if active_turn.runtime is self.runtime:
+                    self._primary_runtime_in_use = False
+                else:
+                    active_turn.runtime.close()

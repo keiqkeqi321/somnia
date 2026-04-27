@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import unittest
 from pathlib import Path
+from threading import Event
+from unittest.mock import patch
 
 from open_somnia.app_service import AppService
 from open_somnia.config.models import (
@@ -278,6 +280,60 @@ class AppServiceTests(unittest.TestCase):
             self.assertTrue(result.interrupted)
             self.assertEqual(result.status, "interrupted")
         finally:
+            service.close()
+
+    def test_run_turn_allows_two_concurrent_sessions_and_rejects_third(self) -> None:
+        root = self._stable_test_dir("app-service-two-concurrent")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        release = Event()
+
+        def fake_run_turn(runtime_self, session, user_input, **kwargs):
+            release.wait(timeout=2.0)
+            return AgentLoopResult(f"done {session.id}", status="completed")
+
+        try:
+            session_one = service.create_session()
+            session_two = service.create_session()
+            session_three = service.create_session()
+
+            with patch.object(OpenAgentRuntime, "run_turn", fake_run_turn):
+                handle_one = service.run_turn(session_one, "one")
+                handle_two = service.run_turn(session_two, "two")
+                self._collect_events_until(handle_one, lambda event: event.type == "turn_started")
+                self._collect_events_until(handle_two, lambda event: event.type == "turn_started")
+
+                with self.assertRaisesRegex(RuntimeError, "two turns running"):
+                    service.run_turn(session_three, "three")
+
+                release.set()
+                self.assertEqual(handle_one.wait(timeout=2.0).text, f"done {session_one.id}")
+                self.assertEqual(handle_two.wait(timeout=2.0).text, f"done {session_two.id}")
+        finally:
+            release.set()
+            service.close()
+
+    def test_run_turn_rejects_second_turn_for_same_session(self) -> None:
+        root = self._stable_test_dir("app-service-same-session-concurrent")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        release = Event()
+
+        def fake_run_turn(runtime_self, session, user_input, **kwargs):
+            release.wait(timeout=2.0)
+            return AgentLoopResult("done", status="completed")
+
+        try:
+            session = service.create_session()
+            with patch.object(OpenAgentRuntime, "run_turn", fake_run_turn):
+                handle = service.run_turn(session, "one")
+                self._collect_events_until(handle, lambda event: event.type == "turn_started")
+                with self.assertRaisesRegex(RuntimeError, "session already has a turn running"):
+                    service.run_turn(session, "two")
+                release.set()
+                self.assertEqual(handle.wait(timeout=2.0).text, "done")
+        finally:
+            release.set()
             service.close()
 
     def test_provider_service_lists_providers_and_models(self) -> None:

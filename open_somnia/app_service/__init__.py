@@ -116,6 +116,7 @@ class AppService:
         )
 
     def close(self) -> None:
+        self.runtime_host.close()
         self.runtime.close()
 
 

@@ -130,7 +130,7 @@ function App() {
   const [streamingText, setStreamingText] = useState("");
   const [pendingTurn, setPendingTurn] = useState<ConversationPendingTurn | null>(null);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-  const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn>>({});
+  const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn[]>>({});
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
@@ -550,16 +550,17 @@ function App() {
       if (event.session_id) {
         setActiveProjectTurns((previous) => ({
           ...previous,
-          [projectPath]: {
-            sessionId: event.session_id ?? "",
-            turnId: event.turn_id ?? null,
-          },
+          [projectPath]: [
+            ...(previous[projectPath] ?? []).filter((turn) => turn.turnId !== event.turn_id && turn.sessionId !== event.session_id),
+            {
+              sessionId: event.session_id ?? "",
+              turnId: event.turn_id ?? null,
+            },
+          ].slice(-2),
         }));
       }
       if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
         setStreamingText("");
-      }
-      if (isActiveProject) {
         setActiveTurnId(event.turn_id ?? null);
       }
       return;
@@ -618,7 +619,9 @@ function App() {
     if (event.type === "interrupt_completed" || event.type === "error") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       if (isActiveProject) {
-        setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        if (event.session_id === selectedSessionIdRef.current) {
+          setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        }
         setStreamingText("");
         setPendingTurn(null);
         void refreshInteractions();
@@ -629,7 +632,9 @@ function App() {
     if (event.type === "turn_result") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       if (isActiveProject) {
-        setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        if (event.session_id === selectedSessionIdRef.current) {
+          setActiveTurnId((current) => (current === event.turn_id ? null : current));
+        }
         setStreamingText("");
       }
       const payloadSession = readSessionFromPayload(event.payload.session);
@@ -775,12 +780,17 @@ function App() {
 
   function clearActiveProjectTurn(projectPath: string, turnId: string | null) {
     setActiveProjectTurns((previous) => {
-      const current = previous[projectPath];
-      if (!current || (turnId && current.turnId !== turnId)) {
+      const current = previous[projectPath] ?? [];
+      const remaining = turnId ? current.filter((turn) => turn.turnId !== turnId) : [];
+      if (remaining.length === current.length) {
         return previous;
       }
       const next = { ...previous };
-      delete next[projectPath];
+      if (remaining.length > 0) {
+        next[projectPath] = remaining;
+      } else {
+        delete next[projectPath];
+      }
       return next;
     });
   }
@@ -893,6 +903,16 @@ function App() {
     if (!client || (!draft.trim() && pendingImages.length === 0)) {
       return;
     }
+    const activeProjectTurnList = selectedProjectPathRef.current ? (activeProjectTurns[selectedProjectPathRef.current] ?? []) : [];
+    const currentSessionId = currentSessionRef.current?.id ?? null;
+    if (currentSessionId && activeProjectTurnList.some((turn) => turn.sessionId === currentSessionId)) {
+      setBannerMessage("This session is already running. Wait for it to finish before sending another prompt.");
+      return;
+    }
+    if (activeProjectTurnList.length >= 2) {
+      setBannerMessage("This project already has two sessions running. Wait for one to finish before starting another turn.");
+      return;
+    }
     setBusyAction("send-prompt");
     const prompt = draft;
     const images = pendingImages;
@@ -932,12 +952,15 @@ function App() {
 
   async function handleInterrupt() {
     const client = clientRef.current;
-    if (!client || !activeTurnId) {
+    const selectedTurnId = selectedProjectPathRef.current
+      ? (activeProjectTurns[selectedProjectPathRef.current] ?? []).find((turn) => turn.sessionId === selectedSessionIdRef.current)?.turnId
+      : null;
+    if (!client || !selectedTurnId) {
       return;
     }
     setBusyAction("interrupt-turn");
     try {
-      await client.interruptTurn(activeTurnId);
+      await client.interruptTurn(selectedTurnId);
       setBannerMessage("Interrupt requested.");
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
@@ -1236,6 +1259,10 @@ function App() {
   const activePendingTurn = pendingTurn && pendingTurn.sessionId === (currentSession?.id ?? null) ? pendingTurn : null;
   const conversationRows = buildConversationRows(currentSession, streamingText, activePendingTurn);
   const firstPendingInteraction = pendingInteractions[0] ?? null;
+  const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
+  const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
+  const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
+  const projectTurnLimitReached = activeProjectTurnList.length >= 2;
   const activeProviderLabel = status?.provider ?? selectedProvider ?? "Provider";
   const activeModelLabel = status?.model ?? selectedModel ?? "Model";
   const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
@@ -1375,7 +1402,7 @@ function App() {
                         <div className="project-session-list">
                           {group.sessions.map((session) => {
                             const isSelected = selectedProjectPath === group.path && selectedSessionId === session.id;
-                            const isAnswering = activeProjectTurns[group.path]?.sessionId === session.id;
+                            const isAnswering = (activeProjectTurns[group.path] ?? []).some((turn) => turn.sessionId === session.id);
                             return (
                               <button
                                 key={session.id}
@@ -1673,16 +1700,22 @@ function App() {
                 </div>
               </div>
               <div className="composer-cta">
-                <button
-                  className="action primary composer-icon-action"
-                  onClick={() => void handleSendPrompt()}
-                  disabled={(!draft.trim() && pendingImages.length === 0) || busyAction !== null}
-                  title="Send"
+              <button
+                className="action primary composer-icon-action"
+                onClick={() => void handleSendPrompt()}
+                  disabled={(!draft.trim() && pendingImages.length === 0) || busyAction !== null || currentSessionRunning || projectTurnLimitReached}
+                  title={
+                    currentSessionRunning
+                      ? "This session is still running"
+                      : projectTurnLimitReached
+                        ? "This project already has two sessions running"
+                        : "Send"
+                  }
                   aria-label="Send"
                 >
                   ↑
                 </button>
-                {activeTurnId ? (
+                {currentSessionTurn ? (
                   <button
                     className="action danger composer-icon-action"
                     onClick={() => void handleInterrupt()}

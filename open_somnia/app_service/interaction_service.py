@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from threading import Lock
+from threading import Lock, local
 from typing import Any, Callable, Iterator
 import uuid
 
@@ -21,21 +21,29 @@ class InteractionService:
         self._pending: dict[str, InteractionRequestState] = {}
         self._active_session_id: str | None = None
         self._active_turn_id: str | None = None
+        self._active = local()
 
     @contextmanager
-    def bind_turn(self, *, session_id: str, turn_id: str) -> Iterator[None]:
-        previous_authorization_handler = self.runtime.authorization_request_handler
-        previous_mode_switch_handler = self.runtime.mode_switch_request_handler
+    def bind_turn(self, *, session_id: str, turn_id: str, runtime: OpenAgentRuntime | None = None) -> Iterator[None]:
+        target_runtime = runtime or self.runtime
+        previous_authorization_handler = target_runtime.authorization_request_handler
+        previous_mode_switch_handler = target_runtime.mode_switch_request_handler
+        previous_session_id = getattr(self._active, "session_id", None)
+        previous_turn_id = getattr(self._active, "turn_id", None)
         with self._lock:
             self._active_session_id = session_id
             self._active_turn_id = turn_id
-        self.runtime.authorization_request_handler = self._request_authorization
-        self.runtime.mode_switch_request_handler = self._request_mode_switch
+        self._active.session_id = session_id
+        self._active.turn_id = turn_id
+        target_runtime.authorization_request_handler = self._request_authorization
+        target_runtime.mode_switch_request_handler = self._request_mode_switch
         try:
             yield
         finally:
-            self.runtime.authorization_request_handler = previous_authorization_handler
-            self.runtime.mode_switch_request_handler = previous_mode_switch_handler
+            target_runtime.authorization_request_handler = previous_authorization_handler
+            target_runtime.mode_switch_request_handler = previous_mode_switch_handler
+            self._active.session_id = previous_session_id
+            self._active.turn_id = previous_turn_id
             with self._lock:
                 if self._active_turn_id == turn_id:
                     self._active_session_id = None
@@ -188,19 +196,23 @@ class InteractionService:
                 "active_mode": normalize_execution_mode(current_mode),
                 "reason": "Mode switch request timed out.",
             }
-        return request.response or {
+        response = request.response or {
             "approved": False,
             "active_mode": normalize_execution_mode(current_mode),
             "reason": "Mode switch denied.",
         }
+        self.runtime.execution_mode = normalize_execution_mode(response.get("active_mode", current_mode))
+        return response
 
     def _create_request(self, kind: str, payload: dict[str, Any]) -> InteractionRequestState:
+        session_id = getattr(self._active, "session_id", None) or self._active_session_id
+        turn_id = getattr(self._active, "turn_id", None) or self._active_turn_id
         with self._lock:
             request = InteractionRequestState(
                 id=uuid.uuid4().hex[:8],
                 kind=kind,
-                session_id=self._active_session_id,
-                turn_id=self._active_turn_id,
+                session_id=session_id,
+                turn_id=turn_id,
                 payload=dict(payload),
             )
             self._pending[request.id] = request
