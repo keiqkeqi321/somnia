@@ -82,6 +82,14 @@ type PendingImage = {
   mediaType: string;
   dataUrl: string;
 };
+type QueuedPrompt = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  images: PendingImage[];
+  userText: string;
+  injectionRequested?: boolean;
+};
 type ProjectState = {
   path: string;
   label: string;
@@ -131,6 +139,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [streamingTexts, setStreamingTexts] = useState<Record<string, string>>({});
   const [pendingTurns, setPendingTurns] = useState<Record<string, ConversationPendingTurn>>({});
+  const [queuedPrompts, setQueuedPrompts] = useState<Record<string, QueuedPrompt[]>>({});
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn[]>>({});
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
@@ -165,6 +174,7 @@ function App() {
   const selectedProjectPathRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
+  const queuedPromptsRef = useRef<Record<string, QueuedPrompt[]>>({});
   const workspaceRef = useRef<HTMLElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
@@ -175,6 +185,7 @@ function App() {
   selectedSessionIdRef.current = selectedSessionId;
   selectedProjectPathRef.current = selectedProjectPath;
   currentSessionRef.current = currentSession;
+  queuedPromptsRef.current = queuedPrompts;
 
   useEffect(() => {
     void initializeConnection();
@@ -559,6 +570,94 @@ function App() {
     });
   }
 
+  function enqueueSessionPrompt(
+    projectPath: string | null | undefined,
+    sessionId: string,
+    prompt: string,
+    images: PendingImage[],
+  ) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    const item: QueuedPrompt = {
+      id: `queued-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      sessionId,
+      prompt,
+      images: images.map((image) => ({ ...image })),
+      userText: buildOptimisticUserText(prompt, images),
+    };
+    setQueuedPrompts((previous) => ({
+      ...previous,
+      [key]: [...(previous[key] ?? []), item],
+    }));
+  }
+
+  function takeNextQueuedPrompt(projectPath: string | null | undefined, sessionId: string): QueuedPrompt | null {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return null;
+    }
+    const current = queuedPromptsRef.current[key] ?? [];
+    const [nextItem, ...remaining] = current;
+    if (!nextItem) {
+      return null;
+    }
+    const nextState = { ...queuedPromptsRef.current };
+    if (remaining.length > 0) {
+      nextState[key] = remaining;
+    } else {
+      delete nextState[key];
+    }
+    queuedPromptsRef.current = nextState;
+    setQueuedPrompts(nextState);
+    return nextItem;
+  }
+
+  function updateQueuedPrompt(
+    projectPath: string | null | undefined,
+    sessionId: string,
+    promptId: string,
+    updater: (prompt: QueuedPrompt) => QueuedPrompt,
+  ) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setQueuedPrompts((previous) => {
+      const current = previous[key] ?? [];
+      if (!current.some((prompt) => prompt.id === promptId)) {
+        return previous;
+      }
+      return {
+        ...previous,
+        [key]: current.map((prompt) => (prompt.id === promptId ? updater(prompt) : prompt)),
+      };
+    });
+  }
+
+  function removeQueuedPrompt(projectPath: string | null | undefined, sessionId: string, promptId: string) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setQueuedPrompts((previous) => {
+      const current = previous[key] ?? [];
+      const remaining = current.filter((prompt) => prompt.id !== promptId);
+      if (remaining.length === current.length) {
+        return previous;
+      }
+      const next = { ...previous };
+      if (remaining.length > 0) {
+        next[key] = remaining;
+      } else {
+        delete next[key];
+      }
+      queuedPromptsRef.current = next;
+      return next;
+    });
+  }
+
   async function handleSidecarEvent(projectPath: string, event: SidecarEvent) {
     const isActiveProject = selectedProjectPathRef.current === projectPath;
     if (event.type === "sidecar_ready") {
@@ -625,6 +724,13 @@ function App() {
       upsertProjectSession(projectPath, nextSession);
       return;
     }
+    if (event.type === "loop_user_message_injected") {
+      const injectionId = typeof event.payload.injection_id === "string" ? event.payload.injection_id : "";
+      if (event.session_id && injectionId) {
+        removeQueuedPrompt(projectPath, event.session_id, injectionId);
+      }
+      return;
+    }
     if (event.type === "tool_finished") {
       if (isActiveProject) {
         void refreshToolLogs();
@@ -658,8 +764,9 @@ function App() {
     if (event.type === "turn_result") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       clearConversationRuntimeState(projectPath, event.session_id);
+      const completedSessionId = event.session_id ?? null;
       if (isActiveProject) {
-        if (event.session_id === selectedSessionIdRef.current) {
+        if (completedSessionId === selectedSessionIdRef.current) {
           setActiveTurnId((current) => (current === event.turn_id ? null : current));
         }
       }
@@ -675,6 +782,9 @@ function App() {
         void refreshInteractions();
         void refreshToolLogs();
         void refreshStatusAndProviders();
+      }
+      if (completedSessionId) {
+        void startNextQueuedPrompt(projectPath, completedSessionId);
       }
     }
   }
@@ -923,6 +1033,88 @@ function App() {
     }
   }
 
+  async function startPromptTurn(
+    client: SidecarClient,
+    projectPath: string | null,
+    session: AgentSession,
+    prompt: string,
+    images: PendingImage[],
+  ) {
+    const optimisticTurnId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const key = conversationStateKey(projectPath, session.id);
+    const optimisticUserText = buildOptimisticUserText(prompt, images);
+    if (key) {
+      setPendingTurns((previous) => ({
+        ...previous,
+        [key]: {
+          id: optimisticTurnId,
+          sessionId: session.id,
+          userText: optimisticUserText,
+          placeholderText: "Thinking",
+        },
+      }));
+      setStreamingTexts((previous) => ({ ...previous, [key]: "" }));
+    }
+    const userInput = buildPromptPayload(prompt, images);
+    const response = await client.startTurn(session.id, userInput);
+    if (key) {
+      setPendingTurns((previous) => {
+        const current = previous[key];
+        if (!current || current.id !== optimisticTurnId) {
+          return previous;
+        }
+        return { ...previous, [key]: { ...current, id: response.turn_id, sessionId: session.id } };
+      });
+    }
+    if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
+      setActiveTurnId(response.turn_id);
+    }
+    return response;
+  }
+
+  async function startNextQueuedPrompt(projectPath: string | null, sessionId: string) {
+    const client = projectPath ? projectClientsRef.current[projectPath] ?? clientRef.current : clientRef.current;
+    if (!client) {
+      return;
+    }
+    const nextPrompt = takeNextQueuedPrompt(projectPath, sessionId);
+    if (!nextPrompt) {
+      return;
+    }
+    try {
+      const session = await client.loadSession(sessionId);
+      upsertProjectSession(projectPath, session);
+      if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
+        setCurrentSession(session);
+      }
+      await startPromptTurn(client, projectPath, session, nextPrompt.prompt, nextPrompt.images);
+      setBannerMessage("Queued prompt started.");
+    } catch (error) {
+      enqueueSessionPrompt(projectPath, sessionId, nextPrompt.prompt, nextPrompt.images);
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
+  async function handleQueuePromptInjection(prompt: QueuedPrompt) {
+    const projectPath = selectedProjectPathRef.current;
+    const client = clientRef.current;
+    const activeTurn = projectPath
+      ? (activeProjectTurns[projectPath] ?? []).find((turn) => turn.sessionId === prompt.sessionId)
+      : null;
+    if (!client || !projectPath || !activeTurn?.turnId) {
+      setBannerMessage("No active turn is available for loop injection.");
+      return;
+    }
+    updateQueuedPrompt(projectPath, prompt.sessionId, prompt.id, (current) => ({ ...current, injectionRequested: true }));
+    try {
+      await client.queueLoopInjection(activeTurn.turnId, prompt.id, buildPromptPayload(prompt.prompt, prompt.images));
+      setBannerMessage("Queued prompt will be injected on the next agent loop.");
+    } catch (error) {
+      updateQueuedPrompt(projectPath, prompt.sessionId, prompt.id, (current) => ({ ...current, injectionRequested: false }));
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
   async function handleSendPrompt() {
     const client = clientRef.current;
     if (!client || (!draft.trim() && pendingImages.length === 0)) {
@@ -931,8 +1123,16 @@ function App() {
     const projectPath = selectedProjectPathRef.current;
     const activeProjectTurnList = projectPath ? (activeProjectTurns[projectPath] ?? []) : [];
     const currentSessionId = currentSessionRef.current?.id ?? null;
+    const prompt = draft;
+    const images = pendingImages;
     if (currentSessionId && activeProjectTurnList.some((turn) => turn.sessionId === currentSessionId)) {
-      setBannerMessage("This session is already running. Wait for it to finish before sending another prompt.");
+      enqueueSessionPrompt(projectPath, currentSessionId, prompt, images);
+      rememberPrompt(prompt);
+      setDraft("");
+      setPendingImages([]);
+      setHistoryCursor(null);
+      setCommandPickerOpen(false);
+      setBannerMessage("Prompt queued for this session.");
       return;
     }
     if (activeProjectTurnList.length >= 2) {
@@ -940,9 +1140,6 @@ function App() {
       return;
     }
     setBusyAction("send-prompt");
-    const prompt = draft;
-    const images = pendingImages;
-    const optimisticTurnId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let promptSessionId: string | null = null;
     try {
       const session = await ensureSession(client, projectPath);
@@ -950,39 +1147,12 @@ function App() {
         return;
       }
       promptSessionId = session.id;
-      const key = conversationStateKey(projectPath, session.id);
-      const optimisticUserText = buildOptimisticUserText(prompt, images);
-      if (key) {
-        setPendingTurns((previous) => ({
-          ...previous,
-          [key]: {
-            id: optimisticTurnId,
-            sessionId: session.id,
-            userText: optimisticUserText,
-            placeholderText: "Thinking",
-          },
-        }));
-        setStreamingTexts((previous) => ({ ...previous, [key]: "" }));
-      }
       rememberPrompt(prompt);
       setDraft("");
       setPendingImages([]);
       setHistoryCursor(null);
       setCommandPickerOpen(false);
-      const userInput = buildPromptPayload(prompt, images);
-      const response = await client.startTurn(session.id, userInput);
-      if (key) {
-        setPendingTurns((previous) => {
-          const current = previous[key];
-          if (!current || current.id !== optimisticTurnId) {
-            return previous;
-          }
-          return { ...previous, [key]: { ...current, id: response.turn_id, sessionId: session.id } };
-        });
-      }
-      if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
-        setActiveTurnId(response.turn_id);
-      }
+      await startPromptTurn(client, projectPath, session, prompt, images);
       setBannerMessage("Turn started.");
     } catch (error) {
       clearConversationRuntimeState(projectPath, promptSessionId);
@@ -1301,6 +1471,7 @@ function App() {
   const activeConversationKey = conversationStateKey(selectedProjectPath, currentSession?.id);
   const activePendingTurn = activeConversationKey ? pendingTurns[activeConversationKey] ?? null : null;
   const activeStreamingText = activeConversationKey ? streamingTexts[activeConversationKey] ?? "" : "";
+  const activeQueuedPrompts = activeConversationKey ? queuedPrompts[activeConversationKey] ?? [] : [];
   const conversationRows = buildConversationRows(currentSession, activeStreamingText, activePendingTurn);
   const currentSessionInteraction = currentSession ? findSessionInteraction(pendingInteractions, currentSession.id) : null;
   const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
@@ -1529,7 +1700,7 @@ function App() {
           <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
 
           <div className="conversation-body">
-            {conversationRows.length === 0 && !currentSessionInteraction ? (
+            {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
               <div className="empty-conversation">
                 <h3>Start a session</h3>
                 <p>Connect to a sidecar, choose a session, then send a prompt. Streaming output lands here.</p>
@@ -1569,6 +1740,14 @@ function App() {
                 </article>
               ))
             )}
+            {activeQueuedPrompts.length > 0 ? (
+              <PromptQueueCard
+                prompts={activeQueuedPrompts}
+                canInject={currentSessionRunning}
+                busy={busyAction !== null}
+                onInject={handleQueuePromptInjection}
+              />
+            ) : null}
             {currentSessionInteraction ? (
               <InteractionDecisionCard
                 interaction={currentSessionInteraction}
@@ -1759,10 +1938,14 @@ function App() {
               <button
                 className="action primary composer-icon-action"
                 onClick={() => void handleSendPrompt()}
-                  disabled={(!draft.trim() && pendingImages.length === 0) || busyAction !== null || currentSessionRunning || projectTurnLimitReached}
+                  disabled={
+                    (!draft.trim() && pendingImages.length === 0) ||
+                    busyAction !== null ||
+                    (projectTurnLimitReached && !currentSessionRunning)
+                  }
                   title={
                     currentSessionRunning
-                      ? "This session is still running"
+                      ? "Queue for this session"
                       : projectTurnLimitReached
                         ? "This project already has two sessions running"
                         : "Send"
@@ -1904,6 +2087,42 @@ function InteractionDecisionCard({
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+function PromptQueueCard({
+  prompts,
+  canInject,
+  busy,
+  onInject,
+}: {
+  prompts: QueuedPrompt[];
+  canInject: boolean;
+  busy: boolean;
+  onInject: (prompt: QueuedPrompt) => Promise<void>;
+}) {
+  return (
+    <section className="prompt-queue-card" aria-live="polite">
+      <div className="prompt-queue-head">
+        <p className="eyebrow">Queued prompts</p>
+        <span>{prompts.length}</span>
+      </div>
+      <ol>
+        {prompts.map((prompt) => (
+          <li key={prompt.id}>
+            <span>{prompt.userText}</span>
+            <button
+              className="queue-inject-button"
+              onClick={() => void onInject(prompt)}
+              disabled={!canInject || busy || prompt.injectionRequested}
+              title={prompt.injectionRequested ? "Waiting for the next agent loop" : "Inject on next agent loop"}
+            >
+              {prompt.injectionRequested ? "Next loop" : "Inject next loop"}
+            </button>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }

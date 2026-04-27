@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   InteractionRequestState,
+  LoopInjectionResponse,
   ModelDescriptor,
   ProviderDescriptor,
   SidecarStatus,
@@ -101,6 +102,20 @@ export class SidecarClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
+      }),
+    );
+  }
+
+  async queueLoopInjection(
+    turnId: string,
+    injectionId: string,
+    userInput: string | Record<string, unknown>,
+  ): Promise<LoopInjectionResponse> {
+    return parseResponse<LoopInjectionResponse>(
+      await fetch(`${this.baseUrl}/turns/${turnId}/loop-injections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ injection_id: injectionId, user_input: userInput }),
       }),
     );
   }

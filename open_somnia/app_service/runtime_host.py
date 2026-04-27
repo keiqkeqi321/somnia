@@ -15,6 +15,7 @@ from open_somnia.app_service.events import (
     ERROR,
     INTERRUPT_COMPLETED,
     INTERRUPT_REQUESTED,
+    LOOP_USER_MESSAGE_INJECTED,
     SESSION_UPDATED,
     TODO_UPDATED,
     TOOL_FINISHED,
@@ -28,6 +29,36 @@ from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import decode_embedded_user_message, render_text_content
 from open_somnia.runtime.session import AgentSession
+
+def _combine_user_inputs(inputs: list[str | dict[str, Any]]) -> str | dict[str, Any] | None:
+    if not inputs:
+        return None
+    if len(inputs) == 1:
+        return _clone_value(inputs[0])
+    if all(isinstance(item, str) for item in inputs):
+        return "\n\n".join(str(item).strip() for item in inputs if str(item).strip())
+    combined_content: list[Any] = []
+    fallback_parts: list[str] = []
+    for item in inputs:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                combined_content.append({"type": "text", "text": text})
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            combined_content.extend(_clone_value(content))
+            continue
+        text = render_text_content(content)
+        if text:
+            combined_content.append({"type": "text", "text": text})
+            continue
+        fallback_parts.append(_user_input_text(item))
+    for part in fallback_parts:
+        text = part.strip()
+        if text:
+            combined_content.append({"type": "text", "text": text})
+    return {"role": "user", "content": combined_content}
 
 
 def _clone_value(value: Any) -> Any:
@@ -78,6 +109,9 @@ class _ActiveTurn:
     last_todo_items: list[dict[str, Any]] = field(default_factory=list)
     take_next_loop_user_message: Any = None
     prepare_next_loop_user_message: Any = None
+    loop_injection_lock: Lock = field(default_factory=Lock)
+    pending_loop_injections: list[dict[str, Any]] = field(default_factory=list)
+    ready_loop_injections: list[dict[str, Any]] = field(default_factory=list)
 
 
 class RuntimeHost:
@@ -144,6 +178,10 @@ class RuntimeHost:
                 take_next_loop_user_message=take_next_loop_user_message,
                 prepare_next_loop_user_message=prepare_next_loop_user_message,
             )
+            if take_next_loop_user_message is None:
+                active_turn.take_next_loop_user_message = lambda: self._take_next_loop_user_message(active_turn)
+            if prepare_next_loop_user_message is None:
+                active_turn.prepare_next_loop_user_message = lambda: self._prepare_next_loop_user_message(active_turn)
             worker = Thread(
                 target=self._run_turn_worker,
                 args=(active_turn,),
@@ -172,6 +210,47 @@ class RuntimeHost:
                 pass
         self.interaction_service.cancel_turn_requests(turn_id, reason="Interrupted by user.")
         return True
+
+    def queue_loop_injection(self, turn_id: str, user_input: str | dict[str, Any], *, injection_id: str | None = None) -> bool:
+        with self._state_lock:
+            active_turn = self._active_turns.get(str(turn_id).strip())
+            if active_turn is None or active_turn.done_event.is_set():
+                return False
+        injection = {
+            "id": str(injection_id or uuid.uuid4().hex[:8]).strip(),
+            "user_input": _clone_value(user_input),
+        }
+        with active_turn.loop_injection_lock:
+            active_turn.pending_loop_injections.append(injection)
+        return True
+
+    def _prepare_next_loop_user_message(self, active_turn: _ActiveTurn) -> bool:
+        with active_turn.loop_injection_lock:
+            if active_turn.ready_loop_injections:
+                return True
+            if not active_turn.pending_loop_injections:
+                return False
+            active_turn.ready_loop_injections.extend(active_turn.pending_loop_injections)
+            active_turn.pending_loop_injections = []
+            return True
+
+    def _take_next_loop_user_message(self, active_turn: _ActiveTurn) -> str | dict[str, Any] | None:
+        with active_turn.loop_injection_lock:
+            if not active_turn.ready_loop_injections:
+                return None
+            injections = active_turn.ready_loop_injections
+            active_turn.ready_loop_injections = []
+        user_inputs = [_clone_value(injection.get("user_input")) for injection in injections]
+        combined_user_input = _combine_user_inputs(user_inputs)
+        for injection, user_input in zip(injections, user_inputs, strict=False):
+            self._emit_for_turn(
+                active_turn,
+                LOOP_USER_MESSAGE_INJECTED,
+                injection_id=str(injection.get("id", "")),
+                user_input=_clone_value(user_input),
+                text=_user_input_text(user_input),
+            )
+        return combined_user_input
 
     def _emit(
         self,

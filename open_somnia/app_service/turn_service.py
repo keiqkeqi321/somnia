@@ -28,3 +28,6 @@ class TurnService:
 
     def interrupt_turn(self, turn_id: str) -> bool:
         return self.runtime_host.interrupt_turn(turn_id)
+
+    def queue_loop_injection(self, turn_id: str, user_input: str | dict[str, Any], *, injection_id: str | None = None) -> bool:
+        return self.runtime_host.queue_loop_injection(turn_id, user_input, injection_id=injection_id)

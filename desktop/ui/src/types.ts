@@ -83,6 +83,12 @@ export interface TurnStartResponse {
   session_id: string;
 }
 
+export interface LoopInjectionResponse {
+  turn_id: string;
+  injection_id: string;
+  queued: boolean;
+}
+
 export interface InteractionRequestState {
   id: string;
   kind: string;

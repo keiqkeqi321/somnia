@@ -16,6 +16,7 @@ INTERRUPT_REQUESTED = "interrupt_requested"
 INTERRUPT_COMPLETED = "interrupt_completed"
 SESSION_UPDATED = "session_updated"
 TODO_UPDATED = "todo_updated"
+LOOP_USER_MESSAGE_INJECTED = "loop_user_message_injected"
 ERROR = "error"
 
 EVENT_TYPES = frozenset(
@@ -31,6 +32,7 @@ EVENT_TYPES = frozenset(
         INTERRUPT_COMPLETED,
         SESSION_UPDATED,
         TODO_UPDATED,
+        LOOP_USER_MESSAGE_INJECTED,
         ERROR,
     }
 )

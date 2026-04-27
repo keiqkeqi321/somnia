@@ -392,6 +392,78 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_service_can_queue_loop_injection_for_active_turn(self) -> None:
+        root = self._stable_test_dir("app-service-active-loop-injection")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+
+        def fake_run_turn(session, user_input, **kwargs):
+            deadline = time.time() + 2.0
+            prepared = False
+            while time.time() < deadline:
+                prepared = bool(kwargs["prepare_next_loop_user_message"]())
+                if prepared:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(prepared)
+            self.assertEqual(kwargs["take_next_loop_user_message"](), "queued follow-up")
+            return AgentLoopResult("Done.", status="completed")
+
+        runtime.run_turn = fake_run_turn
+        try:
+            session = service.create_session()
+            handle = service.run_turn(session, "initial")
+            self._collect_events_until(handle, lambda event: event.type == "turn_started")
+
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "queued follow-up", injection_id="inject-1"))
+
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.text, "Done.")
+            events = handle.drain_events()
+            injected_events = [event for event in events if event.type == "loop_user_message_injected"]
+            self.assertEqual(len(injected_events), 1)
+            self.assertEqual(injected_events[0].payload["injection_id"], "inject-1")
+            self.assertEqual(injected_events[0].payload["text"], "queued follow-up")
+        finally:
+            service.close()
+
+    def test_service_merges_multiple_next_loop_injections(self) -> None:
+        root = self._stable_test_dir("app-service-merged-loop-injection")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+
+        def fake_run_turn(session, user_input, **kwargs):
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if kwargs["prepare_next_loop_user_message"]():
+                    break
+                time.sleep(0.01)
+            self.assertEqual(kwargs["take_next_loop_user_message"](), "first follow-up\n\nsecond follow-up")
+            self.assertIsNone(kwargs["take_next_loop_user_message"]())
+            return AgentLoopResult("Done.", status="completed")
+
+        runtime.run_turn = fake_run_turn
+        try:
+            session = service.create_session()
+            handle = service.run_turn(session, "initial")
+            self._collect_events_until(handle, lambda event: event.type == "turn_started")
+
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "first follow-up", injection_id="inject-1"))
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "second follow-up", injection_id="inject-2"))
+
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            events = handle.drain_events()
+            injected_ids = [
+                event.payload["injection_id"]
+                for event in events
+                if event.type == "loop_user_message_injected"
+            ]
+            self.assertEqual(injected_ids, ["inject-1", "inject-2"])
+        finally:
+            service.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,6 +283,12 @@ class SidecarServer:
         interrupted = self.service.interrupt_turn(turn_id)
         return {"turn_id": str(turn_id).strip(), "interrupted": bool(interrupted)}
 
+    def queue_loop_injection(self, turn_id: str, user_input: str | dict[str, Any], injection_id: str | None = None) -> dict[str, Any]:
+        queued = self.service.queue_loop_injection(turn_id, user_input, injection_id=injection_id)
+        if not queued:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Active turn '{turn_id}' was not found.")
+        return {"turn_id": str(turn_id).strip(), "injection_id": str(injection_id or "").strip(), "queued": True}
+
     def pending_interactions(self) -> list[dict[str, Any]]:
         return [serialize_interaction(interaction) for interaction in self.service.pending_interactions()]
 
@@ -483,6 +489,18 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return self.sidecar.start_turn(session_id, body["user_input"]), HTTPStatus.ACCEPTED
         if len(path_parts) == 3 and path_parts[0] == "turns" and path_parts[2] == "interrupt":
             return self.sidecar.interrupt_turn(path_parts[1]), HTTPStatus.OK
+        if len(path_parts) == 3 and path_parts[0] == "turns" and path_parts[2] == "loop-injections":
+            if "user_input" not in body:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "user_input is required.")
+            injection_id = body.get("injection_id")
+            return (
+                self.sidecar.queue_loop_injection(
+                    path_parts[1],
+                    body["user_input"],
+                    str(injection_id).strip() if injection_id is not None else None,
+                ),
+                HTTPStatus.ACCEPTED,
+            )
         if path_parts == ["providers", "switch"]:
             provider_name = str(body.get("provider_name", "")).strip()
             model = str(body.get("model", "")).strip()

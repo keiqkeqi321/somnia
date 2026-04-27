@@ -925,6 +925,81 @@ button {
   margin-top: 14px;
 }
 
+.prompt-queue-card {
+  align-self: stretch;
+  width: min(100%, 62rem);
+  padding: 14px 16px;
+  border: 1px solid rgba(143, 180, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(15, 18, 24, 0.86);
+}
+
+.prompt-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-queue-head span {
+  min-width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(143, 180, 255, 0.14);
+  color: #d7e3ff;
+  font-size: 0.76rem;
+}
+
+.prompt-queue-card ol {
+  margin: 10px 0 0;
+  padding-left: 1.25rem;
+  color: var(--text-subtle);
+}
+
+.prompt-queue-card li {
+  padding: 7px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.prompt-queue-card li::marker {
+  color: var(--muted);
+}
+
+.prompt-queue-card li span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+.queue-inject-button {
+  border: 1px solid rgba(143, 180, 255, 0.22);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(143, 180, 255, 0.1);
+  color: #d7e3ff;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.queue-inject-button:hover:not(:disabled) {
+  border-color: rgba(143, 180, 255, 0.42);
+  background: rgba(143, 180, 255, 0.18);
+}
+
+.queue-inject-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .bubble pre,
 .tool-call-detail pre,
 .log-detail pre,
