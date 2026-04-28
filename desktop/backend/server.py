@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from queue import Empty, Queue
 import select
 import socket
@@ -37,12 +38,29 @@ from open_somnia.config.models import AppSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 
+IGNORED_PATH_COMPLETION_DIRS = {
+    ".git",
+    ".open_somnia",
+    "__pycache__",
+    ".venv",
+    "node_modules",
+}
+
 
 class SidecarAPIError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
         self.status_code = int(status_code)
         self.message = str(message)
+
+
+def _path_completion_score(item: dict[str, str], query: str) -> tuple[int, int, int, int, str]:
+    basename = item["basename"].lower()
+    path = item["path"].lower()
+    basename_starts = 0 if query and basename.startswith(query) else 1
+    basename_contains = 0 if query and query in basename else 1
+    kind_rank = 0 if item["kind"] == "dir" else 1
+    return (basename_starts, basename_contains, kind_rank, len(path), path)
 
 
 @dataclass(slots=True)
@@ -69,6 +87,8 @@ class SidecarServer:
         self._clients: dict[str, _WebSocketClient] = {}
         self._active_turns: dict[str, Any] = {}
         self._turn_threads: dict[str, Thread] = {}
+        self._path_completion_cache: list[dict[str, str]] = []
+        self._path_completion_scanned_at = 0.0
         self._closed = False
         self._server_thread: Thread | None = None
         self.httpd = _SidecarHTTPServer((host, port), _SidecarRequestHandler, sidecar=self)
@@ -112,6 +132,40 @@ class SidecarServer:
             "execution_mode": execution_mode,
             "execution_mode_title": execution_mode_spec(execution_mode).title,
         }
+
+    def list_workspace_paths(self, *, query: str = "", limit: int = 30) -> list[dict[str, str]]:
+        lowered = str(query or "").strip().lower()
+        max_results = max(1, min(100, int(limit)))
+        candidates = self._workspace_path_candidates()
+        if lowered:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if lowered in candidate["path"].lower() or lowered in candidate["basename"].lower()
+            ]
+        return sorted(candidates, key=lambda item: _path_completion_score(item, lowered))[:max_results]
+
+    def _workspace_path_candidates(self) -> list[dict[str, str]]:
+        now = time.time()
+        if self._path_completion_cache and now - self._path_completion_scanned_at < 5:
+            return self._path_completion_cache
+        workspace_root = self.settings.workspace_root
+        candidates: list[dict[str, str]] = []
+        for current_root, dir_names, file_names in os.walk(workspace_root):
+            dir_names[:] = [name for name in dir_names if name not in IGNORED_PATH_COMPLETION_DIRS]
+            current_path = current_root if isinstance(current_root, str) else str(current_root)
+            for name, kind in [(name, "dir") for name in dir_names] + [(name, "file") for name in file_names]:
+                path = os.path.join(current_path, name)
+                try:
+                    relative = os.path.relpath(path, workspace_root).replace(os.sep, "/")
+                except ValueError:
+                    continue
+                if any(part in IGNORED_PATH_COMPLETION_DIRS for part in relative.split("/")):
+                    continue
+                candidates.append({"path": relative, "basename": name, "kind": kind})
+        self._path_completion_cache = candidates
+        self._path_completion_scanned_at = now
+        return candidates
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.httpd.serve_forever(poll_interval=poll_interval)
@@ -463,6 +517,14 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if path_parts == ["models"]:
             provider_name = (query.get("provider") or [None])[0]
             return {"models": self.sidecar.list_models(provider_name)}
+        if path_parts == ["workspace", "paths"]:
+            raw_limit = (query.get("limit") or [30])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "limit must be an integer.")
+            path_query = (query.get("q") or [""])[0]
+            return {"paths": self.sidecar.list_workspace_paths(query=path_query, limit=limit)}
         if path_parts == ["interactions"]:
             return {"interactions": self.sidecar.pending_interactions()}
         if path_parts == ["tool-logs"]:

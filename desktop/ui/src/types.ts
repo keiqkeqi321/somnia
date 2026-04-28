@@ -89,6 +89,12 @@ export interface LoopInjectionResponse {
   queued: boolean;
 }
 
+export interface WorkspacePathSuggestion {
+  path: string;
+  basename: string;
+  kind: "dir" | "file";
+}
+
 export interface InteractionRequestState {
   id: string;
   kind: string;

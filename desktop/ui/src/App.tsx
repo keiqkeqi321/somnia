@@ -39,6 +39,7 @@ import type {
   TodoItem,
   ToolLogDetail,
   ToolLogIndexEntry,
+  WorkspacePathSuggestion,
 } from "./types";
 
 const STORAGE_KEY = "somnia.desktop.sidecar-url";
@@ -76,6 +77,7 @@ const COMMAND_SPECS = [
   { command: "/help", description: "Show available REPL commands" },
   { command: "/exit", description: "Exit chat mode" },
 ] as const;
+const PATH_MENTION_PATTERN = /(^|\s)@([^\s]*)$/;
 const EXECUTION_MODE_OPTIONS = [
   { key: "shortcuts", title: "? for shortcuts", description: "Read-only shortcuts and lightweight inspection." },
   { key: "plan", title: "⏸ plan mode on", description: "Read-only planning before edits." },
@@ -161,6 +163,10 @@ function App() {
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [commandPickerOpen, setCommandPickerOpen] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [pathPickerOpen, setPathPickerOpen] = useState(false);
+  const [pathSuggestions, setPathSuggestions] = useState<WorkspacePathSuggestion[]>([]);
+  const [selectedPathIndex, setSelectedPathIndex] = useState(0);
+  const [composerCursor, setComposerCursor] = useState(0);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [toolLogs, setToolLogs] = useState<ToolLogIndexEntry[]>([]);
   const [activeToolLog, setActiveToolLog] = useState<ToolLogDetail | null>(null);
@@ -291,6 +297,40 @@ function App() {
     setCommandPickerOpen(shouldOpen);
     setSelectedCommandIndex(0);
   }, [draft]);
+
+  useEffect(() => {
+    const mention = currentPathMention(draft, composerCursor);
+    const client = clientRef.current;
+    if (!mention || !client) {
+      setPathPickerOpen(false);
+      setPathSuggestions([]);
+      setSelectedPathIndex(0);
+      return;
+    }
+    let cancelled = false;
+    client
+      .listWorkspacePaths(mention.query, 30)
+      .then((paths) => {
+        if (cancelled) {
+          return;
+        }
+        setPathSuggestions(paths);
+        setPathPickerOpen(paths.length > 0);
+        setCommandPickerOpen(false);
+        setSelectedPathIndex(0);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setPathSuggestions([]);
+        setPathPickerOpen(false);
+        setSelectedPathIndex(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [draft, composerCursor]);
 
   useEffect(() => {
     setTodoExpanded(false);
@@ -1277,6 +1317,7 @@ function App() {
       setPendingImages([]);
       setHistoryCursor(null);
       setCommandPickerOpen(false);
+      setPathPickerOpen(false);
       setBannerMessage("Prompt queued for this session.");
       return;
     }
@@ -1297,6 +1338,7 @@ function App() {
       setPendingImages([]);
       setHistoryCursor(null);
       setCommandPickerOpen(false);
+      setPathPickerOpen(false);
       await startPromptTurn(client, projectPath, session, prompt, images);
       setBannerMessage("Turn started.");
     } catch (error) {
@@ -1367,8 +1409,9 @@ function App() {
     });
   }
 
-  function handleComposerChange(value: string) {
+  function handleComposerChange(value: string, cursor: number) {
     setDraft(value);
+    setComposerCursor(cursor);
     setHistoryCursor(null);
   }
 
@@ -1385,6 +1428,7 @@ function App() {
         setDraft("Look at this image.");
       }
       setCommandPickerOpen(false);
+      setPathPickerOpen(false);
     } catch (error) {
       setBannerMessage(`Unable to read pasted image: ${formatErrorMessage(error)}`);
     }
@@ -1409,6 +1453,7 @@ function App() {
         setDraft("Look at this image.");
       }
       setCommandPickerOpen(false);
+      setPathPickerOpen(false);
       composerTextareaRef.current?.focus();
     } catch (error) {
       setBannerMessage(`Unable to read selected image: ${formatErrorMessage(error)}`);
@@ -1416,6 +1461,29 @@ function App() {
   }
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (pathPickerOpen && pathSuggestions.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedPathIndex((current) => (current + 1) % pathSuggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedPathIndex((current) => (current - 1 + pathSuggestions.length) % pathSuggestions.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        applyPathSuggestion(pathSuggestions[selectedPathIndex] ?? pathSuggestions[0]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPathPickerOpen(false);
+        return;
+      }
+    }
+
     const suggestions = currentCommandSuggestions(draft);
     if (commandPickerOpen && suggestions.length > 0) {
       if (event.key === "ArrowDown") {
@@ -1505,8 +1573,28 @@ function App() {
   function applyCommandSuggestion(command: string) {
     setDraft(`${command} `);
     setCommandPickerOpen(false);
+    setPathPickerOpen(false);
     requestAnimationFrame(() => {
       composerTextareaRef.current?.focus();
+    });
+  }
+
+  function applyPathSuggestion(suggestion: WorkspacePathSuggestion) {
+    const mention = currentPathMention(draft, composerCursor);
+    if (!mention) {
+      return;
+    }
+    const insertion = suggestion.kind === "dir" && !suggestion.path.endsWith("/") ? `${suggestion.path}/` : suggestion.path;
+    const nextDraft = `${draft.slice(0, mention.queryStart)}${insertion}${draft.slice(mention.end)}`;
+    const nextCursor = mention.queryStart + insertion.length;
+    setDraft(nextDraft);
+    setComposerCursor(nextCursor);
+    setPathPickerOpen(false);
+    setSelectedPathIndex(0);
+    requestAnimationFrame(() => {
+      const textarea = composerTextareaRef.current;
+      textarea?.focus();
+      textarea?.setSelectionRange(nextCursor, nextCursor);
     });
   }
 
@@ -1912,8 +2000,11 @@ function App() {
             <textarea
               ref={composerTextareaRef}
               value={draft}
-              onChange={(event) => handleComposerChange(event.target.value)}
+              onChange={(event) => handleComposerChange(event.target.value, event.target.selectionStart)}
               onKeyDown={handleComposerKeyDown}
+              onKeyUp={(event) => setComposerCursor(event.currentTarget.selectionStart)}
+              onSelect={(event) => setComposerCursor(event.currentTarget.selectionStart)}
+              onClick={(event) => setComposerCursor(event.currentTarget.selectionStart)}
               onPaste={(event) => void handleComposerPaste(event)}
               placeholder="Ask Somnia to inspect, plan, or implement against the current workspace."
               rows={1}
@@ -1946,6 +2037,23 @@ function App() {
                   >
                     <strong>{item.command}</strong>
                     <span>{item.description}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {pathPickerOpen && pathSuggestions.length > 0 ? (
+              <div className="command-picker path-picker">
+                {pathSuggestions.map((item, index) => (
+                  <button
+                    key={`${item.kind}-${item.path}`}
+                    className={`command-option path-option ${index === selectedPathIndex ? "selected" : ""}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyPathSuggestion(item);
+                    }}
+                  >
+                    <strong>{item.kind === "dir" ? `${item.path}/` : item.path}</strong>
+                    <span>{item.kind === "dir" ? "folder" : "file"}</span>
                   </button>
                 ))}
               </div>
@@ -2655,6 +2763,21 @@ function currentCommandSuggestions(value: string): Array<(typeof COMMAND_SPECS)[
     return [];
   }
   return COMMAND_SPECS.filter((item) => item.command.startsWith(query)).slice(0, 8);
+}
+
+function currentPathMention(value: string, cursor: number): { query: string; queryStart: number; end: number } | null {
+  const safeCursor = Math.max(0, Math.min(cursor, value.length));
+  const beforeCursor = value.slice(0, safeCursor);
+  const match = PATH_MENTION_PATTERN.exec(beforeCursor);
+  if (!match) {
+    return null;
+  }
+  const query = match[2] ?? "";
+  return {
+    query,
+    queryStart: safeCursor - query.length,
+    end: safeCursor,
+  };
 }
 
 function buildPromptPayload(prompt: string, images: PendingImage[]): string | Record<string, unknown> {

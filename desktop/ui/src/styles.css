@@ -1321,6 +1321,16 @@ button {
   white-space: nowrap;
 }
 
+.path-option {
+  grid-template-columns: minmax(0, 1fr) 4.5rem;
+}
+
+.path-option strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-actions {
   justify-content: space-between;
   align-items: flex-end;

@@ -8,6 +8,7 @@ import type {
   ToolLogDetail,
   ToolLogIndexEntry,
   TurnStartResponse,
+  WorkspacePathSuggestion,
 } from "../types";
 
 function normalizeBaseUrl(rawBaseUrl: string): string {
@@ -129,6 +130,12 @@ export class SidecarClient {
     const query = providerName ? `?provider=${encodeURIComponent(providerName)}` : "";
     const payload = await parseResponse<{ models: ModelDescriptor[] }>(await fetch(`${this.baseUrl}/models${query}`));
     return payload.models;
+  }
+
+  async listWorkspacePaths(query = "", limit = 30): Promise<WorkspacePathSuggestion[]> {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    const payload = await parseResponse<{ paths: WorkspacePathSuggestion[] }>(await fetch(`${this.baseUrl}/workspace/paths?${params}`));
+    return payload.paths;
   }
 
   async switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string }> {
