@@ -83,7 +83,7 @@ export function buildConversationRows(
         index += 1;
       }
       if (text || toolCalls.length > 0) {
-        rows.push({ id: `${session.id}-assistant-${index}`, role: "assistant", text, toolCalls });
+        appendAssistantRow(rows, { id: `${session.id}-assistant-${index}`, role: "assistant", text, toolCalls });
       }
       index += 1;
       continue;
@@ -130,7 +130,7 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
       if (!item.text.trim()) {
         continue;
       }
-      rows.push({
+      appendAssistantRow(rows, {
         id: item.id,
         role: "assistant",
         text: item.text,
@@ -138,7 +138,7 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
       });
       continue;
     }
-    rows.push({
+    appendAssistantRow(rows, {
       id: item.id,
       role: "assistant",
       text: "",
@@ -146,6 +146,31 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
       isStreaming: item.toolCall.status === "running",
     });
   }
+}
+
+function appendAssistantRow(rows: ConversationRow[], row: ConversationRow) {
+  const last = rows[rows.length - 1];
+  if (last?.role !== "assistant" || last.isPending || row.isPending) {
+    rows.push(row);
+    return;
+  }
+  rows[rows.length - 1] = {
+    ...last,
+    text: mergeAssistantText(last.text, row.text),
+    toolCalls: [...(last.toolCalls ?? []), ...(row.toolCalls ?? [])],
+    isStreaming: Boolean(last.isStreaming || row.isStreaming),
+    isLoading: Boolean(last.isLoading || row.isLoading),
+  };
+}
+
+function mergeAssistantText(left: string, right: string): string {
+  if (!left.trim()) {
+    return right;
+  }
+  if (!right.trim()) {
+    return left;
+  }
+  return `${left.trimEnd()}\n\n${right.trimStart()}`;
 }
 
 function hasToolResults(content: unknown): boolean {
