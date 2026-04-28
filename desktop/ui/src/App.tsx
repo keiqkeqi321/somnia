@@ -29,6 +29,7 @@ import type {
   AgentSession,
   ConversationPendingTurn,
   ConversationRuntimeItem,
+  ConversationToolCall,
   InteractionRequestState,
   ManagedSidecarConnection,
   ModelDescriptor,
@@ -614,6 +615,29 @@ function App() {
     });
   }
 
+  function appendRuntimeUserMessage(
+    projectPath: string | null | undefined,
+    sessionId: string | null | undefined,
+    turnId: string | null | undefined,
+    text: string,
+  ) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key || !text.trim()) {
+      return;
+    }
+    setRuntimeConversationItems((previous) => ({
+      ...previous,
+      [key]: [
+        ...(previous[key] ?? []),
+        {
+          id: runtimeItemId("user", turnId),
+          type: "user_text",
+          text,
+        },
+      ],
+    }));
+  }
+
   function appendRuntimeToolStarted(projectPath: string | null | undefined, event: SidecarEvent) {
     const key = conversationStateKey(projectPath, event.session_id);
     if (!key) {
@@ -762,6 +786,19 @@ function App() {
     });
   }
 
+  function injectedUserMessageText(projectPath: string | null | undefined, sessionId: string, injectionId: string, payload: Record<string, unknown>): string {
+    const text = typeof payload.text === "string" ? payload.text.trim() : "";
+    if (text) {
+      return text;
+    }
+    const key = conversationStateKey(projectPath, sessionId);
+    const queuedPrompt = key ? (queuedPromptsRef.current[key] ?? []).find((prompt) => prompt.id === injectionId) : null;
+    if (queuedPrompt?.userText.trim()) {
+      return queuedPrompt.userText;
+    }
+    return buildOptimisticUserText("", []);
+  }
+
   async function handleSidecarEvent(projectPath: string, event: SidecarEvent) {
     const isActiveProject = selectedProjectPathRef.current === projectPath;
     if (event.type === "sidecar_ready") {
@@ -828,6 +865,8 @@ function App() {
     if (event.type === "loop_user_message_injected") {
       const injectionId = typeof event.payload.injection_id === "string" ? event.payload.injection_id : "";
       if (event.session_id && injectionId) {
+        const injectedText = injectedUserMessageText(projectPath, event.session_id, injectionId, event.payload);
+        appendRuntimeUserMessage(projectPath, event.session_id, event.turn_id, injectedText);
         removeQueuedPrompt(projectPath, event.session_id, injectionId);
       }
       return;
@@ -1816,7 +1855,19 @@ function App() {
             ) : (
               conversationRows.map((row) => (
                 <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
-                  {row.text ? <MarkdownMessage text={row.text} /> : null}
+                  {row.parts?.length ? (
+                    row.parts.map((part) =>
+                      part.type === "text" ? (
+                        <MarkdownMessage key={part.id} text={part.text} />
+                      ) : (
+                        <div key={part.id} className="tool-call-stack">
+                          <ToolCallCard toolCall={part.toolCall} />
+                        </div>
+                      ),
+                    )
+                  ) : row.text ? (
+                    <MarkdownMessage text={row.text} />
+                  ) : null}
                   {row.isLoading ? (
                     <span className="typing-indicator" aria-label="Waiting for assistant response">
                       <span />
@@ -1824,24 +1875,9 @@ function App() {
                       <span />
                     </span>
                   ) : null}
-                  {row.toolCalls?.length ? (
+                  {!row.parts?.length && row.toolCalls?.length ? (
                     <div className="tool-call-stack">
-                      {row.toolCalls.map((toolCall) => (
-                        <details key={toolCall.id} className="tool-call-card">
-                          <summary>
-                            <span>{toolCall.name}</span>
-                            {toolCall.logId ? <em>{toolCall.logId}</em> : null}
-                          </summary>
-                          <div className="tool-call-detail">
-                            <span>Input</span>
-                            <pre>{toolCall.input}</pre>
-                          </div>
-                          <div className="tool-call-detail">
-                            <span>Output</span>
-                            <pre>{toolCall.output}</pre>
-                          </div>
-                        </details>
-                      ))}
+                      {row.toolCalls.map((toolCall) => <ToolCallCard key={toolCall.id} toolCall={toolCall} />)}
                     </div>
                   ) : null}
                   {row.id === latestStreamingAssistantRowId ? (
@@ -2243,6 +2279,25 @@ function PromptQueueCard({
 
 function MarkdownMessage({ text }: { text: string }) {
   return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
+}
+
+function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
+  return (
+    <details className="tool-call-card">
+      <summary>
+        <span>{toolCall.name}</span>
+        {toolCall.logId ? <em>{toolCall.logId}</em> : null}
+      </summary>
+      <div className="tool-call-detail">
+        <span>Input</span>
+        <pre>{toolCall.input}</pre>
+      </div>
+      <div className="tool-call-detail">
+        <span>Output</span>
+        <pre>{toolCall.output}</pre>
+      </div>
+    </details>
+  );
 }
 
 function renderMarkdownBlocks(text: string): ReactNode[] {

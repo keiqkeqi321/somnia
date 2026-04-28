@@ -2,6 +2,7 @@ import type {
   AgentSession,
   ConversationPendingTurn,
   ConversationRow,
+  ConversationRowPart,
   ConversationRuntimeItem,
   ConversationToolCall,
   SessionMessage,
@@ -78,12 +79,14 @@ export function buildConversationRows(
     }
     const text = extractTextContent(message.content).trim();
     if (message.role === "assistant") {
-      const toolCalls = buildToolCalls(message.content, session.messages[index + 1]?.content);
+      const rowId = `${session.id}-assistant-${index}`;
+      const parts = buildAssistantParts(rowId, message.content, session.messages[index + 1]?.content);
+      const toolCalls = parts.flatMap((part) => (part.type === "tool_call" ? [part.toolCall] : []));
       if (toolCalls.length > 0 && session.messages[index + 1]?.role === "user" && hasToolResults(session.messages[index + 1]?.content)) {
         index += 1;
       }
-      if (text || toolCalls.length > 0) {
-        appendAssistantRow(rows, { id: `${session.id}-assistant-${index}`, role: "assistant", text, toolCalls });
+      if (parts.length > 0) {
+        appendAssistantRow(rows, { id: rowId, role: "assistant", text, parts, toolCalls });
       }
       index += 1;
       continue;
@@ -126,6 +129,17 @@ function appendPendingTurn(rows: ConversationRow[], pendingTurn: ConversationPen
 
 function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationRuntimeItem[]) {
   for (const item of runtimeItems) {
+    if (item.type === "user_text") {
+      if (!item.text.trim()) {
+        continue;
+      }
+      rows.push({
+        id: item.id,
+        role: "user",
+        text: item.text,
+      });
+      continue;
+    }
     if (item.type === "assistant_text") {
       if (!item.text.trim()) {
         continue;
@@ -134,6 +148,7 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
         id: item.id,
         role: "assistant",
         text: item.text,
+        parts: [{ id: `${item.id}-text`, type: "text", text: item.text }],
         isStreaming: true,
       });
       continue;
@@ -142,6 +157,7 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
       id: item.id,
       role: "assistant",
       text: "",
+      parts: [{ id: item.toolCall.id, type: "tool_call", toolCall: item.toolCall }],
       toolCalls: [item.toolCall],
       isStreaming: item.toolCall.status === "running",
     });
@@ -157,10 +173,25 @@ function appendAssistantRow(rows: ConversationRow[], row: ConversationRow) {
   rows[rows.length - 1] = {
     ...last,
     text: mergeAssistantText(last.text, row.text),
+    parts: [...rowParts(last), ...rowParts(row)],
     toolCalls: [...(last.toolCalls ?? []), ...(row.toolCalls ?? [])],
     isStreaming: Boolean(last.isStreaming || row.isStreaming),
     isLoading: Boolean(last.isLoading || row.isLoading),
   };
+}
+
+function rowParts(row: ConversationRow): ConversationRowPart[] {
+  if (row.parts) {
+    return row.parts;
+  }
+  const parts: ConversationRowPart[] = [];
+  if (row.text.trim()) {
+    parts.push({ id: `${row.id}-text`, type: "text", text: row.text });
+  }
+  for (const toolCall of row.toolCalls ?? []) {
+    parts.push({ id: toolCall.id, type: "tool_call", toolCall });
+  }
+  return parts;
 }
 
 function mergeAssistantText(left: string, right: string): string {
@@ -177,27 +208,62 @@ function hasToolResults(content: unknown): boolean {
   return Array.isArray(content) && content.some((item) => isRecord(item) && item.type === "tool_result");
 }
 
-function buildToolCalls(assistantContent: unknown, nextUserContent: unknown): ConversationToolCall[] {
+function buildAssistantParts(rowId: string, assistantContent: unknown, nextUserContent: unknown): ConversationRowPart[] {
+  if (typeof assistantContent === "string") {
+    const text = assistantContent.trim();
+    return text ? [{ id: `${rowId}-text-1`, type: "text", text }] : [];
+  }
   if (!Array.isArray(assistantContent)) {
     return [];
   }
   const results = toolResultMap(nextUserContent);
-  const calls: ConversationToolCall[] = [];
+  const parts: ConversationRowPart[] = [];
+  let textCount = 0;
+  let toolCount = 0;
   for (const item of assistantContent) {
-    if (!isRecord(item) || item.type !== "tool_call") {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) {
+        textCount += 1;
+        parts.push({ id: `${rowId}-text-${textCount}`, type: "text", text });
+      }
       continue;
     }
+    if (!isRecord(item)) {
+      continue;
+    }
+    const text = assistantPartText(item).trim();
+    if (text) {
+      textCount += 1;
+      parts.push({ id: `${rowId}-text-${textCount}`, type: "text", text });
+      continue;
+    }
+    if (item.type !== "tool_call") {
+      continue;
+    }
+    toolCount += 1;
     const id = String(item.id ?? "").trim();
     const result = id ? results.get(id) : undefined;
-    calls.push({
-      id: id || `tool-${calls.length + 1}`,
+    const toolCall = {
+      id: id || `tool-${toolCount}`,
       name: String(item.name ?? "tool").trim() || "tool",
       input: stringifyToolValue(item.input ?? {}),
       output: stringifyToolValue(toolResultOutput(result)),
       logId: isRecord(result) && typeof result.log_id === "string" ? result.log_id : null,
-    });
+    };
+    parts.push({ id: `${rowId}-${toolCall.id || `tool-${toolCount}`}`, type: "tool_call", toolCall });
   }
-  return calls;
+  return parts;
+}
+
+function assistantPartText(item: Record<string, unknown>): string {
+  if (item.type === "text" && typeof item.text === "string") {
+    return item.text;
+  }
+  if (typeof item.content === "string") {
+    return item.content;
+  }
+  return "";
 }
 
 function toolResultMap(content: unknown): Map<string, Record<string, unknown>> {

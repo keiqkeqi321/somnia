@@ -128,10 +128,28 @@ export interface ConversationRow {
   isStreaming?: boolean;
   isLoading?: boolean;
   isPending?: boolean;
+  parts?: ConversationRowPart[];
   toolCalls?: ConversationToolCall[];
 }
 
+export type ConversationRowPart =
+  | {
+      id: string;
+      type: "text";
+      text: string;
+    }
+  | {
+      id: string;
+      type: "tool_call";
+      toolCall: ConversationToolCall;
+    };
+
 export type ConversationRuntimeItem =
+  | {
+      id: string;
+      type: "user_text";
+      text: string;
+    }
   | {
       id: string;
       type: "assistant_text";
