@@ -113,3 +113,12 @@ class TranscriptStore:
                     path.unlink()
                     deleted += 1
         return deleted
+
+    def delete_session_artifacts(self, session_id: str) -> int:
+        deleted = 0
+        for path in self.root.glob(f"{session_id}*"):
+            if not path.is_file():
+                continue
+            path.unlink(missing_ok=True)
+            deleted += 1
+        return deleted

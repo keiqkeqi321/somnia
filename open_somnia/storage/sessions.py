@@ -77,3 +77,15 @@ class SessionStore:
             sessions.append(json.loads(path.read_text(encoding="utf-8")))
         sessions.sort(key=lambda item: (float(item.get("updated_at") or 0), float(item.get("created_at") or 0)), reverse=True)
         return sessions
+
+    def delete(self, session_id: str) -> bool:
+        path = self._path(session_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        index = read_json(self.index_path, {"latest": None, "items": []})
+        items = [item for item in index.get("items", []) if item != session_id]
+        index["items"] = items
+        index["latest"] = items[-1] if items else None
+        write_json(self.index_path, index)
+        return True

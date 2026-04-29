@@ -281,6 +281,19 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         return self._serialize_session(session)
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        active_turn = next(
+            (turn for turn in self._active_turns.values() if getattr(turn.session, "id", None) == session_id and not turn.done_event.is_set()),
+            None,
+        )
+        if active_turn is not None:
+            raise SidecarAPIError(HTTPStatus.CONFLICT, f"Session '{session_id}' has an active turn and cannot be deleted.")
+        deleted = self.service.delete_session(session_id)
+        if not deleted:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.")
+        self.broadcast_event(make_sidecar_event("session_deleted", payload={"session_id": session_id}, session_id=session_id))
+        return {"session_id": session_id, "deleted": True}
+
     def _serialize_session(self, session: Any) -> dict[str, Any]:
         payload = serialize_session(session)
         usage = self._context_usage_payload(session)
@@ -539,6 +552,14 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             self._send_json(status_code, payload)
         except SidecarAPIError as exc:
             self._send_json(exc.status_code, {"error": exc.message})
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            payload, status_code = self._route_delete(parsed)
+            self._send_json(status_code, payload)
+        except SidecarAPIError as exc:
+            self._send_json(exc.status_code, {"error": exc.message})
         except Exception as exc:
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -658,6 +679,12 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             )
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
 
+    def _route_delete(self, parsed) -> tuple[dict[str, Any], int]:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) == 2 and path_parts[0] == "sessions":
+            return self.sidecar.delete_session(path_parts[1]), HTTPStatus.OK
+        raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
+
     def _read_json_body(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0") or 0)
         if content_length <= 0:
@@ -687,7 +714,7 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 
     def _handle_websocket(self) -> None:
         upgrade = str(self.headers.get("Upgrade", "")).strip().lower()

@@ -29,6 +29,7 @@ import {
   sortSessions,
   stringifyToolValue,
 } from "./lib/messages";
+import SettingsView, { type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
@@ -51,6 +52,7 @@ const STORAGE_KEY = "somnia.desktop.sidecar-url";
 const PROJECTS_STORAGE_KEY = "somnia.desktop.project-paths";
 const PROMPT_HISTORY_STORAGE_KEY = "somnia.desktop.prompt-history";
 const LAYOUT_STORAGE_KEY = "somnia.desktop.layout";
+const ARCHIVED_SESSIONS_STORAGE_KEY = "somnia.desktop.archived-sessions";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
 const SIDEBAR_MIN_WIDTH = 210;
@@ -89,7 +91,6 @@ const EXECUTION_MODE_OPTIONS = [
   { key: "accept_edits", title: "⏵⏵ accept edits on", description: "Allow file edits and task updates." },
   { key: "yolo", title: "! Yolo", description: "Full autonomy for this workspace." },
 ] as const;
-
 type ReasoningLevelOption = (typeof REASONING_LEVEL_OPTIONS)[number];
 type ExecutionModeOption = (typeof EXECUTION_MODE_OPTIONS)[number]["key"];
 type PendingImage = {
@@ -133,6 +134,7 @@ type LayoutDragState = {
   startSidebarWidth: number;
   startContextWidth: number;
 };
+type ArchivedSessionsState = Record<string, string[]>;
 type ActiveProjectTurn = {
   sessionId: string;
   turnId: string | null;
@@ -179,12 +181,17 @@ function App() {
   const [sidebarSection, setSidebarSection] = useState<"sessions">("sessions");
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
+  const [sessionMenuOpenKey, setSessionMenuOpenKey] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("general");
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [todoExpanded, setTodoExpanded] = useState(false);
   const [layout, setLayout] = useState<LayoutState>(() => readStoredLayout());
   const [layoutDragging, setLayoutDragging] = useState<LayoutDragState | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
+  const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
+  const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
@@ -200,6 +207,7 @@ function App() {
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
+  const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -292,6 +300,31 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [projectMenuOpenKey]);
+
+  useEffect(() => {
+    if (!sessionMenuOpenKey) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!sessionMenuRef.current?.contains(event.target as Node)) {
+        setSessionMenuOpenKey(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setSessionMenuOpenKey(null);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [sessionMenuOpenKey]);
 
   useLayoutEffect(() => {
     resizeComposerTextarea();
@@ -474,8 +507,9 @@ function App() {
     setSelectedReasoningLevel(normalizeReasoningLevel(nextProject.status.reasoning_level));
     await refreshModels(nextProject.status.provider, client, nextProject.status.model);
 
+    const visibleSessions = visibleSessionsForProject(projectPath, nextProject.sessions, archivedSessions);
     const nextSessionId =
-      nextProject.sessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? nextProject.sessions[0]?.id ?? null;
+      visibleSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? visibleSessions[0]?.id ?? null;
     if (nextSessionId) {
       await selectSession(nextSessionId, client, nextProject.sessions, projectPath);
     } else {
@@ -527,6 +561,7 @@ function App() {
 
       const sortedSessions = sortSessions(sessionList);
       const projectPath = runtimeStatus.workspace_root;
+      const visibleSessions = visibleSessionsForProject(projectPath, sortedSessions, archivedSessions);
       const project: ProjectState = {
         path: projectPath,
         label: getPathLeafName(projectPath),
@@ -545,7 +580,7 @@ function App() {
       setSelectedProjectPath(projectPath);
       setSessions(sortedSessions);
       const nextSessionId =
-        sortedSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? sortedSessions[0]?.id ?? null;
+        visibleSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? visibleSessions[0]?.id ?? null;
       if (nextSessionId) {
         await selectSession(nextSessionId, nextClient, sortedSessions, projectPath);
       } else {
@@ -897,6 +932,13 @@ function App() {
       }
       return;
     }
+    if (event.type === "session_deleted") {
+      const sessionId = typeof event.payload.session_id === "string" ? event.payload.session_id : event.session_id;
+      if (sessionId) {
+        removeProjectSession(projectPath, sessionId);
+      }
+      return;
+    }
     if (event.type === "todo_updated") {
       const items = Array.isArray(event.payload.items) ? event.payload.items : null;
       const session = currentSessionRef.current;
@@ -1097,6 +1139,34 @@ function App() {
         return { ...project, sessions: sortSessions([session, ...others]) };
       }),
     );
+  }
+
+  function removeProjectSession(projectPath: string | null, sessionId: string) {
+    setSessions((previous) => previous.filter((session) => session.id !== sessionId));
+    if (projectPath) {
+      setProjects((previous) =>
+        previous.map((project) =>
+          project.path === projectPath ? { ...project, sessions: project.sessions.filter((session) => session.id !== sessionId) } : project,
+        ),
+      );
+      setArchivedSessions((previous) => {
+        const current = previous[projectPath] ?? [];
+        if (!current.includes(sessionId)) {
+          return previous;
+        }
+        const next = {
+          ...previous,
+          [projectPath]: current.filter((id) => id !== sessionId),
+        };
+        persistArchivedSessions(next);
+        return next;
+      });
+    }
+    if (selectedSessionIdRef.current === sessionId) {
+      setSelectedSessionId(null);
+      setCurrentSession(null);
+      setActiveTurnId(null);
+    }
   }
 
   function updateActiveProject(patch: Partial<Pick<ProjectState, "status" | "pendingInteractions" | "toolLogs" | "sessions">>) {
@@ -1586,8 +1656,34 @@ function App() {
   }
 
   function handleOpenSettings() {
+    setSettingsOpen(true);
+    setSettingsSection("general");
+    setSelectedArchivedSessionKeys([]);
+  }
+
+  function handleCloseSettings() {
+    setSettingsOpen(false);
+    setSelectedArchivedSessionKeys([]);
+  }
+
+  function handleOpenProviderProfilesFromSettings() {
+    setSettingsOpen(false);
     applyCommandSuggestion("/providers");
-    setBannerMessage("Settings command ready. Press Enter to open provider settings.");
+  }
+
+  function handleOpenHooksFromSettings() {
+    setSettingsOpen(false);
+    applyCommandSuggestion("/hooks");
+  }
+
+  function handleOpenModelPickerFromSettings() {
+    setSettingsOpen(false);
+    setModelPickerOpen(true);
+  }
+
+  function handleOpenModePickerFromSettings() {
+    setSettingsOpen(false);
+    setModePickerOpen(true);
   }
 
   async function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLElement>) {
@@ -1673,6 +1769,72 @@ function App() {
     setBusyAction("load-tool-log");
     try {
       setActiveToolLog(await client.getToolLog(logId));
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleArchiveSession(projectPath: string, sessionId: string) {
+    const nextArchivedSessions = appendArchivedSession(archivedSessions, projectPath, sessionId);
+    setArchivedSessions(nextArchivedSessions);
+    persistArchivedSessions(nextArchivedSessions);
+    setSessionMenuOpenKey(null);
+
+    if (selectedProjectPathRef.current === projectPath && selectedSessionIdRef.current === sessionId) {
+      const project = projects.find((item) => item.path === projectPath);
+      const remainingVisibleSessions = visibleSessionsForProject(
+        projectPath,
+        (project?.sessions ?? []).filter((session) => session.id !== sessionId),
+        nextArchivedSessions,
+      );
+      const nextSession = remainingVisibleSessions[0] ?? null;
+      if (nextSession) {
+        await selectSession(nextSession.id, projectClientsRef.current[projectPath], project?.sessions, projectPath);
+      } else {
+        setSelectedSessionId(null);
+        setCurrentSession(null);
+        setActiveTurnId(null);
+      }
+    }
+
+    setBannerMessage(`Archived session ${sessionId}.`);
+  }
+
+  function handleRestoreArchivedSessions(entries: ArchivedSessionEntry[]) {
+    if (entries.length === 0) {
+      return;
+    }
+    const nextArchivedSessions = restoreArchivedSessions(archivedSessions, entries);
+    setArchivedSessions(nextArchivedSessions);
+    persistArchivedSessions(nextArchivedSessions);
+    setSelectedArchivedSessionKeys((previous) => previous.filter((key) => !entries.some((entry) => entry.key === key)));
+    setBannerMessage(`Restored ${entries.length} archived session${entries.length === 1 ? "" : "s"}.`);
+  }
+
+  async function handleDeleteArchivedSessions(entries: ArchivedSessionEntry[]) {
+    if (entries.length === 0) {
+      return;
+    }
+    const confirmed =
+      typeof window === "undefined" ||
+      window.confirm(`Permanently delete ${entries.length} archived session${entries.length === 1 ? "" : "s"}? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+    setBusyAction("delete-archived-sessions");
+    try {
+      for (const entry of entries) {
+        const client = projectClientsRef.current[entry.projectPath];
+        if (!client) {
+          throw new Error(`Project client unavailable for ${entry.projectLabel}.`);
+        }
+        await client.deleteSession(entry.session.id);
+        removeProjectSession(entry.projectPath, entry.session.id);
+      }
+      setSelectedArchivedSessionKeys((previous) => previous.filter((key) => !entries.some((entry) => entry.key === key)));
+      setBannerMessage(`Deleted ${entries.length} archived session${entries.length === 1 ? "" : "s"} permanently.`);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     } finally {
@@ -1788,11 +1950,15 @@ function App() {
   const todoSummary = currentSession ? buildTodoSummary(currentSession.todo_items) : null;
   const workspaceRootPath = status?.workspace_root ?? "";
   const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : "workspace";
+  const archivedSessionEntries = buildArchivedSessionEntries(projects, archivedSessions);
+  const archivedSessionSelection = archivedSessionEntries.filter((entry) => selectedArchivedSessionKeys.includes(entry.key));
+  const allArchivedSelected =
+    archivedSessionEntries.length > 0 && archivedSessionEntries.every((entry) => selectedArchivedSessionKeys.includes(entry.key));
   const sessionProjectGroups = projects.map((project) => ({
     key: project.path,
     label: project.label,
     path: project.path,
-    sessions: project.sessions,
+    sessions: visibleSessionsForProject(project.path, project.sessions, archivedSessions),
     pendingInteractions: project.path === selectedProjectPath ? pendingInteractions : project.pendingInteractions,
   }));
   const visibleProjectCount = sessionProjectGroups.length;
@@ -1849,6 +2015,43 @@ function App() {
       </header>
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
+      {settingsOpen ? (
+        <SettingsView
+          activeSection={settingsSection}
+          onSelectSection={setSettingsSection}
+          onClose={handleCloseSettings}
+          onOpenWorkspaceRoot={() => {
+            if (workspaceRootPath) {
+              void openWorkspaceRoot(workspaceRootPath);
+            }
+          }}
+          workspaceRootPath={workspaceRootPath}
+          providerLabel={activeProviderLabel}
+          modelLabel={activeModelLabel}
+          reasoningLabel={activeReasoningLabel}
+          executionModeLabel={activeExecutionModeLabel}
+          connectionState={connectionState}
+          archivedEntries={archivedSessionEntries}
+          archivedSelection={archivedSessionSelection}
+          selectedArchivedKeys={selectedArchivedSessionKeys}
+          allArchivedSelected={allArchivedSelected}
+          busy={busyAction !== null}
+          onToggleArchivedSelection={(entryKey) =>
+            setSelectedArchivedSessionKeys((previous) =>
+              previous.includes(entryKey) ? previous.filter((key) => key !== entryKey) : [...previous, entryKey],
+            )
+          }
+          onToggleSelectAllArchived={() =>
+            setSelectedArchivedSessionKeys(allArchivedSelected ? [] : archivedSessionEntries.map((entry) => entry.key))
+          }
+          onRestoreArchived={handleRestoreArchivedSessions}
+          onDeleteArchived={handleDeleteArchivedSessions}
+          onOpenProviders={handleOpenProviderProfilesFromSettings}
+          onOpenHooks={handleOpenHooksFromSettings}
+          onOpenModelPicker={handleOpenModelPickerFromSettings}
+          onOpenModePicker={handleOpenModePickerFromSettings}
+        />
+      ) : null}
       <main
         ref={workspaceRef}
         className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"} ${layoutDragging ? "resizing" : ""}`}
@@ -1947,34 +2150,63 @@ function App() {
                             const isSelected = selectedProjectPath === group.path && selectedSessionId === session.id;
                             const isAnswering = (activeProjectTurns[group.path] ?? []).some((turn) => turn.sessionId === session.id);
                             const isWaitingForDecision = group.pendingInteractions.some((interaction) => interaction.session_id === session.id);
+                            const sessionMenuKey = `${group.path}::${session.id}`;
                             return (
-                              <button
+                              <div
                                 key={session.id}
                                 className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""} ${isWaitingForDecision ? "waiting-decision" : ""}`}
-                                onClick={() => {
-                                  setContextPanelOpen(true);
-                                  void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
-                                    selectSession(session.id, projectClientsRef.current[group.path], group.sessions, group.path),
-                                  );
-                                }}
                               >
-                                <div className="session-card-head">
-                                  <strong>{session.id}</strong>
-                                  <span className="session-card-status">
-                                    <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
-                                    {isWaitingForDecision ? (
-                                      <span className="session-decision-indicator" aria-label="Waiting for your decision" />
-                                    ) : isAnswering ? (
-                                      <span className="session-answering-indicator" aria-label="Agent is responding">
-                                        <span aria-hidden="true" />
-                                        <span aria-hidden="true" />
-                                        <span aria-hidden="true" />
-                                      </span>
-                                    ) : null}
-                                  </span>
+                                <button
+                                  className="session-card-button"
+                                  onClick={() => {
+                                    setContextPanelOpen(true);
+                                    void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
+                                      selectSession(session.id, projectClientsRef.current[group.path], undefined, group.path),
+                                    );
+                                  }}
+                                >
+                                  <div className="session-card-head">
+                                    <strong>{session.id}</strong>
+                                    <span className="session-card-status">
+                                      <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
+                                      {isWaitingForDecision ? (
+                                        <span className="session-decision-indicator" aria-label="Waiting for your decision" />
+                                      ) : isAnswering ? (
+                                        <span className="session-answering-indicator" aria-label="Agent is responding">
+                                          <span aria-hidden="true" />
+                                          <span aria-hidden="true" />
+                                          <span aria-hidden="true" />
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </div>
+                                  <p>{buildSessionPreview(session)}</p>
+                                </button>
+                                <div className="session-menu" ref={sessionMenuOpenKey === sessionMenuKey ? sessionMenuRef : null}>
+                                  <button
+                                    className="session-menu-trigger"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSessionMenuOpenKey((current) => (current === sessionMenuKey ? null : sessionMenuKey));
+                                    }}
+                                    aria-label={`Session options for ${session.id}`}
+                                    title="Session options"
+                                  >
+                                    ⋯
+                                  </button>
+                                  {sessionMenuOpenKey === sessionMenuKey ? (
+                                    <div className="session-menu-panel">
+                                      <button
+                                        className="session-menu-item"
+                                        onClick={() => void handleArchiveSession(group.path, session.id)}
+                                        disabled={busyAction !== null}
+                                      >
+                                        Archive
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 </div>
-                                <p>{buildSessionPreview(session)}</p>
-                              </button>
+                              </div>
                             );
                           })}
                         </div>
@@ -2910,6 +3142,107 @@ function todoStatusMarker(status: string): string {
     return "✅";
   }
   return "☐";
+}
+
+function visibleSessionsForProject(
+  projectPath: string,
+  sessions: AgentSession[],
+  archivedSessions: ArchivedSessionsState,
+): AgentSession[] {
+  const archivedIds = new Set(archivedSessions[projectPath] ?? []);
+  return sessions.filter((session) => !archivedIds.has(session.id));
+}
+
+function appendArchivedSession(
+  archivedSessions: ArchivedSessionsState,
+  projectPath: string,
+  sessionId: string,
+): ArchivedSessionsState {
+  const current = archivedSessions[projectPath] ?? [];
+  if (current.includes(sessionId)) {
+    return archivedSessions;
+  }
+  return {
+    ...archivedSessions,
+    [projectPath]: [...current, sessionId],
+  };
+}
+
+function restoreArchivedSessions(
+  archivedSessions: ArchivedSessionsState,
+  entries: ArchivedSessionEntry[],
+): ArchivedSessionsState {
+  const grouped = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const current = grouped.get(entry.projectPath) ?? new Set<string>();
+    current.add(entry.session.id);
+    grouped.set(entry.projectPath, current);
+  }
+  const next: ArchivedSessionsState = { ...archivedSessions };
+  for (const [projectPath, sessionIds] of grouped.entries()) {
+    const remaining = (next[projectPath] ?? []).filter((sessionId) => !sessionIds.has(sessionId));
+    if (remaining.length > 0) {
+      next[projectPath] = remaining;
+    } else {
+      delete next[projectPath];
+    }
+  }
+  return next;
+}
+
+function buildArchivedSessionEntries(
+  projects: ProjectState[],
+  archivedSessions: ArchivedSessionsState,
+): ArchivedSessionEntry[] {
+  const entries: ArchivedSessionEntry[] = [];
+  for (const project of projects) {
+    const archivedIds = new Set(archivedSessions[project.path] ?? []);
+    for (const session of project.sessions) {
+      if (!archivedIds.has(session.id)) {
+        continue;
+      }
+      entries.push({
+        key: `${project.path}::${session.id}`,
+        projectPath: project.path,
+        projectLabel: project.label,
+        session,
+        preview: buildSessionPreview(session),
+        updatedAt: session.updated_at ?? session.created_at ?? null,
+      });
+    }
+  }
+  entries.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+  return entries;
+}
+
+function readStoredArchivedSessions(): ArchivedSessionsState {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ARCHIVED_SESSIONS_STORAGE_KEY) ?? "{}") as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    const entries = Object.entries(value as Record<string, unknown>);
+    return Object.fromEntries(
+      entries.map(([projectPath, sessionIds]) => [
+        projectPath,
+        Array.isArray(sessionIds)
+          ? sessionIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          : [],
+      ]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistArchivedSessions(archivedSessions: ArchivedSessionsState) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(ARCHIVED_SESSIONS_STORAGE_KEY, JSON.stringify(archivedSessions));
 }
 
 function readStoredProjectPaths(): string[] {

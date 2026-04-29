@@ -87,6 +87,14 @@ export class SidecarClient {
     return payload.session;
   }
 
+  async deleteSession(sessionId: string): Promise<{ session_id: string; deleted: boolean }> {
+    return parseResponse<{ session_id: string; deleted: boolean }>(
+      await fetch(`${this.baseUrl}/sessions/${sessionId}`, {
+        method: "DELETE",
+      }),
+    );
+  }
+
   async startTurn(sessionId: string, userInput: string | Record<string, unknown>): Promise<TurnStartResponse> {
     return parseResponse<TurnStartResponse>(
       await fetch(`${this.baseUrl}/turns`, {

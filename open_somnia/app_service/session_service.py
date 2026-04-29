@@ -16,3 +16,6 @@ class SessionService:
 
     def load_session(self, session_id: str) -> AgentSession:
         return self.runtime.load_session(session_id)
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.runtime.delete_session(session_id)

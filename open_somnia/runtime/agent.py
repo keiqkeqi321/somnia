@@ -2117,6 +2117,9 @@ class OpenAgentRuntime:
     def list_sessions(self) -> list[AgentSession]:
         return self.session_manager.list_all()
 
+    def delete_session(self, session_id: str) -> bool:
+        return self.session_manager.delete(session_id)
+
     def parse_symbol_output(self, output: object) -> list[dict[str, Any]]:
         if not isinstance(output, str):
             return []

@@ -89,6 +89,11 @@ class SessionManager:
         self.session_store.save(session.to_payload())
         self.transcript_store.save_snapshot(session.id, session.messages)
 
+    def delete(self, session_id: str) -> bool:
+        deleted = self.session_store.delete(session_id)
+        self.transcript_store.delete_session_artifacts(session_id)
+        return deleted
+
     def detect_external_modifications(
         self,
         session: AgentSession,
