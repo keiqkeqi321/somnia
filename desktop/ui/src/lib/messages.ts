@@ -8,6 +8,17 @@ import type {
   SessionMessage,
 } from "../types";
 
+const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+const SHORT_DATE_WITH_YEAR_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -342,7 +353,12 @@ export function formatRelativeTime(timestamp: number | null | undefined): string
   if (delta < 86_400) {
     return `${Math.round(delta / 3600)}h`;
   }
-  return `${Math.round(delta / 86_400)}d`;
+  const date = new Date(timestamp * 1000);
+  const now = new Date();
+  if (date.getFullYear() === now.getFullYear()) {
+    return SHORT_DATE_FORMATTER.format(date);
+  }
+  return SHORT_DATE_WITH_YEAR_FORMATTER.format(date);
 }
 
 export function formatTodoLabel(item: { content?: string; status?: string; activeForm?: string }): string {
