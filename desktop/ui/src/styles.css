@@ -863,7 +863,7 @@ button {
 
 .session-card-button {
   width: 100%;
-  padding: 7px 36px 7px 9px;
+  padding: 7px 40px 7px 9px;
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -939,10 +939,20 @@ button {
   font-size: 0.76rem;
 }
 
-.session-menu {
+.session-card-side {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.session-menu {
+  position: relative;
 }
 
 .session-menu-trigger {
@@ -1003,15 +1013,9 @@ button {
   line-height: 1.15;
 }
 
-.session-card-status {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-}
-
-.session-card-status > span:first-child {
+.session-card-time {
+  display: block;
+  margin-top: 4px;
   color: var(--muted);
   font-size: 0.64rem;
   line-height: 1.15;

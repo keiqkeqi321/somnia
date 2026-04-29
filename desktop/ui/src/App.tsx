@@ -2167,44 +2167,45 @@ function App() {
                                 >
                                   <div className="session-card-head">
                                     <strong>{session.id}</strong>
-                                    <span className="session-card-status">
-                                      <span>{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
-                                      {isWaitingForDecision ? (
-                                        <span className="session-decision-indicator" aria-label="Waiting for your decision" />
-                                      ) : isAnswering ? (
-                                        <span className="session-answering-indicator" aria-label="Agent is responding">
-                                          <span aria-hidden="true" />
-                                          <span aria-hidden="true" />
-                                          <span aria-hidden="true" />
-                                        </span>
-                                      ) : null}
-                                    </span>
                                   </div>
                                   <p>{buildSessionPreview(session)}</p>
+                                  <span className="session-card-time">{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
                                 </button>
-                                <div className="session-menu" ref={sessionMenuOpenKey === sessionMenuKey ? sessionMenuRef : null}>
-                                  <button
-                                    className="session-menu-trigger"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSessionMenuOpenKey((current) => (current === sessionMenuKey ? null : sessionMenuKey));
-                                    }}
-                                    aria-label={`Session options for ${session.id}`}
-                                    title="Session options"
-                                  >
-                                    ⋯
-                                  </button>
-                                  {sessionMenuOpenKey === sessionMenuKey ? (
-                                    <div className="session-menu-panel">
+                                <div className="session-card-side">
+                                  {isWaitingForDecision ? (
+                                    <span className="session-decision-indicator" aria-label="Waiting for your decision" />
+                                  ) : isAnswering ? (
+                                    <span className="session-answering-indicator" aria-label="Agent is responding">
+                                      <span aria-hidden="true" />
+                                      <span aria-hidden="true" />
+                                      <span aria-hidden="true" />
+                                    </span>
+                                  ) : (
+                                    <div className="session-menu" ref={sessionMenuOpenKey === sessionMenuKey ? sessionMenuRef : null}>
                                       <button
-                                        className="session-menu-item"
-                                        onClick={() => void handleArchiveSession(group.path, session.id)}
-                                        disabled={busyAction !== null}
+                                        className="session-menu-trigger"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setSessionMenuOpenKey((current) => (current === sessionMenuKey ? null : sessionMenuKey));
+                                        }}
+                                        aria-label={`Session options for ${session.id}`}
+                                        title="Session options"
                                       >
-                                        Archive
+                                        ⋯
                                       </button>
+                                      {sessionMenuOpenKey === sessionMenuKey ? (
+                                        <div className="session-menu-panel">
+                                          <button
+                                            className="session-menu-item"
+                                            onClick={() => void handleArchiveSession(group.path, session.id)}
+                                            disabled={busyAction !== null}
+                                          >
+                                            Archive
+                                          </button>
+                                        </div>
+                                      ) : null}
                                     </div>
-                                  ) : null}
+                                  )}
                                 </div>
                               </div>
                             );
