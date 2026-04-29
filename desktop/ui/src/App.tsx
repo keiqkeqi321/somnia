@@ -2558,6 +2558,44 @@ function renderMarkdownBlocks(text: string): ReactNode[] {
       continue;
     }
 
+    if (isMarkdownTableHeader(line, lines[index + 1])) {
+      const headerCells = splitMarkdownTableRow(line);
+      const alignments = parseMarkdownTableAlignments(lines[index + 1]);
+      const bodyRows: string[][] = [];
+      index += 2;
+      while (index < lines.length && isMarkdownTableRow(lines[index])) {
+        bodyRows.push(splitMarkdownTableRow(lines[index]));
+        index += 1;
+      }
+      blocks.push(
+        <div key={`block-${key++}`} className="markdown-table-wrap">
+          <table className="markdown-table">
+            <thead>
+              <tr>
+                {headerCells.map((cell, cellIndex) => (
+                  <th key={`head-${cellIndex}`} style={tableCellStyle(alignments[cellIndex])}>
+                    {renderInlineMarkdown(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, rowIndex) => (
+                <tr key={`row-${rowIndex}`}>
+                  {headerCells.map((_, cellIndex) => (
+                    <td key={`cell-${rowIndex}-${cellIndex}`} style={tableCellStyle(alignments[cellIndex])}>
+                      {renderInlineMarkdown(row[cellIndex] ?? "")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
     const unorderedMatch = line.match(/^(\s*)[-*+]\s+(.+)$/);
     if (unorderedMatch) {
       const items: ReactNode[] = [];
@@ -2646,6 +2684,79 @@ function renderInlineMarkdown(text: string): ReactNode[] {
     nodes.push(text.slice(cursor));
   }
   return nodes;
+}
+
+type MarkdownTableAlignment = "left" | "center" | "right" | null;
+
+function isMarkdownTableHeader(line: string, nextLine: string | undefined): boolean {
+  if (!nextLine || !isMarkdownTableRow(line)) {
+    return false;
+  }
+  const headerCells = splitMarkdownTableRow(line);
+  const dividerCells = splitMarkdownTableRow(nextLine);
+  if (headerCells.length < 2 || headerCells.length !== dividerCells.length) {
+    return false;
+  }
+  return dividerCells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || !trimmed.includes("|")) {
+    return false;
+  }
+  const cells = splitMarkdownTableRow(trimmed);
+  return cells.length >= 2 && cells.some((cell) => cell.trim().length > 0);
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index];
+    if (character === "\\" && index + 1 < trimmed.length) {
+      const nextCharacter = trimmed[index + 1];
+      if (nextCharacter === "|" || nextCharacter === "\\") {
+        current += nextCharacter;
+        index += 1;
+        continue;
+      }
+    }
+    if (character === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseMarkdownTableAlignments(line: string): MarkdownTableAlignment[] {
+  return splitMarkdownTableRow(line).map((cell) => {
+    const trimmed = cell.trim();
+    if (trimmed.startsWith(":") && trimmed.endsWith(":")) {
+      return "center";
+    }
+    if (trimmed.endsWith(":")) {
+      return "right";
+    }
+    if (trimmed.startsWith(":")) {
+      return "left";
+    }
+    return null;
+  });
+}
+
+function tableCellStyle(alignment: MarkdownTableAlignment): CSSProperties | undefined {
+  if (!alignment) {
+    return undefined;
+  }
+  return { textAlign: alignment };
 }
 
 function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {

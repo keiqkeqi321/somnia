@@ -1217,6 +1217,47 @@ button {
   border-top: 1px solid var(--line-strong);
 }
 
+.markdown-table-wrap {
+  margin: 0.9rem 0;
+  overflow-x: auto;
+}
+
+.markdown-table {
+  min-width: 100%;
+  border-collapse: collapse;
+  border: 1px solid rgba(135, 174, 224, 0.18);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(7, 10, 16, 0.42);
+}
+
+.markdown-table th,
+.markdown-table td {
+  padding: 0.62rem 0.78rem;
+  border-bottom: 1px solid rgba(135, 174, 224, 0.14);
+  vertical-align: top;
+}
+
+.markdown-table th {
+  background: rgba(169, 200, 255, 0.08);
+  color: #ffffff;
+  font-weight: 650;
+  text-align: left;
+}
+
+.markdown-table td {
+  color: #eef4ff;
+}
+
+.markdown-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-table th code,
+.markdown-table td code {
+  white-space: nowrap;
+}
+
 .bubble.user .markdown-content {
   color: #eef2f8;
 }
