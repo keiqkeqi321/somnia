@@ -98,6 +98,7 @@ type PendingImage = {
   mediaType: string;
   dataUrl: string;
 };
+type PreparedPromptPayload = string | Record<string, unknown>;
 type QueuedPrompt = {
   id: string;
   sessionId: string;
@@ -1245,7 +1246,7 @@ function App() {
       }));
       resetConversationRuntimeItems(projectPath, session.id);
     }
-    const userInput = buildPromptPayload(prompt, images);
+    const userInput = await buildPromptPayload(client, prompt, images);
     const response = await client.startTurn(session.id, userInput);
     if (key) {
       setPendingTurns((previous) => {
@@ -1297,7 +1298,7 @@ function App() {
     }
     updateQueuedPrompt(projectPath, prompt.sessionId, prompt.id, (current) => ({ ...current, injectionRequested: true }));
     try {
-      await client.queueLoopInjection(activeTurn.turnId, prompt.id, buildPromptPayload(prompt.prompt, prompt.images));
+      await client.queueLoopInjection(activeTurn.turnId, prompt.id, await buildPromptPayload(client, prompt.prompt, prompt.images));
       setBannerMessage("Queued prompt will be injected on the next agent loop.");
     } catch (error) {
       updateQueuedPrompt(projectPath, prompt.sessionId, prompt.id, (current) => ({ ...current, injectionRequested: false }));
@@ -2109,8 +2110,9 @@ function App() {
                     onClick={() => removePendingImage(image.id)}
                     title={`Remove ${image.name}`}
                   >
-                    <span>{image.name}</span>
-                    <strong>x</strong>
+                    <img className="pending-attachment-thumb" src={image.dataUrl} alt={image.name} />
+                    <span className="pending-attachment-name">{image.name}</span>
+                    <strong className="pending-attachment-remove">x</strong>
                   </button>
                 ))}
               </div>
@@ -2982,23 +2984,22 @@ function currentPathMention(value: string, cursor: number): { query: string; que
   };
 }
 
-function buildPromptPayload(prompt: string, images: PendingImage[]): string | Record<string, unknown> {
+async function buildPromptPayload(client: SidecarClient, prompt: string, images: PendingImage[]): Promise<PreparedPromptPayload> {
   if (images.length === 0) {
     return prompt;
   }
+  const stagedImages = await Promise.all(images.map((image) => client.stageInlineImage(image)));
   const content: Array<Record<string, unknown>> = [];
   const text = prompt.trim() || "Look at this image.";
   if (text) {
     content.push({ type: "text", text });
   }
-  for (const image of images) {
+  for (const image of stagedImages) {
     content.push({
-      type: "image_url",
-      image_url: {
-        url: image.dataUrl,
-      },
-      media_type: image.mediaType,
-      name: image.name,
+      type: "input_image",
+      path: image.path,
+      absolute_path: image.absolute_path,
+      media_type: image.media_type,
     });
   }
   return { role: "user", content };

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -37,6 +38,7 @@ from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
+from open_somnia.runtime.messages import parse_image_data_url
 
 IGNORED_PATH_COMPLETION_DIRS = {
     ".git",
@@ -44,6 +46,13 @@ IGNORED_PATH_COMPLETION_DIRS = {
     "__pycache__",
     ".venv",
     "node_modules",
+}
+CLIPBOARD_TEMP_DIRNAME = "temp"
+IMAGE_MEDIA_TYPE_SUFFIXES = {
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
 }
 
 
@@ -61,6 +70,13 @@ def _path_completion_score(item: dict[str, str], query: str) -> tuple[int, int, 
     basename_contains = 0 if query and query in basename else 1
     kind_rank = 0 if item["kind"] == "dir" else 1
     return (basename_starts, basename_contains, kind_rank, len(path), path)
+
+
+def _safe_image_stem(name: str) -> str:
+    raw_name = os.path.splitext(os.path.basename(str(name or "").strip()))[0]
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in raw_name)
+    normalized = cleaned.strip("-_")
+    return normalized or "clipboard-image"
 
 
 @dataclass(slots=True)
@@ -166,6 +182,34 @@ class SidecarServer:
         self._path_completion_cache = candidates
         self._path_completion_scanned_at = now
         return candidates
+
+    def save_inline_image(self, *, name: str, media_type: str, data_url: str) -> dict[str, str]:
+        parsed = parse_image_data_url(data_url)
+        if parsed is None:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "Inline image must be a supported image data URL.")
+        parsed_media_type, encoded = parsed
+        normalized_media_type = str(media_type or "").strip().lower() or parsed_media_type
+        if normalized_media_type != parsed_media_type:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "Inline image media type does not match the data URL.")
+        suffix = IMAGE_MEDIA_TYPE_SUFFIXES.get(parsed_media_type)
+        if not suffix:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, f"Unsupported inline image media type: {parsed_media_type}")
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "Inline image payload is not valid base64.") from exc
+
+        temp_dir = self.settings.storage.data_dir / CLIPBOARD_TEMP_DIRNAME
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{_safe_image_stem(name)}-{uuid.uuid4().hex[:10]}{suffix}"
+        image_path = temp_dir / filename
+        image_path.write_bytes(image_bytes)
+        relative_path = os.path.relpath(image_path, self.settings.workspace_root).replace(os.sep, "/")
+        return {
+            "path": relative_path,
+            "absolute_path": str(image_path),
+            "media_type": parsed_media_type,
+        }
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.httpd.serve_forever(poll_interval=poll_interval)
@@ -549,6 +593,18 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if "user_input" not in body:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "user_input is required.")
             return self.sidecar.start_turn(session_id, body["user_input"]), HTTPStatus.ACCEPTED
+        if path_parts == ["workspace", "images"]:
+            data_url = str(body.get("data_url", "")).strip()
+            if not data_url:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "data_url is required.")
+            return (
+                self.sidecar.save_inline_image(
+                    name=str(body.get("name", "")).strip(),
+                    media_type=str(body.get("media_type", "")).strip(),
+                    data_url=data_url,
+                ),
+                HTTPStatus.CREATED,
+            )
         if len(path_parts) == 3 and path_parts[0] == "turns" and path_parts[2] == "interrupt":
             return self.sidecar.interrupt_turn(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "turns" and path_parts[2] == "loop-injections":

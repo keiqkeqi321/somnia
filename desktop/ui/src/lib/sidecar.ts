@@ -138,6 +138,26 @@ export class SidecarClient {
     return payload.paths;
   }
 
+  async stageInlineImage(
+    image: {
+      name: string;
+      mediaType: string;
+      dataUrl: string;
+    },
+  ): Promise<{ path: string; absolute_path: string; media_type: string }> {
+    return parseResponse<{ path: string; absolute_path: string; media_type: string }>(
+      await fetch(`${this.baseUrl}/workspace/images`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: image.name,
+          media_type: image.mediaType,
+          data_url: image.dataUrl,
+        }),
+      }),
+    );
+  }
+
   async switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string }> {
     return parseResponse<{ message: string; provider: string; model: string }>(
       await fetch(`${this.baseUrl}/providers/switch`, {

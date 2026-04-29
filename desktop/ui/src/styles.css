@@ -1480,23 +1480,61 @@ button {
 }
 
 .pending-attachment {
-  max-width: 14rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 8px;
+  width: 5.625rem;
+  padding: 6px;
+  display: inline-grid;
+  grid-template-rows: 3.6rem auto;
+  gap: 6px;
   border: 1px solid rgba(143, 180, 255, 0.22);
-  border-radius: 999px;
+  border-radius: 10px;
   background: rgba(143, 180, 255, 0.1);
   color: #dce8ff;
+  text-align: left;
+  position: relative;
 }
 
-.pending-attachment span {
+.pending-attachment:hover {
+  border-color: rgba(143, 180, 255, 0.42);
+  background: rgba(143, 180, 255, 0.14);
+}
+
+.pending-attachment-thumb {
+  width: 100%;
+  height: 3.6rem;
+  display: block;
+  border-radius: 7px;
+  object-fit: cover;
+  background: rgba(8, 10, 14, 0.42);
+}
+
+.pending-attachment-name {
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.pending-attachment-remove {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(8, 10, 14, 0.72);
+  color: #f3f7ff;
   font-size: 0.76rem;
+  line-height: 1;
+}
+
+.pending-attachment:hover .pending-attachment-remove {
+  background: rgba(196, 43, 28, 0.88);
 }
 
 .pending-attachment strong {
