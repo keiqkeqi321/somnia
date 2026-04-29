@@ -6,15 +6,20 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 
 import {
   chooseProjectFolder,
+  closeMainWindow,
   ensureManagedSidecar,
+  minimizeMainWindow,
   openWorkspaceRoot,
+  startMainWindowDrag,
   stopManagedSidecar,
+  toggleMaximizeMainWindow,
 } from "./lib/desktop";
 import {
   buildConversationRows,
@@ -1579,6 +1584,47 @@ function App() {
     });
   }
 
+  function handleOpenSettings() {
+    applyCommandSuggestion("/providers");
+    setBannerMessage("Settings command ready. Press Enter to open provider settings.");
+  }
+
+  async function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || event.detail > 1 || (event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    try {
+      await startMainWindowDrag();
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
+  async function handleTitlebarDoubleClick(event: ReactMouseEvent<HTMLElement>) {
+    if ((event.target as HTMLElement).closest("button")) {
+      return;
+    }
+    try {
+      await toggleMaximizeMainWindow();
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
+  async function handleWindowControl(action: "minimize" | "toggle-maximize" | "close") {
+    try {
+      if (action === "minimize") {
+        await minimizeMainWindow();
+      } else if (action === "toggle-maximize") {
+        await toggleMaximizeMainWindow();
+      } else {
+        await closeMainWindow();
+      }
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
   function applyPathSuggestion(suggestion: WorkspacePathSuggestion) {
     const mention = currentPathMention(draft, composerCursor);
     if (!mention) {
@@ -1755,6 +1801,51 @@ function App() {
   } as CSSProperties;
   return (
     <div className="shell">
+      <header
+        className="app-titlebar"
+        data-tauri-drag-region
+        onPointerDown={(event) => void handleTitlebarPointerDown(event)}
+        onDoubleClick={(event) => void handleTitlebarDoubleClick(event)}
+      >
+        <div className="titlebar-brand" data-tauri-drag-region>
+          <span className="titlebar-mark" aria-hidden="true">
+            S
+          </span>
+          <span data-tauri-drag-region>Somnia Desktop</span>
+        </div>
+        <div className="titlebar-controls">
+          <button className="titlebar-button" type="button" onClick={handleOpenSettings} title="Settings" aria-label="Settings">
+            ⚙
+          </button>
+          <button
+            className="titlebar-button"
+            type="button"
+            onClick={() => void handleWindowControl("minimize")}
+            title="Minimize"
+            aria-label="Minimize"
+          >
+            -
+          </button>
+          <button
+            className="titlebar-button"
+            type="button"
+            onClick={() => void handleWindowControl("toggle-maximize")}
+            title="Maximize"
+            aria-label="Maximize"
+          >
+            □
+          </button>
+          <button
+            className="titlebar-button close"
+            type="button"
+            onClick={() => void handleWindowControl("close")}
+            title="Close"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+      </header>
       <div className="ambient ambient-left" />
       <div className="ambient ambient-right" />
       <main

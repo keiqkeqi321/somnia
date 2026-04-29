@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { ManagedSidecarConnection } from "../types";
 
@@ -44,10 +45,42 @@ async function openWorkspaceRoot(path: string): Promise<void> {
   await invoke("open_workspace_root", { path });
 }
 
+async function minimizeMainWindow(): Promise<void> {
+  if (!isTauriEnvironment()) {
+    return;
+  }
+  await getCurrentWindow().minimize();
+}
+
+async function toggleMaximizeMainWindow(): Promise<void> {
+  if (!isTauriEnvironment()) {
+    return;
+  }
+  await getCurrentWindow().toggleMaximize();
+}
+
+async function closeMainWindow(): Promise<void> {
+  if (!isTauriEnvironment()) {
+    return;
+  }
+  await getCurrentWindow().close();
+}
+
+async function startMainWindowDrag(): Promise<void> {
+  if (!isTauriEnvironment()) {
+    return;
+  }
+  await getCurrentWindow().startDragging();
+}
+
 export {
+  closeMainWindow,
   chooseProjectFolder,
   ensureManagedSidecar,
   isTauriEnvironment,
+  minimizeMainWindow,
   openWorkspaceRoot,
+  startMainWindowDrag,
   stopManagedSidecar,
+  toggleMaximizeMainWindow,
 };

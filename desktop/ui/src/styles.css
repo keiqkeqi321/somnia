@@ -49,10 +49,84 @@ button {
 .shell {
   position: relative;
   height: 100vh;
-  padding: 18px;
+  padding: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.app-titlebar {
+  position: relative;
+  z-index: 4;
+  height: 38px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(13, 15, 19, 0.96);
+  color: #dfe6f3;
+  user-select: none;
+}
+
+.titlebar-brand {
+  min-width: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  color: var(--text-subtle);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.titlebar-mark {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(143, 180, 255, 0.28);
+  border-radius: 5px;
+  background: rgba(143, 180, 255, 0.12);
+  color: #d7e3ff;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.titlebar-controls {
+  height: 100%;
+  flex: none;
+  display: flex;
+  align-items: stretch;
+}
+
+.titlebar-button {
+  width: 46px;
+  height: 100%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 0;
+  background: transparent;
+  color: #cfd7e6;
+  font-size: 0.98rem;
+  line-height: 1;
+}
+
+.titlebar-button:hover {
+  background: rgba(255, 255, 255, 0.075);
+  color: #ffffff;
+}
+
+.titlebar-button.close:hover {
+  background: #c42b1c;
+  color: #ffffff;
 }
 
 .ambient {
@@ -117,6 +191,8 @@ button {
   grid-template-columns: var(--sidebar-width, 250px) 10px minmax(430px, 1fr) 10px var(--context-width, 340px);
   gap: 0;
   flex: 1;
+  margin: 18px;
+  margin-top: 16px;
   min-height: 0;
   overflow: hidden;
 }
@@ -1876,11 +1952,11 @@ button {
   .shell {
     height: auto;
     min-height: 100vh;
-    padding: 18px;
   }
 
   .workspace {
     grid-template-columns: 1fr;
+    margin: 18px;
     overflow: visible;
   }
 
