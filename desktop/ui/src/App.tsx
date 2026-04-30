@@ -10,6 +10,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import mermaid from "mermaid";
 
 import {
   chooseProjectFolder,
@@ -62,6 +63,18 @@ const CONTEXT_MAX_WIDTH = 540;
 const CONVERSATION_MIN_WIDTH = 430;
 const RESIZER_WIDTH = 10;
 const REASONING_LEVEL_OPTIONS = ["auto", "low", "medium", "high", "deep"] as const;
+let mermaidRenderCounter = 0;
+const MERMAID_MIN_ZOOM = 0.25;
+const MERMAID_MAX_ZOOM = 4;
+const MERMAID_ZOOM_STEP = 0.2;
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: "dark",
+  fontFamily: '"Segoe UI Variable", "Aptos", "IBM Plex Sans", sans-serif',
+});
+
 const COMMAND_SPECS = [
   { command: "/scan", description: "Scan the repo or a subdirectory" },
   { command: "/symbols", description: "Find symbols and inspect matching source locations" },
@@ -2715,6 +2728,219 @@ function MarkdownMessage({ text }: { text: string }) {
   return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
 }
 
+function MermaidDiagram({ source }: { source: string }) {
+  const [svg, setSvg] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"graph" | "code">("graph");
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [fullscreenZoom, setFullscreenZoom] = useState(1);
+  const [fullscreenPan, setFullscreenPan] = useState({ x: 0, y: 0 });
+  const [fullscreenDragging, setFullscreenDragging] = useState(false);
+  const fullscreenDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const renderId = `somnia-mermaid-${Date.now()}-${mermaidRenderCounter++}`;
+
+    setSvg("");
+    setError(null);
+    void (async () => {
+      try {
+        const result = await mermaid.render(renderId, source);
+        if (!cancelled) {
+          setSvg(result.svg);
+        }
+      } catch (renderError) {
+        if (!cancelled) {
+          setError(formatErrorMessage(renderError));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [source]);
+
+  useEffect(() => {
+    if (!fullscreenOpen) {
+      return;
+    }
+
+    setFullscreenZoom(1);
+    setFullscreenPan({ x: 0, y: 0 });
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setFullscreenOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [fullscreenOpen]);
+
+  function adjustFullscreenZoom(delta: number) {
+    setFullscreenZoom((current) => clampMermaidZoom(current + delta));
+  }
+
+  function resetFullscreenView() {
+    setFullscreenZoom(1);
+    setFullscreenPan({ x: 0, y: 0 });
+  }
+
+  function handleFullscreenPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    fullscreenDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: fullscreenPan.x,
+      originY: fullscreenPan.y,
+    };
+    setFullscreenDragging(true);
+  }
+
+  function handleFullscreenPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = fullscreenDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+    setFullscreenPan({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    });
+  }
+
+  function handleFullscreenPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
+    if (fullscreenDragRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    fullscreenDragRef.current = null;
+    setFullscreenDragging(false);
+  }
+
+  if (error) {
+    return (
+      <div className="mermaid-card mermaid-card-error">
+        <div className="mermaid-card-head">
+          <span>Mermaid</span>
+          <span>Render failed</span>
+        </div>
+        <pre className="markdown-code-block">
+          <span className="markdown-code-language">mermaid</span>
+          <code>{source}</code>
+        </pre>
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <figure className="mermaid-card">
+        <figcaption className="mermaid-card-head">
+          <span>Mermaid</span>
+          <span className="mermaid-card-actions">
+            <button type="button" className={viewMode === "graph" ? "active" : ""} onClick={() => setViewMode("graph")}>
+              Graph
+            </button>
+            <button type="button" className={viewMode === "code" ? "active" : ""} onClick={() => setViewMode("code")}>
+              Code
+            </button>
+            <button type="button" onClick={() => setFullscreenOpen(true)} disabled={!svg || viewMode !== "graph"}>
+              Fullscreen
+            </button>
+          </span>
+        </figcaption>
+        {viewMode === "code" ? (
+          <pre className="markdown-code-block mermaid-source-block">
+            <span className="markdown-code-language">mermaid</span>
+            <code>{source}</code>
+          </pre>
+        ) : (
+          <button
+            type="button"
+            className="mermaid-canvas"
+            onClick={() => {
+              if (svg) {
+                setFullscreenOpen(true);
+              }
+            }}
+            disabled={!svg}
+            aria-label="Open Mermaid diagram fullscreen"
+          >
+            {svg ? <span dangerouslySetInnerHTML={{ __html: svg }} /> : <span className="mermaid-loading">Rendering diagram...</span>}
+          </button>
+        )}
+      </figure>
+      {fullscreenOpen && svg ? (
+        <div className="mermaid-fullscreen" role="dialog" aria-modal="true" aria-label="Mermaid diagram fullscreen">
+          <div className="mermaid-fullscreen-head">
+            <span>Mermaid diagram</span>
+            <span className="mermaid-fullscreen-actions">
+              <button type="button" onClick={() => adjustFullscreenZoom(-MERMAID_ZOOM_STEP)}>
+                -
+              </button>
+              <span>{Math.round(fullscreenZoom * 100)}%</span>
+              <button type="button" onClick={() => adjustFullscreenZoom(MERMAID_ZOOM_STEP)}>
+                +
+              </button>
+              <button type="button" onClick={resetFullscreenView}>
+                Reset
+              </button>
+              <button type="button" onClick={() => setFullscreenOpen(false)}>
+                Close
+              </button>
+            </span>
+          </div>
+          <button
+            type="button"
+            className="mermaid-fullscreen-backdrop"
+            aria-label="Close Mermaid diagram fullscreen"
+            onClick={() => setFullscreenOpen(false)}
+          />
+          <div
+            className={`mermaid-fullscreen-canvas${fullscreenDragging ? " is-dragging" : ""}`}
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={handleFullscreenPointerDown}
+            onPointerMove={handleFullscreenPointerMove}
+            onPointerUp={handleFullscreenPointerEnd}
+            onPointerCancel={handleFullscreenPointerEnd}
+            onWheel={(event) => {
+              event.preventDefault();
+              adjustFullscreenZoom(event.deltaY < 0 ? MERMAID_ZOOM_STEP : -MERMAID_ZOOM_STEP);
+            }}
+          >
+            <span
+              className="mermaid-fullscreen-graph"
+              style={{
+                transform: `translate(${fullscreenPan.x}px, ${fullscreenPan.y}px) scale(${fullscreenZoom})`,
+              }}
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function clampMermaidZoom(value: number): number {
+  return Math.min(MERMAID_MAX_ZOOM, Math.max(MERMAID_MIN_ZOOM, Number(value.toFixed(2))));
+}
+
 function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
   return (
     <details className="tool-call-card">
@@ -2759,12 +2985,17 @@ function renderMarkdownBlocks(text: string): ReactNode[] {
         index += 1;
       }
       const language = fenceMatch[1].trim();
-      blocks.push(
-        <pre key={`block-${key++}`} className="markdown-code-block">
-          {language ? <span className="markdown-code-language">{language}</span> : null}
-          <code>{codeLines.join("\n")}</code>
-        </pre>,
-      );
+      const code = codeLines.join("\n");
+      if (/^mermaid\b/i.test(language)) {
+        blocks.push(<MermaidDiagram key={`block-${key++}`} source={code} />);
+      } else {
+        blocks.push(
+          <pre key={`block-${key++}`} className="markdown-code-block">
+            {language ? <span className="markdown-code-language">{language}</span> : null}
+            <code>{code}</code>
+          </pre>,
+        );
+      }
       continue;
     }
 

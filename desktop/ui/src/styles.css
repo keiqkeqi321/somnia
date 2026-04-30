@@ -1559,6 +1559,195 @@ button {
   letter-spacing: 0.08em;
 }
 
+.mermaid-card {
+  margin: 0.9rem 0;
+  border: 1px solid rgba(135, 174, 224, 0.18);
+  border-radius: 12px;
+  background: rgba(7, 10, 16, 0.58);
+  overflow: hidden;
+}
+
+.mermaid-card-head {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0.48rem 0.68rem;
+  border-bottom: 1px solid rgba(135, 174, 224, 0.14);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mermaid-card-actions,
+.mermaid-fullscreen-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mermaid-card-head button,
+.mermaid-fullscreen-head button {
+  border: 1px solid rgba(169, 200, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(169, 200, 255, 0.1);
+  color: #d9e6ff;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.mermaid-card-head button.active {
+  border-color: rgba(169, 200, 255, 0.5);
+  background: rgba(169, 200, 255, 0.22);
+  color: #ffffff;
+}
+
+.mermaid-card-head button {
+  padding: 0.24rem 0.62rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.mermaid-card-head button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.mermaid-source-block.markdown-code-block {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(7, 10, 16, 0.72);
+}
+
+.mermaid-canvas {
+  width: 100%;
+  min-height: 180px;
+  padding: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  background:
+    radial-gradient(circle at 16px 16px, rgba(169, 200, 255, 0.08) 1px, transparent 1px) 0 0 / 24px 24px,
+    rgba(8, 11, 18, 0.7);
+  color: #d9e6ff;
+  overflow: auto;
+}
+
+.mermaid-canvas:not(:disabled):hover {
+  background:
+    radial-gradient(circle at 16px 16px, rgba(169, 200, 255, 0.13) 1px, transparent 1px) 0 0 / 24px 24px,
+    rgba(10, 14, 22, 0.86);
+}
+
+.mermaid-canvas:disabled {
+  cursor: wait;
+}
+
+.mermaid-canvas svg,
+.mermaid-fullscreen-canvas svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-loading {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.mermaid-card-error {
+  padding-bottom: 0.8rem;
+}
+
+.mermaid-card-error p {
+  margin: 0.7rem 1rem 0;
+  color: #ffb4b4;
+  font-size: 0.88rem;
+}
+
+.mermaid-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: rgba(2, 4, 8, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.mermaid-fullscreen-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.mermaid-fullscreen-head {
+  position: relative;
+  z-index: 2;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 13, 18, 0.94);
+  color: #f7fbff;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.mermaid-fullscreen-head button {
+  padding: 0.34rem 0.8rem;
+}
+
+.mermaid-fullscreen-actions > span {
+  min-width: 48px;
+  color: var(--text-subtle);
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-align: center;
+}
+
+.mermaid-fullscreen-canvas {
+  position: relative;
+  z-index: 1;
+  margin: 18px;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(169, 200, 255, 0.18);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 24px 24px, rgba(169, 200, 255, 0.1) 1px, transparent 1px) 0 0 / 28px 28px,
+    rgba(8, 11, 18, 0.96);
+  overflow: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.mermaid-fullscreen-canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.mermaid-fullscreen-graph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+  transition: transform 0.08s ease-out;
+  pointer-events: none;
+}
+
 .markdown-content a {
   color: #a9c8ff;
   text-decoration: underline;
