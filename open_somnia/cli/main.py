@@ -4,12 +4,6 @@ import argparse
 import sys
 
 from open_somnia import __version__
-from open_somnia.cli.provider_management import (
-    choose_provider_target_interactively,
-    collect_provider_profile_interactively,
-    default_base_url,
-    parse_model_ids,
-)
 from open_somnia.config.settings import (
     NoConfiguredProvidersError,
     NoUsableProvidersError,
@@ -19,6 +13,18 @@ from open_somnia.config.settings import (
     persist_provider_profile,
 )
 from open_somnia.runtime.agent import OpenAgentRuntime
+
+
+def choose_provider_target_interactively(existing_profiles):
+    from open_somnia.cli.provider_management import choose_provider_target_interactively as choose_provider_target
+
+    return choose_provider_target(existing_profiles)
+
+
+def collect_provider_profile_interactively(existing_profiles, *, previous_provider_name: str | None = None):
+    from open_somnia.cli.provider_management import collect_provider_profile_interactively as collect_provider_profile
+
+    return collect_provider_profile(existing_profiles, previous_provider_name=previous_provider_name)
 
 
 def _add_provider_overrides(parser: argparse.ArgumentParser) -> None:
@@ -108,11 +114,18 @@ def _can_prompt_interactively() -> bool:
 
 
 def _parse_model_ids(raw_value: str) -> list[str]:
-    return parse_model_ids(raw_value)
+    models: list[str] = []
+    for chunk in raw_value.split(","):
+        model = chunk.strip()
+        if model and model not in models:
+            models.append(model)
+    return models
 
 
 def _default_base_url(provider_type: str) -> str:
-    return default_base_url(provider_type)
+    if provider_type == "openai":
+        return "https://api.openai.com/v1"
+    return "https://api.anthropic.com"
 
 
 def _bootstrap_first_provider() -> bool:

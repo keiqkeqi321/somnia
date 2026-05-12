@@ -85,6 +85,9 @@ class SessionManager:
             sessions.append(AgentSession.from_payload(payload))
         return sessions
 
+    def list_summaries(self) -> list[dict[str, Any]]:
+        return self.session_store.list_summaries(load_missing_messages=self.transcript_store.load_snapshot)
+
     def save(self, session: AgentSession) -> None:
         self.session_store.save(session.to_payload())
         self.transcript_store.save_snapshot(session.id, session.messages)

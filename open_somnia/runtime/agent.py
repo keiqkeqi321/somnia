@@ -34,9 +34,7 @@ from open_somnia.config.settings import (
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
 from open_somnia.mcp.registry import MCPRegistry
-from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.base import LLMProvider, ProviderError
-from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.compact import (
     AUTO_COMPACT_TRIGGER_RATIO,
     CompactManager,
@@ -101,6 +99,10 @@ from open_somnia.tools.tool_errors import (
 )
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 from open_somnia.reasoning import normalize_reasoning_level
+
+
+OpenAIProvider = None
+AnthropicProvider = None
 
 
 class AgentLoopResult(str):
@@ -411,8 +413,19 @@ class OpenAgentRuntime:
         return self._instantiate_provider(self.settings.provider)
 
     def _instantiate_provider(self, provider_settings: ProviderSettings) -> LLMProvider:
+        global OpenAIProvider, AnthropicProvider
         if provider_settings.provider_type == "openai":
+            if OpenAIProvider is None:
+                from open_somnia.providers.openai_provider import OpenAIProvider as _OpenAIProvider
+
+                OpenAIProvider = _OpenAIProvider
+
             return OpenAIProvider(provider_settings)
+        if AnthropicProvider is None:
+            from open_somnia.providers.anthropic_provider import AnthropicProvider as _AnthropicProvider
+
+            AnthropicProvider = _AnthropicProvider
+
         return AnthropicProvider(provider_settings)
 
     def configured_provider_profiles(self) -> dict[str, ProviderProfileSettings]:
@@ -2116,6 +2129,9 @@ class OpenAgentRuntime:
 
     def list_sessions(self) -> list[AgentSession]:
         return self.session_manager.list_all()
+
+    def list_session_summaries(self) -> list[dict[str, Any]]:
+        return self.session_manager.list_summaries()
 
     def delete_session(self, session_id: str) -> bool:
         return self.session_manager.delete(session_id)

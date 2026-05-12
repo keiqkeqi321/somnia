@@ -40,6 +40,9 @@ class AppService:
     def list_sessions(self) -> list[AgentSession]:
         return self.session_service.list_sessions()
 
+    def list_session_summaries(self) -> list[dict]:
+        return self.session_service.list_session_summaries()
+
     def load_session(self, session_id: str) -> AgentSession:
         return self.session_service.load_session(session_id)
 

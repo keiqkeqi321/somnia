@@ -395,6 +395,35 @@ class CliResumeTests(unittest.TestCase):
 
         self.assertEqual([choice.session_id for choice in choices], ["valid"])
 
+    def test_session_history_uses_lightweight_summaries_when_available(self) -> None:
+        def fail_list_sessions():
+            raise AssertionError("list_sessions should not be needed for resume choices")
+
+        runtime = SimpleNamespace(
+            list_session_summaries=lambda: [
+                {
+                    "id": "empty",
+                    "updated_at": 10.0,
+                    "created_at": 10.0,
+                    "has_visible_exchange": False,
+                    "preview": "[no visible messages]",
+                },
+                {
+                    "id": "valid",
+                    "updated_at": 13.0,
+                    "created_at": 13.0,
+                    "has_visible_exchange": True,
+                    "preview": "history answer",
+                },
+            ],
+            list_sessions=fail_list_sessions,
+        )
+
+        choices = _build_session_choices(runtime)
+
+        self.assertEqual([choice.session_id for choice in choices], ["valid"])
+        self.assertIn("history answer", choices[0].label)
+
     def test_resumed_history_uses_chat_output_styles(self) -> None:
         session = SimpleNamespace(
             messages=[

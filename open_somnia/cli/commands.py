@@ -156,6 +156,19 @@ def _session_preview(session) -> str:
 
 def _build_session_choices(runtime) -> list[SessionChoice]:
     choices: list[SessionChoice] = []
+    list_summaries = getattr(runtime, "list_session_summaries", None)
+    if callable(list_summaries):
+        for summary in list_summaries():
+            if not summary.get("has_visible_exchange"):
+                continue
+            session_id = str(summary.get("id", "")).strip()
+            if not session_id:
+                continue
+            stamp = format_session_timestamp(summary.get("updated_at") or summary.get("created_at"))
+            preview = str(summary.get("preview") or "[no visible messages]")
+            label = f"{session_id} | {stamp} | {preview}"
+            choices.append(SessionChoice(session_id=session_id, label=label))
+        return choices
     for session in runtime.list_sessions():
         if not _has_visible_exchange(session):
             continue

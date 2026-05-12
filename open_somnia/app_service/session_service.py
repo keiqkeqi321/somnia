@@ -14,6 +14,9 @@ class SessionService:
     def list_sessions(self) -> list[AgentSession]:
         return self.runtime.list_sessions()
 
+    def list_session_summaries(self) -> list[dict]:
+        return self.runtime.list_session_summaries()
+
     def load_session(self, session_id: str) -> AgentSession:
         return self.runtime.load_session(session_id)
 
