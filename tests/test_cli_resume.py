@@ -366,6 +366,67 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("● Hello", fake_stdout.getvalue())
 
+    def test_cmd_run_flushes_service_stream_before_tool_output(self) -> None:
+        session = SimpleNamespace(id="service-run", messages=[])
+
+        class _StdoutCapture:
+            encoding = "utf-8"
+
+            def __init__(self) -> None:
+                self.parts: list[str] = []
+
+            def write(self, text: str) -> int:
+                self.parts.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                return None
+
+            def isatty(self) -> bool:
+                return True
+
+            def getvalue(self) -> str:
+                return "".join(self.parts)
+
+        class _FakeHandle:
+            def __init__(self) -> None:
+                self.turn_id = "turn-1"
+                self.result = SimpleNamespace(status="completed", text="Done.")
+                self._drained = 0
+
+            def is_done(self) -> bool:
+                return self._drained > 0
+
+            def drain_events(self, *, block: bool = False, timeout: float | None = None):
+                self._drained += 1
+                if self._drained == 1:
+                    return [
+                        SimpleNamespace(type="assistant_delta", payload={"delta": "Preparing update."}),
+                        SimpleNamespace(
+                            type="tool_finished",
+                            payload={
+                                "actor": "lead",
+                                "tool_name": "edit_file",
+                                "rendered_lines": ["TOOL: Update(file.py)"],
+                            },
+                        ),
+                    ]
+                return []
+
+        service = SimpleNamespace(
+            create_session=lambda: session,
+            run_turn=lambda current_session, prompt: _FakeHandle(),
+        )
+        runtime = SimpleNamespace(run_turn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime.run_turn should not be used")))
+
+        fake_stdout = _StdoutCapture()
+        with patch("open_somnia.cli.commands._build_app_service", return_value=service), patch("sys.stdout", fake_stdout):
+            result = cmd_run(runtime, "hello")
+
+        output = fake_stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertLess(output.index("Preparing update."), output.index("TOOL: Update(file.py)"))
+
     def test_session_history_ignores_empty_or_incomplete_sessions(self) -> None:
         empty = SimpleNamespace(id="empty", updated_at=10.0, created_at=10.0, messages=[])
         only_user = SimpleNamespace(

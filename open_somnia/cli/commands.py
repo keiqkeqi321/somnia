@@ -232,6 +232,7 @@ def _run_service_turn_to_console(runtime: OpenAgentRuntime, service: AppService,
                 if event.type == ASSISTANT_DELTA:
                     streamer(str(payload.get("delta", "")))
                 elif event.type == TOOL_FINISHED:
+                    streamer.finish()
                     _print_service_tool_event(payload)
                 elif event.type == AUTHORIZATION_REQUESTED:
                     request_id = str(payload.get("request_id", "")).strip()
@@ -261,6 +262,7 @@ def _run_service_turn_to_console(runtime: OpenAgentRuntime, service: AppService,
                     if event.type == ASSISTANT_DELTA:
                         streamer(str(payload.get("delta", "")))
                     elif event.type == TOOL_FINISHED:
+                        streamer.finish()
                         _print_service_tool_event(payload)
                 continue
             break

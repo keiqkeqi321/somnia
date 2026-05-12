@@ -8,6 +8,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_somnia.cli.commands import ConsoleStreamer
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     AuthorizationRequest,
@@ -927,6 +928,50 @@ class ReplTodoTests(unittest.TestCase):
             runner.close(drain=True)
 
         self.assertEqual(captured, [(runner.session, "service prompt", True, True)])
+
+    def test_service_event_flushes_stream_before_tool_output(self) -> None:
+        class _StdoutCapture:
+            encoding = "utf-8"
+
+            def __init__(self) -> None:
+                self.parts: list[str] = []
+
+            def write(self, text: str) -> int:
+                self.parts.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                return None
+
+            def isatty(self) -> bool:
+                return True
+
+            def getvalue(self) -> str:
+                return "".join(self.parts)
+
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        streamer = ConsoleStreamer(start_on_new_line=True)
+        fake_stdout = _StdoutCapture()
+
+        with patch("sys.stdout", fake_stdout):
+            runner._process_service_event(
+                SimpleNamespace(type="assistant_delta", payload={"delta": "Preparing update."}),
+                streamer,
+            )
+            runner._process_service_event(
+                SimpleNamespace(
+                    type="tool_finished",
+                    payload={
+                        "actor": "lead",
+                        "tool_name": "edit_file",
+                        "rendered_lines": ["TOOL: Update(file.py)"],
+                    },
+                ),
+                streamer,
+            )
+
+        output = fake_stdout.getvalue()
+        self.assertLess(output.index("Preparing update."), output.index("TOOL: Update(file.py)"))
 
     def test_expand_skill_command_wraps_loaded_skill_and_user_request(self) -> None:
         runtime = SimpleNamespace(

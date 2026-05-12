@@ -1126,6 +1126,7 @@ class TurnQueueRunner:
             streamer(str(payload.get("delta", "")))
             return
         if event_type == TOOL_FINISHED:
+            streamer.finish()
             self._print_service_tool_event(payload)
             return
         if event_type == AUTHORIZATION_REQUESTED:
