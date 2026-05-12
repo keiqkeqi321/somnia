@@ -28,6 +28,7 @@ from desktop.backend.ipc import (
     serialize_model,
     serialize_provider,
     serialize_session,
+    serialize_session_summary,
     serialize_tool_log_detail,
     serialize_tool_log_index_entry,
     serialize_turn_result,
@@ -266,7 +267,7 @@ class SidecarServer:
             thread.join(timeout=1.0)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        return [self._serialize_session(session) for session in self.service.list_sessions()]
+        return [serialize_session_summary(summary) for summary in self.service.list_session_summaries()]
 
     def create_session(self) -> dict[str, Any]:
         session = self.service.create_session()
@@ -406,7 +407,7 @@ class SidecarServer:
     def runtime_status(self) -> dict[str, Any]:
         payload = self.ready_payload()
         payload["pending_interaction_count"] = len(self.service.pending_interactions())
-        payload["open_session_count"] = len(self.service.list_sessions())
+        payload["open_session_count"] = len(self.service.list_session_summaries())
         return payload
 
     def list_tool_logs(self, *, limit: int = 20) -> list[dict[str, Any]]:

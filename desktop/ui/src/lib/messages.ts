@@ -313,6 +313,9 @@ export function stringifyToolValue(value: unknown): string {
 }
 
 export function buildSessionPreview(session: AgentSession): string {
+  if (typeof session.preview === "string" && session.preview.trim()) {
+    return session.preview.trim();
+  }
   for (let index = session.messages.length - 1; index >= 0; index -= 1) {
     const message = session.messages[index];
     if (message.role === "assistant") {

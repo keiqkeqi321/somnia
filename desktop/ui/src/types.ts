@@ -28,6 +28,9 @@ export interface AgentSession {
   last_turn_file_changes?: Array<Record<string, unknown>>;
   undo_stack?: Array<Record<string, unknown>>;
   context_window_usage?: ContextWindowUsage | null;
+  preview?: string;
+  has_visible_exchange?: boolean;
+  is_summary?: boolean;
 }
 
 export interface ContextWindowUsage {

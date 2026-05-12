@@ -244,6 +244,31 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_session_list_returns_lightweight_summaries(self) -> None:
+        root = self._stable_test_dir("sidecar-session-summaries")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            session = server.service.create_session()
+            session.messages.extend(
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "Hello from history"},
+                ]
+            )
+            server.runtime.session_manager.save(session)
+
+            listed = next(item for item in server.list_sessions() if item["id"] == session.id)
+            self.assertEqual(listed["messages"], [])
+            self.assertTrue(listed["is_summary"])
+            self.assertIn("Hello from history", listed["preview"])
+
+            detail_payload = server.load_session(session.id)
+            self.assertNotEqual(detail_payload["messages"], [])
+        finally:
+            server.close()
+
     def test_sidecar_emits_authorization_request_and_accepts_external_resolution(self) -> None:
         root = self._stable_test_dir("sidecar-auth")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

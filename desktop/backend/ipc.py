@@ -35,6 +35,25 @@ def serialize_session(session: Any) -> dict[str, Any]:
     }
 
 
+def serialize_session_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(summary.get("id", "")).strip(),
+        "created_at": summary.get("created_at"),
+        "updated_at": summary.get("updated_at"),
+        "messages": [],
+        "token_usage": {},
+        "todo_items": [],
+        "rounds_without_todo": 0,
+        "read_file_overlap_state": {},
+        "latest_turn_id": None,
+        "last_turn_file_changes": [],
+        "undo_stack": [],
+        "preview": str(summary.get("preview") or "No visible history yet"),
+        "has_visible_exchange": bool(summary.get("has_visible_exchange")),
+        "is_summary": True,
+    }
+
+
 def serialize_provider(provider: Any) -> dict[str, Any]:
     return asdict(provider)
 
