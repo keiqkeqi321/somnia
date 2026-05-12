@@ -192,6 +192,53 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_run_turn_emits_unstreamed_tool_turn_text_before_tool_events(self) -> None:
+        root = self._stable_test_dir("app-service-tool-text-order")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            turns = iter(
+                [
+                    AssistantTurn(
+                        stop_reason="tool_use",
+                        text_blocks=["I need to update the todo first."],
+                        tool_calls=[
+                            ToolCall(
+                                "call-1",
+                                "TodoWrite",
+                                {
+                                    "items": [
+                                        {
+                                            "content": "Check ordering",
+                                            "status": "in_progress",
+                                            "activeForm": "Checking ordering",
+                                        }
+                                    ]
+                                },
+                            )
+                        ],
+                    ),
+                    AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+                ]
+            )
+            runtime.complete = lambda *args, **kwargs: next(turns)
+
+            handle = service.run_turn(session, "plan phase 1")
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+
+            events = handle.drain_events()
+            event_types = [event.type for event in events]
+
+            self.assertLess(event_types.index("assistant_delta"), event_types.index("tool_started"))
+            self.assertEqual(
+                next(event for event in events if event.type == "assistant_delta").payload["delta"],
+                "I need to update the todo first.",
+            )
+        finally:
+            service.close()
+
     def test_authorization_request_can_be_resolved_through_service(self) -> None:
         root = self._stable_test_dir("app-service-auth")
         runtime = OpenAgentRuntime(self._make_settings(root))

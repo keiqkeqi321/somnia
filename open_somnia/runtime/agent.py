@@ -2605,6 +2605,13 @@ class OpenAgentRuntime:
                         pass
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
+                streamed_text_chunks: list[str] = []
+                completion_text_callback = text_callback
+                if text_callback is not None:
+                    def completion_text_callback(text: str) -> None:
+                        streamed_text_chunks.append(str(text))
+                        text_callback(text)
+
                 try:
                     system_prompt = self.build_system_prompt(session=session)
                 except TypeError:
@@ -2649,7 +2656,7 @@ class OpenAgentRuntime:
                         system_prompt,
                         payload_messages,
                         tool_schemas,
-                        text_callback=text_callback,
+                        text_callback=completion_text_callback,
                         should_interrupt=should_interrupt,
                     )
                 except Exception as exc:
@@ -2674,6 +2681,10 @@ class OpenAgentRuntime:
                     ),
                 )
                 self._raise_if_interrupted(should_interrupt)
+                if turn.has_tool_calls() and text_callback is not None and not "".join(streamed_text_chunks).strip():
+                    unstreamed_tool_text = "\n\n".join(turn.text_blocks).strip()
+                    if unstreamed_tool_text:
+                        text_callback(unstreamed_tool_text)
                 if callable(stream_flush_callback):
                     stream_flush_callback()
                 session.latest_turn_id = uuid.uuid4().hex[:8]
