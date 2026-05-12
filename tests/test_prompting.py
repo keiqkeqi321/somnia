@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -246,6 +247,48 @@ class PromptingTests(unittest.TestCase):
         self.assertTrue(any(item.display_text == "/model" for item in slash_only))
         self.assertFalse(any(item.display_text == "/+unity" for item in slash_only))
         self.assertEqual([item.display_text for item in plus_prefixed], ["/+unity"])
+
+    def test_at_completion_for_empty_query_uses_top_level_paths_without_full_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "tmp04u5700e").mkdir()
+            (root / "README.md").write_text("hello", encoding="utf-8")
+            completer = OpenAgentCompleter(root)
+            completer._refresh_paths = lambda: (_ for _ in ()).throw(AssertionError("full scan should not run"))
+
+            completions = list(completer.get_completions(Document(text="@", cursor_position=1), None))
+
+        self.assertEqual([item.display_text for item in completions], ["src/", "README.md"])
+
+    def test_at_completion_full_scan_prunes_ignored_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("print('ok')", encoding="utf-8")
+            (root / "node_modules" / "pkg").mkdir(parents=True)
+            (root / "node_modules" / "pkg" / "app.js").write_text("ignored", encoding="utf-8")
+            (root / ".local-tools" / "cargo" / "registry").mkdir(parents=True)
+            (root / ".local-tools" / "cargo" / "registry" / "app.rs").write_text("ignored", encoding="utf-8")
+            (root / ".tmp-system" / "cache").mkdir(parents=True)
+            (root / ".tmp-system" / "cache" / "app.log").write_text("ignored", encoding="utf-8")
+            (root / "tmp04u5700e").mkdir()
+            (root / "tmp04u5700e" / "app.tmp").write_text("ignored", encoding="utf-8")
+            (root / ".open_somnia" / "logs").mkdir(parents=True)
+            (root / ".open_somnia" / "logs" / "app.json").write_text("ignored", encoding="utf-8")
+            completer = OpenAgentCompleter(root)
+
+            completions = list(completer.get_completions(Document(text="@app", cursor_position=4), None))
+
+        display_texts = [item.display_text for item in completions]
+        self.assertIn("src/app.py", display_texts)
+        self.assertFalse(
+            any(
+                ignored in item
+                for item in display_texts
+                for ignored in ["node_modules", ".local-tools", ".tmp-system", "tmp04u5700e", ".open_somnia"]
+            )
+        )
 
     def test_escape_falls_back_to_interrupt_when_busy_escape_does_not_promote(self) -> None:
         events: list[str] = []

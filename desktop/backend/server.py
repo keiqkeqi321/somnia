@@ -37,17 +37,18 @@ from desktop.backend.ipc import (
 from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
+from open_somnia.path_completion import (
+    MAX_PATH_COMPLETION_CANDIDATES,
+    PATH_COMPLETION_CACHE_SECONDS,
+    PathCandidate,
+    match_path_completion_candidates,
+    scan_path_completion_candidates,
+    sort_path_completion_candidates,
+)
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 from open_somnia.runtime.messages import parse_image_data_url
 
-IGNORED_PATH_COMPLETION_DIRS = {
-    ".git",
-    ".open_somnia",
-    "__pycache__",
-    ".venv",
-    "node_modules",
-}
 CLIPBOARD_TEMP_DIRNAME = "temp"
 IMAGE_MEDIA_TYPE_SUFFIXES = {
     "image/gif": ".gif",
@@ -62,15 +63,6 @@ class SidecarAPIError(RuntimeError):
         super().__init__(message)
         self.status_code = int(status_code)
         self.message = str(message)
-
-
-def _path_completion_score(item: dict[str, str], query: str) -> tuple[int, int, int, int, str]:
-    basename = item["basename"].lower()
-    path = item["path"].lower()
-    basename_starts = 0 if query and basename.startswith(query) else 1
-    basename_contains = 0 if query and query in basename else 1
-    kind_rank = 0 if item["kind"] == "dir" else 1
-    return (basename_starts, basename_contains, kind_rank, len(path), path)
 
 
 def _safe_image_stem(name: str) -> str:
@@ -104,8 +96,10 @@ class SidecarServer:
         self._clients: dict[str, _WebSocketClient] = {}
         self._active_turns: dict[str, Any] = {}
         self._turn_threads: dict[str, Thread] = {}
-        self._path_completion_cache: list[dict[str, str]] = []
+        self._path_completion_cache: list[PathCandidate] = []
         self._path_completion_scanned_at = 0.0
+        self._top_level_path_completion_cache: list[PathCandidate] = []
+        self._top_level_path_completion_scanned_at = 0.0
         self._closed = False
         self._server_thread: Thread | None = None
         self.httpd = _SidecarHTTPServer((host, port), _SidecarRequestHandler, sidecar=self)
@@ -151,38 +145,51 @@ class SidecarServer:
         }
 
     def list_workspace_paths(self, *, query: str = "", limit: int = 30) -> list[dict[str, str]]:
-        lowered = str(query or "").strip().lower()
+        normalized_query = str(query or "").strip()
+        lowered = normalized_query.lower()
         max_results = max(1, min(100, int(limit)))
-        candidates = self._workspace_path_candidates()
-        if lowered:
-            candidates = [
-                candidate
-                for candidate in candidates
-                if lowered in candidate["path"].lower() or lowered in candidate["basename"].lower()
-            ]
-        return sorted(candidates, key=lambda item: _path_completion_score(item, lowered))[:max_results]
+        if not lowered:
+            candidates = self._top_level_workspace_path_candidates()
+        elif "/" not in lowered and "\\" not in lowered and len(lowered) < 2 and not self._path_completion_cache:
+            candidates = self._top_level_workspace_path_candidates()
+        else:
+            candidates = self._workspace_path_candidates()
+        matches = (
+            candidates[:max_results]
+            if not lowered
+            else match_path_completion_candidates(candidates, normalized_query, limit=max_results)
+        )
+        return [
+            {"path": item.relative_path, "basename": item.basename, "kind": item.kind}
+            for item in matches
+        ]
 
-    def _workspace_path_candidates(self) -> list[dict[str, str]]:
+    def _workspace_path_candidates(self) -> list[PathCandidate]:
         now = time.time()
-        if self._path_completion_cache and now - self._path_completion_scanned_at < 5:
+        if self._path_completion_cache and now - self._path_completion_scanned_at < PATH_COMPLETION_CACHE_SECONDS:
             return self._path_completion_cache
-        workspace_root = self.settings.workspace_root
-        candidates: list[dict[str, str]] = []
-        for current_root, dir_names, file_names in os.walk(workspace_root):
-            dir_names[:] = [name for name in dir_names if name not in IGNORED_PATH_COMPLETION_DIRS]
-            current_path = current_root if isinstance(current_root, str) else str(current_root)
-            for name, kind in [(name, "dir") for name in dir_names] + [(name, "file") for name in file_names]:
-                path = os.path.join(current_path, name)
-                try:
-                    relative = os.path.relpath(path, workspace_root).replace(os.sep, "/")
-                except ValueError:
-                    continue
-                if any(part in IGNORED_PATH_COMPLETION_DIRS for part in relative.split("/")):
-                    continue
-                candidates.append({"path": relative, "basename": name, "kind": kind})
-        self._path_completion_cache = candidates
+        self._path_completion_cache = sort_path_completion_candidates(
+            scan_path_completion_candidates(
+                self.settings.workspace_root,
+                max_candidates=MAX_PATH_COMPLETION_CANDIDATES,
+            )
+        )
         self._path_completion_scanned_at = now
-        return candidates
+        return self._path_completion_cache
+
+    def _top_level_workspace_path_candidates(self) -> list[PathCandidate]:
+        now = time.time()
+        if (
+            self._top_level_path_completion_cache
+            and now - self._top_level_path_completion_scanned_at < PATH_COMPLETION_CACHE_SECONDS
+        ):
+            return self._top_level_path_completion_cache
+        self._top_level_path_completion_cache = sorted(
+            scan_path_completion_candidates(self.settings.workspace_root, max_depth=1, max_candidates=200),
+            key=lambda item: (0 if item.kind == "dir" else 1, item.relative_path),
+        )
+        self._top_level_path_completion_scanned_at = now
+        return self._top_level_path_completion_cache
 
     def save_inline_image(self, *, name: str, media_type: str, data_url: str) -> dict[str, str]:
         parsed = parse_image_data_url(data_url)

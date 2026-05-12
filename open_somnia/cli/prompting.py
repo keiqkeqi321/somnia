@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
@@ -27,6 +26,15 @@ from prompt_toolkit.shortcuts.dialogs import input_dialog
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
+
+from open_somnia.path_completion import (
+    MAX_PATH_COMPLETION_CANDIDATES,
+    PATH_COMPLETION_CACHE_SECONDS,
+    PathCandidate,
+    match_path_completion_candidates,
+    scan_path_completion_candidates,
+    sort_path_completion_candidates,
+)
 
 VISIBLE_COMMAND_SPECS = [
     ("/scan", "Scan the repo or a subdirectory"),
@@ -58,14 +66,6 @@ HIDDEN_COMMAND_SPECS = [
 ]
 
 COMMAND_SPECS = VISIBLE_COMMAND_SPECS + HIDDEN_COMMAND_SPECS
-
-IGNORED_DIR_NAMES = {
-    ".git",
-    ".open_somnia",
-    "__pycache__",
-    ".venv",
-    "node_modules",
-}
 
 TOKEN_PATTERN = re.compile(r"(?:^|\s)([@/])([^\s]*)$")
 PROMPT_BORDER = "\u2500" * 58
@@ -104,13 +104,6 @@ SESSION_PICKER_STYLE = Style.from_dict(
         "shadow": "bg:#020617",
     }
 )
-
-
-@dataclass(slots=True)
-class PathCandidate:
-    relative_path: str
-    basename: str
-    kind: str
 
 
 class _WindowsSafeCursorOutput(Output):
@@ -303,6 +296,8 @@ class OpenAgentCompleter(Completer):
         self.skill_names_getter = skill_names_getter
         self._path_candidates: list[PathCandidate] = []
         self._last_scan_at = 0.0
+        self._top_level_candidates: list[PathCandidate] = []
+        self._last_top_level_scan_at = 0.0
 
     def get_completions(self, document, complete_event):
         token = self._current_token(document.text_before_cursor)
@@ -370,48 +365,41 @@ class OpenAgentCompleter(Completer):
             )
 
     def _matching_paths(self, query: str) -> list[PathCandidate]:
-        self._refresh_paths()
         lowered = query.lower()
         if not lowered:
-            return self._path_candidates[:30]
+            return self._top_level_paths()[:30]
+        if "/" not in lowered and "\\" not in lowered and len(lowered) < 2 and not self._path_candidates:
+            return [
+                candidate
+                for candidate in self._top_level_paths()
+                if lowered in candidate.relative_path.lower() or lowered in candidate.basename.lower()
+            ][:30]
 
-        def score(item: PathCandidate) -> tuple[int, int, int, str]:
-            basename = item.basename.lower()
-            path = item.relative_path.lower()
-            basename_starts = 0 if basename.startswith(lowered) else 1
-            basename_contains = 0 if lowered in basename else 1
-            kind_rank = 0 if item.kind == "dir" else 1
-            return (basename_starts, basename_contains, kind_rank, item.relative_path)
+        self._refresh_paths()
 
-        matches = [
-            candidate
-            for candidate in self._path_candidates
-            if lowered in candidate.relative_path.lower() or lowered in candidate.basename.lower()
-        ]
-        return sorted(matches, key=score)[:30]
+        return match_path_completion_candidates(self._path_candidates, lowered, limit=30)
 
     def _refresh_paths(self) -> None:
         now = time.time()
-        if self._path_candidates and now - self._last_scan_at < 5:
+        if self._path_candidates and now - self._last_scan_at < PATH_COMPLETION_CACHE_SECONDS:
             return
-        candidates: list[PathCandidate] = []
-        for path in self.workspace_root.rglob("*"):
-            relative_parts = path.relative_to(self.workspace_root).parts
-            if any(part in IGNORED_DIR_NAMES for part in relative_parts):
-                continue
-            if path.is_dir():
-                kind = "dir"
-            elif path.is_file():
-                kind = "file"
-            else:
-                continue
-            relative = path.relative_to(self.workspace_root).as_posix()
-            candidates.append(PathCandidate(relative_path=relative, basename=path.name, kind=kind))
-        self._path_candidates = sorted(
-            candidates,
-            key=lambda item: (0 if item.kind == "dir" else 1, len(item.relative_path), item.relative_path),
+        candidates = scan_path_completion_candidates(
+            self.workspace_root,
+            max_candidates=MAX_PATH_COMPLETION_CANDIDATES,
         )
+        self._path_candidates = sort_path_completion_candidates(candidates)
         self._last_scan_at = now
+
+    def _top_level_paths(self) -> list[PathCandidate]:
+        now = time.time()
+        if self._top_level_candidates and now - self._last_top_level_scan_at < PATH_COMPLETION_CACHE_SECONDS:
+            return self._top_level_candidates
+        self._top_level_candidates = sorted(
+            scan_path_completion_candidates(self.workspace_root, max_depth=1, max_candidates=200),
+            key=lambda item: (0 if item.kind == "dir" else 1, item.relative_path),
+        )
+        self._last_top_level_scan_at = now
+        return self._top_level_candidates
 
 
 def _history_file(workspace_root: Path) -> Path:

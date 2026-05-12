@@ -442,6 +442,44 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_workspace_path_completion_uses_fast_shared_scanner(self) -> None:
+        root = self._stable_test_dir("sidecar-path-completion")
+        (root / "src").mkdir()
+        (root / "src" / "app.py").write_text("print('ok')", encoding="utf-8")
+        (root / "README.md").write_text("hello", encoding="utf-8")
+        (root / "node_modules" / "pkg").mkdir(parents=True)
+        (root / "node_modules" / "pkg" / "app.js").write_text("ignored", encoding="utf-8")
+        (root / ".local-tools" / "cargo" / "registry").mkdir(parents=True)
+        (root / ".local-tools" / "cargo" / "registry" / "app.rs").write_text("ignored", encoding="utf-8")
+        (root / ".tmp-system" / "cache").mkdir(parents=True)
+        (root / ".tmp-system" / "cache" / "app.log").write_text("ignored", encoding="utf-8")
+        (root / "tmp04u5700e").mkdir()
+        (root / "tmp04u5700e" / "app.tmp").write_text("ignored", encoding="utf-8")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        server.start_background()
+        self.assertTrue(server.wait_until_ready())
+        try:
+            server._workspace_path_candidates = lambda: (_ for _ in ()).throw(AssertionError("full scan should not run"))
+
+            top_level = server.list_workspace_paths(query="", limit=30)
+
+            self.assertEqual([item["path"] for item in top_level], ["src", "README.md"])
+            del server._workspace_path_candidates
+
+            matches = server.list_workspace_paths(query="app", limit=30)
+        finally:
+            server.close()
+
+        paths = [item["path"] for item in matches]
+        self.assertIn("src/app.py", paths)
+        self.assertFalse(
+            any(
+                ignored in path
+                for path in paths
+                for ignored in ["node_modules", ".local-tools", ".tmp-system", "tmp04u5700e", ".open_somnia"]
+            )
+        )
+
     def _streaming_complete(self, final_text: str):
         def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
             if text_callback is not None:
