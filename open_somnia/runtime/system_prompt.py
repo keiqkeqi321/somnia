@@ -65,6 +65,9 @@ class SystemPromptBuilder:
             "- If you are unsure and a dedicated tool exists, use the dedicated tool first."
         )
         workflow_guidance = (
+            "Problem solving workflow:\n"
+            "- For non-trivial coding tasks, follow a compact loop: understand local evidence, plan the smallest coherent change, implement focused edits, verify with checks matched to risk, then close the loop.\n"
+            "- Do not treat edits as complete until the user-visible goal is verified. If checks cannot run, say what was reviewed and what remains unverified.\n"
             "Workflow rules:\n"
             "- Use `TodoWrite` to break down meaningful work and keep progress visible to the user.\n"
             "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
