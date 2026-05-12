@@ -283,6 +283,33 @@ class ReplTodoTests(unittest.TestCase):
         self.assertLess(rendered.rindex(PROMPT_BORDER), rendered.index("❯ "))
         self.assertNotIn("model: unknown", rendered)
 
+    def test_prompt_message_keeps_status_bar_and_todos_in_one_persistent_panel(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                provider=SimpleNamespace(name="openai", model="gpt-test", reasoning_level="medium")
+            ),
+            context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=8_000,
+                max_tokens=100_000,
+                counter_name="test_counter",
+            ),
+        )
+        session = SimpleNamespace(
+            todo_items=[
+                {"content": "Refactor module", "status": "in_progress", "activeForm": "Refactoring module"},
+                {"content": "Add tests", "status": "pending", "activeForm": "Adding tests"},
+            ]
+        )
+        runner = TurnQueueRunner(runtime, session, stable_prompt=True)
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("model: openai / gpt-test|medium", rendered)
+        self.assertIn("ctx: 8.0% (8.0k / 100.0k tokens)", rendered)
+        self.assertIn("todo (0/2 completed)", rendered)
+        self.assertLess(rendered.index("model: openai / gpt-test|medium"), rendered.index("todo (0/2 completed)"))
+        self.assertLess(rendered.index("todo (0/2 completed)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+
     def test_prompt_message_hides_todos_when_all_completed(self) -> None:
         session = SimpleNamespace(
             todo_items=[

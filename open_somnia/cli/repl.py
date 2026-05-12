@@ -1218,8 +1218,6 @@ class TurnQueueRunner:
         prompt_line = list(styled_prompt_message())
         mode_line = self._execution_mode_fragments()
         status_line = self._status_line()
-        context_line = self.current_context_label()
-        governance_line = self.current_context_governance_label()
         todo_lines = self._todo_lines()
         team_lines = self._team_lines()
         queue_notice = self._queue_notice()
@@ -1230,14 +1228,15 @@ class TurnQueueRunner:
             style = "fg:#9fb8ab" if status_line == self.DONE_TEXT else "fg:#eab308"
             fragments.extend([panel_prefix, (style, status_line), ("", "\n")])
         if self.stable_prompt:
+            status_bar_fragments = self._status_bar_fragments(include_unknown_model=False)
+            if status_bar_fragments:
+                fragments.append(panel_prefix)
+                fragments.extend(status_bar_fragments)
+                fragments.append(("", "\n"))
             for style, line in todo_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in team_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
-            if context_line:
-                fragments.extend([panel_prefix, (self.current_context_style(), context_line), ("", "\n")])
-            if governance_line:
-                fragments.extend([panel_prefix, ("fg:#67e8f9", governance_line), ("", "\n")])
             if queue_notice:
                 fragments.extend([panel_prefix, ("fg:#94a3b8", queue_notice), ("", "\n")])
             if queue_lines:
@@ -1322,30 +1321,32 @@ class TurnQueueRunner:
             return ""
 
     def current_status_label(self) -> str:
+        return "".join(text for _, text in self._status_bar_fragments(include_unknown_model=True))
+
+    def _status_bar_fragments(self, *, include_unknown_model: bool):
         context_label = self.current_context_label()
         token_sum_label = self.current_token_sum_label()
         governance_label = self.current_context_governance_label()
-        parts = [self.current_model_label()]
+        model_label = self.current_model_label()
+        fragments = []
+        if include_unknown_model or model_label != "model: unknown":
+            fragments.append(("fg:#94a3b8", model_label))
         if context_label:
-            parts.append(context_label)
+            if fragments:
+                fragments.append(("fg:#64748b", " | "))
+            fragments.append((self.current_context_style(), context_label))
         if governance_label:
-            parts.append(governance_label)
+            if fragments:
+                fragments.append(("fg:#64748b", " | "))
+            fragments.append(("fg:#67e8f9", governance_label))
         if token_sum_label:
-            parts.append(token_sum_label)
-        return " | ".join(parts)
+            if fragments:
+                fragments.append(("fg:#64748b", " | "))
+            fragments.append(("fg:#7dd3fc", token_sum_label))
+        return fragments
 
     def bottom_toolbar(self):
-        context_label = self.current_context_label()
-        token_sum_label = self.current_token_sum_label()
-        governance_label = self.current_context_governance_label()
-        fragments = [("fg:#94a3b8", self.current_model_label())]
-        if context_label:
-            fragments.extend([("fg:#64748b", " | "), (self.current_context_style(), context_label)])
-        if governance_label:
-            fragments.extend([("fg:#64748b", " | "), ("fg:#67e8f9", governance_label)])
-        if token_sum_label:
-            fragments.extend([("fg:#64748b", " | "), ("fg:#7dd3fc", token_sum_label)])
-        return fragments
+        return self._status_bar_fragments(include_unknown_model=True)
 
     def current_execution_mode(self):
         return execution_mode_spec(self._execution_mode)
@@ -2111,8 +2112,9 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     if prompt_session is not None:
                         prompt_kwargs = {
                             "refresh_interval": 0.1,
-                            "bottom_toolbar": runner.bottom_toolbar,
                         }
+                        if not runner.stable_prompt:
+                            prompt_kwargs["bottom_toolbar"] = runner.bottom_toolbar
                         if pending_query_prefix:
                             prompt_kwargs["default"] = pending_query_prefix
                         query = prompt_session.prompt(
