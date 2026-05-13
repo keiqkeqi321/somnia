@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
+from open_somnia.mcp.registry import _render_mcp_result
 from open_somnia.providers.base import ProviderError
 from open_somnia.providers.anthropic_provider import AnthropicProvider
 from open_somnia.providers.openai_provider import OpenAIProvider
@@ -32,6 +33,7 @@ from open_somnia.runtime.messages import (
     ToolCall,
     encode_embedded_user_message,
     IMAGE_REFERENCE_BLOCK_TYPE,
+    make_tool_result_item,
     make_user_multimodal_message,
     prepare_image_bytes_for_model,
 )
@@ -1869,6 +1871,36 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result["tool_result_content"][0]["type"], "text")
         self.assertEqual(result["tool_result_content"][1]["type"], "input_image")
         self.assertIn("Visual data attached for the next model turn only", result["tool_result_text"])
+
+    def test_mcp_image_content_becomes_structured_tool_result_content(self) -> None:
+        rendered = _render_mcp_result(
+            {
+                "content": [
+                    {"type": "text", "text": "Screenshot captured."},
+                    {
+                        "type": "image",
+                        "data": base64.b64encode(self._TINY_PNG_BYTES).decode("ascii"),
+                        "mimeType": "image/png",
+                    },
+                ]
+            }
+        )
+
+        self.assertIsInstance(rendered, dict)
+        self.assertEqual(rendered["status"], "ok")
+        self.assertIn("Screenshot captured.", rendered["tool_result_text"])
+        self.assertEqual(rendered["tool_result_content"][0]["type"], "text")
+        self.assertEqual(rendered["tool_result_content"][1]["type"], "image_url")
+
+        result_item = make_tool_result_item(
+            "call-1",
+            rendered,
+            rendered_output=json.dumps(rendered, ensure_ascii=False),
+        )
+
+        blocks = active_tool_result_content_blocks(result_item)
+        self.assertEqual(blocks[1]["type"], "image_url")
+        self.assertTrue(blocks[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
     def test_consume_ephemeral_image_blocks_rewrites_user_image_inputs_to_references(self) -> None:
         messages = [
