@@ -10,6 +10,7 @@ ASSISTANT_DELTA = "assistant_delta"
 ASSISTANT_COMPLETED = "assistant_completed"
 TOOL_STARTED = "tool_started"
 TOOL_FINISHED = "tool_finished"
+SUBAGENT_ACTIVITY = "subagent_activity"
 AUTHORIZATION_REQUESTED = "authorization_requested"
 MODE_SWITCH_REQUESTED = "mode_switch_requested"
 INTERRUPT_REQUESTED = "interrupt_requested"
@@ -26,6 +27,7 @@ EVENT_TYPES = frozenset(
         ASSISTANT_COMPLETED,
         TOOL_STARTED,
         TOOL_FINISHED,
+        SUBAGENT_ACTIVITY,
         AUTHORIZATION_REQUESTED,
         MODE_SWITCH_REQUESTED,
         INTERRUPT_REQUESTED,

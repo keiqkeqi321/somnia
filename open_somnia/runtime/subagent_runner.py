@@ -38,7 +38,8 @@ class SubagentRunner:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
-    def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
+    def run_subagent(self, prompt: str, agent_type: str = "Explore", *, activity_id: str | None = None) -> str:
+        activity_id = str(activity_id or f"subagent-{uuid.uuid4().hex[:8]}")
         registry = self._build_registry(agent_type)
         capability_guidance = (
             "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, and `load_skill`. "
@@ -65,9 +66,17 @@ class SubagentRunner:
             consume_ephemeral_image_blocks(messages)
             turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
             messages.append(turn.as_message())
+            turn_text = "\n".join(turn.text_blocks).strip()
+            if turn_text:
+                self._emit_activity(
+                    activity_id=activity_id,
+                    agent_type=agent_type,
+                    prompt=prompt,
+                    kind="assistant",
+                    text=turn_text,
+                )
             if not turn.has_tool_calls():
-                text = "\n".join(turn.text_blocks).strip()
-                return text or "(no summary)"
+                return turn_text or "(no summary)"
             results: list[dict[str, Any]] = []
             ctx = ToolExecutionContext(
                 runtime=self.runtime,
@@ -86,6 +95,13 @@ class SubagentRunner:
                 if repair_hint is not None:
                     pending_tool_repair_hints.append(repair_hint)
                 persisted_output = sanitize_tool_output_for_persistence(output)
+                self._emit_activity(
+                    activity_id=activity_id,
+                    agent_type=agent_type,
+                    prompt=prompt,
+                    kind="tool_result",
+                    text=self._format_tool_activity(tool_call.name, tool_call.input, persisted_output),
+                )
                 results.append(
                     make_tool_result_item(
                         tool_call.id,
@@ -94,8 +110,66 @@ class SubagentRunner:
                     )
                 )
             messages.append(make_tool_result_message(results))
-            final_text = "\n".join(turn.text_blocks).strip() or final_text
+            final_text = turn_text or final_text
         return final_text
+
+    def _emit_activity(
+        self,
+        *,
+        activity_id: str,
+        agent_type: str,
+        prompt: str,
+        kind: str,
+        text: str,
+    ) -> None:
+        text = self._compact_text(text, limit=180)
+        if not text:
+            return
+        handler = getattr(self.runtime, "subagent_activity_handler", None)
+        if not callable(handler):
+            return
+        try:
+            handler(
+                {
+                    "activity_id": activity_id,
+                    "agent_type": agent_type,
+                    "prompt": prompt,
+                    "kind": kind,
+                    "text": text,
+                }
+            )
+        except Exception:
+            pass
+
+    def _format_tool_activity(self, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
+        label = self._tool_activity_label(tool_name, tool_input)
+        rendered = serialize_tool_output(output)
+        summary = self._compact_text(rendered, limit=140)
+        if summary:
+            return f"{label}: {summary}"
+        return label
+
+    def _tool_activity_label(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        if tool_name == "bash":
+            command = self._compact_text(str(tool_input.get("command", "")).strip(), limit=64)
+            return f"bash {command}" if command else "bash"
+        if tool_name in {"read_file", "read_image", "tree"}:
+            path = str(tool_input.get("path", "")).strip() or "."
+            return f"{tool_name} {self._compact_text(path, limit=64)}"
+        if tool_name in {"grep", "find_symbol"}:
+            query = str(tool_input.get("pattern", tool_input.get("query", ""))).strip()
+            return f"{tool_name} {self._compact_text(query, limit=64)}" if query else tool_name
+        return str(tool_name)
+
+    def _compact_text(self, text: str, *, limit: int) -> str:
+        compact = " ".join(str(text).split())
+        if not compact:
+            return ""
+        if len(compact) <= limit:
+            return compact
+        if limit <= 3:
+            return compact[:limit]
+        return compact[: limit - 3] + "..."
 
     def _build_registry(self, agent_type: str) -> ToolRegistry:
         registry = ToolRegistry()

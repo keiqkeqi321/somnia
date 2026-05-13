@@ -35,7 +35,7 @@ class SubagentToolTests(unittest.TestCase):
 
             self.assertEqual(
                 seen["tool_names"],
-                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "load_skill"],
+                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "read_image", "load_skill"],
             )
 
     def test_general_purpose_subagent_exposes_edit_tools(self) -> None:
@@ -53,7 +53,19 @@ class SubagentToolTests(unittest.TestCase):
 
             self.assertEqual(
                 seen["tool_names"],
-                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "write_file", "edit_file", "load_skill"],
+                [
+                    "bash",
+                    "project_scan",
+                    "tree",
+                    "find_symbol",
+                    "glob",
+                    "grep",
+                    "read_file",
+                    "read_image",
+                    "write_file",
+                    "edit_file",
+                    "load_skill",
+                ],
             )
 
     def test_explore_subagent_can_use_bash_in_accept_edits_mode(self) -> None:
@@ -81,6 +93,35 @@ class SubagentToolTests(unittest.TestCase):
             result = runtime.run_subagent("Inspect the workspace", "Explore")
 
             self.assertEqual(result, "Done.")
+
+    def test_subagent_emits_activity_for_text_and_tool_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            events = []
+            runtime.subagent_activity_handler = events.append
+            turns = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None):
+                turns.append(messages)
+                if len(turns) == 1:
+                    return AssistantTurn(
+                        stop_reason="tool_use",
+                        text_blocks=["Searching files."],
+                        tool_calls=[
+                            ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1}),
+                        ],
+                    )
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["Found the root."], tool_calls=[])
+
+            runtime.complete = fake_complete
+
+            result = runtime.run_subagent("Inspect the workspace", "Explore", activity_id="turn-1")
+
+            self.assertEqual(result, "Found the root.")
+            self.assertEqual(events[0]["activity_id"], "turn-1")
+            self.assertEqual(events[0]["text"], "Searching files.")
+            self.assertTrue(any("tree .:" in event["text"] for event in events))
+            self.assertEqual(events[-1]["text"], "Found the root.")
 
     def _make_settings(self, root: Path) -> AppSettings:
         data_dir = root / ".open_somnia"

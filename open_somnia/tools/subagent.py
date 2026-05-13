@@ -7,7 +7,11 @@ from open_somnia.tools.registry import ToolDefinition
 
 def register_subagent_tool(registry) -> None:
     def handler(ctx: Any, payload: dict[str, Any]) -> str:
-        return ctx.runtime.run_subagent(payload["prompt"], payload.get("agent_type", "Explore"))
+        return ctx.runtime.run_subagent(
+            payload["prompt"],
+            payload.get("agent_type", "Explore"),
+            activity_id=getattr(ctx, "trace_id", None),
+        )
 
     registry.register(
         ToolDefinition(

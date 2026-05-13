@@ -380,6 +380,83 @@ class ReplTodoTests(unittest.TestCase):
         self.assertIn("View team logs: /teamlog Analyst", rendered)
         self.assertLess(rendered.index("team (1 active)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
 
+    def test_prompt_message_shows_active_subagent_before_mode_and_prompt(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        runner._note_tool_started(
+            {
+                "actor": "lead",
+                "tool_name": "subagent",
+                "trace_id": "turn-1",
+                "tool_input": {
+                    "agent_type": "Explore",
+                    "prompt": "Inspect the authentication module and report the key risks.",
+                },
+            }
+        )
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("subagent (1 running)", rendered)
+        self.assertIn("⏳ Explore: Inspect the authentication module", rendered)
+        self.assertLess(rendered.index("subagent (1 running)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+
+    def test_prompt_message_rotates_subagent_fact_line(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._note_tool_started(
+            {
+                "actor": "lead",
+                "tool_name": "subagent",
+                "trace_id": "turn-1",
+                "tool_input": {"agent_type": "Explore", "prompt": "Inspect routing."},
+            }
+        )
+        runner._note_subagent_activity(
+            {
+                "activity_id": "turn-1",
+                "agent_type": "Explore",
+                "prompt": "Inspect routing.",
+                "kind": "tool_result",
+                "text": "grep route: found open_somnia/cli/repl.py",
+            }
+        )
+
+        rendered = _render_prompt_text(runner.prompt_message())
+
+        self.assertIn("↳ grep route: found open_somnia/cli/repl.py", rendered)
+        self.assertLess(rendered.index("↳ grep route"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+
+    def test_service_subagent_events_update_persistent_panel(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        streamer = ConsoleStreamer(start_on_new_line=True)
+        started_payload = {
+            "actor": "lead",
+            "tool_name": "subagent",
+            "tool_input": {
+                "agent_type": "general-purpose",
+                "prompt": "Patch the parser tests.",
+            },
+        }
+
+        runner._process_service_event(SimpleNamespace(type="tool_started", payload=started_payload), streamer)
+        self.assertIn("subagent (1 running)", _render_prompt_text(runner.prompt_message()))
+
+        runner._process_service_event(
+            SimpleNamespace(
+                type="subagent_activity",
+                payload={
+                    "agent_type": "general-purpose",
+                    "prompt": "Patch the parser tests.",
+                    "text": "edit_file tests/test_parser.py: Updated file",
+                },
+            ),
+            streamer,
+        )
+        self.assertIn("↳ edit_file tests/test_parser.py: Updated file", _render_prompt_text(runner.prompt_message()))
+
+        runner._process_service_event(SimpleNamespace(type="tool_finished", payload=started_payload), streamer)
+        self.assertNotIn("subagent (", _render_prompt_text(runner.prompt_message()))
+
     def test_prompt_message_omits_cancelled_items_from_visible_todo_block(self) -> None:
         session = SimpleNamespace(
             todo_items=[

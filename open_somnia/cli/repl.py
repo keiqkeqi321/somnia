@@ -20,8 +20,10 @@ from open_somnia.app_service.events import (
     AUTHORIZATION_REQUESTED,
     MODE_SWITCH_REQUESTED,
     SESSION_UPDATED,
+    SUBAGENT_ACTIVITY,
     TODO_UPDATED,
     TOOL_FINISHED,
+    TOOL_STARTED,
 )
 from open_somnia.cli.commands import ConsoleStreamer, _assistant_prefix, _prefix_first_line, print_user_message
 from open_somnia.cli.prompting import (
@@ -677,10 +679,13 @@ class TurnQueueRunner:
     QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
     QUEUED_MESSAGES_ARMED_NOTICE = "Queued: next one sends after current tool"
     THINKING_FRAME_SECONDS = 0.25
+    SUBAGENT_FACT_FRAME_SECONDS = 1.7
+    SUBAGENT_FACTS_LIMIT = 8
     CONTEXT_HEALTHY_STYLE = "fg:#22c55e"
     CONTEXT_WARNING_STYLE = "fg:#84cc16"
     CONTEXT_REDUCING_STYLE = "fg:#f59e0b"
     CONTEXT_CRITICAL_STYLE = "fg:#ef4444"
+    SUBAGENT_PREVIEW_CHARS = 72
 
     def __init__(self, runtime, session, *, stable_prompt: bool = False, service: AppService | None = None) -> None:
         self.runtime = runtime
@@ -708,6 +713,7 @@ class TurnQueueRunner:
         self._authorization_requests: list[AuthorizationRequest] = []
         self._mode_switch_requests: list[ModeSwitchRequest] = []
         self._active_turn_handle = None
+        self._active_subagents: dict[str, dict[str, object]] = {}
 
     def start(self) -> None:
         self._worker.start()
@@ -1012,7 +1018,8 @@ class TurnQueueRunner:
             turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
         if "prepare_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
             turn_kwargs["prepare_next_loop_user_message"] = self.prepare_next_loop_injection
-        response = run_turn(self.session, task.payload, **turn_kwargs)
+        with self._runtime_tool_activity_tracking():
+            response = run_turn(self.session, task.payload, **turn_kwargs)
         response_status = str(getattr(response, "status", "")).strip()
         if streamer.has_output:
             streamer.finish()
@@ -1125,9 +1132,16 @@ class TurnQueueRunner:
         if event_type == ASSISTANT_DELTA:
             streamer(str(payload.get("delta", "")))
             return
+        if event_type == TOOL_STARTED:
+            self._note_tool_started(payload)
+            return
         if event_type == TOOL_FINISHED:
             streamer.finish()
+            self._note_tool_finished(payload)
             self._print_service_tool_event(payload)
+            return
+        if event_type == SUBAGENT_ACTIVITY:
+            self._note_subagent_activity(payload)
             return
         if event_type == AUTHORIZATION_REQUESTED:
             self._enqueue_authorization_request(
@@ -1220,6 +1234,7 @@ class TurnQueueRunner:
         mode_line = self._execution_mode_fragments()
         status_line = self._status_line()
         todo_lines = self._todo_lines()
+        subagent_lines = self._subagent_lines()
         team_lines = self._team_lines()
         queue_notice = self._queue_notice()
         queue_lines = self._queue_preview_lines()
@@ -1235,6 +1250,8 @@ class TurnQueueRunner:
                 fragments.extend(status_bar_fragments)
                 fragments.append(("", "\n"))
             for style, line in todo_lines:
+                fragments.extend([panel_prefix, (style, line), ("", "\n")])
+            for style, line in subagent_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in team_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
@@ -1462,6 +1479,180 @@ class TurnQueueRunner:
                 suffix = ""
             lines.append((style, f"{marker} {text}{suffix}"))
         return lines
+
+    @contextmanager
+    def _runtime_tool_activity_tracking(self):
+        registry = getattr(self.runtime, "registry", None)
+        original_execute = getattr(registry, "execute", None) if registry is not None else None
+        original_handler = getattr(self.runtime, "subagent_activity_handler", None)
+        had_original_handler = hasattr(self.runtime, "subagent_activity_handler")
+        self.runtime.subagent_activity_handler = self._note_subagent_activity
+
+        if registry is None or not callable(original_execute):
+            try:
+                yield
+            finally:
+                if had_original_handler:
+                    self.runtime.subagent_activity_handler = original_handler
+                else:
+                    try:
+                        delattr(self.runtime, "subagent_activity_handler")
+                    except AttributeError:
+                        pass
+            return
+
+        def wrapped_execute(ctx, name: str, payload: dict[str, object]):
+            activity_payload = {
+                "actor": getattr(ctx, "actor", "lead"),
+                "tool_name": name,
+                "tool_input": payload,
+                "trace_id": getattr(ctx, "trace_id", None),
+            }
+            self._note_tool_started(activity_payload)
+            try:
+                return original_execute(ctx, name, payload)
+            finally:
+                self._note_tool_finished(activity_payload)
+
+        registry.execute = wrapped_execute
+        try:
+            yield
+        finally:
+            registry.execute = original_execute
+            if had_original_handler:
+                self.runtime.subagent_activity_handler = original_handler
+            else:
+                try:
+                    delattr(self.runtime, "subagent_activity_handler")
+                except AttributeError:
+                    pass
+
+    def _note_tool_started(self, payload: dict[str, object]) -> None:
+        tool_name = str(payload.get("tool_name", "")).strip()
+        actor = str(payload.get("actor", "")).strip() or "lead"
+        if tool_name != "subagent" or actor != "lead":
+            return
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        key = str(payload.get("trace_id", "")).strip()
+        if not key:
+            key = f"subagent-{time.monotonic_ns()}"
+        prompt = str(tool_input.get("prompt", "")).strip()
+        agent_type = str(tool_input.get("agent_type", "Explore")).strip() or "Explore"
+        with self._lock:
+            self._active_subagents[key] = {
+                "prompt": prompt,
+                "agent_type": agent_type,
+                "started_at": time.monotonic(),
+                "facts": [],
+            }
+        self._invalidate_ui()
+
+    def _note_subagent_activity(self, payload: dict[str, object]) -> None:
+        activity_id = str(payload.get("activity_id", "")).strip()
+        prompt = str(payload.get("prompt", "")).strip()
+        agent_type = str(payload.get("agent_type", "Explore")).strip() or "Explore"
+        text = self._compact_panel_text(str(payload.get("text", "")).strip(), limit=140)
+        if not text:
+            return
+        with self._lock:
+            key = activity_id if activity_id in self._active_subagents else ""
+            if not key and len(self._active_subagents) == 1:
+                key = next(iter(self._active_subagents))
+            if not key and activity_id:
+                key = activity_id
+                self._active_subagents[key] = {
+                    "prompt": prompt,
+                    "agent_type": agent_type,
+                    "started_at": time.monotonic(),
+                    "facts": [],
+                }
+            if not key:
+                return
+            item = self._active_subagents.setdefault(
+                key,
+                {
+                    "prompt": prompt,
+                    "agent_type": agent_type,
+                    "started_at": time.monotonic(),
+                    "facts": [],
+                },
+            )
+            if prompt and not item.get("prompt"):
+                item["prompt"] = prompt
+            if agent_type and not item.get("agent_type"):
+                item["agent_type"] = agent_type
+            facts = item.get("facts")
+            if not isinstance(facts, list):
+                facts = []
+                item["facts"] = facts
+            if not facts or facts[-1] != text:
+                facts.append(text)
+                if len(facts) > self.SUBAGENT_FACTS_LIMIT:
+                    del facts[: len(facts) - self.SUBAGENT_FACTS_LIMIT]
+            item["last_activity_at"] = time.monotonic()
+        self._invalidate_ui()
+
+    def _note_tool_finished(self, payload: dict[str, object]) -> None:
+        tool_name = str(payload.get("tool_name", "")).strip()
+        actor = str(payload.get("actor", "")).strip() or "lead"
+        if tool_name != "subagent" or actor != "lead":
+            return
+        key = str(payload.get("trace_id", "")).strip()
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+        prompt = str(tool_input.get("prompt", "")).strip()
+        agent_type = str(tool_input.get("agent_type", "Explore")).strip() or "Explore"
+        with self._lock:
+            if key and key in self._active_subagents:
+                self._active_subagents.pop(key, None)
+            else:
+                matched_key = None
+                for candidate_key, item in self._active_subagents.items():
+                    if item.get("prompt") == prompt and item.get("agent_type") == agent_type:
+                        matched_key = candidate_key
+                        break
+                if matched_key is not None:
+                    self._active_subagents.pop(matched_key, None)
+                elif len(self._active_subagents) == 1:
+                    self._active_subagents.clear()
+        self._invalidate_ui()
+
+    def _subagent_lines(self) -> list[tuple[str, str]]:
+        with self._lock:
+            active = [dict(item) for item in self._active_subagents.values()]
+        if not active:
+            return []
+        dots = "." * (int(time.monotonic() / self.THINKING_FRAME_SECONDS) % 4)
+        lines: list[tuple[str, str]] = [("fg:#67e8f9", f"subagent ({len(active)} running){dots}")]
+        for item in active:
+            prompt = str(item.get("prompt", "")).strip()
+            if not prompt:
+                prompt = "working"
+            prompt = self._compact_panel_text(prompt, limit=self.SUBAGENT_PREVIEW_CHARS)
+            agent_type = str(item.get("agent_type", "Explore")).strip() or "Explore"
+            elapsed = max(0, int(time.monotonic() - float(item.get("started_at", time.monotonic()))))
+            lines.append(("fg:#fbbf24", f"⏳ {agent_type}: {prompt} ({elapsed}s)"))
+        facts = [
+            str(fact).strip()
+            for item in active
+            for fact in list(item.get("facts", []) or [])
+            if str(fact).strip()
+        ]
+        if facts:
+            fact_index = int(time.monotonic() / self.SUBAGENT_FACT_FRAME_SECONDS) % len(facts)
+            lines.append(("fg:#cbd5e1", f"↳ {facts[fact_index]}"))
+        return lines
+
+    def _compact_panel_text(self, text: str, *, limit: int) -> str:
+        compact = " ".join(str(text).split())
+        if len(compact) <= limit:
+            return compact
+        if limit <= 3:
+            return compact[:limit]
+        return compact[: limit - 3] + "..."
 
     def _team_lines(self) -> list[tuple[str, str]]:
         manager = getattr(self.runtime, "team_manager", None)

@@ -239,6 +239,57 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_run_turn_emits_subagent_activity_events(self) -> None:
+        root = self._stable_test_dir("app-service-subagent-activity")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            lead_calls = 0
+            subagent_calls = 0
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                nonlocal lead_calls, subagent_calls
+                if system_prompt.startswith("You are an isolated subagent"):
+                    subagent_calls += 1
+                    if subagent_calls == 1:
+                        return AssistantTurn(
+                            stop_reason="tool_use",
+                            text_blocks=["Scanning files."],
+                            tool_calls=[ToolCall("call-2", "tree", {"path": ".", "depth": 1, "limit": 1})],
+                        )
+                    return AssistantTurn(stop_reason="end_turn", text_blocks=["Found the workspace root."])
+                lead_calls += 1
+                if lead_calls == 1:
+                    return AssistantTurn(
+                        stop_reason="tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "call-1",
+                                "subagent",
+                                {
+                                    "prompt": "Inspect the workspace",
+                                    "agent_type": "Explore",
+                                },
+                            )
+                        ],
+                    )
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+
+            runtime.complete = fake_complete
+
+            handle = service.run_turn(session, "delegate inspection")
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            events = handle.drain_events()
+
+            subagent_events = [event for event in events if event.type == "subagent_activity"]
+            self.assertTrue(any(event.payload["text"] == "Scanning files." for event in subagent_events))
+            self.assertTrue(any("tree .:" in event.payload["text"] for event in subagent_events))
+            self.assertTrue(any(event.payload["text"] == "Found the workspace root." for event in subagent_events))
+        finally:
+            service.close()
+
     def test_authorization_request_can_be_resolved_through_service(self) -> None:
         root = self._stable_test_dir("app-service-auth")
         runtime = OpenAgentRuntime(self._make_settings(root))

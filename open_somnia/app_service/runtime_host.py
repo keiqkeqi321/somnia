@@ -17,6 +17,7 @@ from open_somnia.app_service.events import (
     INTERRUPT_REQUESTED,
     LOOP_USER_MESSAGE_INJECTED,
     SESSION_UPDATED,
+    SUBAGENT_ACTIVITY,
     TODO_UPDATED,
     TOOL_FINISHED,
     TOOL_STARTED,
@@ -29,6 +30,9 @@ from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import decode_embedded_user_message, render_text_content
 from open_somnia.runtime.session import AgentSession
+
+_MISSING = object()
+
 
 def _combine_user_inputs(inputs: list[str | dict[str, Any]]) -> str | dict[str, Any] | None:
     if not inputs:
@@ -356,6 +360,27 @@ class RuntimeHost:
         finally:
             active_turn.runtime.print_tool_event = original_print_tool_event
 
+    @contextmanager
+    def _patched_subagent_activity(self, active_turn: _ActiveTurn) -> Iterator[None]:
+        original_handler = getattr(active_turn.runtime, "subagent_activity_handler", _MISSING)
+
+        def emit_subagent_activity(payload: dict[str, Any]) -> None:
+            if not isinstance(payload, dict):
+                return
+            self._emit_for_turn(active_turn, SUBAGENT_ACTIVITY, **_clone_value(payload))
+
+        active_turn.runtime.subagent_activity_handler = emit_subagent_activity
+        try:
+            yield
+        finally:
+            if original_handler is _MISSING:
+                try:
+                    delattr(active_turn.runtime, "subagent_activity_handler")
+                except AttributeError:
+                    pass
+            else:
+                active_turn.runtime.subagent_activity_handler = original_handler
+
     def _run_turn_worker(self, active_turn: _ActiveTurn) -> None:
         turn_result: TurnRunResult | None = None
         self._emit_for_turn(
@@ -366,7 +391,11 @@ class RuntimeHost:
         )
         try:
             with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=active_turn.runtime):
-                with self._patched_registry_execute(active_turn), self._patched_tool_logging(active_turn):
+                with (
+                    self._patched_registry_execute(active_turn),
+                    self._patched_tool_logging(active_turn),
+                    self._patched_subagent_activity(active_turn),
+                ):
                     response = active_turn.runtime.run_turn(
                         active_turn.session,
                         active_turn.user_input,
