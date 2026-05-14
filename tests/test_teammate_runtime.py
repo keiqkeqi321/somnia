@@ -116,6 +116,31 @@ class TeammateRuntimeTests(unittest.TestCase):
                 ["stale"],
             )
 
+    def test_shutdown_request_marks_tracker_without_lead_inbox_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bus = MessageBus(InboxStore(root / "inbox"))
+            tracker = RequestTracker(root / "requests")
+            manager = TeammateRuntimeManager(
+                runtime=SimpleNamespace(),
+                team_store=TeamStore(root / "team"),
+                bus=bus,
+                task_store=TaskStore(root / "tasks"),
+                request_tracker=tracker,
+            )
+            manager._upsert_member("Worker", "worker", "idle", "idle_polling", session_id="session-1")
+            request = tracker.create_shutdown_request("Worker")
+
+            handled = manager._handle_control_message(
+                "Worker",
+                {"type": "shutdown_request", "request_id": request["request_id"]},
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(bus.read_inbox("lead", session_id="session-1"), [])
+            self.assertEqual(tracker._load(tracker.shutdown_path)[request["request_id"]]["status"], "accepted")
+            self.assertEqual(manager._find("Worker")["shutdown_reason"], "shutdown_request")
+
     def test_list_all_and_render_log_show_team_log_entry_points(self) -> None:
         class _MemoryTeamStore:
             def __init__(self) -> None:
@@ -1112,6 +1137,24 @@ class TeammateRuntimeTests(unittest.TestCase):
                 [current["id"]],
             )
             self.assertEqual(task_store.list_owned_open("Worker", session_id="session-2"), [])
+
+    def test_session_scoped_storage_writes_into_session_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            inbox_store = InboxStore(root / "inbox")
+            team_store = TeamStore(root / "team")
+
+            task = task_store.create("Session task", session_id="session-1")
+            inbox_store.send("lead", {"content": "hello", "session_id": "session-1"})
+            team_store.save({"team_name": "default", "members": [{"name": "Lead", "session_id": "session-1"}]}, session_id="session-1")
+            team_store.reset_log("Lead", {"type": "session_started", "prompt": "hello", "session_id": "session-1"}, session_id="session-1")
+            team_store.append_log("Lead", {"type": "assistant_message", "content": "working", "session_id": "session-1"}, session_id="session-1")
+
+            self.assertTrue((root / "tasks" / "sessions" / "session-1" / f"task_{task['id']}.json").exists())
+            self.assertTrue((root / "inbox" / "sessions" / "session-1" / "lead.jsonl").exists())
+            self.assertTrue((root / "team" / "sessions" / "session-1" / "team.json").exists())
+            self.assertTrue((root / "team" / "sessions" / "session-1" / "logs" / "Lead.jsonl").exists())
 
 
 if __name__ == "__main__":

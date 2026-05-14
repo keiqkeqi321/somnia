@@ -4601,6 +4601,24 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.token_usage["output_tokens"], 30)
         self.assertEqual(session.token_usage["total_tokens"], 150)
 
+    def test_lead_inbox_drains_shutdown_responses_as_internal_control_messages(self) -> None:
+        marked: list[tuple[str, str]] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.bus = SimpleNamespace(
+            read_inbox=lambda actor, session_id=None: [
+                {"type": "shutdown_response", "request_id": "req-1", "content": "Shutting down."},
+                {"type": "message", "from": "Worker", "content": "Visible update."},
+            ]
+        )
+        runtime.request_tracker = SimpleNamespace(
+            mark_shutdown_response=lambda request_id, status: marked.append((request_id, status))
+        )
+
+        visible = OpenAgentRuntime._drain_lead_visible_inbox(runtime, AgentSession(id="session-1"))
+
+        self.assertEqual(visible, [{"type": "message", "from": "Worker", "content": "Visible update."}])
+        self.assertEqual(marked, [("req-1", "accepted")])
+
 
 if __name__ == "__main__":
     unittest.main()

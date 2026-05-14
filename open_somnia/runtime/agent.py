@@ -2476,6 +2476,27 @@ class OpenAgentRuntime:
         except Exception:
             return False
 
+    def _is_internal_lead_inbox_message(self, message: dict[str, Any]) -> bool:
+        message_type = str(message.get("type", "")).strip()
+        if message_type != "shutdown_response":
+            return False
+        request_id = str(message.get("request_id", "")).strip()
+        if request_id:
+            marker = getattr(getattr(self, "request_tracker", None), "mark_shutdown_response", None)
+            if callable(marker):
+                try:
+                    marker(request_id, "accepted")
+                except Exception:
+                    pass
+        return True
+
+    def _drain_lead_visible_inbox(self, session: AgentSession) -> list[dict[str, Any]]:
+        try:
+            inbox = self.bus.read_inbox("lead", session_id=session.id)
+        except TypeError:
+            inbox = self.bus.read_inbox("lead")
+        return [message for message in inbox if not self._is_internal_lead_inbox_message(message)]
+
     def _active_task_preserve_index(
         self,
         messages: list[dict[str, Any]],
@@ -2612,10 +2633,7 @@ class OpenAgentRuntime:
                         f"[bg:{item['task_id']}] {item['status']}: {item['result']}" for item in background_notifications
                     )
                     session.messages.append(make_user_text_message(f"<background-results>\n{text}\n</background-results>"))
-                try:
-                    inbox = self.bus.read_inbox("lead", session_id=session.id)
-                except TypeError:
-                    inbox = self.bus.read_inbox("lead")
+                inbox = self._drain_lead_visible_inbox(session)
                 if inbox:
                     session.messages.append(make_user_text_message(f"<inbox>{json.dumps(inbox, ensure_ascii=False, indent=2)}</inbox>"))
                 if should_auto_compact(self.context_window_usage(session)):
@@ -2738,7 +2756,7 @@ class OpenAgentRuntime:
                     ):
                         pending_todo_reconcile = True
                         continue
-                    if self._lead_inbox_has_messages():
+                    if self._drain_lead_visible_inbox(session):
                         continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
 
