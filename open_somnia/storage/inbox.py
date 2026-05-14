@@ -17,6 +17,14 @@ class InboxStore:
     def send(self, recipient: str, payload: dict) -> None:
         append_jsonl(self._path(recipient), payload)
 
+    def peek(self, recipient: str) -> list[dict]:
+        path = self._path(recipient)
+        if not path.exists():
+            return []
+        with get_lock(path):
+            lines = path.read_text(encoding="utf-8").splitlines()
+        return [json.loads(line) for line in lines if line.strip()]
+
     def read_and_drain(self, recipient: str) -> list[dict]:
         path = self._path(recipient)
         if not path.exists():

@@ -45,8 +45,15 @@ class TeammateRuntimeManager:
             config = self.team_store.load()
             changed = False
             for member in config.get("members", []):
-                if member.get("status") in {"starting", "working", "idle"}:
-                    name = str(member.get("name", "")).strip()
+                status = member.get("status")
+                name = str(member.get("name", "")).strip()
+                should_restore_shutdown = (
+                    status == "shutdown"
+                    and member.get("shutdown_reason") == "idle_timeout"
+                    and name
+                    and self._has_owned_open_task(name)
+                )
+                if status in {"starting", "working", "idle"} or should_restore_shutdown:
                     role = str(member.get("role", "")).strip() or "teammate"
                     prompt, messages = self._restore_prompt_and_messages(name)
                     had_active_tool = bool(member.get("current_tool_name") or member.get("current_tool_log_id"))
@@ -60,6 +67,9 @@ class TeammateRuntimeManager:
                     member["status"] = "starting"
                     member["activity"] = "restoring_on_boot"
                     member["shutdown_reason"] = None
+                    owned_open = self._owned_open_tasks(name)
+                    if owned_open:
+                        member["current_task_id"] = owned_open[0].get("id")
                     member["last_transition_at"] = now_ts()
                     member["last_activity_at"] = now_ts()
                     if had_active_tool:
@@ -332,7 +342,11 @@ class TeammateRuntimeManager:
                         self._append_log(name, "user_message", {"content": message, "source": "inbox"})
 
                     self._update_member(name, status="working", activity="waiting_for_model")
-                    payload_messages = self.runtime._build_payload_messages(messages, session=None)
+                    payload_builder = getattr(self.runtime, "_build_payload_messages", None)
+                    if callable(payload_builder):
+                        payload_messages = payload_builder(messages, session=None)
+                    else:
+                        payload_messages = messages
                     consume_ephemeral_image_blocks(messages)
                     turn = self.runtime.complete(
                         system_prompt,
@@ -421,60 +435,64 @@ class TeammateRuntimeManager:
                 resume = False
                 poll_total = max(self.runtime.settings.runtime.teammate_idle_timeout_seconds, 1)
                 poll_interval = max(self.runtime.settings.runtime.teammate_poll_interval_seconds, 1)
-                for _ in range(max(poll_total // poll_interval, 1)):
-                    if stop_event.wait(poll_interval):
-                        if self._shutdown_if_stop_requested(name):
-                            return
-                    self._update_member(name, status="idle", activity="idle_polling")
-                    inbox = self.bus.read_inbox(name)
-                    if inbox:
-                        for message in inbox:
-                            if self._handle_control_message(name, message):
+                while True:
+                    for _ in range(max(poll_total // poll_interval, 1)):
+                        if stop_event.wait(poll_interval):
+                            if self._shutdown_if_stop_requested(name):
                                 return
-                            messages.append({"role": "user", "content": json.dumps(message, ensure_ascii=False)})
-                            self._append_log(name, "user_message", {"content": message, "source": "idle_inbox"})
-                        self._update_member(name, status="working", activity="resuming_from_inbox")
-                        resume = True
+                        self._update_member(name, status="idle", activity="idle_polling")
+                        inbox = self.bus.read_inbox(name)
+                        if inbox:
+                            for message in inbox:
+                                if self._handle_control_message(name, message):
+                                    return
+                                messages.append({"role": "user", "content": json.dumps(message, ensure_ascii=False)})
+                                self._append_log(name, "user_message", {"content": message, "source": "idle_inbox"})
+                            self._update_member(name, status="working", activity="resuming_from_inbox")
+                            resume = True
+                            break
+                        owned_open = []
+                        has_open_task = False
+                        list_owned_open = getattr(self.task_store, "list_owned_open", None)
+                        if callable(list_owned_open):
+                            owned_open = list_owned_open(name) or []
+                            has_open_task = bool(owned_open)
+                        else:
+                            has_open_task = bool(getattr(self.task_store, "has_open_task", lambda owner: False)(name))
+                        if has_open_task:
+                            current_task_id = owned_open[0]["id"] if owned_open else member.get("current_task_id") if (member := self._find(name)) else None
+                            self._update_member(name, status="idle", activity="idle_waiting_on_owned_task", current_task_id=current_task_id)
+                            continue
+                        list_claimable_for = getattr(self.task_store, "list_claimable_for", None)
+                        if callable(list_claimable_for):
+                            claimable = list_claimable_for(name)
+                        else:
+                            claimable = self.task_store.list_claimable()
+                        if claimable:
+                            task = claimable[0]
+                            self.task_store.claim(task["id"], name)
+                            self._update_member(name, status="working", activity="auto_claimed_task", current_task_id=task["id"])
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"<auto-claimed>Task #{task['id']}: {task['subject']}\n{task.get('description', '')}</auto-claimed>",
+                                }
+                            )
+                            self._append_log(
+                                name,
+                                "user_message",
+                                {
+                                    "content": f"Task #{task['id']}: {task['subject']}\n{task.get('description', '')}",
+                                    "source": "auto_claimed",
+                                },
+                            )
+                            messages.append({"role": "assistant", "content": f"Claimed task #{task['id']}. Working on it."})
+                            self._append_log(name, "assistant_message", {"content": f"Claimed task #{task['id']}. Working on it."})
+                            resume = True
+                            break
+                    if resume or not self._has_owned_open_task(name):
                         break
-                    owned_open = []
-                    has_open_task = False
-                    list_owned_open = getattr(self.task_store, "list_owned_open", None)
-                    if callable(list_owned_open):
-                        owned_open = list_owned_open(name) or []
-                        has_open_task = bool(owned_open)
-                    else:
-                        has_open_task = bool(getattr(self.task_store, "has_open_task", lambda owner: False)(name))
-                    if has_open_task:
-                        current_task_id = owned_open[0]["id"] if owned_open else member.get("current_task_id") if (member := self._find(name)) else None
-                        self._update_member(name, status="idle", activity="idle_waiting_on_owned_task", current_task_id=current_task_id)
-                        continue
-                    list_claimable_for = getattr(self.task_store, "list_claimable_for", None)
-                    if callable(list_claimable_for):
-                        claimable = list_claimable_for(name)
-                    else:
-                        claimable = self.task_store.list_claimable()
-                    if claimable:
-                        task = claimable[0]
-                        self.task_store.claim(task["id"], name)
-                        self._update_member(name, status="working", activity="auto_claimed_task", current_task_id=task["id"])
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": f"<auto-claimed>Task #{task['id']}: {task['subject']}\n{task.get('description', '')}</auto-claimed>",
-                            }
-                        )
-                        self._append_log(
-                            name,
-                            "user_message",
-                            {
-                                "content": f"Task #{task['id']}: {task['subject']}\n{task.get('description', '')}",
-                                "source": "auto_claimed",
-                            },
-                        )
-                        messages.append({"role": "assistant", "content": f"Claimed task #{task['id']}. Working on it."})
-                        self._append_log(name, "assistant_message", {"content": f"Claimed task #{task['id']}. Working on it."})
-                        resume = True
-                        break
+                    self._update_member(name, status="idle", activity="idle_waiting_on_owned_task")
                 if not resume:
                     self._update_member(
                         name,
@@ -498,6 +516,25 @@ class TeammateRuntimeManager:
                 last_error=str(exc),
             )
             return
+
+    def _owned_open_tasks(self, name: str) -> list[dict]:
+        list_owned_open = getattr(self.task_store, "list_owned_open", None)
+        try:
+            if callable(list_owned_open):
+                return list(list_owned_open(name) or [])
+        except Exception:
+            return []
+        return []
+
+    def _has_owned_open_task(self, name: str) -> bool:
+        owned_open = self._owned_open_tasks(name)
+        if owned_open:
+            return True
+        try:
+            has_open_task = getattr(self.task_store, "has_open_task", None)
+            return bool(callable(has_open_task) and has_open_task(name))
+        except Exception:
+            return False
 
     def _handle_control_message(self, name: str, message: dict) -> bool:
         if message.get("type") != "shutdown_request":

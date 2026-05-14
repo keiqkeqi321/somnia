@@ -2454,6 +2454,15 @@ class OpenAgentRuntime:
             return False
         return not (content.startswith("<background-results>") or content.startswith("<inbox>"))
 
+    def _lead_inbox_has_messages(self) -> bool:
+        checker = getattr(getattr(self, "bus", None), "has_inbox_messages", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker("lead"))
+        except Exception:
+            return False
+
     def _active_task_preserve_index(
         self,
         messages: list[dict[str, Any]],
@@ -2709,6 +2718,8 @@ class OpenAgentRuntime:
                         and not pending_todo_reconcile
                     ):
                         pending_todo_reconcile = True
+                        continue
+                    if self._lead_inbox_has_messages():
                         continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
 

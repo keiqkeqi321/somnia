@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,22 @@ def get_lock(path: Path) -> threading.RLock:
 
 def atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(path)
+    last_error: PermissionError | None = None
+    for _ in range(5):
+        try:
+            tmp_path.replace(path)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if last_error is not None:
+        raise last_error
 
 
 def read_json(path: Path, default: Any) -> Any:

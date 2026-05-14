@@ -34,6 +34,7 @@ TEAM_COLLAB_TOOL_NAMES = frozenset(
         "spawn_teammate",
         "send_message",
         "read_inbox",
+        "wait_for_inbox",
         "broadcast",
         "shutdown_request",
         "plan_approval",

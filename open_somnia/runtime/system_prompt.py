@@ -90,6 +90,7 @@ class SystemPromptBuilder:
                 "Use tools to solve coding tasks. Prefer task_create/task_update/task_list for longer work.\n"
                 "Use TodoWrite for short checklists. Use subagent for isolated subagent work. Use load_skill only when needed.\n"
                 "When collaborating, keep teammates informed through inbox messages and respect shutdown and plan protocols.\n"
+                "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing.\n"
                 f"{identity_guidance}\n"
                 f"{mode_guidance}\n"
                 f"{tool_selection_guidance}\n"

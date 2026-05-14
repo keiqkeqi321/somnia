@@ -28,6 +28,16 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
     def read_inbox(ctx: Any, payload: dict[str, Any]) -> str:
         return json.dumps(bus.read_inbox(ctx.actor), indent=2, ensure_ascii=False)
 
+    def wait_for_inbox(ctx: Any, payload: dict[str, Any]) -> str:
+        timeout_seconds = int(payload.get("timeout_seconds", 30))
+        timeout_seconds = max(1, min(timeout_seconds, 300))
+        messages = bus.wait_for_inbox(
+            ctx.actor,
+            timeout_seconds=timeout_seconds,
+            should_interrupt=getattr(ctx, "should_interrupt", None),
+        )
+        return json.dumps(messages, indent=2, ensure_ascii=False)
+
     def broadcast(ctx: Any, payload: dict[str, Any]) -> str:
         return bus.broadcast(ctx.actor, payload["content"], teammate_manager.member_names())
 
@@ -108,6 +118,25 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             description="Read and drain the current actor inbox.",
             input_schema={"type": "object", "properties": {}},
             handler=read_inbox,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="wait_for_inbox",
+            description=(
+                "Wait briefly for the current actor inbox to receive messages, then read and drain them. "
+                "Use after messaging teammates when their reply is needed before continuing."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait, clamped to 1-300.",
+                    }
+                },
+            },
+            handler=wait_for_inbox,
         )
     )
     registry.register(

@@ -48,6 +48,40 @@ class TeammateRuntimeTests(unittest.TestCase):
 
         return _MemoryTeamStore(payload, logs)
 
+    def test_bus_peek_does_not_drain_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = MessageBus(InboxStore(Path(tmp) / "inbox"))
+            bus.send("worker", "lead", "done")
+
+            self.assertEqual(len(bus.peek_inbox("lead")), 1)
+            self.assertTrue(bus.has_inbox_messages("lead"))
+            self.assertEqual(len(bus.peek_inbox("lead")), 1)
+
+            drained = bus.read_inbox("lead")
+
+            self.assertEqual(len(drained), 1)
+            self.assertEqual(drained[0]["content"], "done")
+            self.assertFalse(bus.has_inbox_messages("lead"))
+
+    def test_wait_for_inbox_returns_when_message_arrives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = MessageBus(InboxStore(Path(tmp) / "inbox"))
+
+            def send_later() -> None:
+                time.sleep(0.05)
+                bus.send("worker", "lead", "ready")
+
+            thread = threading.Thread(target=send_later)
+            thread.start()
+            started_at = time.monotonic()
+            messages = bus.wait_for_inbox("lead", timeout_seconds=2, poll_interval_seconds=0.01)
+            elapsed = time.monotonic() - started_at
+            thread.join(timeout=1)
+
+            self.assertLess(elapsed, 1)
+            self.assertEqual([message["content"] for message in messages], ["ready"])
+            self.assertEqual(bus.read_inbox("lead"), [])
+
     def test_list_all_and_render_log_show_team_log_entry_points(self) -> None:
         class _MemoryTeamStore:
             def __init__(self) -> None:
@@ -724,6 +758,177 @@ class TeammateRuntimeTests(unittest.TestCase):
                 self.assertEqual(task_store.get(task_one["id"])["owner"], "Planner")
                 self.assertEqual(member["current_task_id"], task_one["id"])
                 self.assertIn(member["activity"], {"idle_waiting_on_owned_task", "working", "waiting_for_model", "idle_polling"})
+            finally:
+                release.set()
+                self._stop_manager(manager)
+
+    def test_idle_teammate_with_owned_open_task_survives_timeout_and_resumes_from_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            task = task_store.create("Wait for lead input", preferred_owner="Reporter")
+            task_store.claim(task["id"], "Reporter")
+            idle_called = threading.Event()
+            resumed_from_inbox = threading.Event()
+            release = threading.Event()
+
+            def register_worker_tools(registry) -> None:
+                registry.register(
+                    ToolDefinition(
+                        name="idle",
+                        description="Enter idle state.",
+                        input_schema={"type": "object", "properties": {}},
+                        handler=lambda ctx, payload: "Entering idle phase.",
+                    )
+                )
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                if not idle_called.is_set():
+                    idle_called.set()
+                    return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-1", "idle", {})])
+                if any("Here is the lead input" in str(message.get("content", "")) for message in messages):
+                    resumed_from_inbox.set()
+                while not release.is_set():
+                    if should_interrupt is not None and should_interrupt():
+                        break
+                    time.sleep(0.01)
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["resumed"])
+
+            runtime = SimpleNamespace(
+                settings=SimpleNamespace(
+                    runtime=SimpleNamespace(
+                        max_agent_rounds=2,
+                        teammate_idle_timeout_seconds=1,
+                        teammate_poll_interval_seconds=1,
+                    )
+                ),
+                build_system_prompt=lambda actor, role: "system",
+                print_tool_event=lambda *args, **kwargs: "log-1",
+                _compact_preview=lambda text, limit=120: text[:limit],
+                register_worker_tools=register_worker_tools,
+                complete=fake_complete,
+            )
+            bus = MessageBus(InboxStore(root / "inbox"))
+            manager = TeammateRuntimeManager(
+                runtime=runtime,
+                team_store=TeamStore(root / "team"),
+                bus=bus,
+                task_store=task_store,
+                request_tracker=RequestTracker(root / "requests"),
+            )
+            manager.spawn("Reporter", "reporter", "Wait for lead input.")
+            try:
+                self.assertTrue(idle_called.wait(timeout=1))
+                time.sleep(1.3)
+                member = manager._find("Reporter")
+                self.assertIsNotNone(member)
+                self.assertEqual(member["status"], "idle")
+                self.assertEqual(member["current_task_id"], task["id"])
+                self.assertEqual(task_store.get(task["id"])["owner"], "Reporter")
+
+                bus.send("lead", "Reporter", "Here is the lead input")
+
+                self.assertTrue(resumed_from_inbox.wait(timeout=2))
+            finally:
+                release.set()
+                self._stop_manager(manager)
+
+    def test_restore_state_resumes_idle_timeout_teammate_with_owned_open_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            task = task_store.create("Summarize received reports", preferred_owner="Reporter")
+            task_store.claim(task["id"], "Reporter")
+            resumed_from_inbox = threading.Event()
+            release = threading.Event()
+
+            def register_worker_tools(registry) -> None:
+                registry.register(
+                    ToolDefinition(
+                        name="idle",
+                        description="Enter idle state.",
+                        input_schema={"type": "object", "properties": {}},
+                        handler=lambda ctx, payload: "Entering idle phase.",
+                    )
+                )
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                if any("Reports are ready" in str(message.get("content", "")) for message in messages):
+                    resumed_from_inbox.set()
+                while not release.is_set():
+                    if should_interrupt is not None and should_interrupt():
+                        break
+                    time.sleep(0.01)
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["resumed"])
+
+            runtime = SimpleNamespace(
+                settings=SimpleNamespace(
+                    runtime=SimpleNamespace(
+                        max_agent_rounds=2,
+                        teammate_idle_timeout_seconds=1,
+                        teammate_poll_interval_seconds=1,
+                    )
+                ),
+                build_system_prompt=lambda actor, role: "system",
+                print_tool_event=lambda *args, **kwargs: "log-1",
+                _compact_preview=lambda text, limit=120: text[:limit],
+                register_worker_tools=register_worker_tools,
+                complete=fake_complete,
+            )
+            team_store = TeamStore(root / "team")
+            team_store.save(
+                {
+                    "team_name": "default",
+                    "members": [
+                        {
+                            "name": "Reporter",
+                            "role": "reporter",
+                            "status": "shutdown",
+                            "activity": "idle_timeout",
+                            "last_transition_at": time.time(),
+                            "last_activity_at": time.time(),
+                            "shutdown_reason": "idle_timeout",
+                            "current_task_id": None,
+                            "last_error": None,
+                            "current_tool_name": None,
+                            "current_tool_log_id": None,
+                        }
+                    ],
+                }
+            )
+            team_store.reset_log(
+                "Reporter",
+                {
+                    "type": "session_started",
+                    "timestamp": time.time(),
+                    "name": "Reporter",
+                    "role": "reporter",
+                    "prompt": "Wait for reports.",
+                },
+            )
+            team_store.append_log(
+                "Reporter",
+                {
+                    "type": "user_message",
+                    "timestamp": time.time(),
+                    "content": "Wait for reports.",
+                    "source": "prompt",
+                },
+            )
+            bus = MessageBus(InboxStore(root / "inbox"))
+            bus.send("lead", "Reporter", "Reports are ready")
+            manager = TeammateRuntimeManager(
+                runtime=runtime,
+                team_store=team_store,
+                bus=bus,
+                task_store=task_store,
+                request_tracker=RequestTracker(root / "requests"),
+            )
+            try:
+                self.assertTrue(resumed_from_inbox.wait(timeout=2))
+                member = manager._find("Reporter")
+                self.assertIsNotNone(member)
+                self.assertNotEqual(member["shutdown_reason"], "idle_timeout")
             finally:
                 release.set()
                 self._stop_manager(manager)
