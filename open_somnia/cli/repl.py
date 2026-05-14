@@ -674,6 +674,7 @@ class TurnQueueRunner:
     )
     DONE_TEXT = "done"
     OPEN_TODOS_TEXT = "waiting_on_open_todos"
+    OPEN_TEAM_TEXT = "waiting_on_teammates"
     STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
     STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
     QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
@@ -1405,6 +1406,8 @@ class TurnQueueRunner:
             return self.DONE_TEXT
         if status == "waiting_on_open_todos":
             return self.OPEN_TODOS_TEXT
+        if status == "waiting_on_teammates":
+            return self.OPEN_TEAM_TEXT
         if status == "stopped_with_open_todos":
             return self.STOPPED_WITH_OPEN_TODOS_TEXT
         if status == "stopped_after_max_rounds":
@@ -1415,6 +1418,21 @@ class TurnQueueRunner:
         todo_items = list(getattr(self.session, "todo_items", []) or [])
         return any(str(item.get("status", "pending")).lower() not in TODO_CLOSED_STATUSES for item in todo_items)
 
+    def _has_active_teammates(self) -> bool:
+        manager = getattr(self.runtime, "team_manager", None)
+        summaries = getattr(manager, "active_member_summaries", None)
+        if not callable(summaries):
+            return False
+        try:
+            return bool(summaries(session_id=getattr(self.session, "id", None)))
+        except TypeError:
+            try:
+                return bool(summaries())
+            except Exception:
+                return False
+        except Exception:
+            return False
+
     def _status_for_response(self, response) -> str:
         status = str(getattr(response, "status", "")).strip()
         if status == "stopped_with_open_todos":
@@ -1423,6 +1441,8 @@ class TurnQueueRunner:
             return "stopped_after_max_rounds"
         if self._session_has_open_todos():
             return "waiting_on_open_todos"
+        if self._has_active_teammates():
+            return "waiting_on_teammates"
         return "done"
 
     def _queue_preview_lines(self) -> list[str]:
@@ -1660,7 +1680,10 @@ class TurnQueueRunner:
         formatter = getattr(manager, "_format_member_summary", None)
         if not callable(summaries) or not callable(formatter):
             return []
-        members = summaries()
+        try:
+            members = summaries(session_id=getattr(self.session, "id", None))
+        except TypeError:
+            members = summaries()
         if not members:
             return []
         lines: list[tuple[str, str]] = [("fg:#c4b5fd", f"team ({len(members)} active)")]
@@ -1673,6 +1696,9 @@ class TurnQueueRunner:
             else:
                 style = "fg:#cbd5e1"
             lines.append((style, formatter(member)))
+            interactions = [str(item).strip() for item in list(member.get("recent_interactions", []) or []) if str(item).strip()]
+            if interactions:
+                lines.append(("fg:#cbd5e1", f"↳ {member.get('name', 'teammate')}: {interactions[-1]}"))
         return lines
 
     def _summarize_preview(self, kind: str, payload: str) -> str:
@@ -2488,10 +2514,10 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                             print(json.dumps(task, ensure_ascii=False, indent=2))
                     continue
                 if stripped == "/team":
-                    print(runtime.team_manager.list_all())
+                    print(runtime.team_manager.list_all(session_id=session.id))
                     continue
                 if stripped == "/teamlog":
-                    active = runtime.team_manager.active_member_summaries()
+                    active = runtime.team_manager.active_member_summaries(session_id=session.id)
                     if not active:
                         print("No active teammates. Use /team to inspect the full roster.")
                     else:

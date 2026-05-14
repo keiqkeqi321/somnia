@@ -17,10 +17,12 @@ VALID_MSG_TYPES = [
 
 def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
     def spawn_teammate(ctx: Any, payload: dict[str, Any]) -> str:
-        return teammate_manager.spawn(payload["name"], payload["role"], payload["prompt"])
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return teammate_manager.spawn(payload["name"], payload["role"], payload["prompt"], session_id=session_id)
 
     def list_teammates(ctx: Any, payload: dict[str, Any]) -> str:
-        return teammate_manager.list_all()
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return teammate_manager.list_all(session_id=session_id)
 
     def send_message(ctx: Any, payload: dict[str, Any]) -> str:
         return bus.send(ctx.actor, payload["to"], payload["content"], payload.get("msg_type", "message"))
@@ -39,7 +41,8 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
         return json.dumps(messages, indent=2, ensure_ascii=False)
 
     def broadcast(ctx: Any, payload: dict[str, Any]) -> str:
-        return bus.broadcast(ctx.actor, payload["content"], teammate_manager.member_names())
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return bus.broadcast(ctx.actor, payload["content"], teammate_manager.member_names(session_id=session_id))
 
     def shutdown_request(ctx: Any, payload: dict[str, Any]) -> str:
         request = tracker.create_shutdown_request(payload["teammate"])

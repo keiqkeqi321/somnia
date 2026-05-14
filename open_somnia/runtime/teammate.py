@@ -37,9 +37,21 @@ class TeammateRuntimeManager:
         self._stop_events: dict[str, threading.Event] = {}
         self._stop_reasons: dict[str, str] = {}
         self._lock = threading.RLock()
-        self._restore_state()
+        self._active_session_id: str | None = None
 
-    def _restore_state(self) -> None:
+    def activate_session(self, session_id: str | None) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+        with self._lock:
+            if self._active_session_id == normalized_session_id:
+                return
+            self._active_session_id = normalized_session_id
+        self._suspend_non_session_members(normalized_session_id)
+        self._suspend_legacy_active_members(normalized_session_id)
+        self._restore_state(normalized_session_id)
+
+    def _restore_state(self, session_id: str) -> None:
         resume_specs: list[tuple[str, str, str, list[dict]]] = []
         with self._lock:
             config = self.team_store.load()
@@ -47,13 +59,16 @@ class TeammateRuntimeManager:
             for member in config.get("members", []):
                 status = member.get("status")
                 name = str(member.get("name", "")).strip()
+                if member.get("session_id") != session_id:
+                    continue
                 should_restore_shutdown = (
                     status == "shutdown"
                     and member.get("shutdown_reason") == "idle_timeout"
                     and name
                     and self._has_owned_open_task(name)
                 )
-                if status in {"starting", "working", "idle"} or should_restore_shutdown:
+                should_restore_suspended = status == "suspended" and member.get("shutdown_reason") == "session_not_active"
+                if status in {"starting", "working", "idle"} or should_restore_shutdown or should_restore_suspended:
                     role = str(member.get("role", "")).strip() or "teammate"
                     prompt, messages = self._restore_prompt_and_messages(name)
                     had_active_tool = bool(member.get("current_tool_name") or member.get("current_tool_log_id"))
@@ -81,6 +96,48 @@ class TeammateRuntimeManager:
                 self.team_store.save(config)
         for name, role, prompt, messages in resume_specs:
             self._start_thread(name, role, prompt, initial_messages=messages, resumed=True)
+
+    def _suspend_non_session_members(self, session_id: str) -> None:
+        with self._lock:
+            config = self.team_store.load()
+            changed = False
+            for member in config.get("members", []):
+                name = str(member.get("name", "")).strip()
+                if not member.get("session_id"):
+                    continue
+                if member.get("session_id") == session_id:
+                    continue
+                if str(member.get("status", "")).strip() not in self.ACTIVE_STATUSES:
+                    continue
+                if name:
+                    self._request_stop(name, "session_not_active")
+                member["status"] = "suspended"
+                member["activity"] = "session_not_active"
+                member["shutdown_reason"] = "session_not_active"
+                member["last_transition_at"] = now_ts()
+                changed = True
+            if changed:
+                self.team_store.save(config)
+
+    def _suspend_legacy_active_members(self, session_id: str) -> None:
+        with self._lock:
+            config = self.team_store.load()
+            changed = False
+            for member in config.get("members", []):
+                if member.get("session_id"):
+                    continue
+                if str(member.get("status", "")).strip() not in self.ACTIVE_STATUSES:
+                    continue
+                name = str(member.get("name", "")).strip()
+                if name:
+                    self._request_stop(name, "legacy_no_session")
+                member["status"] = "suspended"
+                member["activity"] = "legacy_no_session"
+                member["shutdown_reason"] = "legacy_no_session"
+                member["last_transition_at"] = now_ts()
+                changed = True
+            if changed:
+                self.team_store.save(config)
 
     def _restore_prompt_and_messages(self, name: str) -> tuple[str | None, list[dict]]:
         prompt: str | None = None
@@ -127,15 +184,23 @@ class TeammateRuntimeManager:
                     return dict(member)
             return None
 
-    def _upsert_member(self, name: str, role: str, status: str, activity: str) -> None:
+    def _upsert_member(self, name: str, role: str, status: str, activity: str, *, session_id: str | None = None) -> None:
         ts = now_ts()
+        normalized_session_id = str(session_id or "").strip() or None
         with self._lock:
             config = self.team_store.load()
             for member in config.get("members", []):
                 if member.get("name") == name:
+                    if (
+                        normalized_session_id
+                        and member.get("session_id")
+                        and member.get("session_id") != normalized_session_id
+                    ):
+                        continue
                     member["role"] = role
                     member["status"] = status
                     member["activity"] = activity
+                    member["session_id"] = normalized_session_id
                     member["last_transition_at"] = ts
                     member["last_activity_at"] = ts
                     member["shutdown_reason"] = None
@@ -151,6 +216,7 @@ class TeammateRuntimeManager:
                     "role": role,
                     "status": status,
                     "activity": activity,
+                    "session_id": normalized_session_id,
                     "last_transition_at": ts,
                     "last_activity_at": ts,
                     "shutdown_reason": None,
@@ -206,11 +272,18 @@ class TeammateRuntimeManager:
                     self.team_store.save(config)
                     return
 
-    def spawn(self, name: str, role: str, prompt: str) -> str:
+    def spawn(self, name: str, role: str, prompt: str, *, session_id: str | None = None) -> str:
+        normalized_session_id = str(session_id or self._active_session_id or "").strip() or None
         member = self._find(name)
-        if member and member.get("status") not in {"idle", "shutdown"}:
+        if member and member.get("session_id") and member.get("session_id") != normalized_session_id:
+            return f"Error: '{name}' belongs to another session. Choose a different teammate name."
+        if (
+            member
+            and member.get("session_id") in {None, normalized_session_id}
+            and member.get("status") not in {"idle", "shutdown", "suspended"}
+        ):
             return f"Error: '{name}' is currently {member['status']}"
-        self._upsert_member(name, role, "starting", "booting")
+        self._upsert_member(name, role, "starting", "booting", session_id=normalized_session_id)
         self.team_store.reset_log(
             name,
             {
@@ -219,6 +292,7 @@ class TeammateRuntimeManager:
                 "name": name,
                 "role": role,
                 "prompt": prompt,
+                "session_id": normalized_session_id,
             },
         )
         self._start_thread(name, role, prompt)
@@ -269,6 +343,15 @@ class TeammateRuntimeManager:
         reason = self._stop_reason(name)
         if reason is None:
             return False
+        if reason == "session_not_active":
+            self._update_member(
+                name,
+                status="suspended",
+                activity="session_not_active",
+                shutdown_reason=reason,
+                current_task_id=None,
+            )
+            return True
         self._update_member(
             name,
             status="shutdown",
@@ -465,7 +548,7 @@ class TeammateRuntimeManager:
                             continue
                         list_claimable_for = getattr(self.task_store, "list_claimable_for", None)
                         if callable(list_claimable_for):
-                            claimable = list_claimable_for(name)
+                            claimable = list_claimable_for(name, session_id=self._member_session_id(name))
                         else:
                             claimable = self.task_store.list_claimable()
                         if claimable:
@@ -525,6 +608,11 @@ class TeammateRuntimeManager:
         except Exception:
             return []
         return []
+
+    def _member_session_id(self, name: str) -> str | None:
+        member = self._find(name)
+        value = member.get("session_id") if member else None
+        return str(value).strip() if value else None
 
     def _has_owned_open_task(self, name: str) -> bool:
         owned_open = self._owned_open_tasks(name)
@@ -593,10 +681,15 @@ class TeammateRuntimeManager:
         hours, minutes = divmod(minutes, 60)
         return f"{hours}h{minutes:02d}m"
 
-    def list_all(self) -> str:
+    def list_all(self, session_id: str | None = None) -> str:
         self._refresh_thread_health()
         config = self._load()
-        members = config.get("members", [])
+        normalized_session_id = str(session_id or "").strip()
+        members = [
+            member
+            for member in config.get("members", [])
+            if not normalized_session_id or member.get("session_id") == normalized_session_id
+        ]
         if not members:
             return "No teammates."
         lines = [f"Team: {config.get('team_name', 'default')}"]
@@ -604,15 +697,26 @@ class TeammateRuntimeManager:
             lines.append("  " + self._format_member_summary(member))
         return "\n".join(lines)
 
-    def member_names(self) -> list[str]:
-        return [member["name"] for member in self._load().get("members", [])]
+    def member_names(self, session_id: str | None = None) -> list[str]:
+        normalized_session_id = str(session_id or self._active_session_id or "").strip()
+        return [
+            member["name"]
+            for member in self._load().get("members", [])
+            if (not normalized_session_id or member.get("session_id") == normalized_session_id)
+            and str(member.get("status", "")).strip() in self.ACTIVE_STATUSES
+        ]
 
-    def active_member_summaries(self) -> list[dict]:
+    def active_member_summaries(self, session_id: str | None = None) -> list[dict]:
         self._refresh_thread_health()
+        normalized_session_id = str(session_id or self._active_session_id or "").strip()
         members: list[dict] = []
         for member in self._load().get("members", []):
+            if normalized_session_id and member.get("session_id") != normalized_session_id:
+                continue
             if str(member.get("status", "")).strip() in self.ACTIVE_STATUSES:
-                members.append(dict(member))
+                summary = dict(member)
+                summary["recent_interactions"] = self._recent_interaction_summaries(str(member.get("name", "")))
+                members.append(summary)
         return members
 
     def render_log(self, name: str) -> str:
@@ -661,6 +765,37 @@ class TeammateRuntimeManager:
         if event_type == "runtime_error":
             return [f"- runtime_error: {self._compact_text(str(entry.get('error', 'unknown error')))}"]
         return [f"- {event_type}: {self._compact_text(json.dumps(entry, ensure_ascii=False))}"]
+
+    def _recent_interaction_summaries(self, name: str, *, limit: int = 8) -> list[str]:
+        summaries: list[str] = []
+        for entry in reversed(self.team_store.read_log(name)):
+            summary = self._interaction_summary(entry)
+            if not summary:
+                continue
+            if summary in summaries:
+                continue
+            summaries.append(summary)
+            if len(summaries) >= limit:
+                break
+        summaries.reverse()
+        return summaries
+
+    def _interaction_summary(self, entry: dict) -> str:
+        event_type = str(entry.get("type", "event"))
+        if event_type == "user_message":
+            source = str(entry.get("source", "message")).strip() or "message"
+            return f"{source}: {self._compact_text(self._render_log_content(entry.get('content')), limit=140)}"
+        if event_type == "assistant_message":
+            return f"assistant: {self._compact_text(self._render_log_content(entry.get('content')), limit=140)}"
+        if event_type == "tool_call":
+            display_tool_name = self._display_tool_name(entry.get("tool_name", "unknown"))
+            output = self._compact_text(str(entry.get("output_preview", "(no output)")), limit=120)
+            if output:
+                return f"tool {display_tool_name}: {output}"
+            return f"tool {display_tool_name}"
+        if event_type == "runtime_error":
+            return f"runtime_error: {self._compact_text(str(entry.get('error', 'unknown error')), limit=140)}"
+        return ""
 
     def _render_log_content(self, content) -> str:
         if isinstance(content, (dict, list)):

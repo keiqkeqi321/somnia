@@ -367,18 +367,30 @@ class ReplTodoTests(unittest.TestCase):
                         "activity": "running_tool:grep",
                         "current_tool_name": "grep",
                         "last_activity_at": 0.0,
+                        "recent_interactions": ["tool grep: Found 12 matches"],
+                    },
+                    {
+                        "name": "Writer",
+                        "role": "report writer",
+                        "status": "idle",
+                        "activity": "idle_waiting_on_owned_task",
+                        "last_activity_at": 0.0,
+                        "recent_interactions": ["assistant: Waiting for analysis results"],
                     }
                 ],
-                _format_member_summary=lambda member: "Analyst (algorithm analyst): working [tool grep] View team logs: /teamlog Analyst",
+                _format_member_summary=lambda member: f"{member['name']} ({member['role']}): {member['status']} View team logs: /teamlog {member['name']}",
             )
         )
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
 
         rendered = _render_prompt_text(runner.prompt_message())
 
-        self.assertIn("team (1 active)", rendered)
+        self.assertIn("team (2 active)", rendered)
         self.assertIn("View team logs: /teamlog Analyst", rendered)
-        self.assertLess(rendered.index("team (1 active)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
+        self.assertIn("View team logs: /teamlog Writer", rendered)
+        self.assertIn("↳ Analyst: tool grep: Found 12 matches", rendered)
+        self.assertIn("↳ Writer: assistant: Waiting for analysis results", rendered)
+        self.assertLess(rendered.index("team (2 active)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
 
     def test_prompt_message_shows_active_subagent_before_mode_and_prompt(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
@@ -939,6 +951,20 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(status, "waiting_on_open_todos")
         runner._status = status
         self.assertEqual(runner._status_line(), "waiting_on_open_todos")
+
+    def test_status_for_response_marks_completed_turn_with_active_teammates_explicitly(self) -> None:
+        runtime = SimpleNamespace(
+            team_manager=SimpleNamespace(
+                active_member_summaries=lambda: [{"name": "Architect", "status": "working"}],
+            )
+        )
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+
+        status = runner._status_for_response(SimpleNamespace(status="completed"))
+
+        self.assertEqual(status, "waiting_on_teammates")
+        runner._status = status
+        self.assertEqual(runner._status_line(), "waiting_on_teammates")
 
     def test_status_for_response_keeps_done_when_all_todos_are_closed(self) -> None:
         runner = TurnQueueRunner(

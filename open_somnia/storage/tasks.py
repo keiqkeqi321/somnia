@@ -62,6 +62,7 @@ class TaskStore:
         description: str = "",
         *,
         preferred_owner: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """创建新任务.
 
@@ -80,6 +81,7 @@ class TaskStore:
             "status": "pending",
             "owner": None,
             "preferred_owner": preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None,
+            "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
             "blockedBy": [],
             "blocks": [],
             "created_at": now_ts(),
@@ -157,16 +159,18 @@ class TaskStore:
     def has_open_task(self, owner: str) -> bool:
         return bool(self.list_owned_open(owner))
 
-    def list_claimable(self) -> list[dict[str, Any]]:
+    def list_claimable(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        normalized_session_id = str(session_id or "").strip()
         return [
             task
             for task in self.list_all()
             if task.get("status") == "pending" and not task.get("owner") and not task.get("blockedBy")
+            and (not normalized_session_id or task.get("session_id") == normalized_session_id)
         ]
 
-    def list_claimable_for(self, owner: str) -> list[dict[str, Any]]:
+    def list_claimable_for(self, owner: str, session_id: str | None = None) -> list[dict[str, Any]]:
         owner_name = str(owner).strip()
-        claimable = self.list_claimable()
+        claimable = self.list_claimable(session_id=session_id)
         preferred = [task for task in claimable if task.get("preferred_owner") == owner_name]
         neutral = [task for task in claimable if not task.get("preferred_owner")]
         return preferred + neutral

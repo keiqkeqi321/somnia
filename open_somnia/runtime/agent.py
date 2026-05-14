@@ -2552,6 +2552,9 @@ class OpenAgentRuntime:
     ) -> AgentLoopResult:
         session.pending_file_changes = []
         session.last_turn_file_changes = []
+        activator = getattr(getattr(self, "team_manager", None), "activate_session", None)
+        if callable(activator):
+            activator(session.id)
         task_anchor_message, latest_user_message = self._normalize_user_input_message(user_input)
         session.messages.append(task_anchor_message)
         self._append_transcript_entry(session.id, task_anchor_message)

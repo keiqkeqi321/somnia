@@ -24,12 +24,23 @@ def _render_task_list(tasks: list[dict[str, Any]]) -> str:
 
 
 def register_task_tools(registry, task_store) -> None:
+    def _context_session_id(ctx: Any) -> str | None:
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        if session_id:
+            return str(session_id)
+        manager = getattr(getattr(ctx, "runtime", None), "team_manager", None)
+        getter = getattr(manager, "_member_session_id", None)
+        if callable(getter):
+            return getter(getattr(ctx, "actor", ""))
+        return None
+
     def create_task(ctx: Any, payload: dict[str, Any]) -> str:
         return json.dumps(
             task_store.create(
                 payload["subject"],
                 payload.get("description", ""),
                 preferred_owner=payload.get("preferred_owner"),
+                session_id=_context_session_id(ctx),
             ),
             indent=2,
             ensure_ascii=False,

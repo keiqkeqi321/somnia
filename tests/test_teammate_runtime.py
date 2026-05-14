@@ -128,12 +128,16 @@ class TeammateRuntimeTests(unittest.TestCase):
 
         roster = manager.list_all()
         log_output = manager.render_log("Analyst")
+        summaries = manager.active_member_summaries()
 
         self.assertIn("View team logs: /teamlog Analyst", roster)
         self.assertIn("tool grep", roster)
         self.assertIn("[team log Analyst]", log_output)
         self.assertIn("assistant: I will inspect crease generation.", log_output)
         self.assertIn("Tool log: /toollog abc123", log_output)
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("assistant: I will inspect crease generation.", summaries[0]["recent_interactions"])
+        self.assertIn("tool grep: Found 12 matches", summaries[0]["recent_interactions"])
 
     def test_team_ui_displays_update_for_edit_file_tool(self) -> None:
         class _MemoryTeamStore:
@@ -311,6 +315,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                         {
                             "name": "Planner",
                             "role": "planner",
+                            "session_id": "session-1",
                             "status": "idle",
                             "activity": "idle_polling",
                             "last_transition_at": time.time(),
@@ -351,6 +356,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 task_store=TaskStore(root / "tasks"),
                 request_tracker=RequestTracker(root / "requests"),
             )
+            manager.activate_session("session-1")
             try:
                 self.assertTrue(resumed.wait(timeout=1))
                 member = manager._find("Planner")
@@ -386,6 +392,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 {
                     "name": "Planner",
                     "role": "planner",
+                    "session_id": "session-1",
                     "status": "working",
                     "activity": "running_tool:grep",
                     "last_transition_at": time.time(),
@@ -424,6 +431,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             task_store=SimpleNamespace(),
             request_tracker=SimpleNamespace(),
         )
+        manager.activate_session("session-1")
 
         member = team_store.load()["members"][0]
         self.assertEqual(member["status"], "starting")
@@ -457,6 +465,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 {
                     "name": "Analyst",
                     "role": "analyst",
+                    "session_id": "session-1",
                     "status": "idle",
                     "activity": "idle_polling",
                     "last_transition_at": time.time(),
@@ -493,6 +502,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             task_store=SimpleNamespace(),
             request_tracker=SimpleNamespace(),
         )
+        manager.activate_session("session-1")
 
         member = team_store.load()["members"][0]
         self.assertEqual(member["status"], "starting")
@@ -501,6 +511,99 @@ class TeammateRuntimeTests(unittest.TestCase):
         self.assertNotIn("current_tool_log_id", member)
         self.assertEqual(manager.resume_specs[0][:3], ("Analyst", "analyst", "Stay available."))
         self.assertTrue(manager.resume_specs[0][4])
+
+    def test_activate_session_suspends_other_session_teammates_without_resuming_them(self) -> None:
+        class _RecordingManager(TeammateRuntimeManager):
+            def __init__(self, *args, **kwargs) -> None:
+                self.resume_specs: list[tuple[str, str, str, list[dict], bool]] = []
+                super().__init__(*args, **kwargs)
+
+            def _start_thread(
+                self,
+                name: str,
+                role: str,
+                prompt: str,
+                *,
+                initial_messages: list[dict] | None = None,
+                resumed: bool = False,
+            ) -> None:
+                self.resume_specs.append((name, role, prompt, list(initial_messages or []), resumed))
+
+        payload = {
+            "team_name": "default",
+            "members": [
+                {
+                    "name": "OldWorker",
+                    "role": "old session worker",
+                    "session_id": "old-session",
+                    "status": "working",
+                    "activity": "waiting_for_model",
+                    "last_transition_at": time.time(),
+                    "last_activity_at": time.time(),
+                    "shutdown_reason": None,
+                    "current_task_id": None,
+                    "last_error": None,
+                    "current_tool_name": None,
+                    "current_tool_log_id": None,
+                },
+                {
+                    "name": "NewWorker",
+                    "role": "new session worker",
+                    "session_id": "new-session",
+                    "status": "idle",
+                    "activity": "idle_polling",
+                    "last_transition_at": time.time(),
+                    "last_activity_at": time.time(),
+                    "shutdown_reason": None,
+                    "current_task_id": None,
+                    "last_error": None,
+                    "current_tool_name": None,
+                    "current_tool_log_id": None,
+                },
+            ],
+        }
+        logs = {
+            "OldWorker": [
+                {
+                    "type": "session_started",
+                    "timestamp": time.time(),
+                    "name": "OldWorker",
+                    "role": "old session worker",
+                    "prompt": "Old work.",
+                    "session_id": "old-session",
+                },
+                {"type": "user_message", "timestamp": time.time(), "content": "Old work.", "source": "prompt"},
+            ],
+            "NewWorker": [
+                {
+                    "type": "session_started",
+                    "timestamp": time.time(),
+                    "name": "NewWorker",
+                    "role": "new session worker",
+                    "prompt": "New work.",
+                    "session_id": "new-session",
+                },
+                {"type": "user_message", "timestamp": time.time(), "content": "New work.", "source": "prompt"},
+            ],
+        }
+        team_store = self._make_memory_team_store(payload, logs)
+        manager = _RecordingManager(
+            runtime=SimpleNamespace(),
+            team_store=team_store,
+            bus=SimpleNamespace(),
+            task_store=SimpleNamespace(),
+            request_tracker=SimpleNamespace(),
+        )
+
+        manager.activate_session("new-session")
+
+        old_member, new_member = team_store.load()["members"]
+        self.assertEqual(old_member["status"], "suspended")
+        self.assertEqual(old_member["shutdown_reason"], "session_not_active")
+        self.assertEqual(new_member["status"], "starting")
+        self.assertEqual([spec[0] for spec in manager.resume_specs], ["NewWorker"])
+        self.assertEqual(manager.member_names(session_id="new-session"), ["NewWorker"])
+        self.assertEqual(manager.member_names(session_id="old-session"), [])
 
     def test_restore_state_can_continue_claimed_task_from_persisted_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -512,7 +615,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             (inputs / "beta.md").write_text("Beta feature note", encoding="utf-8")
 
             task_store = TaskStore(root / "tasks")
-            task = task_store.create("Summarize beta")
+            task = task_store.create("Summarize beta", session_id="session-1")
             task_store.claim(task["id"], "Writer")
             complete_calls = {"count": 0}
 
@@ -614,6 +717,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                         {
                             "name": "Writer",
                             "role": "writer",
+                            "session_id": "session-1",
                             "status": "working",
                             "activity": "waiting_for_model",
                             "last_transition_at": time.time(),
@@ -683,6 +787,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 task_store=task_store,
                 request_tracker=RequestTracker(root / "requests"),
             )
+            manager.activate_session("session-1")
             try:
                 deadline = time.time() + 2
                 while time.time() < deadline:
@@ -837,7 +942,7 @@ class TeammateRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             task_store = TaskStore(root / "tasks")
-            task = task_store.create("Summarize received reports", preferred_owner="Reporter")
+            task = task_store.create("Summarize received reports", preferred_owner="Reporter", session_id="session-1")
             task_store.claim(task["id"], "Reporter")
             resumed_from_inbox = threading.Event()
             release = threading.Event()
@@ -883,6 +988,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                         {
                             "name": "Reporter",
                             "role": "reporter",
+                            "session_id": "session-1",
                             "status": "shutdown",
                             "activity": "idle_timeout",
                             "last_transition_at": time.time(),
@@ -924,6 +1030,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 task_store=task_store,
                 request_tracker=RequestTracker(root / "requests"),
             )
+            manager.activate_session("session-1")
             try:
                 self.assertTrue(resumed_from_inbox.wait(timeout=2))
                 member = manager._find("Reporter")
@@ -937,13 +1044,14 @@ class TeammateRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             task_store = TaskStore(root / "tasks")
-            neutral = task_store.create("Neutral task")
-            writer_task = task_store.create("Writer task", preferred_owner="Writer")
-            planner_task = task_store.create("Planner task", preferred_owner="Planner")
+            neutral = task_store.create("Neutral task", session_id="session-1")
+            writer_task = task_store.create("Writer task", preferred_owner="Writer", session_id="session-1")
+            planner_task = task_store.create("Planner task", preferred_owner="Planner", session_id="session-1")
+            task_store.create("Other session task", preferred_owner="Writer", session_id="session-2")
 
-            writer_claimable = task_store.list_claimable_for("Writer")
-            planner_claimable = task_store.list_claimable_for("Planner")
-            other_claimable = task_store.list_claimable_for("Other")
+            writer_claimable = task_store.list_claimable_for("Writer", session_id="session-1")
+            planner_claimable = task_store.list_claimable_for("Planner", session_id="session-1")
+            other_claimable = task_store.list_claimable_for("Other", session_id="session-1")
 
             self.assertEqual([task["id"] for task in writer_claimable], [writer_task["id"], neutral["id"]])
             self.assertEqual([task["id"] for task in planner_claimable], [planner_task["id"], neutral["id"]])
