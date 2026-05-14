@@ -417,7 +417,8 @@ class TeammateRuntimeManager:
                                 {"content": repair_message, "source": "tool_repair_hint"},
                             )
                     self._update_member(name, status="working", activity="checking_inbox")
-                    inbox = self.bus.read_inbox(name)
+                    member_session_id = self._member_session_id(name)
+                    inbox = self.bus.read_inbox(name, session_id=member_session_id)
                     for message in inbox:
                         if self._handle_control_message(name, message):
                             return
@@ -524,7 +525,8 @@ class TeammateRuntimeManager:
                             if self._shutdown_if_stop_requested(name):
                                 return
                         self._update_member(name, status="idle", activity="idle_polling")
-                        inbox = self.bus.read_inbox(name)
+                        member_session_id = self._member_session_id(name)
+                        inbox = self.bus.read_inbox(name, session_id=member_session_id)
                         if inbox:
                             for message in inbox:
                                 if self._handle_control_message(name, message):
@@ -631,7 +633,14 @@ class TeammateRuntimeManager:
         self._request_stop(name, "shutdown_request")
         if request_id:
             self.request_tracker.mark_shutdown_response(request_id, "accepted")
-            self.bus.send(name, "lead", "Shutting down.", "shutdown_response", {"request_id": request_id})
+            self.bus.send(
+                name,
+                "lead",
+                "Shutting down.",
+                "shutdown_response",
+                {"request_id": request_id},
+                session_id=self._member_session_id(name),
+            )
         self._update_member(
             name,
             status="shutdown",

@@ -17,19 +17,32 @@ class InboxStore:
     def send(self, recipient: str, payload: dict) -> None:
         append_jsonl(self._path(recipient), payload)
 
-    def peek(self, recipient: str) -> list[dict]:
-        path = self._path(recipient)
-        if not path.exists():
-            return []
-        with get_lock(path):
-            lines = path.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines if line.strip()]
+    def _matches_session(self, message: dict, session_id: str | None) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return True
+        return message.get("session_id") == normalized_session_id
 
-    def read_and_drain(self, recipient: str) -> list[dict]:
+    def peek(self, recipient: str, session_id: str | None = None) -> list[dict]:
         path = self._path(recipient)
         if not path.exists():
             return []
         with get_lock(path):
             lines = path.read_text(encoding="utf-8").splitlines()
-            atomic_write_text(path, "")
-        return [json.loads(line) for line in lines if line.strip()]
+        messages = [json.loads(line) for line in lines if line.strip()]
+        return [message for message in messages if self._matches_session(message, session_id)]
+
+    def read_and_drain(self, recipient: str, session_id: str | None = None) -> list[dict]:
+        path = self._path(recipient)
+        if not path.exists():
+            return []
+        with get_lock(path):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            messages = [json.loads(line) for line in lines if line.strip()]
+            matched = [message for message in messages if self._matches_session(message, session_id)]
+            remaining = [message for message in messages if not self._matches_session(message, session_id)]
+            if remaining:
+                atomic_write_text(path, "".join(json.dumps(message, ensure_ascii=False) + "\n" for message in remaining))
+            else:
+                atomic_write_text(path, "")
+        return matched

@@ -2058,6 +2058,12 @@ class OpenAgentRuntime:
         )
 
     def _register_worker_local_tools(self, registry: ToolRegistry) -> None:
+        def worker_session_id(actor: str) -> str | None:
+            getter = getattr(getattr(self, "team_manager", None), "_member_session_id", None)
+            if callable(getter):
+                return getter(actor)
+            return None
+
         registry.register(
             ToolDefinition(
                 name="send_message",
@@ -2070,7 +2076,12 @@ class OpenAgentRuntime:
                     },
                     "required": ["to", "content"],
                 },
-                handler=lambda ctx, payload: self.bus.send(ctx.actor, payload["to"], payload["content"]),
+                handler=lambda ctx, payload: self.bus.send(
+                    ctx.actor,
+                    payload["to"],
+                    payload["content"],
+                    session_id=worker_session_id(ctx.actor),
+                ),
             )
         )
         registry.register(
@@ -2096,7 +2107,9 @@ class OpenAgentRuntime:
 
     def _submit_plan(self, actor: str, plan: str) -> str:
         request = self.request_tracker.create_plan_request(actor, plan)
-        self.bus.send(actor, "lead", plan, "plan_request", {"request_id": request["request_id"]})
+        getter = getattr(getattr(self, "team_manager", None), "_member_session_id", None)
+        session_id = getter(actor) if callable(getter) else None
+        self.bus.send(actor, "lead", plan, "plan_request", {"request_id": request["request_id"]}, session_id=session_id)
         return f"Submitted plan request {request['request_id']}"
 
     def _environment_guidance(self) -> str:
@@ -2599,7 +2612,10 @@ class OpenAgentRuntime:
                         f"[bg:{item['task_id']}] {item['status']}: {item['result']}" for item in background_notifications
                     )
                     session.messages.append(make_user_text_message(f"<background-results>\n{text}\n</background-results>"))
-                inbox = self.bus.read_inbox("lead")
+                try:
+                    inbox = self.bus.read_inbox("lead", session_id=session.id)
+                except TypeError:
+                    inbox = self.bus.read_inbox("lead")
                 if inbox:
                     session.messages.append(make_user_text_message(f"<inbox>{json.dumps(inbox, ensure_ascii=False, indent=2)}</inbox>"))
                 if should_auto_compact(self.context_window_usage(session)):

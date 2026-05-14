@@ -82,6 +82,40 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual([message["content"] for message in messages], ["ready"])
             self.assertEqual(bus.read_inbox("lead"), [])
 
+    def test_bus_session_filter_preserves_other_session_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = MessageBus(InboxStore(Path(tmp) / "inbox"))
+            bus.send("old", "Worker", "old work", session_id="old-session")
+            bus.send("new", "Worker", "new work", session_id="new-session")
+
+            new_messages = bus.read_inbox("Worker", session_id="new-session")
+
+            self.assertEqual([message["content"] for message in new_messages], ["new work"])
+            self.assertEqual(
+                [message["content"] for message in bus.peek_inbox("Worker", session_id="old-session")],
+                ["old work"],
+            )
+            self.assertEqual(bus.read_inbox("Worker", session_id="new-session"), [])
+            self.assertEqual([message["content"] for message in bus.read_inbox("Worker")], ["old work"])
+
+    def test_wait_for_inbox_ignores_other_session_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bus = MessageBus(InboxStore(Path(tmp) / "inbox"))
+            bus.send("old", "lead", "stale", session_id="old-session")
+
+            messages = bus.wait_for_inbox(
+                "lead",
+                session_id="new-session",
+                timeout_seconds=0.05,
+                poll_interval_seconds=0.01,
+            )
+
+            self.assertEqual(messages, [])
+            self.assertEqual(
+                [message["content"] for message in bus.read_inbox("lead", session_id="old-session")],
+                ["stale"],
+            )
+
     def test_list_all_and_render_log_show_team_log_entry_points(self) -> None:
         class _MemoryTeamStore:
             def __init__(self) -> None:
@@ -1022,7 +1056,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 },
             )
             bus = MessageBus(InboxStore(root / "inbox"))
-            bus.send("lead", "Reporter", "Reports are ready")
+            bus.send("lead", "Reporter", "Reports are ready", session_id="session-1")
             manager = TeammateRuntimeManager(
                 runtime=runtime,
                 team_store=team_store,

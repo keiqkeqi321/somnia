@@ -25,16 +25,26 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
         return teammate_manager.list_all(session_id=session_id)
 
     def send_message(ctx: Any, payload: dict[str, Any]) -> str:
-        return bus.send(ctx.actor, payload["to"], payload["content"], payload.get("msg_type", "message"))
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return bus.send(
+            ctx.actor,
+            payload["to"],
+            payload["content"],
+            payload.get("msg_type", "message"),
+            session_id=session_id,
+        )
 
     def read_inbox(ctx: Any, payload: dict[str, Any]) -> str:
-        return json.dumps(bus.read_inbox(ctx.actor), indent=2, ensure_ascii=False)
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
+        return json.dumps(bus.read_inbox(ctx.actor, session_id=session_id), indent=2, ensure_ascii=False)
 
     def wait_for_inbox(ctx: Any, payload: dict[str, Any]) -> str:
         timeout_seconds = int(payload.get("timeout_seconds", 30))
         timeout_seconds = max(1, min(timeout_seconds, 300))
+        session_id = getattr(getattr(ctx, "session", None), "id", None)
         messages = bus.wait_for_inbox(
             ctx.actor,
+            session_id=session_id,
             timeout_seconds=timeout_seconds,
             should_interrupt=getattr(ctx, "should_interrupt", None),
         )
@@ -42,7 +52,12 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
 
     def broadcast(ctx: Any, payload: dict[str, Any]) -> str:
         session_id = getattr(getattr(ctx, "session", None), "id", None)
-        return bus.broadcast(ctx.actor, payload["content"], teammate_manager.member_names(session_id=session_id))
+        return bus.broadcast(
+            ctx.actor,
+            payload["content"],
+            teammate_manager.member_names(session_id=session_id),
+            session_id=session_id,
+        )
 
     def shutdown_request(ctx: Any, payload: dict[str, Any]) -> str:
         request = tracker.create_shutdown_request(payload["teammate"])
@@ -52,6 +67,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             "Please shut down.",
             "shutdown_request",
             {"request_id": request["request_id"]},
+            session_id=getattr(getattr(ctx, "session", None), "id", None),
         )
         return f"Shutdown request {request['request_id']} sent to '{payload['teammate']}'"
 
@@ -69,6 +85,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 "approve": payload["approve"],
                 "feedback": payload.get("feedback", ""),
             },
+            session_id=getattr(getattr(ctx, "session", None), "id", None),
         )
         return f"Plan {'approved' if payload['approve'] else 'rejected'} for '{result['from']}'"
 

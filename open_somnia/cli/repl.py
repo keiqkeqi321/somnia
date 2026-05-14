@@ -2528,7 +2528,7 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     print(runtime.render_team_log(name))
                     continue
                 if stripped == "/inbox":
-                    print(json.dumps(runtime.bus.read_inbox("lead"), indent=2, ensure_ascii=False))
+                    print(json.dumps(runtime.bus.read_inbox("lead", session_id=session.id), indent=2, ensure_ascii=False))
                     continue
                 if stripped == "/mcp":
                     if runner.has_inflight_work():
