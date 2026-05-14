@@ -507,7 +507,10 @@ class TeammateRuntimeManager:
                 initial_owned_open = []
                 list_owned_open = getattr(self.task_store, "list_owned_open", None)
                 if callable(list_owned_open):
-                    initial_owned_open = list_owned_open(name) or []
+                    try:
+                        initial_owned_open = list_owned_open(name, session_id=self._member_session_id(name)) or []
+                    except TypeError:
+                        initial_owned_open = list_owned_open(name) or []
                 retained_task_id = initial_owned_open[0]["id"] if initial_owned_open else None
                 initial_activity = "idle_waiting_on_owned_task" if initial_owned_open else "idle_polling"
                 self._update_member(
@@ -540,10 +543,21 @@ class TeammateRuntimeManager:
                         has_open_task = False
                         list_owned_open = getattr(self.task_store, "list_owned_open", None)
                         if callable(list_owned_open):
-                            owned_open = list_owned_open(name) or []
+                            try:
+                                owned_open = list_owned_open(name, session_id=self._member_session_id(name)) or []
+                            except TypeError:
+                                owned_open = list_owned_open(name) or []
                             has_open_task = bool(owned_open)
                         else:
-                            has_open_task = bool(getattr(self.task_store, "has_open_task", lambda owner: False)(name))
+                            try:
+                                has_open_task = bool(
+                                    getattr(self.task_store, "has_open_task", lambda owner: False)(
+                                        name,
+                                        session_id=self._member_session_id(name),
+                                    )
+                                )
+                            except TypeError:
+                                has_open_task = bool(getattr(self.task_store, "has_open_task", lambda owner: False)(name))
                         if has_open_task:
                             current_task_id = owned_open[0]["id"] if owned_open else member.get("current_task_id") if (member := self._find(name)) else None
                             self._update_member(name, status="idle", activity="idle_waiting_on_owned_task", current_task_id=current_task_id)

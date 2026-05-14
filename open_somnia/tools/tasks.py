@@ -47,7 +47,11 @@ def register_task_tools(registry, task_store) -> None:
         )
 
     def get_task(ctx: Any, payload: dict[str, Any]) -> str:
-        return json.dumps(task_store.get(int(payload["task_id"])), indent=2, ensure_ascii=False)
+        return json.dumps(
+            task_store.get(int(payload["task_id"]), session_id=_context_session_id(ctx)),
+            indent=2,
+            ensure_ascii=False,
+        )
 
     def update_task(ctx: Any, payload: dict[str, Any]) -> str:
         task = task_store.update(
@@ -56,17 +60,18 @@ def register_task_tools(registry, task_store) -> None:
             payload.get("add_blocked_by"),
             payload.get("add_blocks"),
             payload.get("preferred_owner"),
+            session_id=_context_session_id(ctx),
         )
         if task is None:
             return f"Task {payload['task_id']} deleted"
         return json.dumps(task, indent=2, ensure_ascii=False)
 
     def list_tasks(ctx: Any, payload: dict[str, Any]) -> str:
-        return _render_task_list(task_store.list_all())
+        return _render_task_list(task_store.list_all(session_id=_context_session_id(ctx)))
 
     def claim_task(ctx: Any, payload: dict[str, Any]) -> str:
         owner = payload.get("owner", ctx.actor)
-        task = task_store.claim(int(payload["task_id"]), owner)
+        task = task_store.claim(int(payload["task_id"]), owner, session_id=_context_session_id(ctx))
         return f"Claimed task #{task['id']} for {owner}"
 
     registry.register(

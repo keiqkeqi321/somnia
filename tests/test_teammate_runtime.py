@@ -1091,6 +1091,28 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual([task["id"] for task in planner_claimable], [planner_task["id"], neutral["id"]])
             self.assertEqual([task["id"] for task in other_claimable], [neutral["id"]])
 
+    def test_task_store_session_scope_prevents_cross_session_claim_and_listing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            current = task_store.create("Current session task", session_id="session-1")
+            other = task_store.create("Other session task", session_id="session-2")
+
+            visible = task_store.list_all(session_id="session-1")
+
+            self.assertEqual([task["id"] for task in visible], [current["id"]])
+            with self.assertRaises(ValueError):
+                task_store.get(other["id"], session_id="session-1")
+            with self.assertRaises(ValueError):
+                task_store.claim(other["id"], "Worker", session_id="session-1")
+
+            claimed = task_store.claim(current["id"], "Worker", session_id="session-1")
+            self.assertEqual(claimed["owner"], "Worker")
+            self.assertEqual(
+                [task["id"] for task in task_store.list_owned_open("Worker", session_id="session-1")],
+                [current["id"]],
+            )
+            self.assertEqual(task_store.list_owned_open("Worker", session_id="session-2"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

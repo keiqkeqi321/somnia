@@ -95,16 +95,27 @@ class TaskStore:
         task["updated_at"] = now_ts()
         write_json(self._task_path(int(task["id"])), task)
 
-    def get(self, task_id: int) -> dict[str, Any]:
+    def _matches_session(self, task: dict[str, Any], session_id: str | None) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return True
+        return task.get("session_id") == normalized_session_id
+
+    def get(self, task_id: int, session_id: str | None = None) -> dict[str, Any]:
         path = self._task_path(task_id)
         if not path.exists():
             raise ValueError(f"Task {task_id} not found")
-        return json.loads(path.read_text(encoding="utf-8"))
+        task = json.loads(path.read_text(encoding="utf-8"))
+        if not self._matches_session(task, session_id):
+            raise ValueError(f"Task {task_id} not found in this session")
+        return task
 
-    def list_all(self) -> list[dict[str, Any]]:
+    def list_all(self, session_id: str | None = None) -> list[dict[str, Any]]:
         tasks: list[dict[str, Any]] = []
         for path in sorted(self.root.glob("task_*.json")):
-            tasks.append(json.loads(path.read_text(encoding="utf-8")))
+            task = json.loads(path.read_text(encoding="utf-8"))
+            if self._matches_session(task, session_id):
+                tasks.append(task)
         return tasks
 
     def update(
@@ -114,8 +125,9 @@ class TaskStore:
         add_blocked_by: list[int] | None = None,
         add_blocks: list[int] | None = None,
         preferred_owner: str | None | object = None,
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
-        task = self.get(task_id)
+        task = self.get(task_id, session_id=session_id)
         if status == "deleted":
             path = self._task_path(task_id)
             if path.exists():
@@ -133,31 +145,31 @@ class TaskStore:
             )
         self.save(task)
         if status == "completed":
-            for other in self.list_all():
+            for other in self.list_all(session_id=session_id):
                 if task_id in other.get("blockedBy", []):
                     other["blockedBy"] = [item for item in other.get("blockedBy", []) if item != task_id]
                     self.save(other)
         return task
 
-    def claim(self, task_id: int, owner: str) -> dict[str, Any]:
-        task = self.get(task_id)
+    def claim(self, task_id: int, owner: str, session_id: str | None = None) -> dict[str, Any]:
+        task = self.get(task_id, session_id=session_id)
         task["owner"] = owner
         task["status"] = "in_progress"
         self.save(task)
         return task
 
-    def list_owned_open(self, owner: str) -> list[dict[str, Any]]:
+    def list_owned_open(self, owner: str, session_id: str | None = None) -> list[dict[str, Any]]:
         owner_name = str(owner).strip()
         if not owner_name:
             return []
         return [
             task
-            for task in self.list_all()
+            for task in self.list_all(session_id=session_id)
             if task.get("owner") == owner_name and task.get("status") in {"pending", "in_progress"}
         ]
 
-    def has_open_task(self, owner: str) -> bool:
-        return bool(self.list_owned_open(owner))
+    def has_open_task(self, owner: str, session_id: str | None = None) -> bool:
+        return bool(self.list_owned_open(owner, session_id=session_id))
 
     def list_claimable(self, session_id: str | None = None) -> list[dict[str, Any]]:
         normalized_session_id = str(session_id or "").strip()
