@@ -4,6 +4,9 @@ import type {
   LoopInjectionResponse,
   ModelDescriptor,
   ProviderDescriptor,
+  SettingsConfigPayload,
+  SettingsConfigScopeKey,
+  SettingsConfigSectionKey,
   SidecarStatus,
   ToolLogDetail,
   ToolLogIndexEntry,
@@ -138,6 +141,24 @@ export class SidecarClient {
     const query = providerName ? `?provider=${encodeURIComponent(providerName)}` : "";
     const payload = await parseResponse<{ models: ModelDescriptor[] }>(await fetch(`${this.baseUrl}/models${query}`));
     return payload.models;
+  }
+
+  async getSettingsConfig(): Promise<SettingsConfigPayload> {
+    return parseResponse<SettingsConfigPayload>(await fetch(`${this.baseUrl}/settings/config`));
+  }
+
+  async saveSettingsConfigSection(
+    scope: SettingsConfigScopeKey,
+    section: SettingsConfigSectionKey,
+    content: string,
+  ): Promise<{ scope: string; section: string; config_path: string; saved: boolean; restart_required: boolean }> {
+    return parseResponse<{ scope: string; section: string; config_path: string; saved: boolean; restart_required: boolean }>(
+      await fetch(`${this.baseUrl}/settings/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope, section, content }),
+      }),
+    );
   }
 
   async listWorkspacePaths(query = "", limit = 30): Promise<WorkspacePathSuggestion[]> {

@@ -417,6 +417,132 @@ button {
   margin: 0;
 }
 
+.config-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.config-toolbar,
+.config-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-scope-toggle,
+.config-section-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.config-scope-toggle button,
+.config-section-tabs button {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(32, 34, 39, 0.9);
+  color: #cbd5e1;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+
+.config-scope-toggle button.selected,
+.config-section-tabs button.selected {
+  border-color: rgba(95, 182, 255, 0.48);
+  background: rgba(40, 70, 96, 0.72);
+  color: #ffffff;
+}
+
+.config-path-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+.config-path-row code,
+.config-skill-row code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d1d5db;
+}
+
+.config-editor-head strong {
+  display: block;
+  color: #ffffff;
+  font-size: 0.95rem;
+}
+
+.config-editor-head p,
+.config-message {
+  margin: 4px 0 0;
+  color: #9ca3af;
+  font-size: 0.8rem;
+}
+
+.config-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.config-editor {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(9, 11, 15, 0.86);
+  color: #eef2f8;
+  padding: 12px;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.config-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-skill-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.25fr) minmax(160px, 0.5fr) minmax(160px, 0.7fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(22, 24, 28, 0.78);
+}
+
+.config-skill-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ffffff;
+}
+
+.config-skill-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9ca3af;
+  font-size: 0.8rem;
+}
+
 .archived-list {
   display: flex;
   flex-direction: column;

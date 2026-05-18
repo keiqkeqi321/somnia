@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { formatRelativeTime } from "../lib/messages";
+import type { SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 
 const SETTINGS_SECTIONS = [
   { key: "general", icon: "⚙", label: "常规", title: "常规" },
@@ -46,7 +47,26 @@ type SettingsViewProps = {
   onOpenHooks: () => void;
   onOpenModelPicker: () => void;
   onOpenModePicker: () => void;
+  configScopes: SettingsConfigScope[];
+  configDrafts: Record<string, string>;
+  selectedConfigScope: SettingsConfigScopeKey;
+  selectedConfigSection: SettingsConfigSectionKey;
+  configLoading: boolean;
+  configSaving: boolean;
+  configMessage: string;
+  onSelectConfigScope: (scope: SettingsConfigScopeKey) => void;
+  onSelectConfigSection: (section: SettingsConfigSectionKey) => void;
+  onConfigDraftChange: (key: string, value: string) => void;
+  onSaveConfigSection: () => void | Promise<void>;
+  onReloadConfig: () => void | Promise<void>;
 };
+
+const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; label: string; title: string }> = [
+  { key: "provider", label: "Provider", title: "Provider Profiles" },
+  { key: "mcp", label: "MCP", title: "MCP Servers" },
+  { key: "hooks", label: "Hooks", title: "Hooks" },
+  { key: "system_prompt", label: "System Prompt", title: "System Prompt" },
+];
 
 function SettingsView({
   activeSection,
@@ -72,8 +92,23 @@ function SettingsView({
   onOpenHooks,
   onOpenModelPicker,
   onOpenModePicker,
+  configScopes,
+  configDrafts,
+  selectedConfigScope,
+  selectedConfigSection,
+  configLoading,
+  configSaving,
+  configMessage,
+  onSelectConfigScope,
+  onSelectConfigSection,
+  onConfigDraftChange,
+  onSaveConfigSection,
+  onReloadConfig,
 }: SettingsViewProps) {
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
+  const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
+  const activeDraftKey = `${selectedConfigScope}:${selectedConfigSection}`;
+  const activeConfigOption = CONFIG_SECTION_OPTIONS.find((item) => item.key === selectedConfigSection);
 
   return (
     <section className="settings-shell">
@@ -149,25 +184,93 @@ function SettingsView({
         ) : null}
 
         {activeSection === "configuration" ? (
-          <div className="settings-group">
-            <SettingRow
-              title="Provider Profiles"
-              description="打开当前 CLI/provider 配置工作流，管理共享 provider profiles 和模型列表。"
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenProviders}>
-                  Open
+          <div className="settings-group config-settings-group">
+            <div className="config-toolbar">
+              <div className="config-scope-toggle" role="tablist" aria-label="Configuration scope">
+                {(["user", "project"] as SettingsConfigScopeKey[]).map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    className={selectedConfigScope === scope ? "selected" : ""}
+                    onClick={() => onSelectConfigScope(scope)}
+                  >
+                    {scope === "user" ? "User" : "Project"}
+                  </button>
+                ))}
+              </div>
+              <button className="settings-inline-button" type="button" onClick={onReloadConfig} disabled={configLoading || configSaving}>
+                Reload
+              </button>
+            </div>
+            <div className="config-section-tabs" role="tablist" aria-label="Configuration type">
+              {CONFIG_SECTION_OPTIONS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={selectedConfigSection === item.key ? "selected" : ""}
+                  onClick={() => onSelectConfigSection(item.key)}
+                >
+                  {item.label}
                 </button>
-              }
-            />
-            <SettingRow
-              title="Hooks"
-              description="打开 hooks 管理工作流，查看按事件分组的 hooks 并切换启用状态。"
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenHooks}>
-                  Open
-                </button>
-              }
-            />
+              ))}
+            </div>
+            {activeConfigScope ? (
+              <>
+                <div className="config-path-row">
+                  <span>{activeConfigScope.label} config</span>
+                  <code>{activeConfigScope.config_path}</code>
+                </div>
+                <div className="config-editor-head">
+                  <div>
+                    <strong>{activeConfigOption?.title ?? "Configuration"}</strong>
+                    <p>编辑当前类别的 TOML 片段。保存会写入所选 scope 的配置文件。</p>
+                  </div>
+                  <div className="config-editor-actions">
+                    <button className="settings-inline-button" type="button" onClick={onOpenProviders}>
+                      /providers
+                    </button>
+                    <button className="settings-inline-button" type="button" onClick={onOpenHooks}>
+                      /hooks
+                    </button>
+                    <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
+                      {configSaving ? "Saving" : "Save"}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="config-editor"
+                  spellCheck={false}
+                  value={configDrafts[activeDraftKey] ?? ""}
+                  onChange={(event) => onConfigDraftChange(activeDraftKey, event.currentTarget.value)}
+                  placeholder={configPlaceholder(selectedConfigSection)}
+                  disabled={configLoading}
+                />
+                <div className="config-path-row">
+                  <span>Skills · {activeConfigScope.label}</span>
+                  <code>{activeConfigScope.skills_path}</code>
+                </div>
+                {activeConfigScope.skills.length === 0 ? (
+                  <div className="settings-empty-state">
+                    <p>No skills found for this scope.</p>
+                  </div>
+                ) : (
+                  <div className="config-skill-list">
+                    {activeConfigScope.skills.map((skill) => (
+                      <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
+                        <strong>{skill.name}</strong>
+                        <span>{skill.description}</span>
+                        <code>{skill.path}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {configMessage ? <p className="config-message">{configMessage}</p> : null}
+              </>
+            ) : (
+              <div className="settings-empty-state">
+                <p>{configLoading ? "Loading configuration..." : "Configuration unavailable."}</p>
+              </div>
+            )}
           </div>
         ) : null}
 
@@ -263,6 +366,19 @@ function SettingsView({
       </div>
     </section>
   );
+}
+
+function configPlaceholder(section: SettingsConfigSectionKey): string {
+  if (section === "provider") {
+    return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1"]\ndefault_model = "gpt-4.1"\napi_key = "..."';
+  }
+  if (section === "mcp") {
+    return '[mcp_servers.example]\ntransport = "stdio"\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-filesystem"]';
+  }
+  if (section === "hooks") {
+    return '[[hooks]]\nevent = "AssistantResponse"\ncommand = "python"\nargs = ["scripts/hook.py"]\nenabled = true';
+  }
+  return '[agent]\nsystem_prompt = "You are Somnia."';
 }
 
 function SettingRow({

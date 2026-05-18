@@ -7,11 +7,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+from pathlib import Path
 from queue import Empty, Queue
 import select
 import socket
 from threading import Lock, Thread
 import time
+import tomllib
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 import uuid
@@ -37,6 +39,7 @@ from desktop.backend.ipc import (
 from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
+from open_somnia.config.settings import APP_DIRNAME, global_config_path, workspace_config_path
 from open_somnia.path_completion import (
     MAX_PATH_COMPLETION_CANDIDATES,
     PATH_COMPLETION_CACHE_SECONDS,
@@ -48,6 +51,7 @@ from open_somnia.path_completion import (
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 from open_somnia.runtime.messages import parse_image_data_url
+from open_somnia.skills.loader import SkillLoader
 
 CLIPBOARD_TEMP_DIRNAME = "temp"
 IMAGE_MEDIA_TYPE_SUFFIXES = {
@@ -56,6 +60,8 @@ IMAGE_MEDIA_TYPE_SUFFIXES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+CONFIG_SECTION_KEYS = {"provider", "mcp", "hooks", "system_prompt"}
+CONFIG_SCOPES = {"user", "project"}
 
 
 class SidecarAPIError(RuntimeError):
@@ -70,6 +76,128 @@ def _safe_image_stem(name: str) -> str:
     cleaned = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in raw_name)
     normalized = cleaned.strip("-_")
     return normalized or "clipboard-image"
+
+
+def _config_path_for_scope(workspace_root: Path, scope: str) -> Path:
+    normalized_scope = str(scope or "").strip().lower()
+    if normalized_scope == "user":
+        return global_config_path()
+    if normalized_scope == "project":
+        return workspace_config_path(workspace_root)
+    raise ValueError("scope must be 'user' or 'project'.")
+
+
+def _skills_dir_for_scope(workspace_root: Path, scope: str) -> Path:
+    normalized_scope = str(scope or "").strip().lower()
+    if normalized_scope == "user":
+        return Path.home() / APP_DIRNAME / "skills"
+    if normalized_scope == "project":
+        return workspace_root / APP_DIRNAME / "skills"
+    raise ValueError("scope must be 'user' or 'project'.")
+
+
+def _section_name(line: str) -> str | None:
+    stripped = line.strip()
+    if stripped.startswith("[[") and stripped.endswith("]]"):
+        return stripped[2:-2].strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped[1:-1].strip()
+    return None
+
+
+def _line_matches_config_section(line: str, section_key: str, *, in_builtin_hook_block: bool = False) -> bool:
+    if section_key == "hooks" and in_builtin_hook_block:
+        return True
+    name = _section_name(line)
+    if name is None:
+        return False
+    if section_key == "provider":
+        return name == "providers" or name.startswith("providers.") or name == "model_traits" or name.startswith("model_traits.")
+    if section_key == "mcp":
+        return name == "mcp_servers" or name.startswith("mcp_servers.")
+    if section_key == "hooks":
+        return name == "hooks" or name.startswith("hooks.")
+    if section_key == "system_prompt":
+        return name == "agent"
+    return False
+
+
+def _extract_config_section(text: str, section_key: str) -> str:
+    lines = text.splitlines()
+    selected: list[str] = []
+    current_matches = False
+    in_builtin_hook_block = False
+    for line in lines:
+        marker = line.strip()
+        if marker == "# BEGIN SOMNIA BUILTIN HOOKS":
+            in_builtin_hook_block = True
+        section_name = _section_name(line)
+        if section_name is not None:
+            current_matches = _line_matches_config_section(
+                line,
+                section_key,
+                in_builtin_hook_block=in_builtin_hook_block,
+            )
+        if current_matches or (section_key == "hooks" and in_builtin_hook_block):
+            selected.append(line)
+        if marker == "# END SOMNIA BUILTIN HOOKS":
+            in_builtin_hook_block = False
+            current_matches = False
+    return "\n".join(selected).strip()
+
+
+def _remove_config_section(text: str, section_key: str) -> str:
+    lines = text.splitlines()
+    kept: list[str] = []
+    current_matches = False
+    in_builtin_hook_block = False
+    for line in lines:
+        marker = line.strip()
+        if marker == "# BEGIN SOMNIA BUILTIN HOOKS":
+            in_builtin_hook_block = True
+        section_name = _section_name(line)
+        if section_name is not None:
+            current_matches = _line_matches_config_section(
+                line,
+                section_key,
+                in_builtin_hook_block=in_builtin_hook_block,
+            )
+        should_remove = current_matches or (section_key == "hooks" and in_builtin_hook_block)
+        if not should_remove:
+            kept.append(line)
+        if marker == "# END SOMNIA BUILTIN HOOKS":
+            in_builtin_hook_block = False
+            current_matches = False
+    return _normalize_config_text("\n".join(kept))
+
+
+def _normalize_config_text(text: str) -> str:
+    normalized: list[str] = []
+    previous_blank = False
+    for line in text.splitlines():
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        normalized.append(line.rstrip())
+        previous_blank = is_blank
+    while normalized and not normalized[0].strip():
+        normalized.pop(0)
+    while normalized and not normalized[-1].strip():
+        normalized.pop()
+    return "\n".join(normalized).strip()
+
+
+def _replace_config_section(text: str, section_key: str, content: str) -> str:
+    base = _remove_config_section(text, section_key)
+    next_content = _normalize_config_text(str(content or ""))
+    parts = [part for part in (base, next_content) if part]
+    return ("\n\n".join(parts).strip() + "\n") if parts else ""
+
+
+def _list_skills_for_scope(workspace_root: Path, scope: str) -> list[dict[str, str]]:
+    skills_dir = _skills_dir_for_scope(workspace_root, scope)
+    loader = SkillLoader(skills_dir)
+    return [entry for entry in loader.list_entries() if entry.get("scope") in {scope, "global", "workspace"}]
 
 
 @dataclass(slots=True)
@@ -342,6 +470,58 @@ class SidecarServer:
         except ValueError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
+    def config_payload(self) -> dict[str, Any]:
+        scopes: list[dict[str, Any]] = []
+        for scope in ("user", "project"):
+            config_path = _config_path_for_scope(self.settings.workspace_root, scope)
+            skills_dir = _skills_dir_for_scope(self.settings.workspace_root, scope)
+            text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+            scopes.append(
+                {
+                    "scope": scope,
+                    "label": "User" if scope == "user" else "Project",
+                    "config_path": str(config_path),
+                    "config_exists": config_path.exists(),
+                    "skills_path": str(skills_dir),
+                    "skills_exists": skills_dir.exists(),
+                    "sections": {
+                        "provider": _extract_config_section(text, "provider"),
+                        "mcp": _extract_config_section(text, "mcp"),
+                        "hooks": _extract_config_section(text, "hooks"),
+                        "system_prompt": _extract_config_section(text, "system_prompt"),
+                    },
+                    "skills": _list_skills_for_scope(self.settings.workspace_root, scope),
+                }
+            )
+        return {"scopes": scopes}
+
+    def save_config_section(self, *, scope: str, section: str, content: str) -> dict[str, Any]:
+        normalized_scope = str(scope or "").strip().lower()
+        normalized_section = str(section or "").strip().lower()
+        if normalized_scope not in CONFIG_SCOPES:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "scope must be 'user' or 'project'.")
+        if normalized_section not in CONFIG_SECTION_KEYS:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "section must be provider, mcp, hooks, or system_prompt.")
+        config_path = _config_path_for_scope(self.settings.workspace_root, normalized_scope)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        updated = _replace_config_section(original, normalized_section, str(content or ""))
+        try:
+            tomllib.loads(updated or "")
+        except tomllib.TOMLDecodeError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, f"Config TOML is invalid: {exc}") from exc
+        if updated:
+            config_path.write_text(updated, encoding="utf-8")
+        elif config_path.exists():
+            config_path.unlink()
+        return {
+            "scope": normalized_scope,
+            "section": normalized_section,
+            "config_path": str(config_path),
+            "saved": True,
+            "restart_required": True,
+        }
+
     def switch_provider_model(self, provider_name: str, model: str) -> dict[str, Any]:
         try:
             message = self.service.switch_provider_model(provider_name, model)
@@ -590,6 +770,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if path_parts == ["models"]:
             provider_name = (query.get("provider") or [None])[0]
             return {"models": self.sidecar.list_models(provider_name)}
+        if path_parts == ["settings", "config"]:
+            return self.sidecar.config_payload()
         if path_parts == ["workspace", "paths"]:
             raw_limit = (query.get("limit") or [30])[0]
             try:
@@ -662,6 +844,15 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if not mode:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "mode is required.")
             return self.sidecar.set_execution_mode(mode), HTTPStatus.OK
+        if path_parts == ["settings", "config"]:
+            return (
+                self.sidecar.save_config_section(
+                    scope=str(body.get("scope", "")).strip(),
+                    section=str(body.get("section", "")).strip(),
+                    content=str(body.get("content", "")),
+                ),
+                HTTPStatus.OK,
+            )
         if len(path_parts) == 3 and path_parts[0] == "interactions" and path_parts[2] == "authorization":
             scope = str(body.get("scope", "")).strip()
             if not scope:

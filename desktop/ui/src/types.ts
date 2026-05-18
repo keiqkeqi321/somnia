@@ -122,6 +122,31 @@ export interface ToolLogDetail extends ToolLogIndexEntry {
   rendered: string;
 }
 
+export type SettingsConfigSectionKey = "provider" | "mcp" | "hooks" | "system_prompt";
+export type SettingsConfigScopeKey = "user" | "project";
+
+export interface SettingsSkillEntry {
+  name: string;
+  description: string;
+  path: string;
+  scope: string;
+}
+
+export interface SettingsConfigScope {
+  scope: SettingsConfigScopeKey;
+  label: string;
+  config_path: string;
+  config_exists: boolean;
+  skills_path: string;
+  skills_exists: boolean;
+  sections: Record<SettingsConfigSectionKey, string>;
+  skills: SettingsSkillEntry[];
+}
+
+export interface SettingsConfigPayload {
+  scopes: SettingsConfigScope[];
+}
+
 export interface SidecarEvent {
   type: string;
   session_id?: string | null;

@@ -41,6 +41,9 @@ import type {
   ManagedSidecarConnection,
   ModelDescriptor,
   ProviderDescriptor,
+  SettingsConfigScope,
+  SettingsConfigScopeKey,
+  SettingsConfigSectionKey,
   SidecarEvent,
   SidecarStatus,
   TodoItem,
@@ -197,6 +200,13 @@ function App() {
   const [sessionMenuOpenKey, setSessionMenuOpenKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("general");
+  const [settingsConfigScopes, setSettingsConfigScopes] = useState<SettingsConfigScope[]>([]);
+  const [settingsConfigDrafts, setSettingsConfigDrafts] = useState<Record<string, string>>({});
+  const [settingsConfigScope, setSettingsConfigScope] = useState<SettingsConfigScopeKey>("project");
+  const [settingsConfigSection, setSettingsConfigSection] = useState<SettingsConfigSectionKey>("provider");
+  const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
+  const [settingsConfigSaving, setSettingsConfigSaving] = useState(false);
+  const [settingsConfigMessage, setSettingsConfigMessage] = useState("");
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [todoExpanded, setTodoExpanded] = useState(false);
   const [layout, setLayout] = useState<LayoutState>(() => readStoredLayout());
@@ -1672,6 +1682,7 @@ function App() {
     setSettingsOpen(true);
     setSettingsSection("general");
     setSelectedArchivedSessionKeys([]);
+    void refreshSettingsConfig();
   }
 
   function handleCloseSettings() {
@@ -1687,6 +1698,56 @@ function App() {
   function handleOpenHooksFromSettings() {
     setSettingsOpen(false);
     applyCommandSuggestion("/hooks");
+  }
+
+  async function refreshSettingsConfig() {
+    const client = clientRef.current;
+    if (!client) {
+      setSettingsConfigScopes([]);
+      setSettingsConfigDrafts({});
+      setSettingsConfigMessage("Connect to a sidecar before editing configuration.");
+      return;
+    }
+    setSettingsConfigLoading(true);
+    try {
+      const payload = await client.getSettingsConfig();
+      const nextDrafts: Record<string, string> = {};
+      for (const scope of payload.scopes) {
+        for (const section of ["provider", "mcp", "hooks", "system_prompt"] as SettingsConfigSectionKey[]) {
+          nextDrafts[`${scope.scope}:${section}`] = scope.sections[section] ?? "";
+        }
+      }
+      setSettingsConfigScopes(payload.scopes);
+      setSettingsConfigDrafts(nextDrafts);
+      setSettingsConfigMessage("");
+    } catch (error) {
+      setSettingsConfigMessage(formatErrorMessage(error));
+    } finally {
+      setSettingsConfigLoading(false);
+    }
+  }
+
+  async function handleSaveSettingsConfigSection() {
+    const client = clientRef.current;
+    if (!client) {
+      setSettingsConfigMessage("Connect to a sidecar before saving configuration.");
+      return;
+    }
+    const draftKey = `${settingsConfigScope}:${settingsConfigSection}`;
+    setSettingsConfigSaving(true);
+    try {
+      const result = await client.saveSettingsConfigSection(
+        settingsConfigScope,
+        settingsConfigSection,
+        settingsConfigDrafts[draftKey] ?? "",
+      );
+      await refreshSettingsConfig();
+      setSettingsConfigMessage(`Saved ${result.section} to ${result.config_path}. Restart the sidecar to apply runtime changes.`);
+    } catch (error) {
+      setSettingsConfigMessage(formatErrorMessage(error));
+    } finally {
+      setSettingsConfigSaving(false);
+    }
   }
 
   function handleOpenModelPickerFromSettings() {
@@ -2063,6 +2124,18 @@ function App() {
           onOpenHooks={handleOpenHooksFromSettings}
           onOpenModelPicker={handleOpenModelPickerFromSettings}
           onOpenModePicker={handleOpenModePickerFromSettings}
+          configScopes={settingsConfigScopes}
+          configDrafts={settingsConfigDrafts}
+          selectedConfigScope={settingsConfigScope}
+          selectedConfigSection={settingsConfigSection}
+          configLoading={settingsConfigLoading}
+          configSaving={settingsConfigSaving}
+          configMessage={settingsConfigMessage}
+          onSelectConfigScope={setSettingsConfigScope}
+          onSelectConfigSection={setSettingsConfigSection}
+          onConfigDraftChange={(key, value) => setSettingsConfigDrafts((previous) => ({ ...previous, [key]: value }))}
+          onSaveConfigSection={handleSaveSettingsConfigSection}
+          onReloadConfig={refreshSettingsConfig}
         />
       ) : null}
       <main
