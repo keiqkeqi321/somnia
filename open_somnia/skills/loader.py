@@ -18,6 +18,7 @@ class SkillLoader:
     def for_workspace(cls, workspace_root: Path) -> "SkillLoader":
         return cls(
             [
+                Path(__file__).resolve().parent / "builtin",
                 Path.home() / ".open_somnia" / "skills",
                 workspace_root / "skills",
                 workspace_root / ".open_somnia" / "skills",
@@ -48,6 +49,9 @@ class SkillLoader:
         )
 
     def _scope_name(self, source_dir: Path) -> str:
+        builtin_skills_dir = Path(__file__).resolve().parent / "builtin"
+        if source_dir == builtin_skills_dir:
+            return "builtin"
         home_skills_dir = Path.home() / ".open_somnia" / "skills"
         if source_dir == home_skills_dir:
             return "global"

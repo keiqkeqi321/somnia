@@ -46,6 +46,14 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("- Review [workspace] - review code", rendered)
             self.assertIn("use: /+Review", rendered)
 
+    def test_for_workspace_includes_builtin_somnia_config_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loader = SkillLoader.for_workspace(Path(tmpdir))
+
+            self.assertIn("somnia-config", loader.names())
+            self.assertIn("TOML configuration", loader.descriptions())
+            self.assertIn("Complete TOML Map", loader.load("somnia-config"))
+
 
 if __name__ == "__main__":
     unittest.main()
