@@ -463,17 +463,22 @@ pub fn open_workspace_root(path: String) -> Result<(), String> {
     let target = PathBuf::from(path.trim());
     if !target.exists() {
         return Err(format!(
-            "Workspace path '{}' does not exist.",
+            "Path '{}' does not exist.",
             target.display()
         ));
     }
 
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .arg(&target)
+        let mut command = Command::new("explorer");
+        if target.is_file() {
+            command.arg("/select,").arg(&target);
+        } else {
+            command.arg(&target);
+        }
+        command
             .spawn()
-            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+            .map_err(|error| format!("Unable to open path '{}': {error}", target.display()))?;
     }
 
     #[cfg(target_os = "macos")]
@@ -481,7 +486,7 @@ pub fn open_workspace_root(path: String) -> Result<(), String> {
         Command::new("open")
             .arg(&target)
             .spawn()
-            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+            .map_err(|error| format!("Unable to open path '{}': {error}", target.display()))?;
     }
 
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -489,7 +494,7 @@ pub fn open_workspace_root(path: String) -> Result<(), String> {
         Command::new("xdg-open")
             .arg(&target)
             .spawn()
-            .map_err(|error| format!("Unable to open workspace folder '{}': {error}", target.display()))?;
+            .map_err(|error| format!("Unable to open path '{}': {error}", target.display()))?;
     }
 
     Ok(())

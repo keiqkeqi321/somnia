@@ -423,6 +423,16 @@ button {
   gap: 14px;
 }
 
+.config-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(18, 20, 24, 0.76);
+}
+
 .config-toolbar,
 .config-editor-head {
   display: flex;
@@ -458,7 +468,7 @@ button {
 
 .config-path-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   color: #9ca3af;

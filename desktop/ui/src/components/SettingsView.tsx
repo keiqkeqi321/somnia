@@ -1,12 +1,8 @@
-import type { ReactNode } from "react";
-
 import { formatRelativeTime } from "../lib/messages";
 import type { SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 
 const SETTINGS_SECTIONS = [
-  { key: "general", icon: "⚙", label: "常规", title: "常规" },
   { key: "configuration", icon: "⚙", label: "配置", title: "配置" },
-  { key: "environment", icon: "🖥", label: "环境", title: "环境" },
   { key: "archived", icon: "📋", label: "已归档线程", title: "已归档线程" },
 ] as const;
 
@@ -27,13 +23,6 @@ type SettingsViewProps = {
   activeSection: SettingsSectionKey;
   onSelectSection: (section: SettingsSectionKey) => void;
   onClose: () => void;
-  onOpenWorkspaceRoot: () => void;
-  workspaceRootPath: string;
-  providerLabel: string;
-  modelLabel: string;
-  reasoningLabel: string;
-  executionModeLabel: string;
-  connectionState: string;
   archivedEntries: ArchivedSessionEntry[];
   archivedSelection: ArchivedSessionEntry[];
   selectedArchivedKeys: string[];
@@ -43,10 +32,7 @@ type SettingsViewProps = {
   onToggleSelectAllArchived: () => void;
   onRestoreArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
   onDeleteArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
-  onOpenProviders: () => void;
-  onOpenHooks: () => void;
-  onOpenModelPicker: () => void;
-  onOpenModePicker: () => void;
+  onOpenPath: (path: string) => void | Promise<void>;
   configScopes: SettingsConfigScope[];
   configDrafts: Record<string, string>;
   selectedConfigScope: SettingsConfigScopeKey;
@@ -72,13 +58,6 @@ function SettingsView({
   activeSection,
   onSelectSection,
   onClose,
-  onOpenWorkspaceRoot,
-  workspaceRootPath,
-  providerLabel,
-  modelLabel,
-  reasoningLabel,
-  executionModeLabel,
-  connectionState,
   archivedEntries,
   archivedSelection,
   selectedArchivedKeys,
@@ -88,10 +67,7 @@ function SettingsView({
   onToggleSelectAllArchived,
   onRestoreArchived,
   onDeleteArchived,
-  onOpenProviders,
-  onOpenHooks,
-  onOpenModelPicker,
-  onOpenModePicker,
+  onOpenPath,
   configScopes,
   configDrafts,
   selectedConfigScope,
@@ -137,52 +113,6 @@ function SettingsView({
           <h1>{section.title}</h1>
         </header>
 
-        {activeSection === "general" ? (
-          <div className="settings-group">
-            <SettingRow
-              title="工作区"
-              description={workspaceRootPath || "Workspace unavailable"}
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenWorkspaceRoot} disabled={!workspaceRootPath}>
-                  Open
-                </button>
-              }
-            />
-            <SettingRow
-              title="默认模型"
-              description={`${providerLabel} / ${modelLabel}`}
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenModelPicker}>
-                  Change
-                </button>
-              }
-            />
-            <SettingRow
-              title="推理等级"
-              description={reasoningLabel}
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenModelPicker}>
-                  Adjust
-                </button>
-              }
-            />
-            <SettingRow
-              title="执行模式"
-              description={executionModeLabel}
-              control={
-                <button className="settings-action-button" type="button" onClick={onOpenModePicker}>
-                  Change
-                </button>
-              }
-            />
-            <SettingRow
-              title="连接状态"
-              description="Desktop shell talks to the managed sidecar over the local HTTP bridge."
-              control={<span className={`settings-status-pill ${connectionState}`}>{connectionState}</span>}
-            />
-          </div>
-        ) : null}
-
         {activeSection === "configuration" ? (
           <div className="settings-group config-settings-group">
             <div className="config-toolbar">
@@ -216,54 +146,67 @@ function SettingsView({
             </div>
             {activeConfigScope ? (
               <>
-                <div className="config-path-row">
-                  <span>{activeConfigScope.label} config</span>
-                  <code>{activeConfigScope.config_path}</code>
-                </div>
-                <div className="config-editor-head">
-                  <div>
-                    <strong>{activeConfigOption?.title ?? "Configuration"}</strong>
-                    <p>编辑当前类别的 TOML 片段。保存会写入所选 scope 的配置文件。</p>
-                  </div>
-                  <div className="config-editor-actions">
-                    <button className="settings-inline-button" type="button" onClick={onOpenProviders}>
-                      /providers
-                    </button>
-                    <button className="settings-inline-button" type="button" onClick={onOpenHooks}>
-                      /hooks
-                    </button>
-                    <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
-                      {configSaving ? "Saving" : "Save"}
+                <section className="config-panel">
+                  <div className="config-path-row">
+                    <span>{activeConfigScope.label} config</span>
+                    <code>{activeConfigScope.config_path}</code>
+                    <button
+                      className="settings-inline-button"
+                      type="button"
+                      onClick={() => onOpenPath(activeConfigScope.config_exists ? activeConfigScope.config_path : parentPath(activeConfigScope.config_path))}
+                    >
+                      {activeConfigScope.config_exists ? "Open file" : "Open folder"}
                     </button>
                   </div>
-                </div>
-                <textarea
-                  className="config-editor"
-                  spellCheck={false}
-                  value={configDrafts[activeDraftKey] ?? ""}
-                  onChange={(event) => onConfigDraftChange(activeDraftKey, event.currentTarget.value)}
-                  placeholder={configPlaceholder(selectedConfigSection)}
-                  disabled={configLoading}
-                />
-                <div className="config-path-row">
-                  <span>Skills · {activeConfigScope.label}</span>
-                  <code>{activeConfigScope.skills_path}</code>
-                </div>
-                {activeConfigScope.skills.length === 0 ? (
-                  <div className="settings-empty-state">
-                    <p>No skills found for this scope.</p>
+                  <div className="config-editor-head">
+                    <div>
+                      <strong>{activeConfigOption?.title ?? "Configuration"}</strong>
+                      <p>编辑当前类别的 TOML 片段。保存会写入所选 scope 的配置文件。</p>
+                    </div>
+                    <div className="config-editor-actions">
+                      <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
+                        {configSaving ? "Saving" : "Save"}
+                      </button>
+                    </div>
                   </div>
-                ) : (
-                  <div className="config-skill-list">
-                    {activeConfigScope.skills.map((skill) => (
-                      <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
-                        <strong>{skill.name}</strong>
-                        <span>{skill.description}</span>
-                        <code>{skill.path}</code>
-                      </div>
-                    ))}
+                  <textarea
+                    className="config-editor"
+                    spellCheck={false}
+                    value={configDrafts[activeDraftKey] ?? ""}
+                    onChange={(event) => onConfigDraftChange(activeDraftKey, event.currentTarget.value)}
+                    placeholder={configPlaceholder(selectedConfigSection)}
+                    disabled={configLoading}
+                  />
+                </section>
+
+                <section className="config-panel">
+                  <div className="config-path-row">
+                    <span>Skills · {activeConfigScope.label}</span>
+                    <code>{activeConfigScope.skills_path}</code>
+                    <button
+                      className="settings-inline-button"
+                      type="button"
+                      onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
+                    >
+                      Open folder
+                    </button>
                   </div>
-                )}
+                  {activeConfigScope.skills.length === 0 ? (
+                    <div className="settings-empty-state">
+                      <p>No skills found for this scope.</p>
+                    </div>
+                  ) : (
+                    <div className="config-skill-list">
+                      {activeConfigScope.skills.map((skill) => (
+                        <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
+                          <strong>{skill.name}</strong>
+                          <span>{skill.description}</span>
+                          <code>{skill.path}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
                 {configMessage ? <p className="config-message">{configMessage}</p> : null}
               </>
             ) : (
@@ -271,18 +214,6 @@ function SettingsView({
                 <p>{configLoading ? "Loading configuration..." : "Configuration unavailable."}</p>
               </div>
             )}
-          </div>
-        ) : null}
-
-        {activeSection === "environment" ? (
-          <div className="settings-group">
-            <SettingRow title="Agent environment" description="Windows native" control={<span className="settings-static-value">Windows</span>} />
-            <SettingRow title="Integrated terminal shell" description="PowerShell" control={<span className="settings-static-value">PowerShell</span>} />
-            <SettingRow
-              title="Session storage"
-              description="Desktop keeps runtime state under the workspace .open_somnia directory."
-              control={<span className="settings-static-value">.open_somnia</span>}
-            />
           </div>
         ) : null}
 
@@ -381,24 +312,13 @@ function configPlaceholder(section: SettingsConfigSectionKey): string {
   return '[agent]\nsystem_prompt = "You are Somnia."';
 }
 
-function SettingRow({
-  title,
-  description,
-  control,
-}: {
-  title: string;
-  description: string;
-  control: ReactNode;
-}) {
-  return (
-    <section className="settings-row">
-      <div className="settings-row-copy">
-        <strong>{title}</strong>
-        <p>{description}</p>
-      </div>
-      <div className="settings-row-control">{control}</div>
-    </section>
-  );
+function parentPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const index = normalized.lastIndexOf("/");
+  if (index <= 0) {
+    return path;
+  }
+  return normalized.slice(0, index);
 }
 
 export default SettingsView;

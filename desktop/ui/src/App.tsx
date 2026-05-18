@@ -199,7 +199,7 @@ function App() {
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [sessionMenuOpenKey, setSessionMenuOpenKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("general");
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("configuration");
   const [settingsConfigScopes, setSettingsConfigScopes] = useState<SettingsConfigScope[]>([]);
   const [settingsConfigDrafts, setSettingsConfigDrafts] = useState<Record<string, string>>({});
   const [settingsConfigScope, setSettingsConfigScope] = useState<SettingsConfigScopeKey>("project");
@@ -1680,7 +1680,7 @@ function App() {
 
   function handleOpenSettings() {
     setSettingsOpen(true);
-    setSettingsSection("general");
+    setSettingsSection("configuration");
     setSelectedArchivedSessionKeys([]);
     void refreshSettingsConfig();
   }
@@ -1688,16 +1688,6 @@ function App() {
   function handleCloseSettings() {
     setSettingsOpen(false);
     setSelectedArchivedSessionKeys([]);
-  }
-
-  function handleOpenProviderProfilesFromSettings() {
-    setSettingsOpen(false);
-    applyCommandSuggestion("/providers");
-  }
-
-  function handleOpenHooksFromSettings() {
-    setSettingsOpen(false);
-    applyCommandSuggestion("/hooks");
   }
 
   async function refreshSettingsConfig() {
@@ -1750,14 +1740,16 @@ function App() {
     }
   }
 
-  function handleOpenModelPickerFromSettings() {
-    setSettingsOpen(false);
-    setModelPickerOpen(true);
-  }
-
-  function handleOpenModePickerFromSettings() {
-    setSettingsOpen(false);
-    setModePickerOpen(true);
+  async function handleOpenSettingsPath(path: string) {
+    const targetPath = path.trim();
+    if (!targetPath) {
+      return;
+    }
+    try {
+      await openWorkspaceRoot(targetPath);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
   }
 
   async function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLElement>) {
@@ -2094,17 +2086,6 @@ function App() {
           activeSection={settingsSection}
           onSelectSection={setSettingsSection}
           onClose={handleCloseSettings}
-          onOpenWorkspaceRoot={() => {
-            if (workspaceRootPath) {
-              void openWorkspaceRoot(workspaceRootPath);
-            }
-          }}
-          workspaceRootPath={workspaceRootPath}
-          providerLabel={activeProviderLabel}
-          modelLabel={activeModelLabel}
-          reasoningLabel={activeReasoningLabel}
-          executionModeLabel={activeExecutionModeLabel}
-          connectionState={connectionState}
           archivedEntries={archivedSessionEntries}
           archivedSelection={archivedSessionSelection}
           selectedArchivedKeys={selectedArchivedSessionKeys}
@@ -2120,10 +2101,7 @@ function App() {
           }
           onRestoreArchived={handleRestoreArchivedSessions}
           onDeleteArchived={handleDeleteArchivedSessions}
-          onOpenProviders={handleOpenProviderProfilesFromSettings}
-          onOpenHooks={handleOpenHooksFromSettings}
-          onOpenModelPicker={handleOpenModelPickerFromSettings}
-          onOpenModePicker={handleOpenModePickerFromSettings}
+          onOpenPath={handleOpenSettingsPath}
           configScopes={settingsConfigScopes}
           configDrafts={settingsConfigDrafts}
           selectedConfigScope={settingsConfigScope}
