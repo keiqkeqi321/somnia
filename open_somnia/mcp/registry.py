@@ -112,26 +112,89 @@ class MCPRegistry:
             except Exception as exc:
                 self.errors[server.name] = str(exc)
                 continue
-            for tool in tools:
-                remote_name = tool["name"]
-                local_name = f"mcp__{server.name}__{remote_name}"
-                input_schema = tool.get("inputSchema") or tool.get("input_schema") or {
-                    "type": "object",
-                    "properties": {},
-                }
+            self._register_server_tool_definitions(registry, server.name, tools)
 
-                def handler(ctx: Any, payload: dict[str, Any], server_name: str = server.name, name: str = remote_name) -> str:
-                    result = self.clients[server_name].call_tool(name, payload)
-                    return _render_mcp_result(result)
+    def _register_server_tool_definitions(self, registry, server_name: str, tools: list[dict[str, Any]]) -> None:
+        unregister_prefix = getattr(registry, "unregister_prefix", None)
+        if callable(unregister_prefix):
+            unregister_prefix(f"mcp__{server_name}__")
+        for tool in tools:
+            remote_name = tool["name"]
+            local_name = f"mcp__{server_name}__{remote_name}"
+            input_schema = tool.get("inputSchema") or tool.get("input_schema") or {
+                "type": "object",
+                "properties": {},
+            }
 
-                registry.register(
-                    ToolDefinition(
-                        name=local_name,
-                        description=f"MCP tool '{remote_name}' from server '{server.name}'. {tool.get('description', '')}".strip(),
-                        input_schema=input_schema,
-                        handler=handler,
-                    )
+            def handler(ctx: Any, payload: dict[str, Any], server_name: str = server_name, name: str = remote_name) -> str:
+                result = self.clients[server_name].call_tool(name, payload)
+                return _render_mcp_result(result)
+
+            registry.register(
+                ToolDefinition(
+                    name=local_name,
+                    description=f"MCP tool '{remote_name}' from server '{server_name}'. {tool.get('description', '')}".strip(),
+                    input_schema=input_schema,
+                    handler=handler,
                 )
+            )
+
+    def refresh_server_tools(self, server_name: str, registry=None) -> dict[str, Any]:
+        name = str(server_name or "").strip()
+        server = next((item for item in self.all_servers if item.name == name), None)
+        if server is None:
+            raise ValueError(f"MCP server '{name}' not found")
+        if not server.enabled:
+            raise ValueError(f"MCP server '{name}' is disabled")
+        client = self.clients.get(name)
+        if client is None:
+            client = MCPClient(server)
+            self.clients[name] = client
+        tools = client.list_tools()
+        self.server_tools[name] = [str(tool.get("name", "")) for tool in tools]
+        self.server_tool_details[name] = list(tools)
+        self.errors.pop(name, None)
+        if registry is not None:
+            self._register_server_tool_definitions(registry, name, list(tools))
+        return {
+            "name": server.name,
+            "transport": server.transport,
+            "target": server.url or server.command or "(unconfigured)",
+            "enabled": server.enabled,
+            "status": "connected",
+            "error": "",
+            "tool_count": len(tools),
+            "tools": self.tool_summaries(name),
+        }
+
+    def set_server_enabled(self, server_name: str, enabled: bool, registry=None) -> dict[str, Any]:
+        name = str(server_name or "").strip()
+        server = next((item for item in self.all_servers if item.name == name), None)
+        if server is None:
+            raise ValueError(f"MCP server '{name}' not found")
+        server.enabled = bool(enabled)
+        self.servers = [item for item in self.all_servers if item.enabled]
+        if not server.enabled:
+            unregister_prefix = getattr(registry, "unregister_prefix", None)
+            if callable(unregister_prefix):
+                unregister_prefix(f"mcp__{name}__")
+            client = self.clients.pop(name, None)
+            if client is not None:
+                client.close()
+            self.server_tools.pop(name, None)
+            self.server_tool_details.pop(name, None)
+            self.errors.pop(name, None)
+            return {
+                "name": server.name,
+                "transport": server.transport,
+                "target": server.url or server.command or "(unconfigured)",
+                "enabled": False,
+                "status": "disabled",
+                "error": "",
+                "tool_count": 0,
+                "tools": [],
+            }
+        return self.refresh_server_tools(name, registry=registry)
 
     def status_lines(self) -> list[str]:
         lines = []

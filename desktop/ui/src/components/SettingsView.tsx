@@ -1,5 +1,6 @@
 import { formatRelativeTime } from "../lib/messages";
-import type { SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
+import type { McpServerSummary, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
+import { useState } from "react";
 
 const SETTINGS_SECTIONS = [
   { key: "configuration", icon: "⚙", label: "配置", title: "配置" },
@@ -35,6 +36,7 @@ type SettingsViewProps = {
   onOpenPath: (path: string) => void | Promise<void>;
   configScopes: SettingsConfigScope[];
   configDrafts: Record<string, string>;
+  mcpServers: McpServerSummary[];
   selectedConfigScope: SettingsConfigScopeKey;
   selectedConfigSection: SettingsConfigSectionKey;
   configLoading: boolean;
@@ -44,6 +46,8 @@ type SettingsViewProps = {
   onSelectConfigSection: (section: SettingsConfigSectionKey) => void;
   onConfigDraftChange: (key: string, value: string) => void;
   onSaveConfigSection: () => void | Promise<void>;
+  onDebugMcpServer: (serverName: string) => Promise<number>;
+  onSetMcpServerEnabled: (serverName: string, enabled: boolean) => Promise<number>;
   onReloadConfig: () => void | Promise<void>;
 };
 
@@ -70,6 +74,7 @@ function SettingsView({
   onOpenPath,
   configScopes,
   configDrafts,
+  mcpServers,
   selectedConfigScope,
   selectedConfigSection,
   configLoading,
@@ -79,12 +84,50 @@ function SettingsView({
   onSelectConfigSection,
   onConfigDraftChange,
   onSaveConfigSection,
+  onDebugMcpServer,
+  onSetMcpServerEnabled,
   onReloadConfig,
 }: SettingsViewProps) {
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
   const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
   const activeDraftKey = `${selectedConfigScope}:${selectedConfigSection}`;
   const activeConfigOption = CONFIG_SECTION_OPTIONS.find((item) => item.key === selectedConfigSection);
+  const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(null);
+  const [debuggingMcpServer, setDebuggingMcpServer] = useState<string | null>(null);
+  const [togglingMcpServer, setTogglingMcpServer] = useState<string | null>(null);
+  const [mcpDebugMessage, setMcpDebugMessage] = useState("");
+
+  async function handleDebugServer(serverName: string) {
+    setExpandedMcpServer(serverName);
+    setDebuggingMcpServer(serverName);
+    setMcpDebugMessage("");
+    try {
+      const toolCount = await onDebugMcpServer(serverName);
+      setMcpDebugMessage(`Successfully fetched ${toolCount} tool${toolCount === 1 ? "" : "s"} from ${serverName}.`);
+    } catch (error) {
+      setMcpDebugMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDebuggingMcpServer(null);
+    }
+  }
+
+  async function handleToggleServer(serverName: string, enabled: boolean) {
+    setExpandedMcpServer(serverName);
+    setTogglingMcpServer(serverName);
+    setMcpDebugMessage("");
+    try {
+      const toolCount = await onSetMcpServerEnabled(serverName, enabled);
+      setMcpDebugMessage(
+        enabled
+          ? `Enabled ${serverName}; fetched ${toolCount} tool${toolCount === 1 ? "" : "s"} for chat.`
+          : `Disabled ${serverName}; removed its MCP tools from chat.`,
+      );
+    } catch (error) {
+      setMcpDebugMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTogglingMcpServer(null);
+    }
+  }
 
   return (
     <section className="settings-shell">
@@ -178,6 +221,91 @@ function SettingsView({
                     disabled={configLoading}
                   />
                 </section>
+                {selectedConfigSection === "mcp" ? (
+                  <section className="config-panel mcp-runtime-panel">
+                    <div className="config-editor-head">
+                      <div>
+                        <strong>Runtime MCP Servers</strong>
+                        <p>Click Debug to inspect registered tools from the running sidecar.</p>
+                      </div>
+                    </div>
+                    {mcpServers.length === 0 ? (
+                      <div className="settings-empty-state">
+                        <p>No MCP servers are active in this sidecar.</p>
+                      </div>
+                    ) : (
+                      <div className="mcp-server-list">
+                        {mcpDebugMessage ? <p className="mcp-debug-message">{mcpDebugMessage}</p> : null}
+                        {mcpServers.map((server) => {
+                          const isExpanded = expandedMcpServer === server.name;
+                          return (
+                            <div key={server.name} className={`mcp-server-row ${isExpanded ? "expanded" : ""}`}>
+                              <div className="mcp-server-summary">
+                                <span className={`mcp-status-dot ${server.status}`} aria-hidden="true" />
+                                <strong>{server.name}</strong>
+                                <span>{server.status}</span>
+                                <span>{server.transport}</span>
+                                <span>{server.tool_count} tools</span>
+                                <div className="mcp-server-actions">
+                                  <label className="mcp-toggle" title={server.enabled ? "Disable this MCP server for chat" : "Enable this MCP server for chat"}>
+                                    <input
+                                      type="checkbox"
+                                      checked={server.enabled}
+                                      disabled={togglingMcpServer === server.name}
+                                      onChange={(event) => void handleToggleServer(server.name, event.currentTarget.checked)}
+                                    />
+                                    <span>{togglingMcpServer === server.name ? "..." : server.enabled ? "On" : "Off"}</span>
+                                  </label>
+                                  <button
+                                    type="button"
+                                    className="settings-inline-button"
+                                    onClick={() => void handleDebugServer(server.name)}
+                                    disabled={debuggingMcpServer === server.name || !server.enabled}
+                                  >
+                                    {debuggingMcpServer === server.name ? "Fetching" : "Debug"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="settings-inline-button"
+                                    onClick={() => setExpandedMcpServer(isExpanded ? null : server.name)}
+                                  >
+                                    {isExpanded ? "Hide" : "Tools"}
+                                  </button>
+                                </div>
+                              </div>
+                              {isExpanded ? (
+                                <div className="mcp-server-details">
+                                  <div className="mcp-server-meta">
+                                    <span>Target</span>
+                                    <code>{server.target || "(unconfigured)"}</code>
+                                  </div>
+                                  {server.error ? <p className="mcp-server-error">{server.error}</p> : null}
+                                  {server.tools.length === 0 ? (
+                                    <div className="settings-empty-state">
+                                      <p>No tools registered for this server.</p>
+                                    </div>
+                                  ) : (
+                                    <div className="mcp-tool-list">
+                                      {server.tools.map((tool) => (
+                                        <details key={tool.name} className="mcp-tool-card">
+                                          <summary>
+                                            <strong>{tool.name}</strong>
+                                            <span>{tool.description || "(no description)"}</span>
+                                          </summary>
+                                          <pre>{JSON.stringify(tool.input_schema ?? {}, null, 2)}</pre>
+                                        </details>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                ) : null}
 
                 <section className="config-panel" data-settings-panel="skills">
                   <div className="config-path-row">

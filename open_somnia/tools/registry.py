@@ -37,6 +37,12 @@ class ToolRegistry:
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
 
+    def unregister_prefix(self, prefix: str) -> int:
+        names = [name for name in self._tools if name.startswith(prefix)]
+        for name in names:
+            self._tools.pop(name, None)
+        return len(names)
+
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.schema() for tool in self._tools.values()]
 

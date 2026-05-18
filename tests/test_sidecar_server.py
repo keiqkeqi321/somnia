@@ -8,6 +8,8 @@ import time
 import unittest
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from desktop.backend.server import SidecarServer
 from open_somnia.config.models import (
@@ -21,6 +23,7 @@ from open_somnia.config.models import (
 )
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.tools.registry import ToolDefinition
 
 
 class SidecarServerTests(unittest.TestCase):
@@ -241,6 +244,146 @@ class SidecarServerTests(unittest.TestCase):
                 self.assertEqual(session_payload["session"]["messages"][-1]["content"], "Hello")
             finally:
                 self._close_websocket(client)
+        finally:
+            server.close()
+
+    def test_mcp_servers_endpoint_includes_tool_previews(self) -> None:
+        root = self._stable_test_dir("sidecar-mcp")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        server.runtime.mcp_registry = SimpleNamespace(
+            server_summaries=lambda: [
+                {
+                    "name": "filesystem",
+                    "transport": "stdio",
+                    "target": "npx",
+                    "enabled": True,
+                    "status": "connected",
+                    "error": "",
+                    "tool_count": 1,
+                }
+            ],
+            tool_summaries=lambda server_name: [
+                {
+                    "name": "read_file",
+                    "description": "Read a file.",
+                    "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                }
+            ]
+            if server_name == "filesystem"
+            else [],
+            refresh_server_tools=lambda server_name, registry=None: {
+                "name": server_name,
+                "transport": "stdio",
+                "target": "npx",
+                "enabled": True,
+                "status": "connected",
+                "error": "",
+                "tool_count": 2,
+                "tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read a file.",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                    {
+                        "name": "write_file",
+                        "description": "Write a file.",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                ],
+            },
+            set_server_enabled=lambda server_name, enabled, registry=None: {
+                "name": server_name,
+                "transport": "stdio",
+                "target": "npx",
+                "enabled": bool(enabled),
+                "status": "connected" if enabled else "disabled",
+                "error": "",
+                "tool_count": 2 if enabled else 0,
+                "tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read a file.",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                    {
+                        "name": "write_file",
+                        "description": "Write a file.",
+                        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                ]
+                if enabled
+                else [],
+            },
+            close=lambda: None,
+        )
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+
+            status, payload = self._request_json("GET", f"{server.base_url}/mcp/servers")
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["servers"][0]["name"], "filesystem")
+            self.assertEqual(payload["servers"][0]["tools"][0]["name"], "read_file")
+            self.assertEqual(payload["servers"][0]["tools"][0]["input_schema"]["properties"]["path"]["type"], "string")
+
+            status, debug_payload = self._request_json("POST", f"{server.base_url}/mcp/servers/filesystem/debug", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(debug_payload["tool_count"], 2)
+            self.assertEqual(debug_payload["server"]["tools"][1]["name"], "write_file")
+
+            status, toggle_payload = self._request_json("POST", f"{server.base_url}/mcp/servers/filesystem/enabled", {"enabled": False})
+            self.assertEqual(status, 200)
+            self.assertFalse(toggle_payload["enabled"])
+            self.assertEqual(toggle_payload["tool_count"], 0)
+        finally:
+            server.close()
+
+    def test_saving_mcp_config_reloads_runtime_tools_immediately(self) -> None:
+        root = self._stable_test_dir("sidecar-mcp-save")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        server.runtime.registry.register(
+            ToolDefinition(
+                name="mcp__old__stale",
+                description="stale",
+                input_schema={"type": "object", "properties": {}},
+                handler=lambda ctx, payload: "stale",
+            )
+        )
+
+        class _FakeMCPRegistry:
+            def __init__(self, servers) -> None:
+                self.servers = servers
+
+            def register_tools(self, registry) -> None:
+                for mcp_server in self.servers:
+                    registry.register(
+                        ToolDefinition(
+                            name=f"mcp__{mcp_server.name}__ping",
+                            description="Ping",
+                            input_schema={"type": "object", "properties": {}},
+                            handler=lambda ctx, payload: "pong",
+                        )
+                    )
+
+            def close(self) -> None:
+                return None
+
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            with patch("desktop.backend.server.MCPRegistry", _FakeMCPRegistry):
+                result = server.save_config_section(
+                    scope="project",
+                    section="mcp",
+                    content='[mcp_servers.fresh]\ntransport = "stdio"\ncommand = "fresh-command"\n',
+                )
+
+            self.assertTrue(result["runtime_reloaded"])
+            self.assertIn("fresh", [item.name for item in server.runtime.settings.mcp_servers])
+            self.assertIn("mcp__fresh__ping", server.runtime.registry.names())
+            self.assertNotIn("mcp__old__stale", server.runtime.registry.names())
         finally:
             server.close()
 

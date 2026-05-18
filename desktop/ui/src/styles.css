@@ -519,6 +519,165 @@ button {
   line-height: 1.55;
 }
 
+.mcp-server-list,
+.mcp-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mcp-server-row {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(22, 24, 28, 0.78);
+  overflow: hidden;
+}
+
+.mcp-server-row.expanded {
+  border-color: rgba(95, 182, 255, 0.34);
+}
+
+.mcp-server-summary {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  color: #cbd5e1;
+  text-align: left;
+}
+
+.mcp-server-row:hover .mcp-server-summary {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.mcp-server-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ffffff;
+}
+
+.mcp-server-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.mcp-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: #5fb6ff;
+}
+
+.mcp-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #6b7280;
+}
+
+.mcp-status-dot.connected {
+  background: #4ade80;
+}
+
+.mcp-status-dot.error {
+  background: #f87171;
+}
+
+.mcp-status-dot.disabled {
+  background: #9ca3af;
+}
+
+.mcp-server-details {
+  padding: 0 12px 12px;
+}
+
+.mcp-server-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin: 4px 0 10px;
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+.mcp-server-meta code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #d1d5db;
+}
+
+.mcp-server-error {
+  margin: 0 0 10px;
+  color: #fca5a5;
+  font-size: 0.8rem;
+}
+
+.mcp-debug-message {
+  margin: 0;
+  color: #93c5fd;
+  font-size: 0.8rem;
+}
+
+.mcp-tool-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(9, 11, 15, 0.58);
+}
+
+.mcp-tool-card summary {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.mcp-tool-card summary strong,
+.mcp-tool-card summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-tool-card summary strong {
+  color: #ffffff;
+}
+
+.mcp-tool-card summary span {
+  color: #9ca3af;
+  font-size: 0.8rem;
+}
+
+.mcp-tool-card pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px 12px 12px;
+  overflow: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: #d1d5db;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .config-skill-list {
   display: flex;
   flex-direction: column;

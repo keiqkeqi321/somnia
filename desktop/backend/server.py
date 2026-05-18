@@ -39,7 +39,15 @@ from desktop.backend.ipc import (
 from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
-from open_somnia.config.settings import APP_DIRNAME, global_config_path, workspace_config_path
+from open_somnia.config.settings import (
+    APP_DIRNAME,
+    _load_mcp_servers,
+    _merge_config,
+    _read_toml,
+    global_config_path,
+    workspace_config_path,
+)
+from open_somnia.mcp.registry import MCPRegistry
 from open_somnia.path_completion import (
     MAX_PATH_COMPLETION_CANDIDATES,
     PATH_COMPLETION_CACHE_SECONDS,
@@ -192,6 +200,110 @@ def _replace_config_section(text: str, section_key: str, content: str) -> str:
     next_content = _normalize_config_text(str(content or ""))
     parts = [part for part in (base, next_content) if part]
     return ("\n\n".join(parts).strip() + "\n") if parts else ""
+
+
+def _raw_config_has_mcp_server(raw: dict[str, Any], server_name: str) -> bool:
+    servers = raw.get("mcp_servers", {})
+    if isinstance(servers, dict):
+        return server_name in servers
+    if isinstance(servers, list):
+        return any(isinstance(item, dict) and str(item.get("name", "")).strip() == server_name for item in servers)
+    return False
+
+
+def _toml_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _toml_unquote(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {'"', "'"}:
+        return stripped[1:-1]
+    return stripped
+
+
+def _upsert_mcp_enabled_in_table(lines: list[str], server_name: str, enabled: bool) -> bool:
+    header = f"[mcp_servers.{server_name}]"
+    start: int | None = None
+    end = len(lines)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == header:
+            start = index
+            continue
+        if start is not None and stripped.startswith("[") and stripped.endswith("]"):
+            end = index
+            break
+    if start is None:
+        return False
+    assignment = f"enabled = {_toml_bool(enabled)}"
+    for index in range(start + 1, end):
+        if lines[index].strip().startswith("enabled ="):
+            lines[index] = assignment
+            return True
+    lines.insert(end, assignment)
+    return True
+
+
+def _upsert_mcp_enabled_in_array_table(lines: list[str], server_name: str, enabled: bool) -> bool:
+    blocks: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[[mcp_servers]]":
+            if start is not None:
+                blocks.append((start, index))
+            start = index
+            continue
+        if start is not None and stripped.startswith("[") and stripped.endswith("]") and stripped != "[[mcp_servers]]":
+            blocks.append((start, index))
+            start = None
+    if start is not None:
+        blocks.append((start, len(lines)))
+    for start, end in blocks:
+        has_name = False
+        for index in range(start + 1, end):
+            stripped = lines[index].strip()
+            if not stripped.startswith("name"):
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() == "name" and _toml_unquote(value) == server_name:
+                has_name = True
+                break
+        if not has_name:
+            continue
+        assignment = f"enabled = {_toml_bool(enabled)}"
+        for index in range(start + 1, end):
+            if lines[index].strip().startswith("enabled ="):
+                lines[index] = assignment
+                return True
+        lines.insert(end, assignment)
+        return True
+    return False
+
+
+def _persist_mcp_server_enabled(workspace_root: Path, server_name: str, enabled: bool) -> Path:
+    global_path = global_config_path()
+    project_path = workspace_config_path(workspace_root)
+    project_raw = _read_toml(project_path)
+    global_raw = _read_toml(global_path)
+    if _raw_config_has_mcp_server(project_raw, server_name):
+        config_path = project_path
+    elif _raw_config_has_mcp_server(global_raw, server_name):
+        config_path = global_path
+    else:
+        config_path = project_path
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    changed = _upsert_mcp_enabled_in_table(lines, server_name, enabled)
+    if not changed:
+        changed = _upsert_mcp_enabled_in_array_table(lines, server_name, enabled)
+    if not changed:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend([f"[mcp_servers.{server_name}]", f"enabled = {_toml_bool(enabled)}"])
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return config_path
 
 
 def _list_skills_for_scope(workspace_root: Path, scope: str) -> list[dict[str, str]]:
@@ -495,6 +607,56 @@ class SidecarServer:
             )
         return {"scopes": scopes}
 
+    def mcp_servers_payload(self) -> dict[str, Any]:
+        registry = getattr(self.runtime, "mcp_registry", None)
+        server_summaries = getattr(registry, "server_summaries", None)
+        tool_summaries = getattr(registry, "tool_summaries", None)
+        if registry is None or not callable(server_summaries):
+            return {"servers": []}
+        servers: list[dict[str, Any]] = []
+        for summary in server_summaries():
+            name = str(summary.get("name", ""))
+            tools = tool_summaries(name) if callable(tool_summaries) else []
+            servers.append({**summary, "tools": tools})
+        return {"servers": servers}
+
+    def debug_mcp_server(self, server_name: str) -> dict[str, Any]:
+        normalized_name = str(server_name or "").strip()
+        if not normalized_name:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "server name is required.")
+        registry = getattr(self.runtime, "mcp_registry", None)
+        refresh_server_tools = getattr(registry, "refresh_server_tools", None)
+        if registry is None or not callable(refresh_server_tools):
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, "MCP registry is unavailable.")
+        try:
+            server = refresh_server_tools(normalized_name, registry=self.runtime.registry)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except Exception as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, f"MCP tools/list failed for '{normalized_name}': {exc}") from exc
+        self._mark_tool_registry_changed()
+        return {"server": server, "tool_count": int(server.get("tool_count", 0))}
+
+    def set_mcp_server_enabled(self, server_name: str, enabled: bool) -> dict[str, Any]:
+        normalized_name = str(server_name or "").strip()
+        if not normalized_name:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "server name is required.")
+        try:
+            config_path = _persist_mcp_server_enabled(self.settings.workspace_root, normalized_name, bool(enabled))
+            self.reload_mcp_runtime()
+        except Exception as exc:
+            action = "enable" if enabled else "disable"
+            raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, f"MCP {action} failed for '{normalized_name}': {exc}") from exc
+        server = next((item for item in self.mcp_servers_payload()["servers"] if item.get("name") == normalized_name), None)
+        if server is None:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"MCP server '{normalized_name}' was not found after updating {config_path}.")
+        return {
+            "server": server,
+            "enabled": bool(server.get("enabled")),
+            "tool_count": int(server.get("tool_count", 0)),
+            "config_path": str(config_path),
+        }
+
     def save_config_section(self, *, scope: str, section: str, content: str) -> dict[str, Any]:
         normalized_scope = str(scope or "").strip().lower()
         normalized_section = str(section or "").strip().lower()
@@ -514,13 +676,40 @@ class SidecarServer:
             config_path.write_text(updated, encoding="utf-8")
         elif config_path.exists():
             config_path.unlink()
+        mcp_reloaded = False
+        if normalized_section == "mcp":
+            self.reload_mcp_runtime()
+            mcp_reloaded = True
         return {
             "scope": normalized_scope,
             "section": normalized_section,
             "config_path": str(config_path),
             "saved": True,
             "restart_required": True,
+            "runtime_reloaded": mcp_reloaded,
         }
+
+    def reload_mcp_runtime(self) -> None:
+        global_raw = _read_toml(global_config_path())
+        workspace_raw = _read_toml(workspace_config_path(self.settings.workspace_root))
+        raw = _merge_config(global_raw, workspace_raw)
+        mcp_servers = _load_mcp_servers(self.settings.workspace_root, raw)
+        old_registry = getattr(self.runtime, "mcp_registry", None)
+        if old_registry is not None:
+            old_registry.close()
+        unregister_prefix = getattr(self.runtime.registry, "unregister_prefix", None)
+        if callable(unregister_prefix):
+            unregister_prefix("mcp__")
+        self.settings.mcp_servers = mcp_servers
+        self.runtime.settings.mcp_servers = mcp_servers
+        self.runtime.mcp_registry = MCPRegistry(mcp_servers)
+        self.runtime.mcp_registry.register_tools(self.runtime.registry)
+        self._mark_tool_registry_changed()
+
+    def _mark_tool_registry_changed(self) -> None:
+        invalidator = getattr(self.runtime, "invalidate_tool_schema_state", None)
+        if callable(invalidator):
+            invalidator()
 
     def switch_provider_model(self, provider_name: str, model: str) -> dict[str, Any]:
         try:
@@ -800,6 +989,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"models": self.sidecar.list_models(provider_name)}
         if path_parts == ["settings", "config"]:
             return self.sidecar.config_payload()
+        if path_parts == ["mcp", "servers"]:
+            return self.sidecar.mcp_servers_payload()
         if path_parts == ["workspace", "paths"]:
             raw_limit = (query.get("limit") or [30])[0]
             try:
@@ -878,6 +1069,12 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if not mode:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "mode is required.")
             return self.sidecar.set_execution_mode(mode), HTTPStatus.OK
+        if len(path_parts) == 4 and path_parts[0] == "mcp" and path_parts[1] == "servers" and path_parts[3] == "debug":
+            return self.sidecar.debug_mcp_server(path_parts[2]), HTTPStatus.OK
+        if len(path_parts) == 4 and path_parts[0] == "mcp" and path_parts[1] == "servers" and path_parts[3] == "enabled":
+            if "enabled" not in body:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "enabled is required.")
+            return self.sidecar.set_mcp_server_enabled(path_parts[2], bool(body.get("enabled"))), HTTPStatus.OK
         if path_parts == ["settings", "config"]:
             return (
                 self.sidecar.save_config_section(

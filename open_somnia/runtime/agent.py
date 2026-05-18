@@ -569,6 +569,11 @@ class OpenAgentRuntime:
         registry = self.registry if actor == "lead" else self.worker_registry
         return self._augment_tool_schemas_with_importance(registry.schemas())
 
+    def invalidate_tool_schema_state(self) -> None:
+        self._context_usage_cache = {}
+        self._payload_message_cache = {}
+        self._recent_context_usage = {}
+
     def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
         return self._tool_schemas_for_model(actor)
 

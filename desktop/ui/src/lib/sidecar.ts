@@ -3,7 +3,9 @@ import type {
   InteractionRequestState,
   LoopInjectionResponse,
   ModelDescriptor,
+  McpServerSummary,
   ProviderDescriptor,
+  SaveSettingsConfigSectionResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
@@ -149,12 +151,37 @@ export class SidecarClient {
     return parseResponse<SettingsConfigPayload>(await fetch(`${this.baseUrl}/settings/config`));
   }
 
+  async listMcpServers(): Promise<McpServerSummary[]> {
+    const payload = await parseResponse<{ servers: McpServerSummary[] }>(await fetch(`${this.baseUrl}/mcp/servers`));
+    return payload.servers;
+  }
+
+  async debugMcpServer(serverName: string): Promise<{ server: McpServerSummary; tool_count: number }> {
+    return parseResponse<{ server: McpServerSummary; tool_count: number }>(
+      await fetch(`${this.baseUrl}/mcp/servers/${encodeURIComponent(serverName)}/debug`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
+  async setMcpServerEnabled(serverName: string, enabled: boolean): Promise<{ server: McpServerSummary; enabled: boolean; tool_count: number }> {
+    return parseResponse<{ server: McpServerSummary; enabled: boolean; tool_count: number }>(
+      await fetch(`${this.baseUrl}/mcp/servers/${encodeURIComponent(serverName)}/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+    );
+  }
+
   async saveSettingsConfigSection(
     scope: SettingsConfigScopeKey,
     section: SettingsConfigSectionKey,
     content: string,
-  ): Promise<{ scope: string; section: string; config_path: string; saved: boolean; restart_required: boolean }> {
-    return parseResponse<{ scope: string; section: string; config_path: string; saved: boolean; restart_required: boolean }>(
+  ): Promise<SaveSettingsConfigSectionResult> {
+    return parseResponse<SaveSettingsConfigSectionResult>(
       await fetch(`${this.baseUrl}/settings/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

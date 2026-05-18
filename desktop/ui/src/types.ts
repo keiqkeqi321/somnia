@@ -174,6 +174,32 @@ export interface SettingsConfigPayload {
   scopes: SettingsConfigScope[];
 }
 
+export interface SaveSettingsConfigSectionResult {
+  scope: string;
+  section: string;
+  config_path: string;
+  saved: boolean;
+  restart_required: boolean;
+  runtime_reloaded?: boolean;
+}
+
+export interface McpToolSummary {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+export interface McpServerSummary {
+  name: string;
+  transport: string;
+  target: string;
+  enabled: boolean;
+  status: string;
+  error?: string;
+  tool_count: number;
+  tools: McpToolSummary[];
+}
+
 export interface SidecarEvent {
   type: string;
   session_id?: string | null;

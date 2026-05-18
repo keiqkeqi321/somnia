@@ -39,6 +39,7 @@ import type {
   ConversationToolCall,
   InteractionRequestState,
   ManagedSidecarConnection,
+  McpServerSummary,
   ModelDescriptor,
   ProviderDescriptor,
   SettingsConfigScope,
@@ -236,6 +237,7 @@ function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("configuration");
   const [settingsConfigScopes, setSettingsConfigScopes] = useState<SettingsConfigScope[]>([]);
   const [settingsConfigDrafts, setSettingsConfigDrafts] = useState<Record<string, string>>({});
+  const [settingsMcpServers, setSettingsMcpServers] = useState<McpServerSummary[]>([]);
   const [settingsConfigScope, setSettingsConfigScope] = useState<SettingsConfigScopeKey>("project");
   const [settingsConfigSection, setSettingsConfigSection] = useState<SettingsConfigSectionKey>("provider");
   const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
@@ -1994,12 +1996,14 @@ function App() {
     if (!client) {
       setSettingsConfigScopes([]);
       setSettingsConfigDrafts({});
+      setSettingsMcpServers([]);
       setSettingsConfigMessage("Connect to a sidecar before editing configuration.");
       return;
     }
     setSettingsConfigLoading(true);
     try {
       const payload = await client.getSettingsConfig();
+      const mcpServers = await client.listMcpServers();
       const nextDrafts: Record<string, string> = {};
       for (const scope of payload.scopes) {
         for (const section of ["provider", "mcp", "hooks", "system_prompt"] as SettingsConfigSectionKey[]) {
@@ -2008,6 +2012,7 @@ function App() {
       }
       setSettingsConfigScopes(payload.scopes);
       setSettingsConfigDrafts(nextDrafts);
+      setSettingsMcpServers(mcpServers);
       setSettingsConfigMessage("");
     } catch (error) {
       setSettingsConfigMessage(formatErrorMessage(error));
@@ -2031,12 +2036,49 @@ function App() {
         settingsConfigDrafts[draftKey] ?? "",
       );
       await refreshSettingsConfig();
-      setSettingsConfigMessage(`Saved ${result.section} to ${result.config_path}. Restart the sidecar to apply runtime changes.`);
+      setSettingsConfigMessage(
+        result.runtime_reloaded
+          ? `Saved ${result.section} to ${result.config_path}. Runtime MCP tools are active now.`
+          : `Saved ${result.section} to ${result.config_path}. Restart the sidecar to apply runtime changes.`,
+      );
     } catch (error) {
       setSettingsConfigMessage(formatErrorMessage(error));
     } finally {
       setSettingsConfigSaving(false);
     }
+  }
+
+  async function handleDebugMcpServer(serverName: string): Promise<number> {
+    const client = clientRef.current;
+    if (!client) {
+      throw new Error("Connect to a sidecar before debugging MCP servers.");
+    }
+    const result = await client.debugMcpServer(serverName);
+    setSettingsMcpServers((previous) => {
+      const nextServer = result.server;
+      if (!previous.some((server) => server.name === nextServer.name)) {
+        return [...previous, nextServer];
+      }
+      return previous.map((server) => (server.name === nextServer.name ? nextServer : server));
+    });
+    return result.tool_count;
+  }
+
+  async function handleSetMcpServerEnabled(serverName: string, enabled: boolean): Promise<number> {
+    const client = clientRef.current;
+    if (!client) {
+      throw new Error("Connect to a sidecar before changing MCP servers.");
+    }
+    const result = await client.setMcpServerEnabled(serverName, enabled);
+    setSettingsMcpServers((previous) => {
+      const nextServer = result.server;
+      if (!previous.some((server) => server.name === nextServer.name)) {
+        return [...previous, nextServer];
+      }
+      return previous.map((server) => (server.name === nextServer.name ? nextServer : server));
+    });
+    await refreshSettingsConfig();
+    return result.tool_count;
   }
 
   async function handleOpenSettingsPath(path: string) {
@@ -2406,6 +2448,7 @@ function App() {
           onOpenPath={handleOpenSettingsPath}
           configScopes={settingsConfigScopes}
           configDrafts={settingsConfigDrafts}
+          mcpServers={settingsMcpServers}
           selectedConfigScope={settingsConfigScope}
           selectedConfigSection={settingsConfigSection}
           configLoading={settingsConfigLoading}
@@ -2415,6 +2458,8 @@ function App() {
           onSelectConfigSection={setSettingsConfigSection}
           onConfigDraftChange={(key, value) => setSettingsConfigDrafts((previous) => ({ ...previous, [key]: value }))}
           onSaveConfigSection={handleSaveSettingsConfigSection}
+          onDebugMcpServer={handleDebugMcpServer}
+          onSetMcpServerEnabled={handleSetMcpServerEnabled}
           onReloadConfig={refreshSettingsConfig}
         />
       ) : null}

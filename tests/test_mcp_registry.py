@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from open_somnia.mcp.registry import MCPRegistry
+from open_somnia.tools.registry import ToolRegistry
 
 
 class MCPRegistryTests(unittest.TestCase):
@@ -27,6 +28,30 @@ class MCPRegistryTests(unittest.TestCase):
         self.assertEqual(tools[0]["name"], "echo")
         self.assertEqual(tools[0]["description"], "Echo text")
         self.assertEqual(tools[0]["input_schema"]["type"], "object")
+
+    def test_set_server_enabled_updates_runtime_tool_registry(self) -> None:
+        registry = MCPRegistry([SimpleNamespace(name="minimal", enabled=True, transport="stdio", url=None, command="python")])
+        tool_registry = ToolRegistry()
+        registry.clients["minimal"] = SimpleNamespace(
+            list_tools=lambda: [
+                {
+                    "name": "echo",
+                    "description": "Echo text",
+                    "inputSchema": {"type": "object", "properties": {}},
+                }
+            ],
+            close=lambda: None,
+        )
+
+        enabled = registry.set_server_enabled("minimal", True, registry=tool_registry)
+
+        self.assertEqual(enabled["tool_count"], 1)
+        self.assertIn("mcp__minimal__echo", tool_registry.names())
+
+        disabled = registry.set_server_enabled("minimal", False, registry=tool_registry)
+
+        self.assertFalse(disabled["enabled"])
+        self.assertNotIn("mcp__minimal__echo", tool_registry.names())
 
 
 if __name__ == "__main__":
