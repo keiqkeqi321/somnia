@@ -201,6 +201,9 @@ class TaskStore:
             task["status"] = status
         if add_blocked_by:
             task["blockedBy"] = sorted(set(task.get("blockedBy", []) + add_blocked_by))
+        if task.get("status") in {"in_progress", "completed"} and task.get("blockedBy"):
+            blockers = ", ".join(str(item) for item in task.get("blockedBy", []))
+            raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
         if add_blocks:
             task["blocks"] = sorted(set(task.get("blocks", []) + add_blocks))
         if preferred_owner is not None:
@@ -217,6 +220,9 @@ class TaskStore:
 
     def claim(self, task_id: int, owner: str, session_id: str | None = None) -> dict[str, Any]:
         task = self.get(task_id, session_id=session_id)
+        if task.get("blockedBy"):
+            blockers = ", ".join(str(item) for item in task.get("blockedBy", []))
+            raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
         task["owner"] = owner
         task["status"] = "in_progress"
         self.save(task)

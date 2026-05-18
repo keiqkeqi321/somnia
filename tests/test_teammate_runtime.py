@@ -1206,6 +1206,30 @@ class TeammateRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(task_store.list_owned_open("Worker", session_id="session-2"), [])
 
+    def test_blocked_task_cannot_be_claimed_started_or_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            blocker = task_store.create("Dependency", session_id="session-1")
+            blocked = task_store.create("Blocked task", session_id="session-1")
+            task_store.update(blocked["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+
+            with self.assertRaisesRegex(ValueError, "blocked by"):
+                task_store.claim(blocked["id"], "Worker", session_id="session-1")
+            with self.assertRaisesRegex(ValueError, "blocked by"):
+                task_store.update(blocked["id"], status="in_progress", session_id="session-1")
+            with self.assertRaisesRegex(ValueError, "blocked by"):
+                task_store.update(blocked["id"], status="completed", session_id="session-1")
+            started = task_store.create("Already started", session_id="session-1")
+            task_store.claim(started["id"], "Worker", session_id="session-1")
+            with self.assertRaisesRegex(ValueError, "blocked by"):
+                task_store.update(started["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+
+            task_store.update(blocker["id"], status="completed", session_id="session-1")
+            claimed = task_store.claim(blocked["id"], "Worker", session_id="session-1")
+
+            self.assertEqual(claimed["owner"], "Worker")
+            self.assertEqual(claimed["status"], "in_progress")
+
     def test_session_scoped_storage_writes_into_session_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
