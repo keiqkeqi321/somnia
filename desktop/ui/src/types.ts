@@ -122,6 +122,33 @@ export interface ToolLogDetail extends ToolLogIndexEntry {
   rendered: string;
 }
 
+export interface TeamMemberActivity {
+  name: string;
+  role?: string;
+  status?: string;
+  activity?: string;
+  current_tool_name?: string | null;
+  current_task_id?: number | string | null;
+  recent_interactions?: string[];
+  summary?: string;
+  [key: string]: unknown;
+}
+
+export interface TaskGraphItem {
+  id: number;
+  subject?: string;
+  description?: string;
+  status?: "pending" | "in_progress" | "completed" | string;
+  owner?: string | null;
+  preferred_owner?: string | null;
+  session_id?: string | null;
+  blockedBy?: number[];
+  blocks?: number[];
+  created_at?: number;
+  updated_at?: number;
+  [key: string]: unknown;
+}
+
 export type SettingsConfigSectionKey = "provider" | "mcp" | "hooks" | "system_prompt";
 export type SettingsConfigScopeKey = "user" | "project";
 

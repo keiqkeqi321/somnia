@@ -46,6 +46,8 @@ import type {
   SettingsConfigSectionKey,
   SidecarEvent,
   SidecarStatus,
+  TaskGraphItem,
+  TeamMemberActivity,
   TodoItem,
   ToolLogDetail,
   ToolLogIndexEntry,
@@ -155,8 +157,35 @@ type ActiveProjectTurn = {
   sessionId: string;
   turnId: string | null;
 };
+type SubagentActivity = {
+  id: string;
+  prompt: string;
+  agentType: string;
+  startedAt: number;
+  lastActivityAt?: number;
+  facts: string[];
+};
+type TaskGraphNodeLayout = {
+  task: TaskGraphItem;
+  x: number;
+  y: number;
+  level: number;
+};
+type TaskGraphEdge = {
+  from: number;
+  to: number;
+};
+type TaskGraphLayout = {
+  nodes: TaskGraphNodeLayout[];
+  edges: TaskGraphEdge[];
+  width: number;
+  height: number;
+  nodeWidth: number;
+  nodeHeight: number;
+};
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
+const SUBAGENT_FACTS_LIMIT = 5;
 
 function App() {
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
@@ -177,6 +206,9 @@ function App() {
   const [queuedPrompts, setQueuedPrompts] = useState<Record<string, QueuedPrompt[]>>({});
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [activeProjectTurns, setActiveProjectTurns] = useState<Record<string, ActiveProjectTurn[]>>({});
+  const [activeSubagents, setActiveSubagents] = useState<Record<string, Record<string, SubagentActivity>>>({});
+  const [teamActivity, setTeamActivity] = useState<Record<string, TeamMemberActivity[]>>({});
+  const [taskGraph, setTaskGraph] = useState<Record<string, TaskGraphItem[]>>({});
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
@@ -213,6 +245,7 @@ function App() {
   const [layoutDragging, setLayoutDragging] = useState<LayoutDragState | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
+  const [taskGraphPanelOpen, setTaskGraphPanelOpen] = useState(false);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -396,7 +429,64 @@ function App() {
 
   useEffect(() => {
     setTodoExpanded(false);
+    setTaskGraphPanelOpen(false);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    const projectPath = selectedProjectPath;
+    const sessionId = selectedSessionId;
+    if (!projectPath || !sessionId) {
+      return;
+    }
+    void refreshTaskGraph(projectPath, sessionId);
+  }, [selectedProjectPath, selectedSessionId]);
+
+  useEffect(() => {
+    const projectPath = selectedProjectPath;
+    const sessionId = selectedSessionId;
+    if (!projectPath || !sessionId) {
+      return;
+    }
+    const hasActiveTurn = (activeProjectTurns[projectPath] ?? []).some((turn) => turn.sessionId === sessionId);
+    if (!hasActiveTurn) {
+      return;
+    }
+    let cancelled = false;
+    async function refreshSelectedExecutionState() {
+      const client = clientRef.current;
+      if (!client || !projectPath || !sessionId) {
+        return;
+      }
+      try {
+        const [members, tasks] = await Promise.all([client.listActiveTeamMembers(sessionId), client.listTasks(sessionId)]);
+        if (cancelled) {
+          return;
+        }
+        const key = conversationStateKey(projectPath, sessionId) ?? "";
+        setTeamActivity((previous) => ({
+          ...previous,
+          [key]: members,
+        }));
+        setTaskGraph((previous) => ({
+          ...previous,
+          [key]: tasks,
+        }));
+      } catch {
+        if (!cancelled) {
+          setTeamActivity((previous) => ({
+            ...previous,
+            [conversationStateKey(projectPath, sessionId) ?? ""]: [],
+          }));
+        }
+      }
+    }
+    void refreshSelectedExecutionState();
+    const interval = window.setInterval(() => void refreshSelectedExecutionState(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeProjectTurns, selectedProjectPath, selectedSessionId]);
 
   useEffect(() => {
     if (!layoutDragging) {
@@ -748,6 +838,9 @@ function App() {
       return;
     }
     const toolName = readEventString(event.payload.tool_name, "tool");
+    if (toolName === "subagent" && readEventString(event.payload.actor, "lead") === "lead") {
+      noteSubagentStarted(projectPath, event);
+    }
     setRuntimeConversationItems((previous) => ({
       ...previous,
       [key]: [
@@ -774,6 +867,9 @@ function App() {
       return;
     }
     const toolName = readEventString(event.payload.tool_name, "tool");
+    if (toolName === "subagent" && readEventString(event.payload.actor, "lead") === "lead") {
+      noteSubagentFinished(projectPath, event);
+    }
     const finishedTool = {
       id: runtimeItemId("tool-call", event.turn_id),
       name: toolName,
@@ -799,6 +895,106 @@ function App() {
             : item,
         ),
       };
+    });
+  }
+
+  function noteSubagentStarted(projectPath: string | null | undefined, event: SidecarEvent) {
+    const key = conversationStateKey(projectPath, event.session_id);
+    if (!key) {
+      return;
+    }
+    const toolInput = isRecord(event.payload.tool_input) ? event.payload.tool_input : {};
+    const activityId = readEventString(event.payload.trace_id, `subagent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const prompt = readEventString(toolInput.prompt, "working");
+    const agentType = readEventString(toolInput.agent_type, "Explore");
+    setActiveSubagents((previous) => ({
+      ...previous,
+      [key]: {
+        ...(previous[key] ?? {}),
+        [activityId]: {
+          id: activityId,
+          prompt,
+          agentType,
+          startedAt: Date.now(),
+          facts: [],
+        },
+      },
+    }));
+  }
+
+  function noteSubagentActivity(projectPath: string | null | undefined, event: SidecarEvent) {
+    const key = conversationStateKey(projectPath, event.session_id);
+    if (!key) {
+      return;
+    }
+    const payload = event.payload;
+    const activityId = readEventString(payload.activity_id, "");
+    const text = compactInlineText(readEventString(payload.text, ""), 180);
+    if (!text) {
+      return;
+    }
+    const prompt = readEventString(payload.prompt, "");
+    const agentType = readEventString(payload.agent_type, "Explore");
+    setActiveSubagents((previous) => {
+      const current = previous[key] ?? {};
+      const fallbackId = Object.keys(current).length === 1 ? Object.keys(current)[0] : "";
+      const resolvedId = activityId && current[activityId] ? activityId : fallbackId || activityId;
+      if (!resolvedId) {
+        return previous;
+      }
+      const currentItem = current[resolvedId] ?? {
+        id: resolvedId,
+        prompt,
+        agentType,
+        startedAt: Date.now(),
+        facts: [],
+      };
+      const facts = currentItem.facts[currentItem.facts.length - 1] === text ? currentItem.facts : [...currentItem.facts, text];
+      return {
+        ...previous,
+        [key]: {
+          ...current,
+          [resolvedId]: {
+            ...currentItem,
+            prompt: currentItem.prompt || prompt,
+            agentType: currentItem.agentType || agentType,
+            facts: facts.slice(-SUBAGENT_FACTS_LIMIT),
+            lastActivityAt: Date.now(),
+          },
+        },
+      };
+    });
+  }
+
+  function noteSubagentFinished(projectPath: string | null | undefined, event: SidecarEvent) {
+    const key = conversationStateKey(projectPath, event.session_id);
+    if (!key) {
+      return;
+    }
+    const toolInput = isRecord(event.payload.tool_input) ? event.payload.tool_input : {};
+    const prompt = readEventString(toolInput.prompt, "");
+    const agentType = readEventString(toolInput.agent_type, "Explore");
+    setActiveSubagents((previous) => {
+      const current = previous[key] ?? {};
+      const traceId = readEventString(event.payload.trace_id, "");
+      let removeId = traceId && current[traceId] ? traceId : "";
+      if (!removeId) {
+        removeId =
+          Object.values(current).find((item) => item.prompt === prompt && item.agentType === agentType)?.id ??
+          (Object.keys(current).length === 1 ? Object.keys(current)[0] : "");
+      }
+      if (!removeId) {
+        return previous;
+      }
+      const nextItems = { ...current };
+      delete nextItems[removeId];
+      const next = { ...previous };
+      if (Object.keys(nextItems).length > 0) {
+        next[key] = nextItems;
+      } else {
+        delete next[key];
+      }
+      return next;
     });
   }
 
@@ -991,6 +1187,14 @@ function App() {
       if (isActiveProject) {
         void refreshToolLogs();
       }
+      const toolName = readEventString(event.payload.tool_name, "");
+      if (toolName === "task_create" || toolName === "task_update" || toolName === "task_list" || toolName === "claim_task") {
+        void refreshTaskGraph(projectPath, event.session_id ?? null);
+      }
+      return;
+    }
+    if (event.type === "subagent_activity") {
+      noteSubagentActivity(projectPath, event);
       return;
     }
     if (event.type === "provider_switched" || event.type === "reasoning_level_updated" || event.type === "execution_mode_updated") {
@@ -1008,6 +1212,7 @@ function App() {
     if (event.type === "interrupt_completed" || event.type === "error") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       clearConversationRuntimeState(projectPath, event.session_id);
+      clearActivityState(projectPath, event.session_id);
       if (isActiveProject) {
         if (event.session_id === selectedSessionIdRef.current) {
           setActiveTurnId((current) => (current === event.turn_id ? null : current));
@@ -1020,6 +1225,7 @@ function App() {
     if (event.type === "turn_result") {
       clearActiveProjectTurn(projectPath, event.turn_id ?? null);
       clearConversationRuntimeState(projectPath, event.session_id);
+      clearActivityState(projectPath, event.session_id);
       const completedSessionId = event.session_id ?? null;
       if (isActiveProject) {
         if (completedSessionId === selectedSessionIdRef.current) {
@@ -1098,6 +1304,26 @@ function App() {
       } catch {
         setActiveToolLog(null);
       }
+    }
+  }
+
+  async function refreshTaskGraph(projectPath = selectedProjectPathRef.current, sessionId = selectedSessionIdRef.current) {
+    const client = projectPath ? projectClientsRef.current[projectPath] ?? clientRef.current : clientRef.current;
+    if (!client || !projectPath || !sessionId) {
+      return;
+    }
+    try {
+      const tasks = await client.listTasks(sessionId);
+      const key = conversationStateKey(projectPath, sessionId);
+      if (!key) {
+        return;
+      }
+      setTaskGraph((previous) => ({
+        ...previous,
+        [key]: tasks,
+      }));
+    } catch {
+      // Task graph is auxiliary UI; keep the conversation flow quiet on refresh failures.
     }
   }
 
@@ -1217,6 +1443,29 @@ function App() {
     });
   }
 
+  function clearActivityState(projectPath: string | null | undefined, sessionId: string | null | undefined) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setActiveSubagents((previous) => {
+      if (!previous[key]) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+    setTeamActivity((previous) => {
+      if (!previous[key]) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  }
+
   async function handleCreateProject() {
     setBusyAction("create-project");
     try {
@@ -1282,6 +1531,9 @@ function App() {
         delete next[projectPath];
         return next;
       });
+      setActiveSubagents((previous) => removeProjectActivityKeys(previous, projectPath));
+      setTeamActivity((previous) => removeProjectActivityKeys(previous, projectPath));
+      setTaskGraph((previous) => removeProjectActivityKeys(previous, projectPath));
 
       const remainingProjects = projects.filter((item) => item.path !== projectPath);
       setProjects(remainingProjects);
@@ -1979,6 +2231,9 @@ function App() {
   const activeConversationKey = conversationStateKey(selectedProjectPath, currentSession?.id);
   const activePendingTurn = activeConversationKey ? pendingTurns[activeConversationKey] ?? null : null;
   const activeRuntimeConversationItems = activeConversationKey ? runtimeConversationItems[activeConversationKey] ?? [] : [];
+  const activeSubagentItems = activeConversationKey ? Object.values(activeSubagents[activeConversationKey] ?? {}) : [];
+  const activeTeamItems = activeConversationKey ? teamActivity[activeConversationKey] ?? [] : [];
+  const activeTaskItems = activeConversationKey ? taskGraph[activeConversationKey] ?? [] : [];
   const activeQueuedPrompts = activeConversationKey ? queuedPrompts[activeConversationKey] ?? [] : [];
   const conversationRows = buildConversationRows(currentSession, activeRuntimeConversationItems, activePendingTurn);
   const latestStreamingAssistantRowId =
@@ -2618,6 +2873,10 @@ function App() {
           </div>
         </section>
 
+        {taskGraphPanelOpen ? (
+          <TaskGraphWorkspacePanel tasks={activeTaskItems} onClose={() => setTaskGraphPanelOpen(false)} />
+        ) : null}
+
         {contextPanelOpen ? (
           <>
           <div
@@ -2656,6 +2915,10 @@ function App() {
                     <span>Current mode</span>
                     <strong>{status?.execution_mode_title ?? "unknown"}</strong>
                   </div>
+                  <TaskGraphPanel tasks={activeTaskItems} onOpenPanel={() => setTaskGraphPanelOpen(true)} />
+                  {activeSubagentItems.length > 0 || activeTeamItems.length > 0 ? (
+                    <ExecutionActivityPanel subagents={activeSubagentItems} teamMembers={activeTeamItems} />
+                  ) : null}
                   <div className="context-block">
                     <h3>Preview</h3>
                     <p>{buildSessionPreview(currentSession)}</p>
@@ -2674,6 +2937,226 @@ function App() {
       </main>
 
     </div>
+  );
+}
+
+function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpenPanel: () => void }) {
+  const sortedTasks = [...tasks].sort((left, right) => Number(left.id) - Number(right.id));
+  const counts = taskStatusCounts(sortedTasks);
+  const graph = buildTaskGraphLayout(sortedTasks);
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const selectedTask = sortedTasks.find((task) => task.id === selectedTaskId) ?? null;
+
+  return (
+    <section className="task-graph-panel">
+      <div className="task-graph-head">
+        <div>
+          <h3>TaskGraph</h3>
+          <p>
+            {counts.total === 0
+              ? "No persistent tasks in this session."
+              : `${counts.completed}/${counts.total} completed · ${counts.inProgress} active · ${counts.pending} pending`}
+          </p>
+        </div>
+        <button className="settings-inline-button" type="button" onClick={onOpenPanel} disabled={sortedTasks.length === 0}>
+          Expand
+        </button>
+      </div>
+      {sortedTasks.length === 0 ? (
+        <div className="task-graph-empty">Use task_create to build a task graph for longer work.</div>
+      ) : (
+        <div className="task-graph-canvas">
+          <TaskGraphSvg graph={graph} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} compact />
+        </div>
+      )}
+      {selectedTask ? <TaskGraphDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} /> : null}
+    </section>
+  );
+}
+
+function TaskGraphWorkspacePanel({ tasks, onClose }: { tasks: TaskGraphItem[]; onClose: () => void }) {
+  const sortedTasks = [...tasks].sort((left, right) => Number(left.id) - Number(right.id));
+  const graph = buildTaskGraphLayout(sortedTasks, { expanded: true });
+  const counts = taskStatusCounts(sortedTasks);
+  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const selectedTask = sortedTasks.find((task) => task.id === selectedTaskId) ?? null;
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <section className="task-graph-workspace-panel" role="dialog" aria-label="TaskGraph panel">
+      <div className="task-graph-workspace-head">
+        <div>
+          <h2>TaskGraph</h2>
+          <p>{`${counts.completed}/${counts.total} completed · ${counts.inProgress} active · ${counts.pending} pending`}</p>
+        </div>
+        <button className="settings-inline-button" type="button" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="task-graph-workspace-canvas">
+        <TaskGraphSvg graph={graph} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
+      </div>
+      {selectedTask ? <TaskGraphDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} /> : null}
+    </section>
+  );
+}
+
+function TaskGraphSvg({
+  graph,
+  selectedTaskId,
+  onSelectTask,
+  compact = false,
+}: {
+  graph: TaskGraphLayout;
+  selectedTaskId: number | null;
+  onSelectTask: (taskId: number) => void;
+  compact?: boolean;
+}) {
+  return (
+    <svg className={`task-graph-svg ${compact ? "compact" : ""}`} viewBox={`0 0 ${graph.width} ${graph.height}`} role="img" aria-label="Task dependency graph">
+      <defs>
+        <marker id={`task-arrow-${compact ? "compact" : "full"}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" />
+        </marker>
+      </defs>
+      <g className="task-graph-edges">
+        {graph.edges.map((edge) => (
+          <path
+            key={`${edge.from}-${edge.to}`}
+            d={edgePath(edge, graph)}
+            markerEnd={`url(#task-arrow-${compact ? "compact" : "full"})`}
+          />
+        ))}
+      </g>
+      <g className="task-graph-nodes">
+        {graph.nodes.map((node) => (
+          <g
+            key={node.task.id}
+            className={`task-graph-node ${taskStatus(node.task)} ${selectedTaskId === node.task.id ? "selected" : ""}`}
+            transform={`translate(${node.x} ${node.y})`}
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelectTask(node.task.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectTask(node.task.id);
+              }
+            }}
+          >
+            <rect width={graph.nodeWidth} height={graph.nodeHeight} rx="8" />
+            <text className="task-graph-node-id" x="12" y="21">
+              #{node.task.id}
+            </text>
+            <text className="task-graph-node-status" x={graph.nodeWidth - 12} y="21" textAnchor="end">
+              {taskStatusLabel(taskStatus(node.task))}
+            </text>
+            <text className="task-graph-node-title" x="12" y="46">
+              {svgLine(node.task.subject || "Untitled task", compact ? 24 : 32)}
+            </text>
+            <text className="task-graph-node-meta" x="12" y="70">
+              {taskNodeMeta(node.task, compact ? 28 : 38)}
+            </text>
+          </g>
+        ))}
+      </g>
+    </svg>
+  );
+}
+
+function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () => void }) {
+  const blockedBy = task.blockedBy ?? [];
+  const blocks = task.blocks ?? [];
+  return (
+    <section className="task-graph-detail">
+      <div className="task-graph-detail-head">
+        <div>
+          <strong>#{task.id} · {task.subject || "Untitled task"}</strong>
+          <span>{taskStatusLabel(taskStatus(task))}</span>
+        </div>
+        <button className="settings-inline-button" type="button" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      {task.description ? <p>{task.description}</p> : null}
+      <dl>
+        <div>
+          <dt>Owner</dt>
+          <dd>{task.owner || "unassigned"}</dd>
+        </div>
+        <div>
+          <dt>Preferred</dt>
+          <dd>{task.preferred_owner || "none"}</dd>
+        </div>
+        <div>
+          <dt>Blocked by</dt>
+          <dd>{blockedBy.length ? blockedBy.map((id) => `#${id}`).join(", ") : "none"}</dd>
+        </div>
+        <div>
+          <dt>Blocks</dt>
+          <dd>{blocks.length ? blocks.map((id) => `#${id}`).join(", ") : "none"}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function ExecutionActivityPanel({
+  subagents,
+  teamMembers,
+}: {
+  subagents: SubagentActivity[];
+  teamMembers: TeamMemberActivity[];
+}) {
+  return (
+    <section className="activity-panel" aria-live="polite">
+      <div className="activity-panel-head">
+        <span className="activity-pulse" aria-hidden="true" />
+        <h3>Execution Activity</h3>
+      </div>
+      {subagents.length > 0 ? (
+        <div className="activity-group">
+          <strong>Subagents</strong>
+          {subagents.map((item) => (
+            <div key={item.id} className="activity-item">
+              <div className="activity-item-head">
+                <span>{item.agentType}</span>
+                <em>{formatElapsedSeconds(item.startedAt)}</em>
+              </div>
+              <p>{compactInlineText(item.prompt || "working", 120)}</p>
+              {item.facts.length > 0 ? <small>{item.facts[item.facts.length - 1]}</small> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {teamMembers.length > 0 ? (
+        <div className="activity-group">
+          <strong>Agent Team</strong>
+          {teamMembers.map((member) => {
+            const interactions = Array.isArray(member.recent_interactions) ? member.recent_interactions.filter(Boolean) : [];
+            return (
+              <div key={String(member.name)} className="activity-item">
+                <div className="activity-item-head">
+                  <span>{member.name}</span>
+                  <em>{member.status ?? "active"}</em>
+                </div>
+                <p>{teamMemberSummary(member)}</p>
+                {interactions.length > 0 ? <small>{interactions[interactions.length - 1]}</small> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -3684,6 +4167,199 @@ function runtimeItemId(prefix: string, turnId: string | null | undefined): strin
 function readEventString(value: unknown, fallback: string): string {
   const text = typeof value === "string" ? value.trim() : "";
   return text || fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function compactInlineText(text: string, limit: number): string {
+  const compact = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) {
+    return compact;
+  }
+  return limit <= 3 ? compact.slice(0, limit) : `${compact.slice(0, limit - 3)}...`;
+}
+
+function formatElapsedSeconds(startedAt: number): string {
+  const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  return `${elapsed}s`;
+}
+
+function teamMemberSummary(member: TeamMemberActivity): string {
+  if (typeof member.summary === "string" && member.summary.trim()) {
+    return member.summary;
+  }
+  const pieces = [
+    typeof member.role === "string" && member.role.trim() ? member.role.trim() : "",
+    typeof member.activity === "string" && member.activity.trim() ? member.activity.trim().replace(/_/g, " ") : "",
+    member.current_task_id !== null && member.current_task_id !== undefined ? `task #${member.current_task_id}` : "",
+  ].filter(Boolean);
+  return pieces.join(" | ") || "active";
+}
+
+function taskStatus(task: TaskGraphItem): string {
+  return String(task.status ?? "pending").trim().toLowerCase() || "pending";
+}
+
+function taskStatusLabel(status: string): string {
+  if (status === "in_progress") {
+    return "in progress";
+  }
+  return status.replace(/_/g, " ");
+}
+
+function taskStatusCounts(tasks: TaskGraphItem[]): { total: number; pending: number; inProgress: number; completed: number } {
+  return tasks.reduce(
+    (counts, task) => {
+      const status = taskStatus(task);
+      counts.total += 1;
+      if (status === "completed") {
+        counts.completed += 1;
+      } else if (status === "in_progress") {
+        counts.inProgress += 1;
+      } else {
+        counts.pending += 1;
+      }
+      return counts;
+    },
+    { total: 0, pending: 0, inProgress: 0, completed: 0 },
+  );
+}
+
+function buildTaskGraphLayout(tasks: TaskGraphItem[], options: { expanded?: boolean } = {}): TaskGraphLayout {
+  const nodeWidth = options.expanded ? 250 : 190;
+  const nodeHeight = options.expanded ? 104 : 86;
+  const xGap = options.expanded ? 96 : 74;
+  const yGap = options.expanded ? 30 : 22;
+  const margin = 18;
+  const taskById = new Map(tasks.map((task) => [Number(task.id), task]));
+  const edges = buildTaskEdges(tasks, taskById);
+  const incoming = new Map<number, number[]>();
+  const outgoing = new Map<number, number[]>();
+  for (const task of tasks) {
+    incoming.set(Number(task.id), []);
+    outgoing.set(Number(task.id), []);
+  }
+  for (const edge of edges) {
+    incoming.get(edge.to)?.push(edge.from);
+    outgoing.get(edge.from)?.push(edge.to);
+  }
+  const levels = new Map<number, number>();
+  const visiting = new Set<number>();
+  function resolveLevel(taskId: number): number {
+    if (levels.has(taskId)) {
+      return levels.get(taskId) ?? 0;
+    }
+    if (visiting.has(taskId)) {
+      levels.set(taskId, 0);
+      return 0;
+    }
+    visiting.add(taskId);
+    const parents = incoming.get(taskId) ?? [];
+    const level = parents.length ? Math.max(...parents.map((parentId) => resolveLevel(parentId) + 1)) : 0;
+    visiting.delete(taskId);
+    levels.set(taskId, level);
+    return level;
+  }
+  for (const task of tasks) {
+    resolveLevel(Number(task.id));
+  }
+  const layers = new Map<number, TaskGraphItem[]>();
+  for (const task of tasks) {
+    const level = levels.get(Number(task.id)) ?? 0;
+    layers.set(level, [...(layers.get(level) ?? []), task]);
+  }
+  const maxLayerSize = Math.max(1, ...Array.from(layers.values()).map((items) => items.length));
+  const maxLevel = Math.max(0, ...Array.from(layers.keys()));
+  const nodes: TaskGraphNodeLayout[] = [];
+  for (const [level, layerTasks] of layers.entries()) {
+    const sortedLayer = [...layerTasks].sort((left, right) => Number(left.id) - Number(right.id));
+    const layerHeight = sortedLayer.length * nodeHeight + Math.max(0, sortedLayer.length - 1) * yGap;
+    const graphHeight = maxLayerSize * nodeHeight + Math.max(0, maxLayerSize - 1) * yGap;
+    const offsetY = (graphHeight - layerHeight) / 2;
+    sortedLayer.forEach((task, index) => {
+      nodes.push({
+        task,
+        level,
+        x: margin + level * (nodeWidth + xGap),
+        y: margin + offsetY + index * (nodeHeight + yGap),
+      });
+    });
+  }
+  return {
+    nodes,
+    edges,
+    width: margin * 2 + (maxLevel + 1) * nodeWidth + maxLevel * xGap,
+    height: margin * 2 + maxLayerSize * nodeHeight + Math.max(0, maxLayerSize - 1) * yGap,
+    nodeWidth,
+    nodeHeight,
+  };
+}
+
+function buildTaskEdges(tasks: TaskGraphItem[], taskById: Map<number, TaskGraphItem>): TaskGraphEdge[] {
+  const seen = new Set<string>();
+  const edges: TaskGraphEdge[] = [];
+  function addEdge(from: number, to: number) {
+    if (!taskById.has(from) || !taskById.has(to) || from === to) {
+      return;
+    }
+    const key = `${from}->${to}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    edges.push({ from, to });
+  }
+  for (const task of tasks) {
+    const taskId = Number(task.id);
+    for (const blocker of task.blockedBy ?? []) {
+      addEdge(Number(blocker), taskId);
+    }
+    for (const blocked of task.blocks ?? []) {
+      addEdge(taskId, Number(blocked));
+    }
+  }
+  return edges;
+}
+
+function edgePath(edge: TaskGraphEdge, graph: TaskGraphLayout): string {
+  const from = graph.nodes.find((node) => node.task.id === edge.from);
+  const to = graph.nodes.find((node) => node.task.id === edge.to);
+  if (!from || !to) {
+    return "";
+  }
+  const nodeWidth = graph.nodeWidth;
+  const nodeHeight = graph.nodeHeight;
+  const startX = from.x + nodeWidth;
+  const startY = from.y + nodeHeight / 2;
+  const endX = to.x;
+  const endY = to.y + nodeHeight / 2;
+  const control = Math.max(36, (endX - startX) / 2);
+  return `M ${startX} ${startY} C ${startX + control} ${startY}, ${endX - control} ${endY}, ${endX - 4} ${endY}`;
+}
+
+function svgLine(text: string, limit: number): string {
+  return compactInlineText(text, limit);
+}
+
+function taskNodeMeta(task: TaskGraphItem, limit: number): string {
+  const owner = task.owner ? `@${task.owner}` : task.preferred_owner ? `prefers ${task.preferred_owner}` : "unassigned";
+  return compactInlineText(owner, limit);
+}
+
+function removeProjectActivityKeys<T>(state: Record<string, T>, projectPath: string): Record<string, T> {
+  const prefix = `${projectPath}::`;
+  let changed = false;
+  const next: Record<string, T> = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (key.startsWith(prefix)) {
+      changed = true;
+      continue;
+    }
+    next[key] = value;
+  }
+  return changed ? next : state;
 }
 
 function findLastRunningToolIndex(items: ConversationRuntimeItem[], toolName: string): number {

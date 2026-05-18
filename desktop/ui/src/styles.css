@@ -2614,6 +2614,325 @@ button {
   color: var(--text-subtle);
 }
 
+.task-graph-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(95, 182, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(11, 16, 23, 0.78);
+}
+
+.task-graph-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-graph-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.task-graph-head p,
+.task-graph-empty {
+  margin: 4px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.task-graph-canvas {
+  min-height: 160px;
+  border: 1px solid rgba(146, 179, 222, 0.12);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 16px 16px, rgba(169, 200, 255, 0.08) 1px, transparent 1px) 0 0 / 24px 24px,
+    rgba(8, 10, 14, 0.42);
+  overflow: auto;
+}
+
+.task-graph-svg {
+  min-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.task-graph-svg.compact {
+  max-height: 300px;
+}
+
+.task-graph-edges path {
+  fill: none;
+  stroke: rgba(169, 200, 255, 0.42);
+  stroke-width: 2;
+}
+
+.task-graph-edges marker path {
+  fill: rgba(169, 200, 255, 0.72);
+}
+
+.task-graph-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.task-graph-node rect {
+  fill: rgba(8, 10, 14, 0.9);
+  stroke: rgba(146, 179, 222, 0.22);
+  stroke-width: 1.2;
+}
+
+.task-graph-node.pending rect {
+  stroke: rgba(216, 184, 106, 0.5);
+}
+
+.task-graph-node.in_progress rect {
+  stroke: rgba(95, 182, 255, 0.72);
+  stroke-width: 1.8;
+}
+
+.task-graph-node.completed rect {
+  stroke: rgba(99, 196, 143, 0.52);
+  fill: rgba(8, 14, 12, 0.72);
+}
+
+.task-graph-node.selected rect,
+.task-graph-node:focus rect {
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.task-graph-node text {
+  pointer-events: none;
+  font-family: "Segoe UI Variable", "Aptos", sans-serif;
+}
+
+.task-graph-node-id,
+.task-graph-node-status,
+.task-graph-node-meta {
+  fill: #9ca3af;
+  font-size: 11px;
+}
+
+.task-graph-node-status {
+  text-transform: uppercase;
+}
+
+.task-graph-node-title {
+  fill: #f2f7ff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-graph-detail {
+  padding: 12px;
+  border: 1px solid rgba(146, 179, 222, 0.14);
+  border-radius: 8px;
+  background: rgba(8, 10, 14, 0.58);
+}
+
+.task-graph-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.task-graph-detail-head strong,
+.task-graph-detail-head span {
+  display: block;
+}
+
+.task-graph-detail-head strong {
+  color: #f2f7ff;
+  font-size: 0.86rem;
+}
+
+.task-graph-detail-head span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.task-graph-detail p {
+  margin: 10px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.task-graph-detail dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.task-graph-detail dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.task-graph-detail dd {
+  margin: 3px 0 0;
+  color: #e5edf8;
+  font-size: 0.78rem;
+}
+
+.task-graph-fullscreen-canvas {
+  position: relative;
+  z-index: 1;
+  margin: 18px;
+  padding: 18px;
+  border: 1px solid rgba(169, 200, 255, 0.18);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 24px 24px, rgba(169, 200, 255, 0.1) 1px, transparent 1px) 0 0 / 28px 28px,
+    rgba(8, 11, 18, 0.96);
+  overflow: auto;
+}
+
+.task-graph-fullscreen-canvas .task-graph-svg {
+  min-width: 900px;
+}
+
+.task-graph-fullscreen-canvas .task-graph-detail {
+  max-width: 720px;
+  margin: 16px auto 0;
+}
+
+.task-graph-workspace-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-width, 250px) + 10px);
+  z-index: 4;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(169, 200, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(9, 12, 18, 0.98);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.task-graph-workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.task-graph-workspace-head h2 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 1.05rem;
+}
+
+.task-graph-workspace-head p {
+  margin: 4px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.82rem;
+}
+
+.task-graph-workspace-canvas {
+  min-height: 0;
+  border: 1px solid rgba(146, 179, 222, 0.14);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 18px 18px, rgba(169, 200, 255, 0.08) 1px, transparent 1px) 0 0 / 28px 28px,
+    rgba(8, 10, 14, 0.52);
+  overflow: auto;
+}
+
+.task-graph-workspace-canvas .task-graph-svg {
+  min-width: 1000px;
+}
+
+.activity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(196, 181, 253, 0.22);
+  border-radius: 8px;
+  background: rgba(15, 18, 24, 0.78);
+}
+
+.activity-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.activity-panel-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.activity-pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #c4b5fd;
+  box-shadow: 0 0 0 6px rgba(196, 181, 253, 0.1), 0 0 16px rgba(196, 181, 253, 0.36);
+  animation: decision-pulse 1.2s ease-in-out infinite;
+}
+
+.activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.activity-group > strong {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity-item {
+  padding: 10px;
+  border: 1px solid rgba(146, 179, 222, 0.12);
+  border-radius: 8px;
+  background: rgba(8, 10, 14, 0.42);
+}
+
+.activity-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #f2f7ff;
+  font-size: 0.84rem;
+}
+
+.activity-item-head em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 0.72rem;
+}
+
+.activity-item p,
+.activity-item small {
+  display: block;
+  margin: 6px 0 0;
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.activity-item small {
+  color: #cbd5e1;
+}
+
 .compact-list {
   padding: 0;
 }

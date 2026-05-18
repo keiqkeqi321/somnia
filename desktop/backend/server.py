@@ -601,6 +601,34 @@ class SidecarServer:
         entries = self.runtime.tool_log_store.list_recent(limit=max(1, int(limit)))
         return [serialize_tool_log_index_entry(entry) for entry in entries]
 
+    def active_team_members(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        manager = getattr(self.runtime, "team_manager", None)
+        summaries = getattr(manager, "active_member_summaries", None)
+        formatter = getattr(manager, "_format_member_summary", None)
+        if not callable(summaries):
+            return []
+        try:
+            members = list(summaries(session_id=session_id))
+        except TypeError:
+            members = list(summaries())
+        payload: list[dict[str, Any]] = []
+        for member in members:
+            item = deepcopy(member) if isinstance(member, dict) else {}
+            if callable(formatter):
+                try:
+                    item["summary"] = formatter(member)
+                except Exception:
+                    item["summary"] = ""
+            payload.append(item)
+        return payload
+
+    def list_tasks(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        store = getattr(self.runtime, "task_store", None)
+        lister = getattr(store, "list_all", None)
+        if not callable(lister):
+            return []
+        return [deepcopy(task) for task in lister(session_id=session_id)]
+
     def get_tool_log(self, log_id: str) -> dict[str, Any]:
         entry = self.runtime.tool_log_store.get(log_id)
         if entry is None:
@@ -791,6 +819,12 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"tool_logs": self.sidecar.list_tool_logs(limit=limit)}
         if len(path_parts) == 2 and path_parts[0] == "tool-logs":
             return {"tool_log": self.sidecar.get_tool_log(path_parts[1])}
+        if path_parts == ["team", "active"]:
+            session_id = (query.get("session_id") or [None])[0]
+            return {"members": self.sidecar.active_team_members(session_id)}
+        if path_parts == ["tasks"]:
+            session_id = (query.get("session_id") or [None])[0]
+            return {"tasks": self.sidecar.list_tasks(session_id)}
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
 
     def _route_post(self, parsed, body: dict[str, Any]) -> tuple[dict[str, Any], int]:

@@ -8,6 +8,8 @@ import type {
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
   SidecarStatus,
+  TaskGraphItem,
+  TeamMemberActivity,
   ToolLogDetail,
   ToolLogIndexEntry,
   TurnStartResponse,
@@ -268,6 +270,18 @@ export class SidecarClient {
   async getToolLog(logId: string): Promise<ToolLogDetail> {
     const payload = await parseResponse<{ tool_log: ToolLogDetail }>(await fetch(`${this.baseUrl}/tool-logs/${logId}`));
     return payload.tool_log;
+  }
+
+  async listActiveTeamMembers(sessionId?: string | null): Promise<TeamMemberActivity[]> {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const payload = await parseResponse<{ members: TeamMemberActivity[] }>(await fetch(`${this.baseUrl}/team/active${query}`));
+    return payload.members;
+  }
+
+  async listTasks(sessionId?: string | null): Promise<TaskGraphItem[]> {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    const payload = await parseResponse<{ tasks: TaskGraphItem[] }>(await fetch(`${this.baseUrl}/tasks${query}`));
+    return payload.tasks;
   }
 }
 
