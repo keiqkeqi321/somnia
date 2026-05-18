@@ -183,6 +183,8 @@ type TaskGraphLayout = {
   nodeWidth: number;
   nodeHeight: number;
 };
+type ConfigCommandTarget = SettingsConfigSectionKey | "skills";
+type UiCommandTarget = { kind: "config"; target: ConfigCommandTarget } | { kind: "model" };
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
@@ -1652,6 +1654,11 @@ function App() {
   }
 
   async function handleSendPrompt() {
+    const commandTarget = pendingUiCommandTarget(draft, pendingImages);
+    if (commandTarget) {
+      openUiCommandTarget(commandTarget);
+      return;
+    }
     const client = clientRef.current;
     if (!client || (!draft.trim() && pendingImages.length === 0)) {
       return;
@@ -1922,6 +1929,11 @@ function App() {
   }
 
   function applyCommandSuggestion(command: string) {
+    const uiTarget = uiCommandTarget(command);
+    if (uiTarget) {
+      openUiCommandTarget(uiTarget);
+      return;
+    }
     setDraft(`${command} `);
     setCommandPickerOpen(false);
     setPathPickerOpen(false);
@@ -1931,10 +1943,45 @@ function App() {
   }
 
   function handleOpenSettings() {
+    openConfigurationTarget("provider");
+  }
+
+  function openUiCommandTarget(target: UiCommandTarget) {
+    if (target.kind === "config") {
+      openConfigurationTarget(target.target);
+      return;
+    }
+    setSettingsOpen(false);
+    setDraft("");
+    setCommandPickerOpen(false);
+    setPathPickerOpen(false);
+    setHistoryCursor(null);
+    setModelPickerOpen(true);
+    setModePickerOpen(false);
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".model-trigger")?.focus();
+    });
+  }
+
+  function openConfigurationTarget(target: ConfigCommandTarget) {
     setSettingsOpen(true);
     setSettingsSection("configuration");
     setSelectedArchivedSessionKeys([]);
+    if (target !== "skills") {
+      setSettingsConfigSection(target);
+    }
+    setDraft("");
+    setCommandPickerOpen(false);
+    setPathPickerOpen(false);
+    setHistoryCursor(null);
+    setModelPickerOpen(false);
+    setModePickerOpen(false);
     void refreshSettingsConfig();
+    if (target === "skills") {
+      requestAnimationFrame(() => {
+        scrollSettingsPanelIntoView("skills");
+      });
+    }
   }
 
   function handleCloseSettings() {
@@ -4066,6 +4113,49 @@ function currentCommandSuggestions(value: string): Array<(typeof COMMAND_SPECS)[
     return [];
   }
   return COMMAND_SPECS.filter((item) => item.command.startsWith(query)).slice(0, 8);
+}
+
+function uiCommandTarget(command: string): UiCommandTarget | null {
+  const normalized = command.trim().split(/\s+/, 1)[0].toLowerCase();
+  if (normalized === "/providers") {
+    return { kind: "config", target: "provider" };
+  }
+  if (normalized === "/mcp") {
+    return { kind: "config", target: "mcp" };
+  }
+  if (normalized === "/hooks") {
+    return { kind: "config", target: "hooks" };
+  }
+  if (normalized === "/skills") {
+    return { kind: "config", target: "skills" };
+  }
+  if (normalized === "/model" || normalized === "/reasoning") {
+    return { kind: "model" };
+  }
+  return null;
+}
+
+function pendingUiCommandTarget(value: string, images: PendingImage[]): UiCommandTarget | null {
+  if (images.length > 0) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+  return uiCommandTarget(trimmed);
+}
+
+function scrollSettingsPanelIntoView(panelName: string) {
+  const panel = document.querySelector<HTMLElement>(`[data-settings-panel="${panelName}"]`);
+  const scroller = panel?.closest<HTMLElement>(".settings-group");
+  if (!panel || !scroller) {
+    return;
+  }
+  scroller.scrollTo({
+    top: Math.max(panel.offsetTop - scroller.offsetTop - 12, 0),
+    behavior: "smooth",
+  });
 }
 
 function currentPathMention(value: string, cursor: number): { query: string; queryStart: number; end: number } | null {

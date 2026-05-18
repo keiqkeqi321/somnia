@@ -179,7 +179,7 @@ function SettingsView({
                   />
                 </section>
 
-                <section className="config-panel">
+                <section className="config-panel" data-settings-panel="skills">
                   <div className="config-path-row">
                     <span>Skills · {activeConfigScope.label}</span>
                     <code>{activeConfigScope.skills_path}</code>
