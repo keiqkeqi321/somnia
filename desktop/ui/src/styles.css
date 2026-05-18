@@ -1156,6 +1156,10 @@ button {
   border-radius: 10px;
 }
 
+.session-card.menu-open {
+  z-index: 20;
+}
+
 .session-card-button {
   width: 100%;
   padding: 7px 40px 7px 9px;
@@ -1239,6 +1243,7 @@ button {
   top: 50%;
   right: 8px;
   transform: translateY(-50%);
+  z-index: 1;
   min-width: 24px;
   min-height: 24px;
   display: inline-flex;

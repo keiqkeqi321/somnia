@@ -2565,7 +2565,7 @@ function App() {
                             return (
                               <div
                                 key={session.id}
-                                className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""} ${isWaitingForDecision ? "waiting-decision" : ""}`}
+                                className={`session-card ${isSelected ? "selected" : ""} ${isAnswering ? "answering" : ""} ${isWaitingForDecision ? "waiting-decision" : ""} ${sessionMenuOpenKey === sessionMenuKey ? "menu-open" : ""}`}
                               >
                                 <button
                                   className="session-card-button"
