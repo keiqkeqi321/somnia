@@ -54,14 +54,20 @@ def register_task_tools(registry, task_store) -> None:
         )
 
     def update_task(ctx: Any, payload: dict[str, Any]) -> str:
+        session_id = _context_session_id(ctx)
         task = task_store.update(
             int(payload["task_id"]),
             payload.get("status"),
             payload.get("add_blocked_by"),
             payload.get("add_blocks"),
             payload.get("preferred_owner"),
-            session_id=_context_session_id(ctx),
+            session_id=session_id,
         )
+        if payload.get("status") == "completed":
+            manager = getattr(getattr(ctx, "runtime", None), "team_manager", None)
+            assign_claimable = getattr(manager, "assign_claimable_tasks", None)
+            if callable(assign_claimable):
+                assign_claimable(session_id=session_id)
         if task is None:
             return f"Task {payload['task_id']} deleted"
         return json.dumps(task, indent=2, ensure_ascii=False)

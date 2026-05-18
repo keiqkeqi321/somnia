@@ -9,12 +9,14 @@ from types import SimpleNamespace
 
 from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
+from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.runtime.teammate import TeammateRuntimeManager
 from open_somnia.storage.inbox import InboxStore
 from open_somnia.storage.tasks import TaskStore
 from open_somnia.storage.team import TeamStore
-from open_somnia.tools.registry import ToolDefinition
+from open_somnia.tools.registry import ToolDefinition, ToolRegistry
+from open_somnia.tools.tasks import register_task_tools
 
 
 class TeammateRuntimeTests(unittest.TestCase):
@@ -1115,6 +1117,72 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual([task["id"] for task in writer_claimable], [writer_task["id"], neutral["id"]])
             self.assertEqual([task["id"] for task in planner_claimable], [planner_task["id"], neutral["id"]])
             self.assertEqual([task["id"] for task in other_claimable], [neutral["id"]])
+
+    def test_completed_task_assigns_multiple_unblocked_tasks_to_idle_teammates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            first = task_store.create("Initial dependency", session_id="session-1")
+            second = task_store.create("Follow-up two", preferred_owner="Planner", session_id="session-1")
+            third = task_store.create("Follow-up three", preferred_owner="Writer", session_id="session-1")
+            task_store.update(second["id"], add_blocked_by=[first["id"]], session_id="session-1")
+            task_store.update(third["id"], add_blocked_by=[first["id"]], session_id="session-1")
+
+            team_store = TeamStore(root / "team")
+            base_member = {
+                "status": "idle",
+                "activity": "idle_polling",
+                "last_transition_at": time.time(),
+                "last_activity_at": time.time(),
+                "shutdown_reason": None,
+                "current_task_id": None,
+                "last_error": None,
+                "current_tool_name": None,
+                "current_tool_log_id": None,
+            }
+            team_store.save(
+                {
+                    "team_name": "default",
+                    "members": [
+                        {**base_member, "name": "Planner", "role": "planner", "session_id": "session-1"},
+                        {**base_member, "name": "Writer", "role": "writer", "session_id": "session-1"},
+                    ],
+                },
+                session_id="session-1",
+            )
+            bus = MessageBus(InboxStore(root / "inbox"))
+            manager = TeammateRuntimeManager(
+                runtime=SimpleNamespace(),
+                team_store=team_store,
+                bus=bus,
+                task_store=task_store,
+                request_tracker=RequestTracker(root / "requests"),
+            )
+            runtime = SimpleNamespace(team_manager=manager)
+            registry = ToolRegistry()
+            register_task_tools(registry, task_store)
+
+            registry.execute(
+                ToolExecutionContext(
+                    runtime=runtime,
+                    session=SimpleNamespace(id="session-1"),
+                    actor="lead",
+                    trace_id="test",
+                ),
+                "task_update",
+                {"task_id": first["id"], "status": "completed"},
+            )
+
+            self.assertEqual(task_store.get(second["id"], session_id="session-1")["owner"], "Planner")
+            self.assertEqual(task_store.get(third["id"], session_id="session-1")["owner"], "Writer")
+            self.assertEqual(task_store.get(second["id"], session_id="session-1")["status"], "in_progress")
+            self.assertEqual(task_store.get(third["id"], session_id="session-1")["status"], "in_progress")
+            planner = manager._find("Planner", session_id="session-1")
+            writer = manager._find("Writer", session_id="session-1")
+            self.assertEqual(planner["current_task_id"], second["id"])
+            self.assertEqual(writer["current_task_id"], third["id"])
+            self.assertEqual(len(bus.read_inbox("Planner", session_id="session-1")), 1)
+            self.assertEqual(len(bus.read_inbox("Writer", session_id="session-1")), 1)
 
     def test_task_store_session_scope_prevents_cross_session_claim_and_listing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

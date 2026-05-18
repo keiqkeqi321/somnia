@@ -403,6 +403,87 @@ class TeammateRuntimeManager:
         thread.start()
         self.threads[name] = thread
 
+    def assign_claimable_tasks(self, session_id: str | None = None) -> int:
+        """Assign ready tasks to available teammates after dependencies unblock."""
+        normalized_session_id = str(session_id or self._active_session_id or "").strip() or None
+        list_claimable = getattr(self.task_store, "list_claimable", None)
+        if not callable(list_claimable):
+            return 0
+        try:
+            claimable = list(list_claimable(session_id=normalized_session_id) or [])
+        except TypeError:
+            claimable = list(list_claimable() or [])
+        if not claimable:
+            return 0
+
+        self._refresh_thread_health()
+        config = self._load_for_session(normalized_session_id) if normalized_session_id else self._load()
+        candidates: list[dict] = []
+        for member in config.get("members", []):
+            name = str(member.get("name", "")).strip()
+            if not name:
+                continue
+            if normalized_session_id and member.get("session_id") != normalized_session_id:
+                continue
+            status = str(member.get("status", "")).strip()
+            can_resume_idle_timeout = status == "shutdown" and member.get("shutdown_reason") == "idle_timeout"
+            if status != "idle" and not can_resume_idle_timeout:
+                continue
+            if self._has_owned_open_task(name):
+                continue
+            if can_resume_idle_timeout:
+                prompt, _messages = self._restore_prompt_and_messages(name, session_id=member.get("session_id"))
+                if not prompt:
+                    continue
+            candidates.append(dict(member))
+
+        assigned = 0
+        used_names: set[str] = set()
+        for task in claimable:
+            preferred_owner = str(task.get("preferred_owner") or "").strip()
+            selected = None
+            if preferred_owner:
+                selected = next(
+                    (
+                        member
+                        for member in candidates
+                        if member.get("name") == preferred_owner and member.get("name") not in used_names
+                    ),
+                    None,
+                )
+            if selected is None and not preferred_owner:
+                selected = next((member for member in candidates if member.get("name") not in used_names), None)
+            if selected is None:
+                continue
+
+            name = str(selected["name"])
+            member_session_id = str(selected.get("session_id") or "").strip() or normalized_session_id
+            try:
+                self.task_store.claim(int(task["id"]), name, session_id=member_session_id)
+            except TypeError:
+                self.task_store.claim(int(task["id"]), name)
+            used_names.add(name)
+            assigned += 1
+            assignment_message = (
+                f"<auto-assigned>Task #{task['id']}: {task['subject']}\n"
+                f"{task.get('description', '')}</auto-assigned>"
+            )
+            self.bus.send("lead", name, assignment_message, msg_type="task_assignment", session_id=member_session_id)
+            if selected.get("status") == "shutdown" and selected.get("shutdown_reason") == "idle_timeout":
+                prompt, messages = self._restore_prompt_and_messages(name, session_id=member_session_id)
+                role = str(selected.get("role", "")).strip() or "teammate"
+                self._update_member(
+                    name,
+                    status="starting",
+                    activity="restoring_for_assigned_task",
+                    shutdown_reason="",
+                    current_task_id=int(task["id"]),
+                )
+                self._start_thread(name, role, prompt or assignment_message, initial_messages=messages, resumed=True)
+            else:
+                self._update_member(name, activity="auto_assigned_task", current_task_id=int(task["id"]))
+        return assigned
+
     def _reset_stop_request(self, name: str) -> threading.Event:
         with self._lock:
             event = self._stop_events.get(name)
