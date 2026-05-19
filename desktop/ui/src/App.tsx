@@ -255,6 +255,7 @@ function App() {
   const [layoutDragging, setLayoutDragging] = useState<LayoutDragState | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
+  const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
   const [taskGraphPanelOpen, setTaskGraphPanelOpen] = useState(false);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
@@ -272,6 +273,7 @@ function App() {
   const workspaceRef = useRef<HTMLElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
+  const contextPopoverRef = useRef<HTMLDivElement | null>(null);
   const projectMenuRef = useRef<HTMLDivElement | null>(null);
   const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -342,6 +344,31 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [modePickerOpen]);
+
+  useEffect(() => {
+    if (!contextPopoverOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!contextPopoverRef.current?.contains(event.target as Node)) {
+        setContextPopoverOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setContextPopoverOpen(false);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [contextPopoverOpen]);
 
   useEffect(() => {
     if (!projectMenuOpenKey) {
@@ -795,6 +822,22 @@ function App() {
     });
   }
 
+  function clearPendingTurn(projectPath: string | null | undefined, sessionId: string | null | undefined, pendingTurnId: string) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    setPendingTurns((previous) => {
+      const current = previous[key];
+      if (!current || current.id !== pendingTurnId) {
+        return previous;
+      }
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  }
+
   function resetConversationRuntimeItems(projectPath: string | null | undefined, sessionId: string | null | undefined) {
     const key = conversationStateKey(projectPath, sessionId);
     if (!key) {
@@ -849,6 +892,30 @@ function App() {
           id: runtimeItemId("user", turnId),
           type: "user_text",
           text,
+        },
+      ],
+    }));
+  }
+
+  function appendRuntimeAssistantNotice(
+    projectPath: string | null | undefined,
+    sessionId: string | null | undefined,
+    operationId: string | null | undefined,
+    text: string,
+  ) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key || !text.trim()) {
+      return;
+    }
+    setRuntimeConversationItems((previous) => ({
+      ...previous,
+      [key]: [
+        ...(previous[key] ?? []),
+        {
+          id: runtimeItemId("assistant", operationId),
+          type: "assistant_text",
+          text,
+          isStreaming: false,
         },
       ],
     }));
@@ -2016,9 +2083,83 @@ function App() {
     openConfigurationTarget("provider");
   }
 
+  async function handleContextCommand(command: ContextCommandTarget) {
+    const client = clientRef.current;
+    const session = currentSessionRef.current;
+    const projectPath = selectedProjectPathRef.current;
+    const actionLabel = command === "compact" ? "压缩上下文" : "语义脱水";
+    const placeholderText = command === "compact" ? "正在压缩上下文" : "正在执行语义脱水";
+    if (!client || !session) {
+      setBannerMessage("Select a session before changing context.");
+      return;
+    }
+    if (projectPath && (activeProjectTurns[projectPath] ?? []).some((turn) => turn.sessionId === session.id)) {
+      setBannerMessage("Wait for the active turn to finish before changing context.");
+      return;
+    }
+
+    const operationId = `context-${command}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const key = conversationStateKey(projectPath, session.id);
+    if (key) {
+      setPendingTurns((previous) => ({
+        ...previous,
+        [key]: {
+          id: operationId,
+          sessionId: session.id,
+          userText: "",
+          placeholderText,
+        },
+      }));
+      resetConversationRuntimeItems(projectPath, session.id);
+    }
+    if (projectPath) {
+      setActiveProjectTurns((previous) => ({
+        ...previous,
+        [projectPath]: [
+          ...(previous[projectPath] ?? []).filter((turn) => turn.sessionId !== session.id),
+          { sessionId: session.id, turnId: operationId },
+        ],
+      }));
+    }
+    if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
+      setActiveTurnId(operationId);
+    }
+    setBusyAction(`context-${command}`);
+    setDraft("");
+    setCommandPickerOpen(false);
+    setPathPickerOpen(false);
+    setHistoryCursor(null);
+    setBannerMessage(`${actionLabel} started.`);
+    try {
+      const result = command === "compact" ? await client.compactSession(session.id) : await client.janitorSession(session.id);
+      upsertProjectSession(projectPath, result.session);
+      setCurrentSession(result.session);
+      setContextPopoverOpen(false);
+      clearPendingTurn(projectPath, session.id, operationId);
+      appendRuntimeAssistantNotice(projectPath, session.id, operationId, result.message);
+      setBannerMessage(result.message);
+    } catch (error) {
+      clearPendingTurn(projectPath, session.id, operationId);
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      clearPendingTurn(projectPath, session.id, operationId);
+      if (projectPath) {
+        clearActiveProjectTurn(projectPath, operationId);
+      }
+      if (session.id === selectedSessionIdRef.current) {
+        setActiveTurnId((current) => (current === operationId ? null : current));
+      }
+      setBusyAction(null);
+    }
+  }
+
   function openUiCommandTarget(target: UiCommandTarget) {
     if (target.kind === "config") {
       openConfigurationTarget(target.target);
+      return;
+    }
+    if (target.kind === "context") {
+      void handleContextCommand(target.command);
       return;
     }
     setSettingsOpen(false);
@@ -2422,6 +2563,9 @@ function App() {
         )} tokens)`
       : `Context: ${formatTokenCount(contextUsage.used_tokens)} tokens`
     : "Context usage unavailable";
+  const contextUsedLabel = contextUsage ? formatTokenCount(contextUsage.used_tokens) : "--";
+  const contextWindowLabel = contextUsage?.max_tokens ? formatTokenCount(contextUsage.max_tokens) : "--";
+  const contextRatioLabel = contextPercent === null ? "--" : `${contextPercent.toFixed(1)}%`;
   const commandSuggestions = currentCommandSuggestions(draft);
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
   const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || "New conversation");
@@ -2819,6 +2963,7 @@ function App() {
               onClick={(event) => setComposerCursor(event.currentTarget.selectionStart)}
               onPaste={(event) => void handleComposerPaste(event)}
               placeholder="Ask Somnia to inspect, plan, or implement against the current workspace."
+              disabled={busyAction !== null}
               rows={1}
             />
             {pendingImages.length > 0 ? (
@@ -2989,19 +3134,57 @@ function App() {
                       </div>
                     ) : null}
                   </div>
-                  <div
-                    className="ctx-meter"
-                    style={
-                      {
-                        "--ctx-color": contextColor,
-                        "--ctx-fill": `${contextFill}%`,
-                      } as CSSProperties
-                    }
-                    title={contextTitle}
-                    aria-label={contextTitle}
-                  >
-                    <span className="ctx-ring" />
-                    <span className="ctx-label">{contextLabel}</span>
+                  <div className="ctx-popover-anchor" ref={contextPopoverRef}>
+                    <button
+                      type="button"
+                      className={`ctx-meter ${contextPopoverOpen ? "open" : ""}`}
+                      style={
+                        {
+                          "--ctx-color": contextColor,
+                          "--ctx-fill": `${contextFill}%`,
+                        } as CSSProperties
+                      }
+                      title={contextTitle}
+                      aria-label={contextTitle}
+                      aria-expanded={contextPopoverOpen}
+                      onClick={() => setContextPopoverOpen((current) => !current)}
+                      disabled={busyAction !== null}
+                    >
+                      <span className="ctx-ring" />
+                      <span className="ctx-label">{contextLabel}</span>
+                    </button>
+                    {contextPopoverOpen ? (
+                      <div className="ctx-popover" role="dialog" aria-label="Context window details">
+                        <div className="ctx-popover-header">
+                          <strong>CTX</strong>
+                          <span>{contextRatioLabel}</span>
+                        </div>
+                        <div className="ctx-popover-grid">
+                          <span>Used</span>
+                          <strong>{contextUsedLabel}</strong>
+                          <span>Window</span>
+                          <strong>{contextWindowLabel}</strong>
+                          <span>Ratio</span>
+                          <strong>{contextRatioLabel}</strong>
+                        </div>
+                        <div className="ctx-popover-actions">
+                          <button
+                            className="action secondary"
+                            onClick={() => void handleContextCommand("compact")}
+                            disabled={!currentSession || currentSessionRunning || busyAction !== null}
+                          >
+                            压缩上下文
+                          </button>
+                          <button
+                            className="action secondary"
+                            onClick={() => void handleContextCommand("janitor")}
+                            disabled={!currentSession || currentSessionRunning || busyAction !== null}
+                          >
+                            语义脱水
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -4564,6 +4747,12 @@ function uiCommandTarget(command: string): UiCommandTarget | null {
   }
   if (normalized === "/model" || normalized === "/reasoning") {
     return { kind: "model" };
+  }
+  if (normalized === "/compact") {
+    return { kind: "context", command: "compact" };
+  }
+  if (normalized === "/janitor") {
+    return { kind: "context", command: "janitor" };
   }
   return null;
 }

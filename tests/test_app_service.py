@@ -107,6 +107,27 @@ class AppServiceTests(unittest.TestCase):
                 break
         return events
 
+    def test_context_commands_delegate_to_runtime(self) -> None:
+        root = self._stable_test_dir("app-service-context-commands")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        session = service.create_session()
+        calls: list[tuple[str, str]] = []
+
+        def fake_compact(target_session):
+            calls.append(("compact", target_session.id))
+
+        def fake_janitor(target_session):
+            calls.append(("janitor", target_session.id))
+            return "Janitor reduced context."
+
+        runtime.compact_session = fake_compact
+        runtime.run_semantic_janitor = fake_janitor
+
+        self.assertEqual(service.compact_session(session), "Context compacted.")
+        self.assertEqual(service.run_semantic_janitor(session), "Janitor reduced context.")
+        self.assertEqual(calls, [("compact", session.id), ("janitor", session.id)])
+
     def test_run_turn_emits_stream_events_without_repl(self) -> None:
         root = self._stable_test_dir("app-service-stream")
         runtime = OpenAgentRuntime(self._make_settings(root))

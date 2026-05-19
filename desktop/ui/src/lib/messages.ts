@@ -160,7 +160,7 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
         role: "assistant",
         text: item.text,
         parts: [{ id: `${item.id}-text`, type: "text", text: item.text }],
-        isStreaming: true,
+        isStreaming: item.isStreaming ?? true,
       });
       continue;
     }

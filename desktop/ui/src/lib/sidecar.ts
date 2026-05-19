@@ -112,6 +112,26 @@ export class SidecarClient {
     );
   }
 
+  async compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
+    return parseResponse<{ message: string; session: AgentSession }>(
+      await fetch(`${this.baseUrl}/sessions/${sessionId}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
+  async janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
+    return parseResponse<{ message: string; session: AgentSession }>(
+      await fetch(`${this.baseUrl}/sessions/${sessionId}/janitor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
   async interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {
     return parseResponse<{ turn_id: string; interrupted: boolean }>(
       await fetch(`${this.baseUrl}/turns/${turnId}/interrupt`, {

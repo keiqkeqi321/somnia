@@ -767,6 +767,25 @@ class SidecarServer:
         drainer.start()
         return {"turn_id": handle.turn_id, "session_id": session.id}
 
+    def compact_session(self, session_id: str) -> dict[str, Any]:
+        try:
+            session = self.service.load_session(session_id)
+        except FileNotFoundError as exc:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
+        payload = {"message": self.service.compact_session(session), "session": self._serialize_session(session)}
+        self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
+        return payload
+
+    def janitor_session(self, session_id: str) -> dict[str, Any]:
+        try:
+            session = self.service.load_session(session_id)
+        except FileNotFoundError as exc:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
+        message = self.service.run_semantic_janitor(session)
+        payload = {"message": message, "session": self._serialize_session(session)}
+        self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
+        return payload
+
     def interrupt_turn(self, turn_id: str) -> dict[str, Any]:
         interrupted = self.service.interrupt_turn(turn_id)
         return {"turn_id": str(turn_id).strip(), "interrupted": bool(interrupted)}
@@ -1029,6 +1048,10 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if "user_input" not in body:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "user_input is required.")
             return self.sidecar.start_turn(session_id, body["user_input"]), HTTPStatus.ACCEPTED
+        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "compact":
+            return self.sidecar.compact_session(path_parts[1]), HTTPStatus.OK
+        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "janitor":
+            return self.sidecar.janitor_session(path_parts[1]), HTTPStatus.OK
         if path_parts == ["workspace", "images"]:
             data_url = str(body.get("data_url", "")).strip()
             if not data_url:

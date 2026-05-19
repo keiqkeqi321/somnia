@@ -241,6 +241,7 @@ export type ConversationRuntimeItem =
       id: string;
       type: "assistant_text";
       text: string;
+      isStreaming?: boolean;
     }
   | {
       id: string;

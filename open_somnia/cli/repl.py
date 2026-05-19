@@ -1198,8 +1198,12 @@ class TurnQueueRunner:
             response = None
             try:
                 if task.kind == "compact":
-                    self.runtime.compact_session(self.session)
-                    print("[manual compact complete]")
+                    if self.service is not None:
+                        message = self.service.compact_session(self.session)
+                    else:
+                        self.runtime.compact_session(self.session)
+                        message = "Context compacted."
+                    print(f"[manual compact complete] {message}")
                     print()
                 else:
                     if self.service is not None:
@@ -2400,7 +2404,10 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                         print("[busy; wait for queued responses before /janitor]")
                         continue
                     print("[janitor started]")
-                    print(runtime.run_semantic_janitor(session))
+                    if service is not None:
+                        print(service.run_semantic_janitor(session))
+                    else:
+                        print(runtime.run_semantic_janitor(session))
                     print("[janitor complete]")
                     continue
                 if stripped == "/scan" or stripped.startswith("/scan "):
