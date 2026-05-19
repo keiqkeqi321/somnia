@@ -777,6 +777,63 @@ If dependencies are already installed and you only need to build, rerun with -Sk
 "@
 }
 
+function Assert-DesktopTargetExecutablesAreNotRunning {
+    $targetDir = Join-Path $script:Root "desktop\ui\src-tauri\target"
+    if (-not (Test-Path $targetDir)) {
+        return
+    }
+
+    $normalizedTargetDir = Get-NormalizedPath -Path $targetDir
+    $targetPrefix = if ($normalizedTargetDir.EndsWith("\")) { $normalizedTargetDir } else { $normalizedTargetDir + "\" }
+    $comparison = [System.StringComparison]::OrdinalIgnoreCase
+    $blockingProcesses = @()
+
+    foreach ($process in Get-Process) {
+        $processPath = $null
+        try {
+            $processPath = $process.Path
+        }
+        catch {
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($processPath)) {
+            continue
+        }
+
+        try {
+            $normalizedProcessPath = Get-NormalizedPath -Path $processPath
+        }
+        catch {
+            continue
+        }
+
+        if ($normalizedProcessPath.StartsWith($targetPrefix, $comparison)) {
+            $blockingProcesses += [PSCustomObject]@{
+                Id   = $process.Id
+                Name = $process.ProcessName
+                Path = $normalizedProcessPath
+            }
+        }
+    }
+
+    if ($blockingProcesses.Count -eq 0) {
+        return
+    }
+
+    $details = ($blockingProcesses | ForEach-Object {
+        "  PID {0} {1}: {2}" -f $_.Id, $_.Name, $_.Path
+    }) -join [Environment]::NewLine
+
+    throw @"
+Cannot build Tauri bundles because desktop target output contains executables that are currently running.
+
+$details
+
+Close the desktop app/sidecar that owns these processes, or stop them manually, then rerun this script.
+"@
+}
+
 function Write-TextFile {
     param(
         [string]$Path,
@@ -909,6 +966,7 @@ try {
     }
 
     Write-Host ("==> Building Tauri bundles ({0})" -f $Bundles) -ForegroundColor Cyan
+    Assert-DesktopTargetExecutablesAreNotRunning
     & $Npm run tauri:build -- --config $resolvedBundleConfigPath --target $TargetTriple --bundles $Bundles --ci --no-sign
     if ($LASTEXITCODE -ne 0) {
         throw ("npm run tauri:build failed with exit code {0}." -f $LASTEXITCODE)
