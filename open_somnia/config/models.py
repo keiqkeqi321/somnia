@@ -92,6 +92,7 @@ class RuntimeSettings:
     teammate_idle_timeout_seconds: int = 60
     teammate_poll_interval_seconds: int = 5
     max_tool_output_chars: int = 50_000
+    max_tool_calls_per_turn: int = 64
     max_subagent_rounds: int = 30
     max_agent_rounds: int = 100
 

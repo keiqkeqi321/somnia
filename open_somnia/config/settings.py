@@ -1000,6 +1000,7 @@ def load_settings(
         teammate_idle_timeout_seconds=int(runtime_raw.get("teammate_idle_timeout_seconds", 60)),
         teammate_poll_interval_seconds=int(runtime_raw.get("teammate_poll_interval_seconds", 5)),
         max_tool_output_chars=int(runtime_raw.get("max_tool_output_chars", 50_000)),
+        max_tool_calls_per_turn=int(runtime_raw.get("max_tool_calls_per_turn", 64)),
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
     )

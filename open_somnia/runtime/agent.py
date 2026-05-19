@@ -92,6 +92,7 @@ from open_somnia.tools.tasks import register_task_tools
 from open_somnia.tools.team import register_team_tools
 from open_somnia.tools.tool_errors import (
     extract_transient_repair_hint,
+    make_tool_error,
     render_transient_repair_hint_message,
     sanitize_tool_output_for_persistence,
     serialize_tool_output,
@@ -137,6 +138,7 @@ class OpenAgentRuntime:
     SILENT_TOOL_NAMES = {"TodoWrite"}
     MAX_UNDO_TURNS = 10
     TURN_BOUNDARY_TOOL_NAMES = {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN = 64
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
     PROVIDER_RETRY_DELAY_SECONDS = 2.0
@@ -2557,6 +2559,32 @@ class OpenAgentRuntime:
             open_todo_count=self._count_open_todo_items(session),
         )
 
+    def _max_tool_calls_per_turn(self) -> int:
+        runtime_settings = getattr(self.settings, "runtime", None)
+        raw_limit = getattr(runtime_settings, "max_tool_calls_per_turn", self.DEFAULT_MAX_TOOL_CALLS_PER_TURN)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return self.DEFAULT_MAX_TOOL_CALLS_PER_TURN
+        return max(1, limit)
+
+    def _known_tool_names(self) -> set[str]:
+        names = getattr(self.registry, "names", None)
+        if not callable(names):
+            return set()
+        try:
+            return {str(name) for name in names()}
+        except Exception:
+            return set()
+
+    def _malformed_tool_name_reason(self, tool_name: str) -> str | None:
+        normalized = str(tool_name or "").strip()
+        if not normalized:
+            return "empty tool name"
+        if any(marker in normalized for marker in ("<", ">", "\r", "\n", "\t")):
+            return "tool name contains markup or control characters"
+        return None
+
     def _normalize_user_input_message(self, user_input: Any) -> tuple[dict[str, Any], str]:
         if isinstance(user_input, dict):
             message = {
@@ -2771,6 +2799,10 @@ class OpenAgentRuntime:
                 used_read_file = False
                 manual_compact = False
                 end_turn_after_tool = False
+                max_tool_calls = self._max_tool_calls_per_turn()
+                known_tool_names = self._known_tool_names()
+                reported_invalid_tool_names: set[tuple[str, str]] = set()
+                reported_tool_calls = 0
                 for tool_call in turn.tool_calls:
                     self._raise_if_interrupted(should_interrupt)
                     ctx = ToolExecutionContext(
@@ -2780,21 +2812,63 @@ class OpenAgentRuntime:
                         trace_id=f"{session.id}-{session.latest_turn_id}",
                         should_interrupt=should_interrupt,
                     )
-                    if tool_call.name == "compress":
+                    tool_name = str(tool_call.name or "")
+                    output: Any | None = None
+                    if reported_tool_calls >= max_tool_calls:
+                        output = make_tool_error(
+                            tool_name,
+                            "too_many_tool_calls",
+                            (
+                                f"Tool call flood guard stopped this turn after {max_tool_calls} reported tool "
+                                f"call(s); skipped the remaining {max(0, len(turn.tool_calls) - reported_tool_calls)}."
+                            ),
+                        )
+                        end_turn_after_tool = True
+                    else:
+                        malformed_reason = self._malformed_tool_name_reason(tool_name)
+                        if malformed_reason is not None:
+                            key = ("malformed_tool_name", tool_name)
+                            if key in reported_invalid_tool_names:
+                                continue
+                            reported_invalid_tool_names.add(key)
+                            output = make_tool_error(
+                                tool_name,
+                                "malformed_tool_name",
+                                (
+                                    f"Malformed tool call name '{tool_name}': {malformed_reason}. "
+                                    "Use exactly one of the registered tool names and send arguments as JSON."
+                                ),
+                            )
+                        elif known_tool_names and tool_name not in known_tool_names:
+                            key = ("unknown_tool", tool_name)
+                            if key in reported_invalid_tool_names:
+                                continue
+                            reported_invalid_tool_names.add(key)
+                            output = make_tool_error(
+                                tool_name,
+                                "unknown_tool",
+                                (
+                                    f"Unknown tool: {tool_name}. "
+                                    f"Available tools: {', '.join(sorted(known_tool_names))}."
+                                ),
+                            )
+                    if tool_name == "compress":
                         manual_compact = True
-                    try:
-                        output = self.registry.execute(ctx, tool_call.name, tool_call.input)
-                    except TurnInterrupted:
-                        raise
-                    except Exception as exc:
-                        output = tool_error_from_exception(tool_call.name, exc)
+                    if output is None:
+                        try:
+                            output = self.registry.execute(ctx, tool_name, tool_call.input)
+                        except TurnInterrupted:
+                            raise
+                        except Exception as exc:
+                            output = tool_error_from_exception(tool_name, exc)
                     repair_hint = extract_transient_repair_hint(output)
                     if repair_hint is not None:
                         pending_tool_repair_hints.append(repair_hint)
                     persisted_output = sanitize_tool_output_for_persistence(output)
                     rendered_output = serialize_tool_output(persisted_output)
-                    log_id = self.print_tool_event("lead", tool_call.name, tool_call.input, persisted_output)
+                    log_id = self.print_tool_event("lead", tool_name, tool_call.input, persisted_output)
                     executed_tool_calls.append(tool_call)
+                    reported_tool_calls += 1
                     result = make_tool_result_item(
                         tool_call.id,
                         persisted_output,
@@ -2808,20 +2882,22 @@ class OpenAgentRuntime:
                         session.id,
                         {
                             "role": "tool",
-                            "name": tool_call.name,
+                            "name": tool_name,
                             "input": tool_call.input,
                             "output": result["content"],
                         },
                     )
-                    if tool_call.name == "TodoWrite":
+                    if tool_name == "TodoWrite":
                         used_todo = True
-                    if tool_call.name == "read_file":
+                    if tool_name == "read_file":
                         used_read_file = True
-                    if tool_call.name in self.TURN_BOUNDARY_TOOL_NAMES:
+                    if tool_name in self.TURN_BOUNDARY_TOOL_NAMES:
                         end_turn_after_tool = True
                         break
                     if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
                         end_turn_after_tool = True
+                        break
+                    if end_turn_after_tool:
                         break
 
                 assistant_message = turn.as_message(executed_tool_calls)

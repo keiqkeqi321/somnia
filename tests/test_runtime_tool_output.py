@@ -3794,6 +3794,114 @@ class RuntimeToolOutputTests(unittest.TestCase):
         tool_calls_after_bash = [item for item in assistant_with_bash["content"] if item.get("type") == "tool_call"]
         self.assertEqual([item["name"] for item in tool_calls_after_bash], ["bash"])
 
+    def test_agent_loop_collapses_repeated_malformed_tool_names(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(
+                max_agent_rounds=1,
+                janitor_trigger_ratio=0.6,
+                max_tool_output_chars=5000,
+                max_tool_calls_per_turn=64,
+            ),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: "log-1"
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = lambda messages, **kwargs: messages
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
+        runtime._run_automatic_context_janitor = lambda session: None
+
+        executed_tools: list[str] = []
+        runtime.registry = SimpleNamespace(
+            names=lambda: ["edit_file", "read_file"],
+            execute=lambda ctx, name, payload: executed_tools.append(name) or "ok",
+        )
+        runtime.complete = lambda *args, **kwargs: AssistantTurn(
+            stop_reason="tool_use",
+            text_blocks=["Updating file."],
+            tool_calls=[ToolCall(f"call-{index}", "edit_file</arg_value>", {}) for index in range(20)],
+        )
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "update file")
+
+        self.assertEqual(getattr(result, "status", None), "stopped_after_max_rounds")
+        self.assertEqual(executed_tools, [])
+        assistant_message = session.messages[1]
+        tool_calls = [item for item in assistant_message["content"] if item.get("type") == "tool_call"]
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["name"], "edit_file</arg_value>")
+        tool_results = session.messages[2]["content"]
+        self.assertEqual(len(tool_results), 1)
+        self.assertEqual(tool_results[0]["raw_output"]["error_type"], "malformed_tool_name")
+
+    def test_agent_loop_stops_after_tool_call_limit(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(
+                max_agent_rounds=1,
+                janitor_trigger_ratio=0.6,
+                max_tool_output_chars=5000,
+                max_tool_calls_per_turn=2,
+            ),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: "log-1"
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = lambda messages, **kwargs: messages
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
+        runtime._run_automatic_context_janitor = lambda session: None
+
+        executed_tools: list[str] = []
+        runtime.registry = SimpleNamespace(
+            names=lambda: ["bash"],
+            execute=lambda ctx, name, payload: executed_tools.append(name) or "ok",
+        )
+        runtime.complete = lambda *args, **kwargs: AssistantTurn(
+            stop_reason="tool_use",
+            tool_calls=[ToolCall(f"call-{index}", "bash", {"command": f"cmd-{index}"}) for index in range(5)],
+        )
+
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+
+        self.assertEqual(getattr(result, "status", None), "stopped_after_max_rounds")
+        self.assertEqual(executed_tools, ["bash", "bash"])
+        assistant_message = session.messages[1]
+        tool_calls = [item for item in assistant_message["content"] if item.get("type") == "tool_call"]
+        self.assertEqual([item["id"] for item in tool_calls], ["call-0", "call-1", "call-2"])
+        tool_results = session.messages[2]["content"]
+        self.assertEqual(len(tool_results), 3)
+        self.assertEqual(tool_results[2]["raw_output"]["error_type"], "too_many_tool_calls")
+
     def test_agent_loop_flushes_streamed_text_before_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
