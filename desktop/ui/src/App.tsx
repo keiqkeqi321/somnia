@@ -2657,6 +2657,7 @@ function App() {
           onToggleSelectAllArchived={() =>
             setSelectedArchivedSessionKeys(allArchivedSelected ? [] : archivedSessionEntries.map((entry) => entry.key))
           }
+          onSetArchivedSelection={setSelectedArchivedSessionKeys}
           onRestoreArchived={handleRestoreArchivedSessions}
           onDeleteArchived={handleDeleteArchivedSessions}
           onOpenPath={handleOpenSettingsPath}

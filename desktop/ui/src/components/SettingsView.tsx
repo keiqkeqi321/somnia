@@ -31,6 +31,7 @@ type SettingsViewProps = {
   busy: boolean;
   onToggleArchivedSelection: (entryKey: string) => void;
   onToggleSelectAllArchived: () => void;
+  onSetArchivedSelection: (entryKeys: string[]) => void;
   onRestoreArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
   onDeleteArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
   onOpenPath: (path: string) => void | Promise<void>;
@@ -69,6 +70,7 @@ function SettingsView({
   busy,
   onToggleArchivedSelection,
   onToggleSelectAllArchived,
+  onSetArchivedSelection,
   onRestoreArchived,
   onDeleteArchived,
   onOpenPath,
@@ -96,6 +98,7 @@ function SettingsView({
   const [debuggingMcpServer, setDebuggingMcpServer] = useState<string | null>(null);
   const [togglingMcpServer, setTogglingMcpServer] = useState<string | null>(null);
   const [mcpDebugMessage, setMcpDebugMessage] = useState("");
+  const archivedProjectGroups = groupArchivedEntriesByProject(archivedEntries);
 
   async function handleDebugServer(serverName: string) {
     setExpandedMcpServer(serverName);
@@ -127,6 +130,17 @@ function SettingsView({
     } finally {
       setTogglingMcpServer(null);
     }
+  }
+
+  function toggleArchivedProjectSelection(entries: ArchivedSessionEntry[]) {
+    const projectKeys = entries.map((entry) => entry.key);
+    const projectKeySet = new Set(projectKeys);
+    const allProjectSelected = projectKeys.every((key) => selectedArchivedKeys.includes(key));
+    if (allProjectSelected) {
+      onSetArchivedSelection(selectedArchivedKeys.filter((key) => !projectKeySet.has(key)));
+      return;
+    }
+    onSetArchivedSelection([...selectedArchivedKeys, ...projectKeys.filter((key) => !selectedArchivedKeys.includes(key))]);
   }
 
   return (
@@ -382,42 +396,60 @@ function SettingsView({
               </div>
             ) : (
               <div className="archived-list">
-                {archivedEntries.map((entry) => {
-                  const isSelected = selectedArchivedKeys.includes(entry.key);
-                  return (
-                    <div key={entry.key} className={`archived-row ${isSelected ? "selected" : ""}`}>
-                      <label className="archived-row-check">
+                {archivedProjectGroups.map((group) => (
+                  <section key={group.projectPath} className="archived-project-group">
+                    <header className="archived-project-head">
+                      <label className="archived-project-select">
                         <input
                           type="checkbox"
-                          checked={isSelected}
-                          onChange={() => onToggleArchivedSelection(entry.key)}
+                          checked={group.entries.every((entry) => selectedArchivedKeys.includes(entry.key))}
+                          onChange={() => toggleArchivedProjectSelection(group.entries)}
                         />
+                        <span>
+                          <strong>{group.projectLabel}</strong>
+                          <small>{group.projectPath}</small>
+                        </span>
                       </label>
-                      <div className="archived-row-copy">
-                        <div className="archived-row-head">
-                          <strong>{entry.session.id}</strong>
-                          <span>{entry.projectLabel}</span>
-                          <em>{formatRelativeTime(entry.updatedAt)}</em>
-                        </div>
-                        <p title={entry.preview || "(empty session)"}>{entry.preview || "(empty session)"}</p>
-                        <small>{entry.projectPath}</small>
-                      </div>
-                      <div className="archived-row-actions">
-                        <button className="settings-inline-button" type="button" onClick={() => onRestoreArchived([entry])} disabled={busy}>
-                          恢复
-                        </button>
-                        <button
-                          className="settings-inline-button danger"
-                          type="button"
-                          onClick={() => onDeleteArchived([entry])}
-                          disabled={busy}
-                        >
-                          彻底
-                        </button>
-                      </div>
+                      <em>{group.entries.length} session{group.entries.length === 1 ? "" : "s"}</em>
+                    </header>
+                    <div className="archived-project-rows">
+                      {group.entries.map((entry) => {
+                        const isSelected = selectedArchivedKeys.includes(entry.key);
+                        return (
+                          <div key={entry.key} className={`archived-row ${isSelected ? "selected" : ""}`}>
+                            <label className="archived-row-check">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => onToggleArchivedSelection(entry.key)}
+                              />
+                            </label>
+                            <div className="archived-row-copy">
+                              <div className="archived-row-head">
+                                <strong>{entry.session.id}</strong>
+                                <em>{formatRelativeTime(entry.updatedAt)}</em>
+                              </div>
+                              <p title={entry.preview || "(empty session)"}>{entry.preview || "(empty session)"}</p>
+                            </div>
+                            <div className="archived-row-actions">
+                              <button className="settings-inline-button" type="button" onClick={() => onRestoreArchived([entry])} disabled={busy}>
+                                恢复
+                              </button>
+                              <button
+                                className="settings-inline-button danger"
+                                type="button"
+                                onClick={() => onDeleteArchived([entry])}
+                                disabled={busy}
+                              >
+                                彻底
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
+                  </section>
+                ))}
               </div>
             )}
           </div>
@@ -425,6 +457,29 @@ function SettingsView({
       </div>
     </section>
   );
+}
+
+function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
+  projectPath: string;
+  projectLabel: string;
+  entries: ArchivedSessionEntry[];
+}> {
+  const groups: Array<{ projectPath: string; projectLabel: string; entries: ArchivedSessionEntry[] }> = [];
+  const byPath = new Map<string, (typeof groups)[number]>();
+  for (const entry of entries) {
+    let group = byPath.get(entry.projectPath);
+    if (!group) {
+      group = {
+        projectPath: entry.projectPath,
+        projectLabel: entry.projectLabel,
+        entries: [],
+      };
+      byPath.set(entry.projectPath, group);
+      groups.push(group);
+    }
+    group.entries.push(entry);
+  }
+  return groups;
 }
 
 function configPlaceholder(section: SettingsConfigSectionKey): string {
