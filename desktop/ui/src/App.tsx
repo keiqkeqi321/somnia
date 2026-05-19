@@ -130,8 +130,10 @@ type QueuedPrompt = {
 type ProjectState = {
   path: string;
   label: string;
-  connection: ManagedSidecarConnection;
-  status: SidecarStatus;
+  connection: ManagedSidecarConnection | null;
+  status: SidecarStatus | null;
+  connectionState: "connecting" | "connected" | "error";
+  connectionError?: string | null;
   sessions: AgentSession[];
   pendingInteractions: InteractionRequestState[];
   toolLogs: ToolLogIndexEntry[];
@@ -545,7 +547,7 @@ function App() {
         if (managedConnection) {
           await connectManagedProject(managedConnection, { selectProject: true });
           for (const projectPath of savedProjectPaths) {
-            if (projectPath === managedConnection.workspaceRoot) {
+            if (projectPathKey(projectPath) === projectPathKey(managedConnection.workspaceRoot)) {
               continue;
             }
             try {
@@ -591,6 +593,8 @@ function App() {
       label: getPathLeafName(projectPath),
       connection: managedConnection,
       status: runtimeStatus,
+      connectionState: "connected",
+      connectionError: null,
       sessions: sortSessions(sessionList),
       pendingInteractions: interactionList,
       toolLogs: logList,
@@ -609,7 +613,7 @@ function App() {
 
   async function activateProject(projectPath: string, client = projectClientsRef.current[projectPath], project?: ProjectState) {
     const nextProject = project ?? projects.find((item) => item.path === projectPath);
-    if (!client || !nextProject) {
+    if (!client || !nextProject || !nextProject.status) {
       return;
     }
     clientRef.current = client;
@@ -688,6 +692,8 @@ function App() {
           workspaceRoot: projectPath,
         },
         status: runtimeStatus,
+        connectionState: "connected",
+        connectionError: null,
         sessions: sortedSessions,
         pendingInteractions: interactionList,
         toolLogs: logList,
@@ -1472,24 +1478,70 @@ function App() {
 
   async function handleCreateProject() {
     setBusyAction("create-project");
+    let projectPathForError: string | null = null;
     try {
       const projectPath = await chooseProjectFolder();
       if (!projectPath) {
         setBannerMessage("No project folder selected.");
         return;
       }
+      projectPathForError = projectPath;
+      const pendingProject: ProjectState = {
+        path: projectPath,
+        label: getPathLeafName(projectPath),
+        connection: null,
+        status: null,
+        connectionState: "connecting",
+        connectionError: null,
+        sessions: [],
+        pendingInteractions: [],
+        toolLogs: [],
+      };
+      setProjects((previous) => upsertProject(previous, pendingProject));
+      setSelectedProjectPath(projectPath);
+      setSessions([]);
+      setSelectedSessionId(null);
+      setCurrentSession(null);
+      setContextPanelOpen(true);
+      setBannerMessage(`Adding project: ${projectPath}`);
+
       const managedConnection = await ensureManagedSidecar(projectPath);
       if (!managedConnection) {
-        setBannerMessage("Project folder selection is only available in the desktop app.");
+        const message = "Project folder selection is only available in the desktop app.";
+        markProjectConnectionError(projectPath, message);
+        setBannerMessage(message);
         return;
       }
       await connectManagedProject(managedConnection, { selectProject: true });
-      setContextPanelOpen(true);
+      setBannerMessage(`Added project: ${managedConnection.workspaceRoot}`);
     } catch (error) {
-      setBannerMessage(formatErrorMessage(error));
+      const message = formatErrorMessage(error);
+      setBannerMessage(message);
+      if (projectPathForError) {
+        markProjectConnectionError(projectPathForError, message);
+      }
     } finally {
       setBusyAction(null);
     }
+  }
+
+  function markProjectConnectionError(projectPath: string, message: string) {
+    const projectKey = projectPathKey(projectPath);
+    setProjects((previous) =>
+      previous.map((project) =>
+        projectPathKey(project.path) === projectKey
+          ? {
+              ...project,
+              connectionState: "error",
+              connectionError: message,
+              status: null,
+              sessions: [],
+              pendingInteractions: [],
+              toolLogs: [],
+            }
+          : project,
+      ),
+    );
   }
 
   async function handleCreateSession(projectPath = selectedProjectPathRef.current) {
@@ -2368,6 +2420,8 @@ function App() {
     key: project.path,
     label: project.label,
     path: project.path,
+    connectionState: project.connectionState,
+    connectionError: project.connectionError ?? null,
     sessions: visibleSessionsForProject(project.path, project.sessions, archivedSessions),
     pendingInteractions: project.path === selectedProjectPath ? pendingInteractions : project.pendingInteractions,
   }));
@@ -2514,9 +2568,11 @@ function App() {
                             <span className="project-toggle-label">
                               <strong>{group.label}</strong>
                               <small>{group.path}</small>
+                              {group.connectionState === "connecting" ? <em>Connecting...</em> : null}
+                              {group.connectionState === "error" && group.connectionError ? <em>{group.connectionError}</em> : null}
                             </span>
                           </span>
-                          <span className="project-toggle-count">{group.sessions.length}</span>
+                          <span className={`project-toggle-count ${group.connectionState}`}>{group.connectionState === "connected" ? group.sessions.length : "!"}</span>
                         </button>
                         <div className="project-menu" ref={projectMenuOpenKey === group.key ? projectMenuRef : null}>
                           <button
@@ -2538,7 +2594,7 @@ function App() {
                                   setProjectMenuOpenKey(null);
                                   void handleCreateSession(group.path);
                                 }}
-                                disabled={busyAction !== null}
+                                disabled={busyAction !== null || group.connectionState !== "connected"}
                               >
                                 New
                               </button>
@@ -2557,6 +2613,10 @@ function App() {
                       </div>
                       {isCollapsed ? null : (
                         <div className="project-session-list">
+                          {group.connectionState === "connecting" ? <div className="project-status-card">Starting sidecar...</div> : null}
+                          {group.connectionState === "error" && group.connectionError ? (
+                            <div className="project-status-card error">{group.connectionError}</div>
+                          ) : null}
                           {group.sessions.map((session) => {
                             const isSelected = selectedProjectPath === group.path && selectedSessionId === session.id;
                             const isAnswering = (activeProjectTurns[group.path] ?? []).some((turn) => turn.sessionId === session.id);
@@ -3852,8 +3912,21 @@ function tableCellStyle(alignment: MarkdownTableAlignment): CSSProperties | unde
 }
 
 function upsertProject(projects: ProjectState[], nextProject: ProjectState): ProjectState[] {
-  const others = projects.filter((project) => project.path !== nextProject.path);
+  const nextProjectKey = projectPathKey(nextProject.path);
+  const others = projects.filter((project) => projectPathKey(project.path) !== nextProjectKey);
   return [...others, nextProject].sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function projectPathKey(path: string | null | undefined): string {
+  let normalized = String(path ?? "")
+    .trim()
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (/^[a-zA-Z]:\//.test(normalized) || normalized.startsWith("//")) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
 }
 
 function readStoredLayout(): LayoutState {
@@ -4120,7 +4193,8 @@ function persistProjectPath(projectPath: string) {
     return;
   }
   const paths = readStoredProjectPaths();
-  if (!paths.includes(projectPath)) {
+  const projectKey = projectPathKey(projectPath);
+  if (!paths.some((path) => projectPathKey(path) === projectKey)) {
     window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify([...paths, projectPath]));
   }
 }
@@ -4129,7 +4203,8 @@ function removeStoredProjectPath(projectPath: string) {
   if (typeof window === "undefined") {
     return;
   }
-  const paths = readStoredProjectPaths().filter((path) => path !== projectPath);
+  const projectKey = projectPathKey(projectPath);
+  const paths = readStoredProjectPaths().filter((path) => projectPathKey(path) !== projectKey);
   window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(paths));
 }
 

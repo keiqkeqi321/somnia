@@ -1004,7 +1004,8 @@ button {
 }
 
 .project-toggle-label strong,
-.project-toggle-label small {
+.project-toggle-label small,
+.project-toggle-label em {
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -1019,6 +1020,13 @@ button {
   max-width: 9.5rem;
   color: var(--muted);
   font-size: 0.68rem;
+}
+
+.project-toggle-label em {
+  max-width: 9.5rem;
+  color: #d8b86a;
+  font-size: 0.68rem;
+  font-style: normal;
 }
 
 .project-toggle-caret,
@@ -1040,6 +1048,27 @@ button {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.055);
   text-align: center;
+}
+
+.project-toggle-count.connecting,
+.project-toggle-count.error {
+  color: #d8b86a;
+}
+
+.project-status-card {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(216, 184, 106, 0.08);
+  color: #d8b86a;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.project-status-card.error {
+  border-color: rgba(224, 118, 118, 0.34);
+  background: rgba(224, 118, 118, 0.08);
+  color: #f0a0a0;
 }
 
 .project-menu {
