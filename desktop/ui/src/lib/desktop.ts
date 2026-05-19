@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { ManagedSidecarConnection } from "../types";
@@ -59,6 +60,20 @@ async function toggleMaximizeMainWindow(): Promise<void> {
   await getCurrentWindow().toggleMaximize();
 }
 
+async function isMainWindowMaximized(): Promise<boolean> {
+  if (!isTauriEnvironment()) {
+    return false;
+  }
+  return getCurrentWindow().isMaximized();
+}
+
+async function onMainWindowResized(callback: () => void): Promise<UnlistenFn | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+  return getCurrentWindow().onResized(callback);
+}
+
 async function closeMainWindow(): Promise<void> {
   if (!isTauriEnvironment()) {
     return;
@@ -78,8 +93,10 @@ export {
   closeMainWindow,
   chooseProjectFolder,
   ensureManagedSidecar,
+  isMainWindowMaximized,
   isTauriEnvironment,
   minimizeMainWindow,
+  onMainWindowResized,
   openWorkspaceRoot,
   startMainWindowDrag,
   stopManagedSidecar,

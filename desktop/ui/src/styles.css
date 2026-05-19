@@ -123,6 +123,59 @@ button {
   color: #ffffff;
 }
 
+.titlebar-minimize span {
+  width: 16px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.titlebar-maximize span {
+  position: relative;
+  width: 12px;
+  height: 12px;
+}
+
+.titlebar-restore span {
+  position: relative;
+  width: 14px;
+  height: 14px;
+}
+
+.titlebar-maximize span::before {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-radius: 1.5px;
+}
+
+.titlebar-maximize span::before {
+  inset: 0;
+}
+
+.titlebar-restore span::before,
+.titlebar-restore span::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 1.5px;
+}
+
+.titlebar-restore span::before {
+  right: 0;
+  top: 0;
+}
+
+.titlebar-restore span::after {
+  left: 0;
+  bottom: 0;
+  background: rgba(13, 15, 19, 0.96);
+}
+
 .ambient {
   position: absolute;
   inset: auto;

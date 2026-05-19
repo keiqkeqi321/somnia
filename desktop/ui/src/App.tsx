@@ -17,7 +17,9 @@ import {
   chooseProjectFolder,
   closeMainWindow,
   ensureManagedSidecar,
+  isMainWindowMaximized,
   minimizeMainWindow,
+  onMainWindowResized,
   openWorkspaceRoot,
   startMainWindowDrag,
   stopManagedSidecar,
@@ -252,6 +254,7 @@ function App() {
   const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
   const [settingsConfigSaving, setSettingsConfigSaving] = useState(false);
   const [settingsConfigMessage, setSettingsConfigMessage] = useState("");
+  const [windowMaximized, setWindowMaximized] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [todoExpanded, setTodoExpanded] = useState(false);
   const [layout, setLayout] = useState<LayoutState>(() => readStoredLayout());
@@ -296,6 +299,40 @@ function App() {
     };
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    async function refreshWindowState() {
+      try {
+        const maximized = await isMainWindowMaximized();
+        if (!cancelled) {
+          setWindowMaximized(maximized);
+        }
+      } catch {
+        if (!cancelled) {
+          setWindowMaximized(false);
+        }
+      }
+    }
+
+    void refreshWindowState();
+    void onMainWindowResized(() => {
+      void refreshWindowState();
+    }).then((nextUnlisten) => {
+      if (cancelled) {
+        nextUnlisten?.();
+        return;
+      }
+      unlisten = nextUnlisten;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -2322,6 +2359,7 @@ function App() {
     }
     try {
       await toggleMaximizeMainWindow();
+      setWindowMaximized(await isMainWindowMaximized());
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     }
@@ -2333,6 +2371,7 @@ function App() {
         await minimizeMainWindow();
       } else if (action === "toggle-maximize") {
         await toggleMaximizeMainWindow();
+        setWindowMaximized(await isMainWindowMaximized());
       } else {
         await closeMainWindow();
       }
@@ -2594,6 +2633,7 @@ function App() {
     "--sidebar-width": `${layout.sidebarWidth}px`,
     "--context-width": `${layout.contextWidth}px`,
   } as CSSProperties;
+  const maximizeTitle = windowMaximized ? t("titlebar.restore") : t("titlebar.maximize");
   return (
     <div className="shell">
       <header
@@ -2611,22 +2651,22 @@ function App() {
             ⚙
           </button>
           <button
-            className="titlebar-button"
+            className="titlebar-button titlebar-minimize"
             type="button"
             onClick={() => void handleWindowControl("minimize")}
             title={t("titlebar.minimize")}
             aria-label={t("titlebar.minimize")}
           >
-            -
+            <span aria-hidden="true" />
           </button>
           <button
-            className="titlebar-button"
+            className={`titlebar-button ${windowMaximized ? "titlebar-restore" : "titlebar-maximize"}`}
             type="button"
             onClick={() => void handleWindowControl("toggle-maximize")}
-            title={t("titlebar.maximize")}
-            aria-label={t("titlebar.maximize")}
+            title={maximizeTitle}
+            aria-label={maximizeTitle}
           >
-            □
+            <span aria-hidden="true" />
           </button>
           <button
             className="titlebar-button close"

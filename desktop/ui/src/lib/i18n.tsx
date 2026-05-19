@@ -14,6 +14,7 @@ const translations = {
     /* ── Title bar ── */
     "titlebar.minimize": "Minimize",
     "titlebar.maximize": "Maximize",
+    "titlebar.restore": "Restore",
     "titlebar.close": "Close",
 
     /* ── Settings ── */
@@ -289,6 +290,7 @@ const translations = {
     /* ── Title bar ── */
     "titlebar.minimize": "最小化",
     "titlebar.maximize": "最大化",
+    "titlebar.restore": "还原",
     "titlebar.close": "关闭",
 
     /* ── Settings ── */
