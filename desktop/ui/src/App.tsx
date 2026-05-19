@@ -3696,15 +3696,13 @@ function FileChangeDetail({ change }: { change: FileChangeSummary }) {
         {change.diffLines.length > 0 ? (
           change.diffLines.map((line) => (
             <span key={line.key} className={`file-diff-line ${line.kind}`}>
-              <span className="file-diff-line-number">{line.oldLine ?? ""}</span>
-              <span className="file-diff-line-number">{line.newLine ?? ""}</span>
+              <span className="file-diff-line-number">{line.newLine ?? line.oldLine ?? ""}</span>
               <span className="file-diff-marker">{diffMarker(line.kind)}</span>
               <code>{line.text || " "}</code>
             </span>
           ))
         ) : (
           <span className="file-diff-line context">
-            <span className="file-diff-line-number" />
             <span className="file-diff-line-number" />
             <span className="file-diff-marker" />
             <code>File updated.</code>

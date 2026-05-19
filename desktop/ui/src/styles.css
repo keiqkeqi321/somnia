@@ -2289,7 +2289,7 @@ button {
   padding: 0 12px 12px;
 }
 
-.tool-call-detail span {
+.tool-call-detail > span {
   display: block;
   margin-bottom: 6px;
   color: var(--muted);
@@ -2321,10 +2321,12 @@ button {
 
 .file-diff-line {
   display: grid;
-  grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr);
-  min-height: 1.42rem;
-  padding: 0 10px;
+  grid-template-columns: 5ch 2ch minmax(0, 1fr);
+  align-items: baseline;
+  min-height: 1.18rem;
+  padding: 1px 10px;
   color: #dce8f7;
+  line-height: 1.28;
 }
 
 .file-diff-line code {
@@ -2332,17 +2334,22 @@ button {
   color: inherit;
   font-family: inherit;
   white-space: pre;
+  line-height: inherit;
 }
 
 .file-diff-line-number {
+  display: block;
   color: rgba(170, 184, 204, 0.58);
   text-align: right;
   user-select: none;
+  line-height: inherit;
 }
 
 .file-diff-marker {
+  display: block;
   text-align: center;
   user-select: none;
+  line-height: inherit;
 }
 
 .file-diff-line.added {
