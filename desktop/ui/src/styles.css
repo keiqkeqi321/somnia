@@ -81,19 +81,13 @@ button {
   font-weight: 600;
 }
 
-.titlebar-mark {
-  width: 18px;
-  height: 18px;
+.titlebar-icon {
+  width: 20px;
+  height: 20px;
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(143, 180, 255, 0.28);
+  display: block;
   border-radius: 5px;
-  background: rgba(143, 180, 255, 0.12);
-  color: #d7e3ff;
-  font-size: 0.72rem;
-  line-height: 1;
+  box-shadow: 0 0 10px rgba(95, 182, 255, 0.18);
 }
 
 .titlebar-controls {

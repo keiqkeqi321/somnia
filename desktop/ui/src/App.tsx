@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import mermaid from "mermaid";
+import appIconUrl from "../src-tauri/icons/32x32.png";
 
 import {
   chooseProjectFolder,
@@ -2602,9 +2603,7 @@ function App() {
         onDoubleClick={(event) => void handleTitlebarDoubleClick(event)}
       >
         <div className="titlebar-brand" data-tauri-drag-region>
-          <span className="titlebar-mark" aria-hidden="true">
-            S
-          </span>
+          <img className="titlebar-icon" src={appIconUrl} alt="" aria-hidden="true" data-tauri-drag-region />
           <span data-tauri-drag-region>{t("app.title")}</span>
         </div>
         <div className="titlebar-controls">

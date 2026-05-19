@@ -49,9 +49,11 @@ def base_build_args() -> list[str]:
         "--jsx=automatic",
         "--entry-names=app",
         "--outdir=dist/assets",
+        "--public-path=./assets",
         "--loader:.ts=ts",
         "--loader:.tsx=tsx",
         "--loader:.css=css",
+        "--loader:.png=file",
     ]
 
 

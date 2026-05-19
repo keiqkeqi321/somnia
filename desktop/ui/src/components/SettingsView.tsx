@@ -108,7 +108,7 @@ function SettingsView({
     setMcpDebugMessage("");
     try {
       const toolCount = await onDebugMcpServer(serverName);
-      setMcpDebugMessage(`Successfully fetched ${toolCount} tool${toolCount === 1 ? "" : "s"} from ${serverName}.`);
+      setMcpDebugMessage(t("settings.config.debugSuccess", { count: toolCount, name: serverName }));
     } catch (error) {
       setMcpDebugMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -124,8 +124,8 @@ function SettingsView({
       const toolCount = await onSetMcpServerEnabled(serverName, enabled);
       setMcpDebugMessage(
         enabled
-          ? `Enabled ${serverName}; fetched ${toolCount} tool${toolCount === 1 ? "" : "s"} for chat.`
-          : `Disabled ${serverName}; removed its MCP tools from chat.`,
+          ? t("settings.config.mcpEnabled", { name: serverName, count: toolCount })
+          : t("settings.config.mcpDisabled", { name: serverName }),
       );
     } catch (error) {
       setMcpDebugMessage(error instanceof Error ? error.message : String(error));
