@@ -396,7 +396,7 @@ fn stop_locked(state: &mut ManagedSidecarState) -> bool {
     let mut stopped = false;
     if let Some(mut child) = state.child.take() {
         stopped = true;
-        let _ = child.kill();
+        terminate_child(&mut child);
         let _ = child.wait();
     }
     state.connection = None;
@@ -404,6 +404,29 @@ fn stop_locked(state: &mut ManagedSidecarState) -> bool {
     state.stdout_log_path = None;
     state.stderr_log_path = None;
     stopped
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+
+    let mut command = Command::new("taskkill");
+    command
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    if !matches!(command.status(), Ok(status) if status.success()) {
+        let _ = child.kill();
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
 }
 
 fn sidecar_binary_name() -> &'static str {

@@ -63,6 +63,7 @@ async function closeMainWindow(): Promise<void> {
   if (!isTauriEnvironment()) {
     return;
   }
+  await stopManagedSidecar();
   await getCurrentWindow().close();
 }
 
