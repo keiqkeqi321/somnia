@@ -260,6 +260,8 @@ function buildAssistantParts(rowId: string, assistantContent: unknown, nextUserC
       name: String(item.name ?? "tool").trim() || "tool",
       input: stringifyToolValue(item.input ?? {}),
       output: stringifyToolValue(toolResultOutput(result)),
+      rawInput: item.input ?? {},
+      rawOutput: toolResultOutput(result),
       logId: isRecord(result) && typeof result.log_id === "string" ? result.log_id : null,
     };
     parts.push({ id: `${rowId}-${toolCall.id || `tool-${toolCount}`}`, type: "tool_call", toolCall });

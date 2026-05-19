@@ -2186,6 +2186,14 @@ button {
   overflow: hidden;
 }
 
+.tool-call-card.success {
+  border-color: rgba(83, 210, 132, 0.24);
+}
+
+.tool-call-card.error {
+  border-color: rgba(239, 111, 111, 0.28);
+}
+
 .tool-call-card summary {
   display: flex;
   align-items: center;
@@ -2201,7 +2209,53 @@ button {
   color: var(--muted);
 }
 
-.tool-call-card summary em {
+.tool-call-summary-main,
+.tool-call-summary-meta {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-call-summary-main {
+  flex: 1 1 auto;
+}
+
+.tool-call-summary-main > span:not(.tool-result-dot) {
+  flex: none;
+}
+
+.tool-call-summary-meta {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+
+.tool-result-dot {
+  flex: none;
+  width: 0.54rem;
+  height: 0.54rem;
+  border-radius: 999px;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(143, 180, 255, 0.08);
+}
+
+.tool-result-dot.success {
+  background: #57d98b;
+  box-shadow: 0 0 0 3px rgba(87, 217, 139, 0.12);
+}
+
+.tool-result-dot.error {
+  background: #ef6f6f;
+  box-shadow: 0 0 0 3px rgba(239, 111, 111, 0.12);
+}
+
+.tool-result-dot.running {
+  background: #d8b86a;
+  box-shadow: 0 0 0 3px rgba(216, 184, 106, 0.12);
+}
+
+.tool-call-card summary em,
+.tool-call-summary-main em {
   min-width: 0;
   color: var(--muted);
   font-style: normal;
@@ -2209,6 +2263,26 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-change-stat {
+  flex: none;
+  min-width: 2.4rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.file-change-stat.added {
+  background: rgba(68, 207, 118, 0.14);
+  color: #82efaa;
+}
+
+.file-change-stat.removed {
+  background: rgba(239, 111, 111, 0.14);
+  color: #ffaaaa;
 }
 
 .tool-call-detail {
@@ -2231,6 +2305,69 @@ button {
   background: rgba(0, 0, 0, 0.32);
   overflow: auto;
   color: #eef6ff;
+}
+
+.file-change-detail {
+  padding-top: 0;
+}
+
+.tool-call-detail .file-diff-view {
+  max-height: 26rem;
+  padding: 8px 0;
+  background: rgba(5, 8, 13, 0.68);
+  white-space: pre;
+  word-break: normal;
+}
+
+.file-diff-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr);
+  min-height: 1.42rem;
+  padding: 0 10px;
+  color: #dce8f7;
+}
+
+.file-diff-line code {
+  min-width: 0;
+  color: inherit;
+  font-family: inherit;
+  white-space: pre;
+}
+
+.file-diff-line-number {
+  color: rgba(170, 184, 204, 0.58);
+  text-align: right;
+  user-select: none;
+}
+
+.file-diff-marker {
+  text-align: center;
+  user-select: none;
+}
+
+.file-diff-line.added {
+  background: rgba(48, 185, 96, 0.18);
+  color: #d8ffe3;
+}
+
+.file-diff-line.added .file-diff-marker,
+.file-diff-line.added .file-diff-line-number {
+  color: #83f2aa;
+}
+
+.file-diff-line.removed {
+  background: rgba(224, 80, 80, 0.18);
+  color: #ffe1e1;
+}
+
+.file-diff-line.removed .file-diff-marker,
+.file-diff-line.removed .file-diff-line-number {
+  color: #ff9c9c;
+}
+
+.file-diff-line.meta {
+  color: #9fb3d1;
+  background: rgba(143, 180, 255, 0.08);
 }
 
 .empty-conversation {

@@ -253,6 +253,8 @@ export interface ConversationToolCall {
   name: string;
   input: string;
   output: string;
+  rawInput?: unknown;
+  rawOutput?: unknown;
   logId?: string | null;
   status?: "running" | "finished";
 }

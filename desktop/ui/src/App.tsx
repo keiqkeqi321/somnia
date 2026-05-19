@@ -863,6 +863,8 @@ function App() {
             name: toolName,
             input: stringifyToolValue(event.payload.tool_input ?? {}),
             output: "(running)",
+            rawInput: event.payload.tool_input ?? {},
+            rawOutput: null,
             logId: null,
             status: "running",
           },
@@ -885,6 +887,8 @@ function App() {
       name: toolName,
       input: stringifyToolValue(event.payload.tool_input ?? {}),
       output: stringifyToolValue(event.payload.output ?? "(no output)"),
+      rawInput: event.payload.tool_input ?? {},
+      rawOutput: event.payload.output ?? "(no output)",
       logId: typeof event.payload.log_id === "string" ? event.payload.log_id : null,
       status: "finished" as const,
     };
@@ -3628,22 +3632,290 @@ function clampMermaidZoom(value: number): number {
 }
 
 function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
+  const resultState = toolCallResultState(toolCall);
+  const fileChange = fileChangeSummary(toolCall, resultState);
   return (
-    <details className="tool-call-card">
+    <details className={`tool-call-card ${resultState}`}>
       <summary>
-        <span>{toolCall.name}</span>
-        {toolCall.logId ? <em>{toolCall.logId}</em> : null}
+        <span className="tool-call-summary-main">
+          <span className={`tool-result-dot ${resultState}`} aria-hidden="true" />
+          <span>{fileChange ? fileChange.actionLabel : toolCall.name}</span>
+          {fileChange ? <em>{fileChange.path}</em> : null}
+        </span>
+        <span className="tool-call-summary-meta">
+          {fileChange ? (
+            <>
+              <span className="file-change-stat added">+{fileChange.added}</span>
+              <span className="file-change-stat removed">-{fileChange.removed}</span>
+            </>
+          ) : null}
+          {toolCall.logId ? <em>{toolCall.logId}</em> : null}
+        </span>
       </summary>
-      <div className="tool-call-detail">
-        <span>Input</span>
-        <pre>{toolCall.input}</pre>
-      </div>
-      <div className="tool-call-detail">
-        <span>Output</span>
-        <pre>{toolCall.output}</pre>
-      </div>
+      {fileChange ? (
+        <FileChangeDetail change={fileChange} />
+      ) : (
+        <>
+          <div className="tool-call-detail">
+            <span>Input</span>
+            <pre>{toolCall.input}</pre>
+          </div>
+          <div className="tool-call-detail">
+            <span>Output</span>
+            <pre>{toolCall.output}</pre>
+          </div>
+        </>
+      )}
     </details>
   );
+}
+
+type ToolResultState = "running" | "success" | "error";
+
+type DiffLine = {
+  key: string;
+  kind: "context" | "added" | "removed" | "meta";
+  oldLine: number | null;
+  newLine: number | null;
+  text: string;
+};
+
+type FileChangeSummary = {
+  actionLabel: string;
+  path: string;
+  added: number;
+  removed: number;
+  diffLines: DiffLine[];
+};
+
+function FileChangeDetail({ change }: { change: FileChangeSummary }) {
+  return (
+    <div className="tool-call-detail file-change-detail">
+      <span>Changes</span>
+      <pre className="file-diff-view" aria-label={`Changes for ${change.path}`}>
+        {change.diffLines.length > 0 ? (
+          change.diffLines.map((line) => (
+            <span key={line.key} className={`file-diff-line ${line.kind}`}>
+              <span className="file-diff-line-number">{line.oldLine ?? ""}</span>
+              <span className="file-diff-line-number">{line.newLine ?? ""}</span>
+              <span className="file-diff-marker">{diffMarker(line.kind)}</span>
+              <code>{line.text || " "}</code>
+            </span>
+          ))
+        ) : (
+          <span className="file-diff-line context">
+            <span className="file-diff-line-number" />
+            <span className="file-diff-line-number" />
+            <span className="file-diff-marker" />
+            <code>File updated.</code>
+          </span>
+        )}
+      </pre>
+    </div>
+  );
+}
+
+function diffMarker(kind: DiffLine["kind"]): string {
+  if (kind === "added") {
+    return "+";
+  }
+  if (kind === "removed") {
+    return "-";
+  }
+  return " ";
+}
+
+function toolCallResultState(toolCall: ConversationToolCall): ToolResultState {
+  if (toolCall.status === "running") {
+    return "running";
+  }
+  const output = toolCall.rawOutput;
+  if (typeof output === "string") {
+    const lowered = output.trim().toLowerCase();
+    return lowered.startsWith("error:") || lowered.startsWith("unknown tool:") || lowered.startsWith("blocked in ") ? "error" : "success";
+  }
+  if (!isRecord(output)) {
+    return "success";
+  }
+  const status = String(output.status ?? "").trim().toLowerCase();
+  if (["error", "failed", "denied"].includes(status)) {
+    return "error";
+  }
+  if (output.success === false || output.isError === true) {
+    return "error";
+  }
+  const error = output.error;
+  if (typeof error === "string" && error.trim()) {
+    return "error";
+  }
+  return "success";
+}
+
+function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResultState): FileChangeSummary | null {
+  if (resultState !== "success" || !isRecord(toolCall.rawOutput)) {
+    return null;
+  }
+  const action = String(toolCall.rawOutput.action ?? toolCall.name).trim();
+  if (!["write_file", "edit_file", "delete_file"].includes(toolCall.name) && !["write_file", "edit_file", "delete_file"].includes(action)) {
+    return null;
+  }
+  if (toolCall.name === "delete_file" || action === "delete_file") {
+    const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? "(unknown path)");
+    return {
+      actionLabel: "Delete",
+      path,
+      added: 0,
+      removed: 0,
+      diffLines: [
+        {
+          key: "delete",
+          kind: "removed",
+          oldLine: null,
+          newLine: null,
+          text: path,
+        },
+      ],
+    };
+  }
+  const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? "(unknown path)");
+  const added = numberFromValue(toolCall.rawOutput.added_lines);
+  const removed = numberFromValue(toolCall.rawOutput.removed_lines);
+  const actionLabel = toolCall.name === "write_file" || action === "write_file" ? (toolCall.rawOutput.existed_before === false ? "Create" : "Write") : "Update";
+  return {
+    actionLabel,
+    path,
+    added,
+    removed,
+    diffLines: buildFileDiffLines(toolCall.name || action, toolCall.rawInput),
+  };
+}
+
+function buildFileDiffLines(toolName: string, rawInput: unknown): DiffLine[] {
+  if (!isRecord(rawInput)) {
+    return [];
+  }
+  if (toolName === "edit_file") {
+    return buildEditFileDiffLines(rawInput);
+  }
+  if (toolName === "write_file") {
+    const content = String(rawInput.content ?? "");
+    return renderUnifiedTextDiff("", content);
+  }
+  return [];
+}
+
+function buildEditFileDiffLines(rawInput: Record<string, unknown>): DiffLine[] {
+  const edits = Array.isArray(rawInput.edits) ? rawInput.edits : [];
+  const lines: DiffLine[] = [];
+  edits.forEach((item, editIndex) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const oldText = String(item.old_text ?? "");
+    const newText = String(item.new_text ?? "");
+    if (!oldText && !newText) {
+      return;
+    }
+    if (edits.length > 1) {
+      const path = String(item.path ?? rawInput.path ?? "").trim();
+      lines.push({
+        key: `edit-${editIndex}-meta`,
+        kind: "meta",
+        oldLine: null,
+        newLine: null,
+        text: path ? `edit ${editIndex + 1}: ${path}` : `edit ${editIndex + 1}`,
+      });
+    }
+    lines.push(...renderUnifiedTextDiff(oldText, newText, `edit-${editIndex}`));
+  });
+  return lines;
+}
+
+function renderUnifiedTextDiff(before: string, after: string, keyPrefix = "diff"): DiffLine[] {
+  const beforeLines = before.replace(/\r\n?/g, "\n").split("\n");
+  const afterLines = after.replace(/\r\n?/g, "\n").split("\n");
+  if (beforeLines.length === 1 && beforeLines[0] === "") {
+    beforeLines.length = 0;
+  }
+  if (afterLines.length === 1 && afterLines[0] === "") {
+    afterLines.length = 0;
+  }
+  const prefixCount = commonPrefixLineCount(beforeLines, afterLines);
+  const suffixCount = commonSuffixLineCount(beforeLines, afterLines, prefixCount);
+  const visibleBeforeStart = Math.max(0, prefixCount - 2);
+  const visibleAfterStart = Math.max(0, prefixCount - 2);
+  const visibleBeforeEnd = Math.min(beforeLines.length, beforeLines.length - suffixCount + 2);
+  const visibleAfterEnd = Math.min(afterLines.length, afterLines.length - suffixCount + 2);
+  const lines: DiffLine[] = [];
+  let oldLine = visibleBeforeStart + 1;
+  let newLine = visibleAfterStart + 1;
+  for (let index = visibleBeforeStart; index < prefixCount; index += 1) {
+    lines.push({ key: `${keyPrefix}-ctx-before-${index}`, kind: "context", oldLine: oldLine++, newLine: newLine++, text: beforeLines[index] ?? "" });
+  }
+  for (let index = prefixCount; index < beforeLines.length - suffixCount; index += 1) {
+    lines.push({ key: `${keyPrefix}-removed-${index}`, kind: "removed", oldLine: oldLine++, newLine: null, text: beforeLines[index] ?? "" });
+  }
+  for (let index = prefixCount; index < afterLines.length - suffixCount; index += 1) {
+    lines.push({ key: `${keyPrefix}-added-${index}`, kind: "added", oldLine: null, newLine: newLine++, text: afterLines[index] ?? "" });
+  }
+  const suffixStartBefore = Math.max(prefixCount, beforeLines.length - suffixCount);
+  const suffixStartAfter = Math.max(prefixCount, afterLines.length - suffixCount);
+  oldLine = suffixStartBefore + 1;
+  newLine = suffixStartAfter + 1;
+  for (let index = 0; index < Math.min(2, suffixCount); index += 1) {
+    const beforeIndex = suffixStartBefore + index;
+    const afterIndex = suffixStartAfter + index;
+    if (beforeIndex >= visibleBeforeEnd || afterIndex >= visibleAfterEnd) {
+      break;
+    }
+    lines.push({
+      key: `${keyPrefix}-ctx-after-${index}`,
+      kind: "context",
+      oldLine: oldLine++,
+      newLine: newLine++,
+      text: beforeLines[beforeIndex] ?? afterLines[afterIndex] ?? "",
+    });
+  }
+  return lines;
+}
+
+function commonPrefixLineCount(left: string[], right: string[]): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left[index] === right[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function commonSuffixLineCount(left: string[], right: string[], prefixCount: number): number {
+  const limit = Math.min(left.length, right.length) - prefixCount;
+  let count = 0;
+  while (count < limit && left[left.length - 1 - count] === right[right.length - 1 - count]) {
+    count += 1;
+  }
+  return count;
+}
+
+function readablePathFromInput(input: unknown): string | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+  if (typeof input.path === "string" && input.path.trim()) {
+    return input.path;
+  }
+  const edits = Array.isArray(input.edits) ? input.edits : [];
+  for (const item of edits) {
+    if (isRecord(item) && typeof item.path === "string" && item.path.trim()) {
+      return item.path;
+    }
+  }
+  return null;
+}
+
+function numberFromValue(value: unknown): number {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : 0;
 }
 
 function renderMarkdownBlocks(text: string): ReactNode[] {
