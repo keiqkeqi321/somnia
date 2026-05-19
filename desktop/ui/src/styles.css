@@ -236,6 +236,44 @@ button {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.settings-language-switcher {
+  display: grid;
+  gap: 6px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.settings-language-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-language-options button {
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.settings-language-options button:hover {
+  color: #eef2f8;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.settings-language-options button.selected {
+  border-color: rgba(95, 182, 255, 0.32);
+  background: rgba(95, 182, 255, 0.14);
+  color: #eef2f8;
+}
+
 .settings-nav {
   display: flex;
   flex-direction: column;
@@ -1614,7 +1652,10 @@ button {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  max-height: min(260px, 34vh);
+  overflow-y: auto;
   padding: 0 14px 14px 36px;
+  scrollbar-width: thin;
 }
 
 .todo-status-item {
@@ -1636,11 +1677,6 @@ button {
 
 .todo-status-item.completed {
   opacity: 0.62;
-}
-
-.todo-status-more {
-  color: var(--muted);
-  font-size: 0.78rem;
 }
 
 .mode-pill {

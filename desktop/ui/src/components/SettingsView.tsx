@@ -1,10 +1,11 @@
 import { formatRelativeTime } from "../lib/messages";
+import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "../lib/i18n";
 import type { McpServerSummary, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useState } from "react";
 
 const SETTINGS_SECTIONS = [
-  { key: "configuration", icon: "⚙", label: "配置", title: "配置" },
-  { key: "archived", icon: "📋", label: "已归档线程", title: "已归档线程" },
+  { key: "configuration", icon: "⚙", labelKey: "settings.section.configuration", titleKey: "settings.section.configuration" },
+  { key: "archived", icon: "📋", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]["key"];
@@ -52,11 +53,11 @@ type SettingsViewProps = {
   onReloadConfig: () => void | Promise<void>;
 };
 
-const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; label: string; title: string }> = [
-  { key: "provider", label: "Provider", title: "Provider Profiles" },
-  { key: "mcp", label: "MCP", title: "MCP Servers" },
-  { key: "hooks", label: "Hooks", title: "Hooks" },
-  { key: "system_prompt", label: "System Prompt", title: "System Prompt" },
+const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: TranslationKey; titleKey: TranslationKey }> = [
+  { key: "provider", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
+  { key: "mcp", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
+  { key: "hooks", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
+  { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
 ];
 
 function SettingsView({
@@ -90,6 +91,7 @@ function SettingsView({
   onSetMcpServerEnabled,
   onReloadConfig,
 }: SettingsViewProps) {
+  const { locale, setLocale, t } = useI18n();
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
   const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
   const activeDraftKey = `${selectedConfigScope}:${selectedConfigSection}`;
@@ -148,8 +150,23 @@ function SettingsView({
       <aside className="settings-sidebar">
         <button className="settings-back" type="button" onClick={onClose}>
           <span aria-hidden="true">←</span>
-          <span>返回应用</span>
+          <span>{t("settings.back")}</span>
         </button>
+        <div className="settings-language-switcher">
+          <span>{t("settings.language.label")}</span>
+          <div className="settings-language-options" role="group" aria-label={t("settings.language.label")}>
+            {SUPPORTED_LOCALES.map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={locale === item ? "selected" : ""}
+                onClick={() => setLocale(item as Locale)}
+              >
+                {t(`settings.language.${item}` as TranslationKey)}
+              </button>
+            ))}
+          </div>
+        </div>
         <nav className="settings-nav" aria-label="Settings sections">
           {SETTINGS_SECTIONS.map((item) => (
             <button
@@ -159,7 +176,7 @@ function SettingsView({
               onClick={() => onSelectSection(item.key)}
             >
               <span aria-hidden="true">{item.icon}</span>
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </button>
           ))}
         </nav>
@@ -167,7 +184,7 @@ function SettingsView({
 
       <div className="settings-main">
         <header className="settings-header">
-          <h1>{section.title}</h1>
+          <h1>{t(section.titleKey)}</h1>
         </header>
 
         {activeSection === "configuration" ? (
@@ -181,12 +198,12 @@ function SettingsView({
                     className={selectedConfigScope === scope ? "selected" : ""}
                     onClick={() => onSelectConfigScope(scope)}
                   >
-                    {scope === "user" ? "User" : "Project"}
+                    {scope === "user" ? t("settings.config.user") : t("settings.config.project")}
                   </button>
                 ))}
               </div>
               <button className="settings-inline-button" type="button" onClick={onReloadConfig} disabled={configLoading || configSaving}>
-                Reload
+                {t("settings.config.reload")}
               </button>
             </div>
             <div className="config-section-tabs" role="tablist" aria-label="Configuration type">
@@ -197,7 +214,7 @@ function SettingsView({
                   className={selectedConfigSection === item.key ? "selected" : ""}
                   onClick={() => onSelectConfigSection(item.key)}
                 >
-                  {item.label}
+                  {t(item.labelKey)}
                 </button>
               ))}
             </div>
@@ -205,24 +222,24 @@ function SettingsView({
               <>
                 <section className="config-panel">
                   <div className="config-path-row">
-                    <span>{activeConfigScope.label} config</span>
+                    <span>{activeConfigScope.label} {t("settings.config.configLabel")}</span>
                     <code>{activeConfigScope.config_path}</code>
                     <button
                       className="settings-inline-button"
                       type="button"
                       onClick={() => onOpenPath(activeConfigScope.config_exists ? activeConfigScope.config_path : parentPath(activeConfigScope.config_path))}
                     >
-                      {activeConfigScope.config_exists ? "Open file" : "Open folder"}
+                      {activeConfigScope.config_exists ? t("settings.config.openFile") : t("settings.config.openFolder")}
                     </button>
                   </div>
                   <div className="config-editor-head">
                     <div>
-                      <strong>{activeConfigOption?.title ?? "Configuration"}</strong>
-                      <p>编辑当前类别的 TOML 片段。保存会写入所选 scope 的配置文件。</p>
+                      <strong>{activeConfigOption ? t(activeConfigOption.titleKey) : t("settings.config.configuration")}</strong>
+                      <p>{t("settings.config.editorHint")}</p>
                     </div>
                     <div className="config-editor-actions">
                       <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
-                        {configSaving ? "Saving" : "Save"}
+                        {configSaving ? t("settings.config.saving") : t("settings.config.save")}
                       </button>
                     </div>
                   </div>
@@ -239,13 +256,13 @@ function SettingsView({
                   <section className="config-panel mcp-runtime-panel">
                     <div className="config-editor-head">
                       <div>
-                        <strong>Runtime MCP Servers</strong>
-                        <p>Click Debug to inspect registered tools from the running sidecar.</p>
+                        <strong>{t("settings.config.runtimeMcpServers")}</strong>
+                        <p>{t("settings.config.runtimeMcpHint")}</p>
                       </div>
                     </div>
                     {mcpServers.length === 0 ? (
                       <div className="settings-empty-state">
-                        <p>No MCP servers are active in this sidecar.</p>
+                        <p>{t("settings.config.noMcpServers")}</p>
                       </div>
                     ) : (
                       <div className="mcp-server-list">
@@ -259,16 +276,16 @@ function SettingsView({
                                 <strong>{server.name}</strong>
                                 <span>{server.status}</span>
                                 <span>{server.transport}</span>
-                                <span>{server.tool_count} tools</span>
+                                <span>{server.tool_count} {t("settings.config.tools")}</span>
                                 <div className="mcp-server-actions">
-                                  <label className="mcp-toggle" title={server.enabled ? "Disable this MCP server for chat" : "Enable this MCP server for chat"}>
+                                  <label className="mcp-toggle" title={t(server.enabled ? "settings.config.disableMcp" : "settings.config.enableMcp")}>
                                     <input
                                       type="checkbox"
                                       checked={server.enabled}
                                       disabled={togglingMcpServer === server.name}
                                       onChange={(event) => void handleToggleServer(server.name, event.currentTarget.checked)}
                                     />
-                                    <span>{togglingMcpServer === server.name ? "..." : server.enabled ? "On" : "Off"}</span>
+                                    <span>{togglingMcpServer === server.name ? "..." : server.enabled ? t("settings.config.on") : t("settings.config.off")}</span>
                                   </label>
                                   <button
                                     type="button"
@@ -276,27 +293,27 @@ function SettingsView({
                                     onClick={() => void handleDebugServer(server.name)}
                                     disabled={debuggingMcpServer === server.name || !server.enabled}
                                   >
-                                    {debuggingMcpServer === server.name ? "Fetching" : "Debug"}
+                                    {debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
                                   </button>
                                   <button
                                     type="button"
                                     className="settings-inline-button"
                                     onClick={() => setExpandedMcpServer(isExpanded ? null : server.name)}
                                   >
-                                    {isExpanded ? "Hide" : "Tools"}
+                                    {isExpanded ? t("settings.config.hide") : t("settings.config.toolsButton")}
                                   </button>
                                 </div>
                               </div>
                               {isExpanded ? (
                                 <div className="mcp-server-details">
                                   <div className="mcp-server-meta">
-                                    <span>Target</span>
-                                    <code>{server.target || "(unconfigured)"}</code>
+                                    <span>{t("settings.config.target")}</span>
+                                    <code>{server.target || t("settings.config.unconfigured")}</code>
                                   </div>
                                   {server.error ? <p className="mcp-server-error">{server.error}</p> : null}
                                   {server.tools.length === 0 ? (
                                     <div className="settings-empty-state">
-                                      <p>No tools registered for this server.</p>
+                                      <p>{t("settings.config.noToolsRegistered")}</p>
                                     </div>
                                   ) : (
                                     <div className="mcp-tool-list">
@@ -304,7 +321,7 @@ function SettingsView({
                                         <details key={tool.name} className="mcp-tool-card">
                                           <summary>
                                             <strong>{tool.name}</strong>
-                                            <span>{tool.description || "(no description)"}</span>
+                                            <span>{tool.description || t("settings.config.noDescription")}</span>
                                           </summary>
                                           <pre>{JSON.stringify(tool.input_schema ?? {}, null, 2)}</pre>
                                         </details>
@@ -323,19 +340,19 @@ function SettingsView({
 
                 <section className="config-panel" data-settings-panel="skills">
                   <div className="config-path-row">
-                    <span>Skills · {activeConfigScope.label}</span>
+                    <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
                     <code>{activeConfigScope.skills_path}</code>
                     <button
                       className="settings-inline-button"
                       type="button"
                       onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
                     >
-                      Open folder
+                      {t("settings.config.openFolder")}
                     </button>
                   </div>
                   {activeConfigScope.skills.length === 0 ? (
                     <div className="settings-empty-state">
-                      <p>No skills found for this scope.</p>
+                      <p>{t("settings.config.noSkills")}</p>
                     </div>
                   ) : (
                     <div className="config-skill-list">
@@ -353,7 +370,7 @@ function SettingsView({
               </>
             ) : (
               <div className="settings-empty-state">
-                <p>{configLoading ? "Loading configuration..." : "Configuration unavailable."}</p>
+                <p>{configLoading ? t("settings.config.loading") : t("settings.config.unavailable")}</p>
               </div>
             )}
           </div>
@@ -369,7 +386,7 @@ function SettingsView({
                   onChange={onToggleSelectAllArchived}
                   disabled={archivedEntries.length === 0}
                 />
-                <span>Select all</span>
+                <span>{t("settings.archived.selectAll")}</span>
               </label>
               <div className="archived-toolbar-actions">
                 <button
@@ -378,7 +395,7 @@ function SettingsView({
                   onClick={() => onRestoreArchived(archivedSelection)}
                   disabled={busy || archivedSelection.length === 0}
                 >
-                  恢复所选
+                  {t("settings.archived.restoreSelected")}
                 </button>
                 <button
                   className="settings-action-button danger"
@@ -386,13 +403,13 @@ function SettingsView({
                   onClick={() => onDeleteArchived(archivedSelection)}
                   disabled={busy || archivedSelection.length === 0}
                 >
-                  彻底删除所选
+                  {t("settings.archived.deleteSelected")}
                 </button>
               </div>
             </div>
             {archivedEntries.length === 0 ? (
               <div className="settings-empty-state">
-                <p>没有已归档会话。</p>
+                <p>{t("settings.archived.empty")}</p>
               </div>
             ) : (
               <div className="archived-list">
@@ -410,7 +427,7 @@ function SettingsView({
                           <small>{group.projectPath}</small>
                         </span>
                       </label>
-                      <em>{group.entries.length} session{group.entries.length === 1 ? "" : "s"}</em>
+                      <em>{group.entries.length} {group.entries.length === 1 ? t("settings.archived.session") : t("settings.archived.sessions")}</em>
                     </header>
                     <div className="archived-project-rows">
                       {group.entries.map((entry) => {
@@ -429,11 +446,11 @@ function SettingsView({
                                 <strong>{entry.session.id}</strong>
                                 <em>{formatRelativeTime(entry.updatedAt)}</em>
                               </div>
-                              <p title={entry.preview || "(empty session)"}>{entry.preview || "(empty session)"}</p>
+                              <p title={entry.preview || t("settings.archived.emptySession")}>{entry.preview || t("settings.archived.emptySession")}</p>
                             </div>
                             <div className="archived-row-actions">
                               <button className="settings-inline-button" type="button" onClick={() => onRestoreArchived([entry])} disabled={busy}>
-                                恢复
+                                {t("settings.archived.restore")}
                               </button>
                               <button
                                 className="settings-inline-button danger"
@@ -441,7 +458,7 @@ function SettingsView({
                                 onClick={() => onDeleteArchived([entry])}
                                 disabled={busy}
                               >
-                                彻底
+                                {t("settings.archived.delete")}
                               </button>
                             </div>
                           </div>

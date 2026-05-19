@@ -31,6 +31,7 @@ import {
   stringifyToolValue,
 } from "./lib/messages";
 import SettingsView, { type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
+import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
@@ -82,33 +83,33 @@ mermaid.initialize({
 });
 
 const COMMAND_SPECS = [
-  { command: "/scan", description: "Scan the repo or a subdirectory" },
-  { command: "/symbols", description: "Find symbols and inspect matching source locations" },
-  { command: "/image", description: "Send a local image to the active multimodal model" },
-  { command: "/paste-image", description: "Read an image from the system clipboard" },
-  { command: "/model", description: "Choose the active provider and model" },
-  { command: "/reasoning", description: "Set the active provider reasoning level" },
-  { command: "/providers", description: "Add or edit shared provider profiles" },
-  { command: "/hooks", description: "Browse hooks by event and toggle them on or off" },
-  { command: "/undo", description: "Undo the most recent file change set" },
-  { command: "/checkpoint", description: "Save a named checkpoint of the current session state" },
-  { command: "/rollback", description: "Roll back to a previous checkpoint" },
-  { command: "/compact", description: "Compact the current session context" },
-  { command: "/janitor", description: "Run semantic janitor on the current payload" },
-  { command: "/skills", description: "Choose a skill to apply to the next prompt" },
-  { command: "/tasks", description: "Show persistent tasks" },
-  { command: "/team", description: "Show teammate roster and states" },
-  { command: "/mcp", description: "Browse configured MCP servers and tools" },
-  { command: "/bg", description: "Show background jobs" },
-  { command: "/help", description: "Show available REPL commands" },
-  { command: "/exit", description: "Exit chat mode" },
+  { command: "/scan", descriptionKey: "cmd.scan" as const },
+  { command: "/symbols", descriptionKey: "cmd.symbols" as const },
+  { command: "/image", descriptionKey: "cmd.image" as const },
+  { command: "/paste-image", descriptionKey: "cmd.pasteImage" as const },
+  { command: "/model", descriptionKey: "cmd.model" as const },
+  { command: "/reasoning", descriptionKey: "cmd.reasoning" as const },
+  { command: "/providers", descriptionKey: "cmd.providers" as const },
+  { command: "/hooks", descriptionKey: "cmd.hooks" as const },
+  { command: "/undo", descriptionKey: "cmd.undo" as const },
+  { command: "/checkpoint", descriptionKey: "cmd.checkpoint" as const },
+  { command: "/rollback", descriptionKey: "cmd.rollback" as const },
+  { command: "/compact", descriptionKey: "cmd.compact" as const },
+  { command: "/janitor", descriptionKey: "cmd.janitor" as const },
+  { command: "/skills", descriptionKey: "cmd.skills" as const },
+  { command: "/tasks", descriptionKey: "cmd.tasks" as const },
+  { command: "/team", descriptionKey: "cmd.team" as const },
+  { command: "/mcp", descriptionKey: "cmd.mcp" as const },
+  { command: "/bg", descriptionKey: "cmd.bg" as const },
+  { command: "/help", descriptionKey: "cmd.help" as const },
+  { command: "/exit", descriptionKey: "cmd.exit" as const },
 ] as const;
 const PATH_MENTION_PATTERN = /(^|\s)@([^\s]*)$/;
 const EXECUTION_MODE_OPTIONS = [
-  { key: "shortcuts", title: "? for shortcuts", description: "Read-only shortcuts and lightweight inspection." },
-  { key: "plan", title: "⏸ plan mode on", description: "Read-only planning before edits." },
-  { key: "accept_edits", title: "⏵⏵ accept edits on", description: "Allow file edits and task updates." },
-  { key: "yolo", title: "! Yolo", description: "Full autonomy for this workspace." },
+  { key: "shortcuts", titleKey: "mode.shortcuts.title" as const, descriptionKey: "mode.shortcuts.description" as const },
+  { key: "plan", titleKey: "mode.plan.title" as const, descriptionKey: "mode.plan.description" as const },
+  { key: "accept_edits", titleKey: "mode.acceptEdits.title" as const, descriptionKey: "mode.acceptEdits.description" as const },
+  { key: "yolo", titleKey: "mode.yolo.title" as const, descriptionKey: "mode.yolo.description" as const },
 ] as const;
 type ReasoningLevelOption = (typeof REASONING_LEVEL_OPTIONS)[number];
 type ExecutionModeOption = (typeof EXECUTION_MODE_OPTIONS)[number]["key"];
@@ -197,6 +198,7 @@ const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
 
 function App() {
+  const { t } = useI18n();
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
   const initialBaseUrl = normalizeBaseUrl(initialSavedUrl ?? DEFAULT_SIDECAR_URL);
   const [baseUrlInput, setBaseUrlInput] = useState(initialBaseUrl);
@@ -2087,8 +2089,8 @@ function App() {
     const client = clientRef.current;
     const session = currentSessionRef.current;
     const projectPath = selectedProjectPathRef.current;
-    const actionLabel = command === "compact" ? "压缩上下文" : "语义脱水";
-    const placeholderText = command === "compact" ? "正在压缩上下文" : "正在执行语义脱水";
+    const actionLabel = command === "compact" ? t("context.compactContext") : t("context.semanticJanitor");
+    const placeholderText = command === "compact" ? t("context.compactContext") : t("context.semanticJanitor");
     if (!client || !session) {
       setBannerMessage("Select a session before changing context.");
       return;
@@ -2541,12 +2543,13 @@ function App() {
   const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
   const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
   const projectTurnLimitReached = activeProjectTurnList.length >= 2;
-  const activeProviderLabel = status?.provider ?? selectedProvider ?? "Provider";
-  const activeModelLabel = status?.model ?? selectedModel ?? "Model";
+  const activeProviderLabel = status?.provider ?? selectedProvider ?? t("composer.provider");
+  const activeModelLabel = status?.model ?? selectedModel ?? t("composer.model");
   const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
   const activeExecutionMode = normalizeExecutionMode(status?.execution_mode);
+  const activeModeOption = EXECUTION_MODE_OPTIONS.find((mode) => mode.key === activeExecutionMode);
   const activeExecutionModeLabel =
-    status?.execution_mode_title ?? EXECUTION_MODE_OPTIONS.find((mode) => mode.key === activeExecutionMode)?.title ?? "Execution mode unavailable";
+    status?.execution_mode_title ?? (activeModeOption ? t(activeModeOption.titleKey) : t("common.executionModeUnavailable"));
   const contextUsage = currentSession?.context_window_usage ?? null;
   const contextPercent = normalizeContextPercent(contextUsage?.usage_percent);
   const contextColor = contextUsageColor(contextPercent);
@@ -2562,16 +2565,16 @@ function App() {
           contextUsage.max_tokens,
         )} tokens)`
       : `Context: ${formatTokenCount(contextUsage.used_tokens)} tokens`
-    : "Context usage unavailable";
+    : t("ctx.usageUnavailable");
   const contextUsedLabel = contextUsage ? formatTokenCount(contextUsage.used_tokens) : "--";
   const contextWindowLabel = contextUsage?.max_tokens ? formatTokenCount(contextUsage.max_tokens) : "--";
   const contextRatioLabel = contextPercent === null ? "--" : `${contextPercent.toFixed(1)}%`;
   const commandSuggestions = currentCommandSuggestions(draft);
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
-  const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || "New conversation");
+  const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || t("conversation.newConversation"));
   const todoSummary = currentSession ? buildTodoSummary(currentSession.todo_items) : null;
   const workspaceRootPath = status?.workspace_root ?? "";
-  const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : "workspace";
+  const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : t("common.workspace");
   const archivedSessionEntries = buildArchivedSessionEntries(projects, archivedSessions);
   const archivedSessionSelection = archivedSessionEntries.filter((entry) => selectedArchivedSessionKeys.includes(entry.key));
   const allArchivedSelected =
@@ -2602,18 +2605,18 @@ function App() {
           <span className="titlebar-mark" aria-hidden="true">
             S
           </span>
-          <span data-tauri-drag-region>Somnia Desktop</span>
+          <span data-tauri-drag-region>{t("app.title")}</span>
         </div>
         <div className="titlebar-controls">
-          <button className="titlebar-button" type="button" onClick={handleOpenSettings} title="Settings" aria-label="Settings">
+          <button className="titlebar-button" type="button" onClick={handleOpenSettings} title={t("settings.title")} aria-label={t("settings.title")}>
             ⚙
           </button>
           <button
             className="titlebar-button"
             type="button"
             onClick={() => void handleWindowControl("minimize")}
-            title="Minimize"
-            aria-label="Minimize"
+            title={t("titlebar.minimize")}
+            aria-label={t("titlebar.minimize")}
           >
             -
           </button>
@@ -2621,8 +2624,8 @@ function App() {
             className="titlebar-button"
             type="button"
             onClick={() => void handleWindowControl("toggle-maximize")}
-            title="Maximize"
-            aria-label="Maximize"
+            title={t("titlebar.maximize")}
+            aria-label={t("titlebar.maximize")}
           >
             □
           </button>
@@ -2630,8 +2633,8 @@ function App() {
             className="titlebar-button close"
             type="button"
             onClick={() => void handleWindowControl("close")}
-            title="Close"
-            aria-label="Close"
+            title={t("titlebar.close")}
+            aria-label={t("titlebar.close")}
           >
             ×
           </button>
@@ -2686,16 +2689,16 @@ function App() {
         <aside className="panel sidebar-panel">
           <div className="panel-header">
             <div>
-              <h2>Projects</h2>
+              <h2>{t("sidebar.projects")}</h2>
             </div>
             <div className="panel-header-actions">
-              <span className="panel-count">{visibleProjectCount} total</span>
+              <span className="panel-count">{t("sidebar.total", { count: visibleProjectCount })}</span>
               <button
                 className="action primary sidebar-new"
                 onClick={() => void handleCreateProject()}
                 disabled={busyAction !== null}
-                title="New Project"
-                aria-label="New Project"
+                title={t("sidebar.newProject")}
+                aria-label={t("sidebar.newProject")}
               >
                 +
               </button>
@@ -2705,8 +2708,8 @@ function App() {
           <div className="session-list">
             {sessionProjectGroups.length === 0 ? (
               <div className="empty-card">
-                <p>No projects yet.</p>
-                <span>Choose a folder to add a project and run its own Somnia sidecar.</span>
+                <p>{t("sidebar.noProjects")}</p>
+                <span>{t("sidebar.noProjectsHint")}</span>
               </div>
             ) : (
               <div className="project-groups">
@@ -2729,7 +2732,7 @@ function App() {
                             <span className="project-toggle-label">
                               <strong>{group.label}</strong>
                               <small>{group.path}</small>
-                              {group.connectionState === "connecting" ? <em>Connecting...</em> : null}
+                              {group.connectionState === "connecting" ? <em>{t("sidebar.connecting")}</em> : null}
                               {group.connectionState === "error" && group.connectionError ? <em>{group.connectionError}</em> : null}
                             </span>
                           </span>
@@ -2743,7 +2746,7 @@ function App() {
                               setProjectMenuOpenKey((current) => (current === group.key ? null : group.key));
                             }}
                             aria-label={`Project options for ${group.label}`}
-                            title="Project options"
+                            title={t("sidebar.projectOptions")}
                           >
                             ⋯
                           </button>
@@ -2757,7 +2760,7 @@ function App() {
                                 }}
                                 disabled={busyAction !== null || group.connectionState !== "connected"}
                               >
-                                New
+                                {t("sidebar.newSession")}
                               </button>
                               <button
                                 className="project-menu-item danger"
@@ -2766,7 +2769,7 @@ function App() {
                                 }}
                                 disabled={busyAction !== null}
                               >
-                                Remove
+                                {t("sidebar.removeProject")}
                               </button>
                             </div>
                           ) : null}
@@ -2774,7 +2777,7 @@ function App() {
                       </div>
                       {isCollapsed ? null : (
                         <div className="project-session-list">
-                          {group.connectionState === "connecting" ? <div className="project-status-card">Starting sidecar...</div> : null}
+                          {group.connectionState === "connecting" ? <div className="project-status-card">{t("sidebar.startingSidecar")}</div> : null}
                           {group.connectionState === "error" && group.connectionError ? (
                             <div className="project-status-card error">{group.connectionError}</div>
                           ) : null}
@@ -2805,9 +2808,9 @@ function App() {
                                 </button>
                                 <div className="session-card-side">
                                   {isWaitingForDecision ? (
-                                    <span className="session-decision-indicator" aria-label="Waiting for your decision" />
+                                    <span className="session-decision-indicator" aria-label={t("sidebar.waitingDecision")} />
                                   ) : isAnswering ? (
-                                    <span className="session-answering-indicator" aria-label="Agent is responding">
+                                    <span className="session-answering-indicator" aria-label={t("sidebar.agentResponding")}>
                                       <span aria-hidden="true" />
                                       <span aria-hidden="true" />
                                       <span aria-hidden="true" />
@@ -2821,7 +2824,7 @@ function App() {
                                           setSessionMenuOpenKey((current) => (current === sessionMenuKey ? null : sessionMenuKey));
                                         }}
                                         aria-label={`Session options for ${session.id}`}
-                                        title="Session options"
+                                        title={t("sidebar.sessionOptions")}
                                       >
                                         ⋯
                                       </button>
@@ -2832,7 +2835,7 @@ function App() {
                                             onClick={() => void handleArchiveSession(group.path, session.id)}
                                             disabled={busyAction !== null}
                                           >
-                                            Archive
+                                            {t("sidebar.archiveSession")}
                                           </button>
                                         </div>
                                       ) : null}
@@ -2855,7 +2858,7 @@ function App() {
         <div
           className="layout-resizer sidebar-resizer"
           role="separator"
-          aria-label="Resize projects panel"
+          aria-label={t("sidebar.resizePanel")}
           aria-orientation="vertical"
           onPointerDown={(event) => beginLayoutDrag("sidebar", event)}
         />
@@ -2872,7 +2875,7 @@ function App() {
                   }
                 }}
                 disabled={!workspaceRootPath}
-                title={workspaceRootPath || "Workspace unavailable"}
+                title={workspaceRootPath || t("conversation.workspaceUnavailable")}
               >
                 {workspaceRootName}
               </button>
@@ -2881,8 +2884,8 @@ function App() {
               <button
                 className="action ghost detail-toggle"
                 onClick={() => setContextPanelOpen((current) => !current)}
-                title={contextPanelOpen ? "Hide details" : "Show details"}
-                aria-label={contextPanelOpen ? "Hide details" : "Show details"}
+                title={contextPanelOpen ? t("conversation.hideDetails") : t("conversation.showDetails")}
+                aria-label={contextPanelOpen ? t("conversation.hideDetails") : t("conversation.showDetails")}
               >
                 ⋯
               </button>
@@ -2894,8 +2897,8 @@ function App() {
           <div ref={conversationBodyRef} className="conversation-body">
             {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
               <div className="empty-conversation">
-                <h3>Start a session</h3>
-                <p>Connect to a sidecar, choose a session, then send a prompt. Streaming output lands here.</p>
+                <h3>{t("conversation.startSession")}</h3>
+                <p>{t("conversation.startSessionHint")}</p>
               </div>
             ) : (
               conversationRows.map((row) => (
@@ -2914,7 +2917,7 @@ function App() {
                     <MarkdownMessage text={row.text} />
                   ) : null}
                   {row.isLoading ? (
-                    <span className="typing-indicator" aria-label="Waiting for assistant response">
+                    <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
                       <span />
                       <span />
                       <span />
@@ -2926,7 +2929,7 @@ function App() {
                     </div>
                   ) : null}
                   {row.id === latestStreamingAssistantRowId ? (
-                    <span className="session-answering-indicator conversation-answering-indicator" aria-label="Agent is responding">
+                    <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
                       <span aria-hidden="true" />
                       <span aria-hidden="true" />
                       <span aria-hidden="true" />
@@ -2963,7 +2966,7 @@ function App() {
               onSelect={(event) => setComposerCursor(event.currentTarget.selectionStart)}
               onClick={(event) => setComposerCursor(event.currentTarget.selectionStart)}
               onPaste={(event) => void handleComposerPaste(event)}
-              placeholder="Ask Somnia to inspect, plan, or implement against the current workspace."
+              placeholder={t("composer.placeholder")}
               disabled={busyAction !== null}
               rows={1}
             />
@@ -2974,7 +2977,7 @@ function App() {
                     key={image.id}
                     className="pending-attachment"
                     onClick={() => removePendingImage(image.id)}
-                    title={`Remove ${image.name}`}
+                    title={t("composer.removeImage", { name: image.name })}
                   >
                     <img className="pending-attachment-thumb" src={image.dataUrl} alt={image.name} />
                     <span className="pending-attachment-name">{image.name}</span>
@@ -2995,7 +2998,7 @@ function App() {
                     }}
                   >
                     <strong>{item.command}</strong>
-                    <span>{item.description}</span>
+                    <span>{t(item.descriptionKey)}</span>
                   </button>
                 ))}
               </div>
@@ -3012,7 +3015,7 @@ function App() {
                     }}
                   >
                     <strong>{item.kind === "dir" ? `${item.path}/` : item.path}</strong>
-                    <span>{item.kind === "dir" ? "folder" : "file"}</span>
+                    <span>{item.kind === "dir" ? t("pathPicker.folder") : t("pathPicker.file")}</span>
                   </button>
                 ))}
               </div>
@@ -3030,8 +3033,8 @@ function App() {
                 className="action secondary composer-icon-action attachment-action"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={busyAction !== null}
-                title="Attach image"
-                aria-label="Attach image"
+                title={t("composer.attachImage")}
+                aria-label={t("composer.attachImage")}
               >
                 +
               </button>
@@ -3057,7 +3060,7 @@ function App() {
                       <div className="model-picker-panel">
                         <div className="model-picker-grid">
                           <div className="picker-column">
-                            <span className="picker-label">Provider</span>
+                            <span className="picker-label">{t("composer.provider")}</span>
                             <div className="picker-options">
                               {providers.map((provider) => (
                                 <button
@@ -3072,7 +3075,7 @@ function App() {
                             </div>
                           </div>
                           <div className="picker-column">
-                            <span className="picker-label">Model</span>
+                            <span className="picker-label">{t("composer.model")}</span>
                             <div className="picker-options">
                               {models.map((model) => (
                                 <button
@@ -3088,7 +3091,7 @@ function App() {
                           </div>
                         </div>
                         <div className="model-picker-footer">
-                          <div className="reasoning-levels" role="group" aria-label="Reasoning level">
+                          <div className="reasoning-levels" role="group" aria-label={t("composer.reasoningLevel")}>
                             {REASONING_LEVEL_OPTIONS.map((level) => (
                               <button
                                 key={level}
@@ -3105,7 +3108,7 @@ function App() {
                             onClick={() => void handleApplyProviderModel()}
                             disabled={!selectedProvider || !selectedModel || busyAction !== null}
                           >
-                            Apply
+                            {t("composer.apply")}
                           </button>
                         </div>
                       </div>
@@ -3128,8 +3131,8 @@ function App() {
                             onClick={() => void handleExecutionModeChange(mode.key)}
                             disabled={busyAction !== null}
                           >
-                            <strong>{mode.title}</strong>
-                            <span>{mode.description}</span>
+                            <strong>{t(mode.titleKey)}</strong>
+                            <span>{t(mode.descriptionKey)}</span>
                           </button>
                         ))}
                       </div>
@@ -3155,17 +3158,17 @@ function App() {
                       <span className="ctx-label">{contextLabel}</span>
                     </button>
                     {contextPopoverOpen ? (
-                      <div className="ctx-popover" role="dialog" aria-label="Context window details">
+                      <div className="ctx-popover" role="dialog" aria-label={t("ctx.windowDetails")}>
                         <div className="ctx-popover-header">
                           <strong>CTX</strong>
                           <span>{contextRatioLabel}</span>
                         </div>
                         <div className="ctx-popover-grid">
-                          <span>Used</span>
+                          <span>{t("ctx.used")}</span>
                           <strong>{contextUsedLabel}</strong>
-                          <span>Window</span>
+                          <span>{t("ctx.window")}</span>
                           <strong>{contextWindowLabel}</strong>
-                          <span>Ratio</span>
+                          <span>{t("ctx.ratio")}</span>
                           <strong>{contextRatioLabel}</strong>
                         </div>
                         <div className="ctx-popover-actions">
@@ -3174,14 +3177,14 @@ function App() {
                             onClick={() => void handleContextCommand("compact")}
                             disabled={!currentSession || currentSessionRunning || busyAction !== null}
                           >
-                            压缩上下文
+{t("context.compactContext")}
                           </button>
                           <button
                             className="action secondary"
                             onClick={() => void handleContextCommand("janitor")}
                             disabled={!currentSession || currentSessionRunning || busyAction !== null}
                           >
-                            语义脱水
+                            {t("context.semanticJanitor")}
                           </button>
                         </div>
                       </div>
@@ -3200,12 +3203,12 @@ function App() {
                   }
                   title={
                     currentSessionRunning
-                      ? "Queue for this session"
+                      ? t("composer.queueForSession")
                       : projectTurnLimitReached
-                        ? "This project already has two sessions running"
-                        : "Send"
+                        ? t("composer.projectTurnLimit")
+                        : t("composer.send")
                   }
-                  aria-label="Send"
+                  aria-label={t("composer.send")}
                 >
                   ↑
                 </button>
@@ -3214,8 +3217,8 @@ function App() {
                     className="action danger composer-icon-action"
                     onClick={() => void handleInterrupt()}
                     disabled={busyAction !== null}
-                    title="Interrupt"
-                    aria-label="Interrupt"
+                    title={t("composer.interrupt")}
+                    aria-label={t("composer.interrupt")}
                   >
                     ■
                   </button>
@@ -3234,18 +3237,18 @@ function App() {
           <div
             className="layout-resizer context-resizer"
             role="separator"
-            aria-label="Resize session details panel"
+            aria-label={t("context.resizePanel")}
             aria-orientation="vertical"
             onPointerDown={(event) => beginLayoutDrag("context", event)}
           />
           <aside className="panel context-panel">
             <div className="panel-header">
               <div>
-                <p className="panel-kicker">Context</p>
-                <h2>Session Details</h2>
+                <p className="panel-kicker">{t("context.kicker")}</p>
+                <h2>{t("context.sessionDetails")}</h2>
               </div>
               <button className="action ghost" onClick={() => setContextPanelOpen(false)}>
-                Collapse
+                {t("context.collapse")}
               </button>
             </div>
             <div className="inspector-section context-scroll">
@@ -3278,8 +3281,8 @@ function App() {
                 </>
               ) : (
                 <div className="empty-card">
-                  <p>No session selected.</p>
-                  <span>Choose a session from the sidebar to inspect its details.</span>
+                  <p>{t("context.noSession")}</p>
+                  <span>{t("context.noSessionHint")}</span>
                 </div>
               )}
             </div>
@@ -3293,6 +3296,7 @@ function App() {
 }
 
 function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpenPanel: () => void }) {
+  const { t } = useI18n();
   const sortedTasks = [...tasks].sort((left, right) => Number(left.id) - Number(right.id));
   const counts = taskStatusCounts(sortedTasks);
   const graph = buildTaskGraphLayout(sortedTasks);
@@ -3303,19 +3307,19 @@ function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpen
     <section className="task-graph-panel">
       <div className="task-graph-head">
         <div>
-          <h3>TaskGraph</h3>
+          <h3>{t("taskGraph.title")}</h3>
           <p>
             {counts.total === 0
-              ? "No persistent tasks in this session."
-              : `${counts.completed}/${counts.total} completed · ${counts.inProgress} active · ${counts.pending} pending`}
+              ? t("taskGraph.empty")
+              : t("taskGraph.summary", { completed: counts.completed, total: counts.total, inProgress: counts.inProgress, pending: counts.pending })}
           </p>
         </div>
         <button className="settings-inline-button" type="button" onClick={onOpenPanel} disabled={sortedTasks.length === 0}>
-          Expand
+          {t("taskGraph.expand")}
         </button>
       </div>
       {sortedTasks.length === 0 ? (
-        <div className="task-graph-empty">Use task_create to build a task graph for longer work.</div>
+        <div className="task-graph-empty">{t("taskGraph.hint")}</div>
       ) : (
         <div className="task-graph-canvas">
           <TaskGraphSvg graph={graph} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} compact />
@@ -3327,6 +3331,7 @@ function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpen
 }
 
 function TaskGraphWorkspacePanel({ tasks, onClose }: { tasks: TaskGraphItem[]; onClose: () => void }) {
+  const { t } = useI18n();
   const sortedTasks = [...tasks].sort((left, right) => Number(left.id) - Number(right.id));
   const graph = buildTaskGraphLayout(sortedTasks, { expanded: true });
   const counts = taskStatusCounts(sortedTasks);
@@ -3344,14 +3349,14 @@ function TaskGraphWorkspacePanel({ tasks, onClose }: { tasks: TaskGraphItem[]; o
   }, [onClose]);
 
   return (
-    <section className="task-graph-workspace-panel" role="dialog" aria-label="TaskGraph panel">
+    <section className="task-graph-workspace-panel" role="dialog" aria-label={t("taskGraph.panelLabel")}>
       <div className="task-graph-workspace-head">
         <div>
-          <h2>TaskGraph</h2>
-          <p>{`${counts.completed}/${counts.total} completed · ${counts.inProgress} active · ${counts.pending} pending`}</p>
+          <h2>{t("taskGraph.title")}</h2>
+          <p>{t("taskGraph.summary", { completed: counts.completed, total: counts.total, inProgress: counts.inProgress, pending: counts.pending })}</p>
         </div>
         <button className="settings-inline-button" type="button" onClick={onClose}>
-          Close
+          {t("taskGraph.close")}
         </button>
       </div>
       <div className="task-graph-workspace-canvas">
@@ -3426,36 +3431,37 @@ function TaskGraphSvg({
 }
 
 function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () => void }) {
+  const { t } = useI18n();
   const blockedBy = task.blockedBy ?? [];
   const blocks = task.blocks ?? [];
   return (
     <section className="task-graph-detail">
       <div className="task-graph-detail-head">
         <div>
-          <strong>#{task.id} · {task.subject || "Untitled task"}</strong>
+          <strong>#{task.id} · {task.subject || t("taskGraph.untitledTask")}</strong>
           <span>{taskStatusLabel(taskStatus(task))}</span>
         </div>
         <button className="settings-inline-button" type="button" onClick={onClose}>
-          Close
+          {t("taskGraph.close")}
         </button>
       </div>
       {task.description ? <p>{task.description}</p> : null}
       <dl>
         <div>
-          <dt>Owner</dt>
-          <dd>{task.owner || "unassigned"}</dd>
+          <dt>{t("taskGraph.owner")}</dt>
+          <dd>{task.owner || t("taskGraph.unassigned")}</dd>
         </div>
         <div>
-          <dt>Preferred</dt>
-          <dd>{task.preferred_owner || "none"}</dd>
+          <dt>{t("taskGraph.preferred")}</dt>
+          <dd>{task.preferred_owner || t("taskGraph.none")}</dd>
         </div>
         <div>
-          <dt>Blocked by</dt>
-          <dd>{blockedBy.length ? blockedBy.map((id) => `#${id}`).join(", ") : "none"}</dd>
+          <dt>{t("taskGraph.blockedBy")}</dt>
+          <dd>{blockedBy.length ? blockedBy.map((id) => `#${id}`).join(", ") : t("taskGraph.none")}</dd>
         </div>
         <div>
-          <dt>Blocks</dt>
-          <dd>{blocks.length ? blocks.map((id) => `#${id}`).join(", ") : "none"}</dd>
+          <dt>{t("taskGraph.blocks")}</dt>
+          <dd>{blocks.length ? blocks.map((id) => `#${id}`).join(", ") : t("taskGraph.none")}</dd>
         </div>
       </dl>
     </section>
@@ -3469,22 +3475,23 @@ function ExecutionActivityPanel({
   subagents: SubagentActivity[];
   teamMembers: TeamMemberActivity[];
 }) {
+  const { t } = useI18n();
   return (
     <section className="activity-panel" aria-live="polite">
       <div className="activity-panel-head">
         <span className="activity-pulse" aria-hidden="true" />
-        <h3>Execution Activity</h3>
+        <h3>{t("activity.executionActivity")}</h3>
       </div>
       {subagents.length > 0 ? (
         <div className="activity-group">
-          <strong>Subagents</strong>
+          <strong>{t("activity.subagents")}</strong>
           {subagents.map((item) => (
             <div key={item.id} className="activity-item">
               <div className="activity-item-head">
                 <span>{item.agentType}</span>
                 <em>{formatElapsedSeconds(item.startedAt)}</em>
               </div>
-              <p>{compactInlineText(item.prompt || "working", 120)}</p>
+              <p>{compactInlineText(item.prompt || t("common.working"), 120)}</p>
               {item.facts.length > 0 ? <small>{item.facts[item.facts.length - 1]}</small> : null}
             </div>
           ))}
@@ -3492,14 +3499,14 @@ function ExecutionActivityPanel({
       ) : null}
       {teamMembers.length > 0 ? (
         <div className="activity-group">
-          <strong>Agent Team</strong>
+          <strong>{t("activity.agentTeam")}</strong>
           {teamMembers.map((member) => {
             const interactions = Array.isArray(member.recent_interactions) ? member.recent_interactions.filter(Boolean) : [];
             return (
               <div key={String(member.name)} className="activity-item">
                 <div className="activity-item-head">
                   <span>{member.name}</span>
-                  <em>{member.status ?? "active"}</em>
+                  <em>{member.status ?? t("common.active")}</em>
                 </div>
                 <p>{teamMemberSummary(member)}</p>
                 {interactions.length > 0 ? <small>{interactions[interactions.length - 1]}</small> : null}
@@ -3528,45 +3535,46 @@ function InteractionDecisionCard({
   ) => Promise<void>;
   onResolveModeSwitch: (interaction: InteractionRequestState, approved: boolean) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const isAuthorization = interaction.kind === "authorization";
   return (
     <section className="decision-card" aria-live="polite">
       <div className="decision-copy">
-        <p className="eyebrow">{isAuthorization ? "Authorization request" : "Mode switch request"}</p>
-        <h3>{interactionTitle(interaction)}</h3>
-        <p>{interactionSummary(interaction)}</p>
+        <p className="eyebrow">{isAuthorization ? t("decision.authorizationRequest") : t("decision.modeSwitchRequest")}</p>
+        <h3>{interactionTitle(interaction, t)}</h3>
+        <p>{interactionSummary(interaction, t)}</p>
       </div>
       {isAuthorization ? (
         <div className="decision-actions">
           <button
             className="action primary"
-            onClick={() => void onResolveAuthorization(interaction.id, "once", true, "Allowed once from desktop UI.")}
+            onClick={() => void onResolveAuthorization(interaction.id, "once", true, t("decision.allowOnceReason"))}
             disabled={busy}
           >
-            Allow once
+            {t("decision.allowOnce")}
           </button>
           <button
             className="action secondary"
-            onClick={() => void onResolveAuthorization(interaction.id, "workspace", true, "Allowed in this workspace from desktop UI.")}
+            onClick={() => void onResolveAuthorization(interaction.id, "workspace", true, t("decision.allowWorkspaceReason"))}
             disabled={busy}
           >
-            Allow workspace
+            {t("decision.allowWorkspace")}
           </button>
           <button
             className="action danger"
-            onClick={() => void onResolveAuthorization(interaction.id, "deny", false, "Denied from desktop UI.")}
+            onClick={() => void onResolveAuthorization(interaction.id, "deny", false, t("decision.denyReason"))}
             disabled={busy}
           >
-            Deny
+            {t("decision.deny")}
           </button>
         </div>
       ) : (
         <div className="decision-actions">
           <button className="action primary" onClick={() => void onResolveModeSwitch(interaction, true)} disabled={busy}>
-            Switch now
+            {t("decision.switchNow")}
           </button>
           <button className="action danger" onClick={() => void onResolveModeSwitch(interaction, false)} disabled={busy}>
-            Stay here
+            {t("decision.stayHere")}
           </button>
         </div>
       )}
@@ -3585,10 +3593,11 @@ function PromptQueueCard({
   busy: boolean;
   onInject: (prompt: QueuedPrompt) => Promise<void>;
 }) {
+  const { t } = useI18n();
   return (
     <section className="prompt-queue-card" aria-live="polite">
       <div className="prompt-queue-head">
-        <p className="eyebrow">Queued prompts</p>
+        <p className="eyebrow">{t("queue.queuedPrompts")}</p>
         <span>{prompts.length}</span>
       </div>
       <ol>
@@ -3599,9 +3608,9 @@ function PromptQueueCard({
               className="queue-inject-button"
               onClick={() => void onInject(prompt)}
               disabled={!canInject || busy || prompt.injectionRequested}
-              title={prompt.injectionRequested ? "Waiting for the next agent loop" : "Inject on next agent loop"}
+              title={prompt.injectionRequested ? t("queue.waitingNextLoop") : t("queue.injectOnNextLoop")}
             >
-              {prompt.injectionRequested ? "Next loop" : "Inject next loop"}
+              {prompt.injectionRequested ? t("queue.nextLoop") : t("queue.injectNextLoop")}
             </button>
           </li>
         ))}
@@ -3615,6 +3624,7 @@ function MarkdownMessage({ text }: { text: string }) {
 }
 
 function MermaidDiagram({ source }: { source: string }) {
+  const { t } = useI18n();
   const [svg, setSvg] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"graph" | "code">("graph");
@@ -3721,8 +3731,8 @@ function MermaidDiagram({ source }: { source: string }) {
     return (
       <div className="mermaid-card mermaid-card-error">
         <div className="mermaid-card-head">
-          <span>Mermaid</span>
-          <span>Render failed</span>
+          <span>{t("mermaid.title")}</span>
+          <span>{t("mermaid.renderFailed")}</span>
         </div>
         <pre className="markdown-code-block">
           <span className="markdown-code-language">mermaid</span>
@@ -3737,16 +3747,16 @@ function MermaidDiagram({ source }: { source: string }) {
     <>
       <figure className="mermaid-card">
         <figcaption className="mermaid-card-head">
-          <span>Mermaid</span>
+          <span>{t("mermaid.title")}</span>
           <span className="mermaid-card-actions">
             <button type="button" className={viewMode === "graph" ? "active" : ""} onClick={() => setViewMode("graph")}>
-              Graph
+              {t("mermaid.graph")}
             </button>
             <button type="button" className={viewMode === "code" ? "active" : ""} onClick={() => setViewMode("code")}>
-              Code
+              {t("mermaid.code")}
             </button>
             <button type="button" onClick={() => setFullscreenOpen(true)} disabled={!svg || viewMode !== "graph"}>
-              Fullscreen
+              {t("mermaid.fullscreen")}
             </button>
           </span>
         </figcaption>
@@ -3765,16 +3775,16 @@ function MermaidDiagram({ source }: { source: string }) {
               }
             }}
             disabled={!svg}
-            aria-label="Open Mermaid diagram fullscreen"
+            aria-label={t("mermaid.openFullscreen")}
           >
-            {svg ? <span dangerouslySetInnerHTML={{ __html: svg }} /> : <span className="mermaid-loading">Rendering diagram...</span>}
+            {svg ? <span dangerouslySetInnerHTML={{ __html: svg }} /> : <span className="mermaid-loading">{t("mermaid.rendering")}</span>}
           </button>
         )}
       </figure>
       {fullscreenOpen && svg ? (
-        <div className="mermaid-fullscreen" role="dialog" aria-modal="true" aria-label="Mermaid diagram fullscreen">
+        <div className="mermaid-fullscreen" role="dialog" aria-modal="true" aria-label={t("mermaid.diagram")}>
           <div className="mermaid-fullscreen-head">
-            <span>Mermaid diagram</span>
+            <span>{t("mermaid.diagram")}</span>
             <span className="mermaid-fullscreen-actions">
               <button type="button" onClick={() => adjustFullscreenZoom(-MERMAID_ZOOM_STEP)}>
                 -
@@ -3784,17 +3794,17 @@ function MermaidDiagram({ source }: { source: string }) {
                 +
               </button>
               <button type="button" onClick={resetFullscreenView}>
-                Reset
+                {t("mermaid.reset")}
               </button>
               <button type="button" onClick={() => setFullscreenOpen(false)}>
-                Close
+                {t("mermaid.close")}
               </button>
             </span>
           </div>
           <button
             type="button"
             className="mermaid-fullscreen-backdrop"
-            aria-label="Close Mermaid diagram fullscreen"
+            aria-label={t("mermaid.closeFullscreen")}
             onClick={() => setFullscreenOpen(false)}
           />
           <div
@@ -3828,8 +3838,9 @@ function clampMermaidZoom(value: number): number {
 }
 
 function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
+  const { t } = useI18n();
   const resultState = toolCallResultState(toolCall);
-  const fileChange = fileChangeSummary(toolCall, resultState);
+  const fileChange = fileChangeSummary(toolCall, resultState, t);
   return (
     <details className={`tool-call-card ${resultState}`}>
       <summary>
@@ -3853,11 +3864,11 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
       ) : (
         <>
           <div className="tool-call-detail">
-            <span>Input</span>
+            <span>{t("toolCall.input")}</span>
             <pre>{toolCall.input}</pre>
           </div>
           <div className="tool-call-detail">
-            <span>Output</span>
+            <span>{t("toolCall.output")}</span>
             <pre>{toolCall.output}</pre>
           </div>
         </>
@@ -3885,10 +3896,11 @@ type FileChangeSummary = {
 };
 
 function FileChangeDetail({ change }: { change: FileChangeSummary }) {
+  const { t } = useI18n();
   return (
     <div className="tool-call-detail file-change-detail">
-      <span>Changes</span>
-      <pre className="file-diff-view" aria-label={`Changes for ${change.path}`}>
+      <span>{t("toolCall.changes")}</span>
+      <pre className="file-diff-view" aria-label={t("toolCall.changesFor", { path: change.path })}>
         {change.diffLines.length > 0 ? (
           change.diffLines.map((line) => (
             <span key={line.key} className={`file-diff-line ${line.kind}`}>
@@ -3901,7 +3913,7 @@ function FileChangeDetail({ change }: { change: FileChangeSummary }) {
           <span className="file-diff-line context">
             <span className="file-diff-line-number" />
             <span className="file-diff-marker" />
-            <code>File updated.</code>
+            <code>{t("toolCall.fileUpdated")}</code>
           </span>
         )}
       </pre>
@@ -3945,7 +3957,7 @@ function toolCallResultState(toolCall: ConversationToolCall): ToolResultState {
   return "success";
 }
 
-function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResultState): FileChangeSummary | null {
+function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResultState, t: (key: import("./lib/i18n").TranslationKey, params?: Record<string, string | number>) => string): FileChangeSummary | null {
   if (resultState !== "success" || !isRecord(toolCall.rawOutput)) {
     return null;
   }
@@ -3954,9 +3966,9 @@ function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResu
     return null;
   }
   if (toolCall.name === "delete_file" || action === "delete_file") {
-    const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? "(unknown path)");
+    const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? t("common.unknownPath"));
     return {
-      actionLabel: "Delete",
+      actionLabel: t("toolCall.delete"),
       path,
       added: 0,
       removed: 0,
@@ -3971,10 +3983,10 @@ function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResu
       ],
     };
   }
-  const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? "(unknown path)");
+  const path = String(toolCall.rawOutput.path ?? readablePathFromInput(toolCall.rawInput) ?? t("common.unknownPath"));
   const added = numberFromValue(toolCall.rawOutput.added_lines);
   const removed = numberFromValue(toolCall.rawOutput.removed_lines);
-  const actionLabel = toolCall.name === "write_file" || action === "write_file" ? (toolCall.rawOutput.existed_before === false ? "Create" : "Write") : "Update";
+  const actionLabel = toolCall.name === "write_file" || action === "write_file" ? (toolCall.rawOutput.existed_before === false ? t("toolCall.create") : t("toolCall.write")) : t("toolCall.update");
   return {
     actionLabel,
     path,
@@ -4486,26 +4498,25 @@ function TodoStatusBar({
   expanded: boolean;
   onToggleExpanded: () => void;
 }) {
+  const { t } = useI18n();
   if (!summary || summary.openItems.length === 0) {
     return null;
   }
 
   const focusItem = summary.activeItem ?? summary.nextItem ?? summary.openItems[0] ?? null;
   const focusStatus = normalizeTodoStatus(focusItem?.status);
-  const focusPrefix = focusStatus === "in_progress" ? "In progress" : "Next";
+  const focusPrefix = focusStatus === "in_progress" ? t("todo.inProgress") : t("todo.next");
   const focusLabel = focusItem ? formatTodoLabel(focusItem) : "";
-  const shownItems = expanded ? summary.visibleItems.slice(0, 5) : [];
-  const hiddenCount = Math.max(0, summary.visibleItems.length - shownItems.length);
 
   return (
-    <section className={`todo-status-bar ${expanded ? "expanded" : ""}`} aria-label="Todo progress">
+    <section className={`todo-status-bar ${expanded ? "expanded" : ""}`} aria-label={t("todo.progressLabel")}>
       <div className="todo-status-main">
         <div className="todo-status-pulse" aria-hidden="true" />
         <div className="todo-status-copy">
           <div className="todo-status-line">
-            <strong>Todo</strong>
+            <strong>{t("todo.title")}</strong>
             <span>
-              {summary.completedCount}/{summary.visibleItems.length} done
+              {t("todo.progress", { completed: summary.completedCount, total: summary.visibleItems.length })}
             </span>
           </div>
           {focusLabel ? (
@@ -4515,22 +4526,21 @@ function TodoStatusBar({
           ) : null}
         </div>
         <button className="todo-toggle" type="button" onClick={onToggleExpanded}>
-          {expanded ? "Hide" : "Show all"}
+          {expanded ? t("todo.hide") : t("todo.showAll")}
         </button>
       </div>
       {expanded ? (
         <div className="todo-status-list">
-          {shownItems.map((item, index) => {
+          {summary.visibleItems.map((item, index) => {
             const status = normalizeTodoStatus(item.status);
             const label = formatTodoLabel(item);
             return (
               <div key={`${status}-${index}-${label}`} className={`todo-status-item ${status}`}>
                 <span aria-hidden="true">{todoStatusMarker(status)}</span>
-                <p>{label || "(untitled todo)"}</p>
+                <p>{label || t("todo.untitled")}</p>
               </div>
             );
           })}
-          {hiddenCount > 0 ? <div className="todo-status-more">+{hiddenCount} more</div> : null}
         </div>
       ) : null}
     </section>
@@ -4847,16 +4857,16 @@ function readClipboardImage(file: File): Promise<PendingImage> {
   });
 }
 
-function interactionTitle(interaction: InteractionRequestState): string {
+function interactionTitle(interaction: InteractionRequestState, t: (key: import("./lib/i18n").TranslationKey, params?: Record<string, string | number>) => string): string {
   if (interaction.kind === "authorization") {
     const toolName = typeof interaction.payload.tool_name === "string" ? interaction.payload.tool_name : "tool";
-    return `Approve ${toolName}`;
+    return t("decision.approveTool", { toolName });
   }
   const targetMode = typeof interaction.payload.target_mode === "string" ? interaction.payload.target_mode : "another mode";
-  return `Switch to ${targetMode}`;
+  return t("decision.switchToMode", { targetMode });
 }
 
-function interactionSummary(interaction: InteractionRequestState): string {
+function interactionSummary(interaction: InteractionRequestState, t: (key: import("./lib/i18n").TranslationKey, params?: Record<string, string | number>) => string): string {
   if (interaction.kind === "authorization") {
     const reason = typeof interaction.payload.reason === "string" ? interaction.payload.reason : "No reason provided.";
     const args = typeof interaction.payload.argument_summary === "string" ? interaction.payload.argument_summary : "";
