@@ -187,7 +187,11 @@ type TaskGraphLayout = {
   nodeHeight: number;
 };
 type ConfigCommandTarget = SettingsConfigSectionKey | "skills";
-type UiCommandTarget = { kind: "config"; target: ConfigCommandTarget } | { kind: "model" };
+type ContextCommandTarget = "compact" | "janitor";
+type UiCommandTarget =
+  | { kind: "config"; target: ConfigCommandTarget }
+  | { kind: "model" }
+  | { kind: "context"; command: ContextCommandTarget };
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
@@ -272,6 +276,7 @@ function App() {
   const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const conversationBodyRef = useRef<HTMLDivElement | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
   selectedProjectPathRef.current = selectedProjectPath;
@@ -436,6 +441,13 @@ function App() {
   useEffect(() => {
     setTodoExpanded(false);
     setTaskGraphPanelOpen(false);
+  }, [selectedSessionId]);
+
+  useLayoutEffect(() => {
+    const el = conversationBodyRef.current;
+    if (el && selectedSessionId) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -2734,7 +2746,7 @@ function App() {
 
           <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
 
-          <div className="conversation-body">
+          <div ref={conversationBodyRef} className="conversation-body">
             {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
               <div className="empty-conversation">
                 <h3>Start a session</h3>
