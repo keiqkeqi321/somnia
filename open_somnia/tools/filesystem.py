@@ -1057,6 +1057,72 @@ def _line_diff_stats(before: str, after: str) -> tuple[int, int]:
     return added, removed
 
 
+def _structured_diff_hunks(
+    before: str,
+    after: str,
+    *,
+    context_lines: int = 3,
+    max_lines: int = 160,
+) -> list[dict[str, Any]]:
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    matcher = difflib.SequenceMatcher(a=before_lines, b=after_lines)
+    rendered: list[dict[str, Any]] = []
+    truncated = False
+    for group in matcher.get_grouped_opcodes(n=context_lines):
+        if rendered:
+            rendered.append({"kind": "meta", "old_line": None, "new_line": None, "text": "..."})
+        for tag, old_start, old_end, new_start, new_end in group:
+            if len(rendered) >= max_lines:
+                truncated = True
+                break
+            if tag == "equal":
+                for offset, line in enumerate(before_lines[old_start:old_end]):
+                    if len(rendered) >= max_lines:
+                        truncated = True
+                        break
+                    rendered.append(
+                        {
+                            "kind": "context",
+                            "old_line": old_start + offset + 1,
+                            "new_line": new_start + offset + 1,
+                            "text": line,
+                        }
+                    )
+                continue
+            if tag in {"replace", "delete"}:
+                for offset, line in enumerate(before_lines[old_start:old_end]):
+                    if len(rendered) >= max_lines:
+                        truncated = True
+                        break
+                    rendered.append(
+                        {
+                            "kind": "removed",
+                            "old_line": old_start + offset + 1,
+                            "new_line": None,
+                            "text": line,
+                        }
+                    )
+            if tag in {"replace", "insert"}:
+                for offset, line in enumerate(after_lines[new_start:new_end]):
+                    if len(rendered) >= max_lines:
+                        truncated = True
+                        break
+                    rendered.append(
+                        {
+                            "kind": "added",
+                            "old_line": None,
+                            "new_line": new_start + offset + 1,
+                            "text": line,
+                        }
+                    )
+        if truncated:
+            break
+    if truncated:
+        rendered.append({"kind": "meta", "old_line": None, "new_line": None, "text": "... diff truncated ..."})
+    return rendered
+
+
 def _workspace_relative_path(workspace_root: Path, path: Path) -> str:
     try:
         return path.relative_to(workspace_root).as_posix()
@@ -1171,6 +1237,7 @@ def write_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
     previous = _read_text_with_fallback(path) if existed_before else ""
     path.write_text(content, encoding="utf-8")
     added, removed = _line_diff_stats(previous, content)
+    diff_hunks = _structured_diff_hunks(previous, content)
     snippet = _render_updated_content_snippet(content, anchors=_snippet_anchor_candidates(content))
     _update_runtime_active_file(
         ctx,
@@ -1199,6 +1266,7 @@ def write_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
         "existed_before": existed_before,
         "added_lines": added,
         "removed_lines": removed,
+        "diff_hunks": diff_hunks,
         "bytes_written": len(content),
         "updated_content_snippet": snippet,
     }
@@ -1262,6 +1330,7 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
 
         path.write_text(updated, encoding="utf-8")
         added, removed = _line_diff_stats(content, updated)
+        diff_hunks = _structured_diff_hunks(content, updated)
         snippet = _render_updated_content_snippet(updated, anchors=snippet_anchors)
         _update_runtime_active_file(
             ctx,
@@ -1289,6 +1358,7 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
                 "added_lines": added,
                 "removed_lines": removed,
                 "applied_edits": len(path_replacements),
+                "diff_hunks": diff_hunks,
                 "updated_content_snippet": snippet,
             }
         )
@@ -1303,12 +1373,26 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
             "added_lines": result["added_lines"],
             "removed_lines": result["removed_lines"],
             "applied_edits": result["applied_edits"],
+            "diff_hunks": result["diff_hunks"],
             "updated_content_snippet": result["updated_content_snippet"],
         }
 
     total_added = sum(int(item["added_lines"]) for item in file_results)
     total_removed = sum(int(item["removed_lines"]) for item in file_results)
     total_edits = sum(int(item["applied_edits"]) for item in file_results)
+    combined_diff_hunks: list[dict[str, Any]] = []
+    for item in file_results:
+        if combined_diff_hunks:
+            combined_diff_hunks.append({"kind": "meta", "old_line": None, "new_line": None, "text": "..."})
+        combined_diff_hunks.append(
+            {
+                "kind": "meta",
+                "old_line": None,
+                "new_line": None,
+                "text": str(item.get("path", "(unknown path)")),
+            }
+        )
+        combined_diff_hunks.extend(list(item.get("diff_hunks") or []))
     return {
         "status": "ok",
         "action": "edit_file",
@@ -1318,6 +1402,7 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
         "removed_lines": total_removed,
         "applied_edits": total_edits,
         "edited_files": file_results,
+        "diff_hunks": combined_diff_hunks,
         "updated_content_snippet": f"Updated {len(file_results)} files.",
     }
 

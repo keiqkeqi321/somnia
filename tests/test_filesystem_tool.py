@@ -120,6 +120,13 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["added_lines"], 2)
         self.assertEqual(result["removed_lines"], 0)
         self.assertIn("1: a", result["updated_content_snippet"])
+        self.assertEqual(
+            result["diff_hunks"],
+            [
+                {"kind": "added", "old_line": None, "new_line": 1, "text": "a"},
+                {"kind": "added", "old_line": None, "new_line": 2, "text": "b"},
+            ],
+        )
         self.assertEqual(len(session.pending_file_changes), 1)
         self.assertEqual(active_files[0]["path"], "demo.txt")
         self.assertEqual(active_files[0]["source"], "write_file")
@@ -178,6 +185,14 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["applied_edits"], 1)
         self.assertIn("2: b", result["updated_content_snippet"])
         self.assertIn("3: c", result["updated_content_snippet"])
+        self.assertEqual(
+            result["diff_hunks"],
+            [
+                {"kind": "context", "old_line": 1, "new_line": 1, "text": "a"},
+                {"kind": "context", "old_line": 2, "new_line": 2, "text": "b"},
+                {"kind": "added", "old_line": None, "new_line": 3, "text": "c"},
+            ],
+        )
         self.assertEqual(len(session.pending_file_changes), 1)
         self.assertEqual(active_files[0]["path"], "demo.txt")
         self.assertEqual(active_files[0]["source"], "edit_file")

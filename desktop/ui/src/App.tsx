@@ -3784,8 +3784,31 @@ function fileChangeSummary(toolCall: ConversationToolCall, resultState: ToolResu
     path,
     added,
     removed,
-    diffLines: buildFileDiffLines(toolCall.name || action, toolCall.rawInput),
+    diffLines: structuredDiffLines(toolCall.rawOutput.diff_hunks) ?? buildFileDiffLines(toolCall.name || action, toolCall.rawInput),
   };
+}
+
+function structuredDiffLines(value: unknown): DiffLine[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const lines: DiffLine[] = [];
+  value.forEach((item, index) => {
+    if (!isRecord(item)) {
+      return;
+    }
+    const rawKind = String(item.kind ?? "context").trim();
+    const kind: DiffLine["kind"] =
+      rawKind === "added" || rawKind === "removed" || rawKind === "meta" || rawKind === "context" ? rawKind : "context";
+    lines.push({
+      key: `structured-${index}`,
+      kind,
+      oldLine: nullableNumberFromValue(item.old_line),
+      newLine: nullableNumberFromValue(item.new_line),
+      text: String(item.text ?? ""),
+    });
+  });
+  return lines;
 }
 
 function buildFileDiffLines(toolName: string, rawInput: unknown): DiffLine[] {
@@ -3914,6 +3937,14 @@ function readablePathFromInput(input: unknown): string | null {
 function numberFromValue(value: unknown): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : 0;
+}
+
+function nullableNumberFromValue(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : null;
 }
 
 function renderMarkdownBlocks(text: string): ReactNode[] {
