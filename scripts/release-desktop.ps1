@@ -871,6 +871,9 @@ if ($script:Cargo.Scope -eq "local") {
 
 Disable-UnavailableLocalCargoProxyConfig -CargoCommand $script:Cargo
 Enable-CargoEnvironment -CargoCommand $script:Cargo
+if ([string]::IsNullOrWhiteSpace($env:CARGO_BUILD_JOBS)) {
+    $env:CARGO_BUILD_JOBS = "1"
+}
 
 if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
     $TargetTriple = Get-DefaultTargetTriple
