@@ -69,6 +69,7 @@ const ARCHIVED_SESSIONS_STORAGE_KEY = "somnia.desktop.archived-sessions";
 const LAST_OPENED_SESSION_STORAGE_KEY = "somnia.desktop.last-opened-session";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
+const PROJECT_LIMIT = 5;
 const SIDEBAR_MIN_WIDTH = 210;
 const SIDEBAR_MAX_WIDTH = 430;
 const CONTEXT_MIN_WIDTH = 280;
@@ -256,6 +257,7 @@ function App() {
   const [activeToolLog, setActiveToolLog] = useState<ToolLogDetail | null>(null);
   const [sidebarSection, setSidebarSection] = useState<"sessions">("sessions");
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  const [projectLimitNotice, setProjectLimitNotice] = useState<string | null>(null);
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [sessionMenuOpenKey, setSessionMenuOpenKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -537,6 +539,12 @@ function App() {
     setTodoExpanded(false);
     setTaskGraphPanelOpen(false);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (projects.length < PROJECT_LIMIT && projectLimitNotice) {
+      setProjectLimitNotice(null);
+    }
+  }, [projectLimitNotice, projects.length]);
 
   useLayoutEffect(() => {
     const el = conversationBodyRef.current;
@@ -1671,6 +1679,13 @@ function App() {
   }
 
   async function handleCreateProject() {
+    if (projects.length >= PROJECT_LIMIT) {
+      const message = t("sidebar.projectLimitReached", { count: PROJECT_LIMIT });
+      setProjectLimitNotice(message);
+      setBannerMessage(message);
+      return;
+    }
+    setProjectLimitNotice(null);
     setBusyAction("create-project");
     let projectPathForError: string | null = null;
     try {
@@ -2823,6 +2838,8 @@ function App() {
               </button>
             </div>
           </div>
+
+          {projectLimitNotice ? <div className="sidebar-notice">{projectLimitNotice}</div> : null}
 
           <div className="session-list">
             {sessionProjectGroups.length === 0 ? (

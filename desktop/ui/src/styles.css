@@ -1310,6 +1310,17 @@ button {
   line-height: 1;
 }
 
+.sidebar-notice {
+  margin: 10px 16px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 194, 97, 0.38);
+  border-radius: 10px;
+  background: rgba(255, 194, 97, 0.12);
+  color: #ffdca3;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .session-card,
 .log-card,
 .approval-card,
