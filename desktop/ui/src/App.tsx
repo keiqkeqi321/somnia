@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import mermaid from "mermaid";
 import appIconUrl from "../src-tauri/icons/32x32.png";
@@ -78,6 +79,9 @@ let mermaidRenderCounter = 0;
 const MERMAID_MIN_ZOOM = 0.25;
 const MERMAID_MAX_ZOOM = 4;
 const MERMAID_ZOOM_STEP = 0.2;
+const TOOL_IMAGE_MIN_SCALE = 0.75;
+const TOOL_IMAGE_MAX_SCALE = 4;
+const TOOL_IMAGE_SCALE_STEP = 0.15;
 
 mermaid.initialize({
   startOnLoad: false,
@@ -197,6 +201,10 @@ type UiCommandTarget =
   | { kind: "config"; target: ConfigCommandTarget }
   | { kind: "model" }
   | { kind: "context"; command: ContextCommandTarget };
+type ToolImagePreviewState = {
+  src: string;
+  label: string;
+};
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
@@ -264,6 +272,7 @@ function App() {
   const [modePickerOpen, setModePickerOpen] = useState(false);
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
   const [taskGraphPanelOpen, setTaskGraphPanelOpen] = useState(false);
+  const [toolImagePreview, setToolImagePreview] = useState<ToolImagePreviewState | null>(null);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -360,6 +369,19 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [modelPickerOpen]);
+
+  useEffect(() => {
+    if (!toolImagePreview) {
+      return;
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setToolImagePreview(null);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toolImagePreview]);
 
   useEffect(() => {
     if (!modePickerOpen) {
@@ -2950,7 +2972,11 @@ function App() {
                         <MarkdownMessage key={part.id} text={part.text} />
                       ) : (
                         <div key={part.id} className="tool-call-stack">
-                          <ToolCallWithImages toolCall={part.toolCall} baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""} />
+                          <ToolCallWithImages
+                            toolCall={part.toolCall}
+                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                            onPreviewImage={setToolImagePreview}
+                          />
                         </div>
                       ),
                     )
@@ -2967,7 +2993,12 @@ function App() {
                   {!row.parts?.length && row.toolCalls?.length ? (
                     <div className="tool-call-stack">
                       {row.toolCalls.map((toolCall) => (
-                        <ToolCallWithImages key={toolCall.id} toolCall={toolCall} baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""} />
+                        <ToolCallWithImages
+                          key={toolCall.id}
+                          toolCall={toolCall}
+                          baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                          onPreviewImage={setToolImagePreview}
+                        />
                       ))}
                     </div>
                   ) : null}
@@ -3274,6 +3305,8 @@ function App() {
         {taskGraphPanelOpen ? (
           <TaskGraphWorkspacePanel tasks={activeTaskItems} onClose={() => setTaskGraphPanelOpen(false)} />
         ) : null}
+
+        {toolImagePreview ? <ToolImageLightbox preview={toolImagePreview} onClose={() => setToolImagePreview(null)} /> : null}
 
         {contextPanelOpen ? (
           <>
@@ -3880,7 +3913,15 @@ function clampMermaidZoom(value: number): number {
   return Math.min(MERMAID_MAX_ZOOM, Math.max(MERMAID_MIN_ZOOM, Number(value.toFixed(2))));
 }
 
-function ToolCallWithImages({ toolCall, baseUrl }: { toolCall: ConversationToolCall; baseUrl: string }) {
+function ToolCallWithImages({
+  toolCall,
+  baseUrl,
+  onPreviewImage,
+}: {
+  toolCall: ConversationToolCall;
+  baseUrl: string;
+  onPreviewImage: (preview: ToolImagePreviewState) => void;
+}) {
   const imageReferences = toolCall.contentBlocks?.filter((block) => block.type === "image_reference") ?? [];
   return (
     <>
@@ -3888,7 +3929,12 @@ function ToolCallWithImages({ toolCall, baseUrl }: { toolCall: ConversationToolC
       {imageReferences.length > 0 ? (
         <div className="tool-image-list">
           {imageReferences.map((image, index) => (
-            <ToolImagePreview key={`${image.path ?? image.absolute_path ?? image.image_url ?? "image"}-${index}`} image={image} baseUrl={baseUrl} />
+            <ToolImagePreview
+              key={`${image.path ?? image.absolute_path ?? image.image_url ?? "image"}-${index}`}
+              image={image}
+              baseUrl={baseUrl}
+              onPreviewImage={onPreviewImage}
+            />
           ))}
         </div>
       ) : null}
@@ -3939,9 +3985,11 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
 function ToolImagePreview({
   image,
   baseUrl,
+  onPreviewImage,
 }: {
   image: NonNullable<ConversationToolCall["contentBlocks"]>[number] & { type: "image_reference" };
   baseUrl: string;
+  onPreviewImage: (preview: ToolImagePreviewState) => void;
 }) {
   const src = toolImageSource(image, baseUrl);
   const label = image.path || image.absolute_path || image.image_url || "tool image";
@@ -3949,11 +3997,51 @@ function ToolImagePreview({
     return <span className="tool-image-missing">{label}</span>;
   }
   return (
-    <a className="tool-image-preview" href={src} target="_blank" rel="noreferrer" title={label}>
+    <button className="tool-image-preview" type="button" title={label} onClick={() => onPreviewImage({ src, label })}>
       <img src={src} alt={label} loading="lazy" />
       <span>{label}</span>
-    </a>
+    </button>
   );
+}
+
+function ToolImageLightbox({ preview, onClose }: { preview: ToolImagePreviewState; onClose: () => void }) {
+  const [scale, setScale] = useState(1);
+  const [transformOrigin, setTransformOrigin] = useState("50% 50%");
+
+  function handleWheel(event: ReactWheelEvent<HTMLImageElement>) {
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.width > 0 && bounds.height > 0) {
+      const originX = ((event.clientX - bounds.left) / bounds.width) * 100;
+      const originY = ((event.clientY - bounds.top) / bounds.height) * 100;
+      setTransformOrigin(`${clampPercent(originX)}% ${clampPercent(originY)}%`);
+    }
+    const direction = event.deltaY < 0 ? 1 : -1;
+    setScale((current) => clampToolImageScale(current + direction * TOOL_IMAGE_SCALE_STEP));
+  }
+
+  return (
+    <div className="tool-image-lightbox" role="dialog" aria-modal="true" aria-label={preview.label} onClick={onClose}>
+      <div className="tool-image-lightbox-content">
+        <img
+          src={preview.src}
+          alt={preview.label}
+          style={{ transform: `scale(${scale})`, transformOrigin }}
+          onWheel={handleWheel}
+          onClick={onClose}
+        />
+        <span>{preview.label}</span>
+      </div>
+    </div>
+  );
+}
+
+function clampToolImageScale(value: number): number {
+  return Math.min(TOOL_IMAGE_MAX_SCALE, Math.max(TOOL_IMAGE_MIN_SCALE, Number(value.toFixed(2))));
+}
+
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, Number(value.toFixed(2))));
 }
 
 function toolImageSource(image: { path?: string; absolute_path?: string; image_url?: string }, baseUrl: string): string {
