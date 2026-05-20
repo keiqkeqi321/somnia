@@ -55,6 +55,28 @@ class ProjectInitTests(unittest.TestCase):
             self.assertIn("重点分析 CLI 和测试命令", init_prompt.prompt)
             self.assertIn("Do not copy them verbatim into AGENTS.md", init_prompt.prompt)
 
+    def test_build_project_init_prompt_protects_gitnexus_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            block = "\n".join(
+                [
+                    "<!-- gitnexus:start -->",
+                    "# GitNexus - Code Intelligence",
+                    "Preserve this indexed guidance.",
+                    "<!-- gitnexus:end -->",
+                ]
+            )
+            (root / "AGENTS.md").write_text(f"before\n{block}\nafter\n", encoding="utf-8")
+            (root / "main.py").write_text("print('hello')\n", encoding="utf-8")
+
+            init_prompt = build_project_init_prompt(root, force=True)
+
+            self.assertEqual(init_prompt.protected_gitnexus_block, block)
+            self.assertIn("Protected indexed guidance detected", init_prompt.prompt)
+            self.assertIn(block, init_prompt.prompt)
+            self.assertIn("Preserve that block byte-for-byte", init_prompt.prompt)
+            self.assertIn("even when overwrite is enabled", init_prompt.prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

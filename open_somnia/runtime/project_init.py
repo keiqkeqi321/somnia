@@ -54,6 +54,8 @@ MANIFEST_NAMES = {
     "tox.ini",
     "uv.lock",
 }
+GITNEXUS_BLOCK_START = "<!-- gitnexus:start -->"
+GITNEXUS_BLOCK_END = "<!-- gitnexus:end -->"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,7 @@ class ProjectInitPrompt:
     code_file_count: int
     force: bool = False
     extra_prompt: str = ""
+    protected_gitnexus_block: str = ""
 
 
 @dataclass(slots=True)
@@ -100,12 +103,14 @@ def build_project_init_prompt(workspace_root: Path, *, force: bool = False, extr
     line_limit = init_line_limit(profile.code_file_count)
     target = root / "AGENTS.md"
     normalized_extra_prompt = str(extra_prompt or "").strip()
+    protected_gitnexus_block = _extract_gitnexus_block(target)
     prompt = _render_init_prompt(
         profile,
         target=target,
         line_limit=line_limit,
         force=force,
         extra_prompt=normalized_extra_prompt,
+        protected_gitnexus_block=protected_gitnexus_block,
     )
     return ProjectInitPrompt(
         target_path=target,
@@ -114,6 +119,7 @@ def build_project_init_prompt(workspace_root: Path, *, force: bool = False, extr
         code_file_count=profile.code_file_count,
         force=force,
         extra_prompt=normalized_extra_prompt,
+        protected_gitnexus_block=protected_gitnexus_block,
     )
 
 
@@ -196,7 +202,29 @@ def _read_pyproject(path: Path) -> dict:
         return {}
 
 
-def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: int, force: bool, extra_prompt: str = "") -> str:
+def _extract_gitnexus_block(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    start = text.find(GITNEXUS_BLOCK_START)
+    if start < 0:
+        return ""
+    end = text.find(GITNEXUS_BLOCK_END, start + len(GITNEXUS_BLOCK_START))
+    if end < 0:
+        return ""
+    return text[start : end + len(GITNEXUS_BLOCK_END)]
+
+
+def _render_init_prompt(
+    profile: ProjectProfile,
+    *,
+    target: Path,
+    line_limit: int,
+    force: bool,
+    extra_prompt: str = "",
+    protected_gitnexus_block: str = "",
+) -> str:
     lines = [
         "Initialize project instructions for this workspace.",
         "",
@@ -217,6 +245,19 @@ def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: in
                 "",
                 "Treat the user extra instructions as preferences for what to inspect or emphasize. Do not copy them verbatim into AGENTS.md unless they are useful project guidance verified against the repository.",
                 "If user extra instructions conflict with the hard line budget, real inspection requirement, or safety rules, those hard constraints win.",
+                "",
+            ]
+        )
+    if protected_gitnexus_block:
+        lines.extend(
+            [
+                "Protected indexed guidance detected in existing AGENTS.md:",
+                protected_gitnexus_block,
+                "",
+                "Code-level preservation requirement:",
+                f"- The complete block from {GITNEXUS_BLOCK_START} through {GITNEXUS_BLOCK_END} is protected indexed guidance.",
+                "- Preserve that block byte-for-byte in the rewritten AGENTS.md, even when overwrite is enabled.",
+                "- You may move the whole block only if needed, but must not edit, summarize, duplicate, or delete any line inside it.",
                 "",
             ]
         )
@@ -251,6 +292,7 @@ def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: in
             "- Mention that higher-priority user/runtime/tool safety instructions override this file.",
             "- Include build/test commands only if you verified them from manifests, docs, or tests.",
             "- If AGENTS.md already has useful hand-written guidance, merge rather than deleting it blindly.",
+            f"- Preserve any existing {GITNEXUS_BLOCK_START} ... {GITNEXUS_BLOCK_END} block exactly.",
             "- After writing AGENTS.md, verify the line count. If it exceeds the hard line budget, edit it down before finishing.",
             "",
             "Recommended structure:",
