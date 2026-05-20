@@ -54,6 +54,44 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("TOML configuration", loader.descriptions())
             self.assertIn("Complete TOML Map", loader.load("somnia-config"))
 
+    def test_for_workspace_loads_project_claude_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            claude_skill_dir = root / ".claude" / "skills" / "gitnexus" / "gitnexus-exploring"
+            claude_skill_dir.mkdir(parents=True)
+            (claude_skill_dir / "SKILL.md").write_text(
+                "---\ndescription: explore with graph\n---\nclaude skill body\n",
+                encoding="utf-8",
+            )
+
+            loader = SkillLoader.for_workspace(root)
+
+            self.assertIn("gitnexus-exploring", loader.names())
+            self.assertIn("claude skill body", loader.load("gitnexus-exploring"))
+            self.assertIn("- gitnexus-exploring [workspace-claude] - explore with graph", loader.render_listing())
+
+    def test_workspace_somnia_skill_overrides_project_claude_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            claude_skill_dir = root / ".claude" / "skills" / "Review"
+            somnia_skill_dir = root / ".open_somnia" / "skills" / "Review"
+            claude_skill_dir.mkdir(parents=True)
+            somnia_skill_dir.mkdir(parents=True)
+            (claude_skill_dir / "SKILL.md").write_text(
+                "---\ndescription: claude review\n---\nclaude body\n",
+                encoding="utf-8",
+            )
+            (somnia_skill_dir / "SKILL.md").write_text(
+                "---\ndescription: somnia review\n---\nsomnia body\n",
+                encoding="utf-8",
+            )
+
+            loader = SkillLoader.for_workspace(root)
+
+            self.assertEqual(loader.names().count("Review"), 1)
+            self.assertIn("somnia body", loader.load("Review"))
+            self.assertIn("- Review [workspace] - somnia review", loader.render_listing())
+
 
 if __name__ == "__main__":
     unittest.main()

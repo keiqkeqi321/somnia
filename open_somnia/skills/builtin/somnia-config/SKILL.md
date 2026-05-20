@@ -56,7 +56,9 @@ Supported top-level areas:
 Skills are configured by directories, not TOML:
 
 - User skills: `~/.open_somnia/skills/<skill-name>/SKILL.md`
+- Claude-compatible user skills: `~/.claude/skills/<skill-name>/SKILL.md`
 - Project skills: `<workspace>/.open_somnia/skills/<skill-name>/SKILL.md`
+- Claude-compatible project skills: `<workspace>/.claude/skills/<skill-name>/SKILL.md`
 - Legacy project skills: `<workspace>/skills/<skill-name>/SKILL.md`
 - Built-in skills: packaged inside Somnia.
 
@@ -314,7 +316,9 @@ Skills are directory-based, not TOML-based.
 
 ```text
 ~/.open_somnia/skills/my-skill/SKILL.md
+~/.claude/skills/my-skill/SKILL.md
 <workspace>/.open_somnia/skills/my-skill/SKILL.md
+<workspace>/.claude/skills/my-skill/SKILL.md
 <workspace>/skills/my-skill/SKILL.md
 ```
 

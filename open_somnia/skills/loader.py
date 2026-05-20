@@ -19,8 +19,10 @@ class SkillLoader:
         return cls(
             [
                 Path(__file__).resolve().parent / "builtin",
+                Path.home() / ".claude" / "skills",
                 Path.home() / ".open_somnia" / "skills",
                 workspace_root / "skills",
+                workspace_root / ".claude" / "skills",
                 workspace_root / ".open_somnia" / "skills",
             ]
         )
@@ -55,8 +57,13 @@ class SkillLoader:
         home_skills_dir = Path.home() / ".open_somnia" / "skills"
         if source_dir == home_skills_dir:
             return "global"
+        home_claude_skills_dir = Path.home() / ".claude" / "skills"
+        if source_dir == home_claude_skills_dir:
+            return "global-claude"
         if source_dir.name == "skills" and source_dir.parent.name == ".open_somnia":
             return "workspace"
+        if source_dir.name == "skills" and source_dir.parent.name == ".claude":
+            return "workspace-claude"
         if source_dir.name == "skills":
             return "workspace-legacy"
         return "custom"
