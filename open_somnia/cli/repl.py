@@ -60,6 +60,7 @@ from open_somnia.runtime.messages import (
     render_message_content,
     render_text_content,
 )
+from open_somnia.runtime.project_init import build_project_init_prompt
 from open_somnia.tools.filesystem import safe_path
 from open_somnia.tools.todo import TODO_CLOSED_STATUSES, TODO_STATUS_MARKERS, TODO_VISIBLE_STATUSES
 
@@ -1746,6 +1747,27 @@ def _is_exit_command(command: str) -> bool:
     return stripped in {"q", "exit", "/exit"}
 
 
+def _build_init_query(runtime, command: str) -> str | None:
+    args = command.split()[1:]
+    valid_args = {"--force", "-f"}
+    unknown = [arg for arg in args if arg not in valid_args]
+    if unknown:
+        print(f"[init failed] unknown option(s): {', '.join(unknown)}")
+        print("Usage: /init [--force]")
+        return None
+    force = any(arg in {"--force", "-f"} for arg in args)
+    target = runtime.settings.workspace_root / "AGENTS.md"
+    if target.exists() and not force:
+        print("[init skipped] AGENTS.md already exists. Use /init --force to regenerate it.")
+        return None
+    init_prompt = build_project_init_prompt(runtime.settings.workspace_root, force=force)
+    print(
+        f"[init queued] target=AGENTS.md line_budget={init_prompt.line_limit} "
+        f"code_files={init_prompt.code_file_count}"
+    )
+    return init_prompt.prompt
+
+
 def _handle_scan_command(runtime, session, command: str) -> None:
     args = command.split()[1:]
     if args and args[0] == "--refresh":
@@ -2398,6 +2420,25 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     if (was_active or queued_before) and not runner.stable_prompt:
                         ahead = queued_before + (1 if was_active else 0)
                         print(f"[queued compact; {ahead} item(s) ahead]")
+                    continue
+                if stripped == "/init" or stripped.startswith("/init "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /init]")
+                        continue
+                    if not _ensure_accept_edits_for_command(
+                        runner,
+                        "/init",
+                        "Generating AGENTS.md writes a project instruction file.",
+                    ):
+                        continue
+                    init_query = _build_init_query(runtime, stripped)
+                    if init_query is None:
+                        continue
+                    was_active, queued_before = runner.enqueue(init_query)
+                    if runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(stripped)
+                    if not runner.stable_prompt and not was_active and queued_before == 0:
+                        print_user_message(stripped)
                     continue
                 if stripped == "/janitor":
                     if runner.has_inflight_work():

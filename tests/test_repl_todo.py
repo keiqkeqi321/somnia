@@ -15,6 +15,7 @@ from open_somnia.cli.repl import (
     ModeSwitchRequest,
     TurnQueueRunner,
     _build_image_query,
+    _build_init_query,
     _build_clipboard_image_query,
     _clipboard_image_command,
     _ensure_accept_edits_for_command,
@@ -69,6 +70,35 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(decoded["content"][0], {"type": "text", "text": "describe this"})
         self.assertEqual(decoded["content"][1]["type"], "input_image")
         self.assertEqual(decoded["content"][1]["media_type"], "image/png")
+
+    def test_build_init_query_refuses_existing_agents_without_force(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / f"repl-init-existing-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "AGENTS.md").write_text("existing\n", encoding="utf-8")
+        runtime = SimpleNamespace(settings=SimpleNamespace(workspace_root=root))
+
+        with patch("builtins.print") as mock_print:
+            query = _build_init_query(runtime, "/init")
+
+        self.assertIsNone(query)
+        self.assertIn("AGENTS.md already exists", mock_print.call_args[0][0])
+
+    def test_build_init_query_allows_force_and_creates_agent_loop_prompt(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / f"repl-init-force-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "AGENTS.md").write_text("existing\n", encoding="utf-8")
+        (root / "pyproject.toml").write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
+        runtime = SimpleNamespace(settings=SimpleNamespace(workspace_root=root))
+
+        with patch("builtins.print") as mock_print:
+            query = _build_init_query(runtime, "/init --force")
+
+        self.assertIsNotNone(query)
+        self.assertIn("Initialize project instructions", str(query))
+        self.assertIn("Overwrite existing file: yes", str(query))
+        self.assertIn("real repository inspection loop", str(query))
+        self.assertIn("write_file or edit_file", str(query))
+        self.assertIn("[init queued]", mock_print.call_args[0][0])
 
     def test_clipboard_image_command_targets_workspace_temp_image(self) -> None:
         workspace_root = Path.cwd()
