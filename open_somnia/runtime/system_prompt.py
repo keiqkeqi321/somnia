@@ -5,6 +5,7 @@ import sys
 from typing import Any
 
 from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, execution_mode_spec
+from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
 
 
 class SystemPromptBuilder:
@@ -38,6 +39,7 @@ class SystemPromptBuilder:
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
         working_file_context_getter = getattr(self.runtime, "current_working_file_context", None)
         working_file_context = working_file_context_getter() if callable(working_file_context_getter) else ""
+        project_instructions = ProjectInstructionsLoader(self.runtime.settings.workspace_root).render()
         identity_guidance = (
             "Identity rules:\n"
             f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
@@ -95,6 +97,7 @@ class SystemPromptBuilder:
                 f"{mode_guidance}\n"
                 f"{tool_selection_guidance}\n"
                 f"{workflow_guidance}\n"
+                f"{project_instructions}\n"
                 f"{environment_guidance}\n"
                 f"{working_file_guidance}\n"
                 f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
@@ -109,6 +112,7 @@ class SystemPromptBuilder:
             f"{mode_guidance}\n"
             f"{tool_selection_guidance}\n"
             f"{workflow_guidance}\n"
+            f"{project_instructions}\n"
             f"{environment_guidance}\n"
             f"{working_file_guidance}\n"
             f"Available skills:\n{self.runtime.skill_loader.descriptions()}"

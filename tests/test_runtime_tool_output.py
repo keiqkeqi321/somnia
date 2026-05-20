@@ -380,6 +380,43 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("Repository memory:", prompt)
         self.assertNotIn("Session exploration memory:", prompt)
 
+    def test_build_system_prompt_includes_project_instructions_from_agents_md(self) -> None:
+        root = self._stable_test_dir("project-instructions-agents")
+        (root / "AGENTS.md").write_text("Use project tests.\n", encoding="utf-8")
+        (root / "CLAUDE.md").write_text("Use claude tests.\n", encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=root,
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime)
+
+        self.assertIn("Project instructions:", prompt)
+        self.assertIn('source="AGENTS.md"', prompt)
+        self.assertIn("Use project tests.", prompt)
+        self.assertNotIn("Use claude tests.", prompt)
+
+    def test_build_system_prompt_uses_claude_md_when_agents_md_is_missing(self) -> None:
+        root = self._stable_test_dir("project-instructions-claude")
+        (root / "CLAUDE.md").write_text("Use claude fallback.\n", encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=root,
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime)
+
+        self.assertIn('source="CLAUDE.md"', prompt)
+        self.assertIn("Use claude fallback.", prompt)
+
     def test_agent_session_ignores_legacy_exploration_cache_payload(self) -> None:
         restored = AgentSession.from_payload(
             {
