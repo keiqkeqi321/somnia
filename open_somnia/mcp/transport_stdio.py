@@ -18,12 +18,19 @@ class StdioTransport:
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         timeout_seconds: int = 30,
+        startup_timeout_seconds: int | None = None,
+        framing: str = "jsonl",
     ):
         self.command = command
         self.args = args
         self.cwd = cwd
         self.env = env
         self.timeout_seconds = timeout_seconds
+        self.startup_timeout_seconds = startup_timeout_seconds if startup_timeout_seconds is not None else timeout_seconds
+        normalized_framing = framing.strip().lower().replace("-", "_")
+        if normalized_framing not in {"jsonl", "content_length"}:
+            raise ValueError("stdio framing must be 'jsonl' or 'content_length'")
+        self.framing = normalized_framing
         self.process: subprocess.Popen[bytes] | None = None
         self._responses: dict[str, Queue] = {}
         self._lock = threading.Lock()
@@ -60,37 +67,56 @@ class StdioTransport:
             return
         stream = self.process.stdout
         while True:
+            line = stream.readline()
+            if not line:
+                return
+            if line in {b"\r\n", b"\n"}:
+                continue
+            stripped = line.strip()
+            if stripped.startswith(b"{"):
+                self._dispatch_message(json.loads(stripped.decode("utf-8")))
+                continue
             headers: dict[str, str] = {}
             while True:
-                line = stream.readline()
                 if not line:
                     return
                 if line in {b"\r\n", b"\n"}:
                     break
                 key, _, value = line.decode("utf-8", errors="replace").partition(":")
                 headers[key.strip().lower()] = value.strip()
-            length = int(headers.get("content-length", "0"))
+                line = stream.readline()
+            try:
+                length = int(headers.get("content-length", "0"))
+            except ValueError:
+                length = 0
             if length <= 0:
                 continue
             payload = stream.read(length)
             if not payload:
                 return
             message = json.loads(payload.decode("utf-8"))
-            msg_id = message.get("id")
-            if msg_id is None:
-                continue
-            queue = self._responses.get(str(msg_id))
-            if queue is not None:
-                queue.put(message)
+            self._dispatch_message(message)
+
+    def _dispatch_message(self, message: dict[str, Any]) -> None:
+        msg_id = message.get("id")
+        if msg_id is None:
+            return
+        queue = self._responses.get(str(msg_id))
+        if queue is not None:
+            queue.put(message)
 
     def _write(self, payload: dict[str, Any]) -> None:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("Transport not started")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
         with self._lock:
-            self.process.stdin.write(header)
-            self.process.stdin.write(body)
+            if self.framing == "content_length":
+                header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+                self.process.stdin.write(header)
+                self.process.stdin.write(body)
+            else:
+                self.process.stdin.write(body)
+                self.process.stdin.write(b"\n")
             self.process.stdin.flush()
 
     def request(self, method: str, params: dict[str, Any] | None = None, *, startup: bool = False) -> dict[str, Any]:
@@ -107,12 +133,14 @@ class StdioTransport:
             }
         )
         try:
-            response = response_queue.get(timeout=self.timeout_seconds)
+            timeout = self.startup_timeout_seconds if startup else self.timeout_seconds
+            response = response_queue.get(timeout=timeout)
         except Empty as exc:
             process = self.process
             return_code = process.poll() if process is not None else None
             stderr_tail = "\n".join(self.stderr_lines[-8:]).strip()
-            details: list[str] = [f"MCP stdio request '{method}' timed out after {self.timeout_seconds}s."]
+            timeout = self.startup_timeout_seconds if startup else self.timeout_seconds
+            details: list[str] = [f"MCP stdio request '{method}' timed out after {timeout}s."]
             if return_code is not None:
                 details.append(f"Process exited with code {return_code}.")
             if stderr_tail:

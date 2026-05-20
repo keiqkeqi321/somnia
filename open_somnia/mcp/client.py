@@ -26,6 +26,7 @@ class MCPClient:
                 cwd=settings.cwd,
                 env=settings.env or None,
                 timeout_seconds=settings.timeout_seconds,
+                startup_timeout_seconds=settings.startup_timeout_seconds,
             )
         self.initialized = False
 
