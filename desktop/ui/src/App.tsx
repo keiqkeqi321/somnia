@@ -66,6 +66,7 @@ const PROJECTS_STORAGE_KEY = "somnia.desktop.project-paths";
 const PROMPT_HISTORY_STORAGE_KEY = "somnia.desktop.prompt-history";
 const LAYOUT_STORAGE_KEY = "somnia.desktop.layout";
 const ARCHIVED_SESSIONS_STORAGE_KEY = "somnia.desktop.archived-sessions";
+const LAST_OPENED_SESSION_STORAGE_KEY = "somnia.desktop.last-opened-session";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
 const TOOL_LIMIT = 24;
 const SIDEBAR_MIN_WIDTH = 210;
@@ -165,6 +166,10 @@ type LayoutDragState = {
   startContextWidth: number;
 };
 type ArchivedSessionsState = Record<string, string[]>;
+type LastOpenedSessionState = {
+  projectPath: string;
+  sessionId: string;
+};
 type ActiveProjectTurn = {
   sessionId: string;
   turnId: string | null;
@@ -645,9 +650,14 @@ function App() {
     if (shouldPreferManagedSidecar) {
       try {
         const savedProjectPaths = readStoredProjectPaths();
+        const lastOpenedSession = readLastOpenedSession();
+        const lastOpenedProjectKey = projectPathKey(lastOpenedSession?.projectPath);
         const managedConnection = await ensureManagedSidecar();
         if (managedConnection) {
-          await connectManagedProject(managedConnection, { selectProject: true });
+          const managedProjectKey = projectPathKey(managedConnection.workspaceRoot);
+          await connectManagedProject(managedConnection, {
+            selectProject: !lastOpenedProjectKey || managedProjectKey === lastOpenedProjectKey,
+          });
           for (const projectPath of savedProjectPaths) {
             if (projectPathKey(projectPath) === projectPathKey(managedConnection.workspaceRoot)) {
               continue;
@@ -655,7 +665,9 @@ function App() {
             try {
               const projectConnection = await ensureManagedSidecar(projectPath);
               if (projectConnection) {
-                await connectManagedProject(projectConnection, { selectProject: false });
+                await connectManagedProject(projectConnection, {
+                  selectProject: projectPathKey(projectPath) === lastOpenedProjectKey,
+                });
               }
             } catch (error) {
               setBannerMessage(`Unable to restore project '${projectPath}': ${formatErrorMessage(error)}`);
@@ -710,6 +722,11 @@ function App() {
 
     if (options.selectProject) {
       await activateProject(projectPath, client, project);
+    } else if (!selectedProjectPathRef.current) {
+      const lastOpenedSession = readLastOpenedSession();
+      if (!lastOpenedSession || projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)) {
+        await activateProject(projectPath, client, project);
+      }
     }
   }
 
@@ -731,13 +748,18 @@ function App() {
     await refreshModels(nextProject.status.provider, client, nextProject.status.model);
 
     const visibleSessions = visibleSessionsForProject(projectPath, nextProject.sessions, archivedSessions);
-    const nextSessionId =
-      visibleSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? visibleSessions[0]?.id ?? null;
+    const lastOpenedSession = readLastOpenedSession();
+    const preferredSessionId =
+      lastOpenedSession && projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)
+        ? lastOpenedSession.sessionId
+        : selectedSessionIdRef.current;
+    const nextSessionId = visibleSessions.find((session) => session.id === preferredSessionId)?.id ?? visibleSessions[0]?.id ?? null;
     if (nextSessionId) {
       await selectSession(nextSessionId, client, nextProject.sessions, projectPath);
     } else {
       setSelectedSessionId(null);
       setCurrentSession(null);
+      clearLastOpenedSession(projectPath);
     }
     setBannerMessage(`Active project: ${projectPath}`);
   }
@@ -804,13 +826,18 @@ function App() {
       setProjects((previous) => upsertProject(previous, project));
       setSelectedProjectPath(projectPath);
       setSessions(sortedSessions);
-      const nextSessionId =
-        visibleSessions.find((session) => session.id === selectedSessionIdRef.current)?.id ?? visibleSessions[0]?.id ?? null;
+      const lastOpenedSession = readLastOpenedSession();
+      const preferredSessionId =
+        lastOpenedSession && projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)
+          ? lastOpenedSession.sessionId
+          : selectedSessionIdRef.current;
+      const nextSessionId = visibleSessions.find((session) => session.id === preferredSessionId)?.id ?? visibleSessions[0]?.id ?? null;
       if (nextSessionId) {
         await selectSession(nextSessionId, nextClient, sortedSessions, projectPath);
       } else {
         setSelectedSessionId(null);
         setCurrentSession(null);
+        clearLastOpenedSession(projectPath);
       }
       await refreshModels(runtimeStatus.provider, nextClient, runtimeStatus.model);
       openEventSocket(nextClient, runtimeStatus.ws_url, runtimeStatus.workspace_root);
@@ -1268,12 +1295,17 @@ function App() {
         if (isActiveProject) {
           setSelectedSessionId(payloadSession.id);
           setCurrentSession(payloadSession);
+          persistLastOpenedSession(projectPath, payloadSession.id);
         }
       }
       return;
     }
     if (event.type === "turn_started") {
       if (event.session_id) {
+        setCollapsedProjects((previous) => ({
+          ...previous,
+          [projectPath]: false,
+        }));
         setActiveProjectTurns((previous) => ({
           ...previous,
           [projectPath]: [
@@ -1502,6 +1534,13 @@ function App() {
       setSelectedSessionId(created.id);
       setCurrentSession(created);
       setSidebarSection("sessions");
+      if (projectPath) {
+        persistLastOpenedSession(projectPath, created.id);
+        setCollapsedProjects((previous) => ({
+          ...previous,
+          [projectPath]: false,
+        }));
+      }
     }
     return created;
   }
@@ -1518,6 +1557,13 @@ function App() {
     const loadedSession = await client.loadSession(sessionId);
     setSelectedSessionId(sessionId);
     setCurrentSession(loadedSession);
+    if (projectPath) {
+      persistLastOpenedSession(projectPath, sessionId);
+      setCollapsedProjects((previous) => ({
+        ...previous,
+        [projectPath]: false,
+      }));
+    }
     setActiveTurnId(
       projectPath ? (activeProjectTurns[projectPath] ?? []).find((turn) => turn.sessionId === sessionId)?.turnId ?? null : null,
     );
@@ -1573,6 +1619,7 @@ function App() {
       setCurrentSession(null);
       setActiveTurnId(null);
     }
+    clearLastOpenedSession(projectPath, sessionId);
   }
 
   function updateActiveProject(patch: Partial<Pick<ProjectState, "status" | "pendingInteractions" | "toolLogs" | "sessions">>) {
@@ -1706,6 +1753,13 @@ function App() {
       upsertProjectSession(projectPath, session);
       setSelectedSessionId(session.id);
       setCurrentSession(session);
+      if (projectPath) {
+        persistLastOpenedSession(projectPath, session.id);
+        setCollapsedProjects((previous) => ({
+          ...previous,
+          [projectPath]: false,
+        }));
+      }
       setSidebarSection("sessions");
       setContextPanelOpen(true);
       setDraft("");
@@ -1729,6 +1783,7 @@ function App() {
       delete projectClientsRef.current[projectPath];
       await stopManagedSidecar(projectPath);
       removeStoredProjectPath(projectPath);
+      clearLastOpenedSession(projectPath);
       setActiveProjectTurns((previous) => {
         const next = { ...previous };
         delete next[projectPath];
@@ -2478,6 +2533,7 @@ function App() {
         setSelectedSessionId(null);
         setCurrentSession(null);
         setActiveTurnId(null);
+        clearLastOpenedSession(projectPath);
       }
     }
 
@@ -2777,7 +2833,11 @@ function App() {
             ) : (
               <div className="project-groups">
                 {sessionProjectGroups.map((group) => {
-                  const isCollapsed = Boolean(collapsedProjects[group.key]);
+                  const hasActiveProjectTurn = (activeProjectTurns[group.path] ?? []).length > 0;
+                  const hasPendingInteraction = group.pendingInteractions.length > 0;
+                  const isSelectedProject = selectedProjectPath === group.path;
+                  const shouldForceExpanded = isSelectedProject || hasActiveProjectTurn || hasPendingInteraction;
+                  const isCollapsed = shouldForceExpanded ? false : (collapsedProjects[group.key] ?? true);
                   return (
                     <section key={group.key} className="project-group">
                       <div className={`project-toggle ${isCollapsed ? "collapsed" : ""}`}>
@@ -2786,7 +2846,7 @@ function App() {
                           onClick={() =>
                             setCollapsedProjects((previous) => ({
                               ...previous,
-                              [group.key]: !previous[group.key],
+                              [group.key]: !isCollapsed,
                             }))
                           }
                         >
@@ -4643,6 +4703,48 @@ function projectPathKey(path: string | null | undefined): string {
     normalized = normalized.toLowerCase();
   }
   return normalized;
+}
+
+function readLastOpenedSession(): LastOpenedSessionState | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(LAST_OPENED_SESSION_STORAGE_KEY) ?? "null") as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const projectPath = (value as { projectPath?: unknown }).projectPath;
+    const sessionId = (value as { sessionId?: unknown }).sessionId;
+    if (typeof projectPath !== "string" || !projectPath.trim() || typeof sessionId !== "string" || !sessionId.trim()) {
+      return null;
+    }
+    return { projectPath, sessionId };
+  } catch {
+    return null;
+  }
+}
+
+function persistLastOpenedSession(projectPath: string, sessionId: string) {
+  if (typeof window === "undefined" || !projectPath.trim() || !sessionId.trim()) {
+    return;
+  }
+  window.localStorage.setItem(LAST_OPENED_SESSION_STORAGE_KEY, JSON.stringify({ projectPath, sessionId }));
+}
+
+function clearLastOpenedSession(projectPath?: string | null, sessionId?: string | null) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const current = readLastOpenedSession();
+  if (!current) {
+    return;
+  }
+  const projectMatches = !projectPath || projectPathKey(current.projectPath) === projectPathKey(projectPath);
+  const sessionMatches = !sessionId || current.sessionId === sessionId;
+  if (projectMatches && sessionMatches) {
+    window.localStorage.removeItem(LAST_OPENED_SESSION_STORAGE_KEY);
+  }
 }
 
 function readStoredLayout(): LayoutState {
