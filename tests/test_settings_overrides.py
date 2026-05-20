@@ -9,8 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from open_somnia.config.settings import (
+    APP_DIR_GITIGNORE,
     NoConfiguredProvidersError,
     NoUsableProvidersError,
+    ensure_app_dir_ignored,
     _infer_context_window_tokens,
     load_settings,
     persist_initial_provider_setup,
@@ -111,7 +113,19 @@ class SettingsOverrideTests(unittest.TestCase):
             with self._patched_home(home):
                 settings = load_settings(root)
 
-        self.assertEqual(settings.runtime.max_agent_rounds, 100)
+            self.assertEqual(settings.runtime.max_agent_rounds, 100)
+            self.assertEqual((root / ".open_somnia" / ".gitignore").read_text(encoding="utf-8"), APP_DIR_GITIGNORE)
+
+    def test_ensure_app_dir_ignored_preserves_existing_gitignore(self) -> None:
+        with self._tempdir() as tmpdir:
+            app_dir = Path(tmpdir) / ".open_somnia"
+            app_dir.mkdir(parents=True)
+            gitignore = app_dir / ".gitignore"
+            gitignore.write_text("custom\n", encoding="utf-8")
+
+            ensure_app_dir_ignored(app_dir)
+
+            self.assertEqual(gitignore.read_text(encoding="utf-8"), "custom\n")
 
     def test_load_settings_can_override_provider_and_model_from_configured_profiles(self) -> None:
         with self._tempdir() as tmpdir:

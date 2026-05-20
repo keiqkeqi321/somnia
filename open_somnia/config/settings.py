@@ -23,6 +23,7 @@ from open_somnia.storage.common import atomic_write_text
 
 APP_DIRNAME = ".open_somnia"
 CONFIG_FILENAME = "open_somnia.toml"
+APP_DIR_GITIGNORE = "*\n"
 DEFAULT_AGENT_NAME = "Somnia"
 HOOKS_DIRNAME = "Hooks"
 BUILTIN_NOTIFY_FOLDER = "builtin_notify"
@@ -120,6 +121,13 @@ def global_hooks_root() -> Path:
 
 def workspace_config_path(workspace_root: Path) -> Path:
     return workspace_root / APP_DIRNAME / CONFIG_FILENAME
+
+
+def ensure_app_dir_ignored(app_dir: Path) -> None:
+    app_dir.mkdir(parents=True, exist_ok=True)
+    gitignore = app_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(APP_DIR_GITIGNORE, encoding="utf-8")
 
 
 def load_raw_config(workspace_root: Path) -> dict:
@@ -278,7 +286,7 @@ def clear_stale_provider_config(workspace_root: Path) -> None:
 
 def persist_provider_selection(settings: AppSettings, provider_name: str, model: str) -> None:
     config_path = workspace_config_path(settings.workspace_root)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_app_dir_ignored(config_path.parent)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
     _upsert_section_value(lines, "providers", "default", _toml_string(provider_name))
     _upsert_section_value(lines, f"providers.{provider_name}", "default_model", _toml_string(model))
@@ -307,7 +315,7 @@ def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, 
         raise ValueError("Reasoning level must be one of: auto, low, medium, high, deep.")
 
     config_path = workspace_config_path(settings.workspace_root)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_app_dir_ignored(config_path.parent)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
     if clear_requested:
         lines = _remove_section_value(lines, f"providers.{normalized_provider}", "reasoning_level")
@@ -1027,6 +1035,7 @@ def load_settings(
 
 
 def ensure_storage_dirs(settings: AppSettings) -> None:
+    ensure_app_dir_ignored(settings.storage.data_dir)
     for path in (
         settings.storage.data_dir,
         settings.storage.transcripts_dir,
