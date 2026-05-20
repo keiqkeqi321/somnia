@@ -256,9 +256,26 @@ export interface ConversationToolCall {
   output: string;
   rawInput?: unknown;
   rawOutput?: unknown;
+  contentBlocks?: ConversationContentBlock[];
   logId?: string | null;
   status?: "running" | "finished";
 }
+
+export interface ConversationImageReferenceBlock {
+  type: "image_reference";
+  path?: string;
+  absolute_path?: string;
+  media_type?: string;
+  image_url?: string;
+  origin?: string;
+}
+
+export interface ConversationTextContentBlock {
+  type: "text";
+  text: string;
+}
+
+export type ConversationContentBlock = ConversationImageReferenceBlock | ConversationTextContentBlock;
 
 export interface ConversationPendingTurn {
   id: string;

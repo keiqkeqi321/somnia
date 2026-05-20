@@ -6,6 +6,7 @@ import os
 import socket
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -337,6 +338,26 @@ class SidecarServerTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertFalse(toggle_payload["enabled"])
             self.assertEqual(toggle_payload["tool_count"], 0)
+        finally:
+            server.close()
+
+    def test_workspace_image_endpoint_serves_only_workspace_images(self) -> None:
+        root = self._stable_test_dir("sidecar-image")
+        image_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+        (root / "qr.png").write_bytes(image_bytes)
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        server.start_background()
+        try:
+            with urllib.request.urlopen(f"{server.base_url}/workspace/images?path=qr.png", timeout=2.0) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get("Content-Type"), "image/png")
+                self.assertEqual(response.read(), image_bytes)
+
+            with self.assertRaises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(f"{server.base_url}/workspace/images?path=../qr.png", timeout=2.0)
+            self.assertEqual(exc.exception.code, 403)
         finally:
             server.close()
 

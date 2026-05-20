@@ -202,6 +202,7 @@ const translations = {
     /* ── Tool call card ── */
     "toolCall.input": "Input",
     "toolCall.output": "Output",
+    "toolCall.images": "Images",
     "toolCall.changes": "Changes",
     "toolCall.changesFor": "Changes for {path}",
     "toolCall.fileUpdated": "File updated.",
@@ -478,6 +479,7 @@ const translations = {
     /* ── Tool call card ── */
     "toolCall.input": "输入",
     "toolCall.output": "输出",
+    "toolCall.images": "图片",
     "toolCall.changes": "变更",
     "toolCall.changesFor": "{path} 的变更",
     "toolCall.fileUpdated": "文件已更新。",

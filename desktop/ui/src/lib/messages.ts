@@ -1,5 +1,6 @@
 import type {
   AgentSession,
+  ConversationContentBlock,
   ConversationPendingTurn,
   ConversationRow,
   ConversationRowPart,
@@ -262,6 +263,7 @@ function buildAssistantParts(rowId: string, assistantContent: unknown, nextUserC
       output: stringifyToolValue(toolResultOutput(result)),
       rawInput: item.input ?? {},
       rawOutput: toolResultOutput(result),
+      contentBlocks: toolResultContentBlocks(result),
       logId: isRecord(result) && typeof result.log_id === "string" ? result.log_id : null,
     };
     parts.push({ id: `${rowId}-${toolCall.id || `tool-${toolCount}`}`, type: "tool_call", toolCall });
@@ -301,6 +303,33 @@ function toolResultOutput(result: Record<string, unknown> | undefined): unknown 
     return "(no output)";
   }
   return result.raw_output ?? result.content ?? "(no output)";
+}
+
+function toolResultContentBlocks(result: Record<string, unknown> | undefined): ConversationContentBlock[] {
+  if (!result || !Array.isArray(result.content_blocks)) {
+    return [];
+  }
+  const blocks: ConversationContentBlock[] = [];
+  for (const item of result.content_blocks) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (item.type === "text") {
+      blocks.push({ type: "text", text: String(item.text ?? "") });
+      continue;
+    }
+    if (item.type === "image_reference") {
+      blocks.push({
+        type: "image_reference",
+        path: typeof item.path === "string" ? item.path : undefined,
+        absolute_path: typeof item.absolute_path === "string" ? item.absolute_path : undefined,
+        media_type: typeof item.media_type === "string" ? item.media_type : undefined,
+        image_url: typeof item.image_url === "string" ? item.image_url : undefined,
+        origin: typeof item.origin === "string" ? item.origin : undefined,
+      });
+    }
+  }
+  return blocks;
 }
 
 export function stringifyToolValue(value: unknown): string {

@@ -1939,6 +1939,34 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(blocks[1]["type"], "image_url")
         self.assertTrue(blocks[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
+    def test_mcp_local_image_link_becomes_image_reference_content(self) -> None:
+        rendered = _render_mcp_result(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "### Result\n- [Screenshot of viewport](./feishu-login-qr.png)",
+                    }
+                ]
+            },
+            cwd=Path.cwd(),
+        )
+
+        self.assertIsInstance(rendered, dict)
+        self.assertEqual(rendered["status"], "ok")
+        self.assertIn("feishu-login-qr.png", rendered["tool_result_text"])
+        self.assertEqual(rendered["tool_result_content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+        self.assertEqual(rendered["tool_result_content"][1]["path"], "./feishu-login-qr.png")
+        self.assertEqual(rendered["tool_result_content"][1]["media_type"], "image/png")
+
+        result_item = make_tool_result_item(
+            "call-1",
+            rendered,
+            rendered_output=json.dumps(rendered, ensure_ascii=False),
+        )
+
+        self.assertEqual(result_item["content_blocks"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
+
     def test_consume_ephemeral_image_blocks_rewrites_user_image_inputs_to_references(self) -> None:
         messages = [
             {

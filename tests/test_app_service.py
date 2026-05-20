@@ -19,6 +19,7 @@ from open_somnia.config.models import (
 from open_somnia.runtime.agent import AgentLoopResult, OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
+from open_somnia.tools.registry import ToolDefinition
 
 
 class AppServiceTests(unittest.TestCase):
@@ -210,6 +211,47 @@ class AppServiceTests(unittest.TestCase):
             self.assertEqual(todo_updated.payload["items"][0]["status"], "in_progress")
             self.assertEqual(result.text, "Done.")
             self.assertEqual(session.todo_items[0]["content"], "Build service layer")
+        finally:
+            service.close()
+
+    def test_tool_finished_event_includes_structured_content_blocks(self) -> None:
+        root = self._stable_test_dir("app-service-tool-image")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        runtime.execution_mode = "yolo"
+        runtime.registry.register(
+            ToolDefinition(
+                name="structured_image",
+                description="Return a structured image reference.",
+                input_schema={"type": "object", "properties": {}},
+                handler=lambda ctx, payload: {
+                    "status": "ok",
+                    "tool_result_text": "Image ready",
+                    "tool_result_content": [
+                        {"type": "text", "text": "Image ready"},
+                        {"type": "image_reference", "path": "qr.png", "media_type": "image/png"},
+                    ],
+                },
+            )
+        )
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            turns = iter(
+                [
+                    AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-1", "structured_image", {})]),
+                    AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+                ]
+            )
+            runtime.complete = lambda *args, **kwargs: next(turns)
+
+            handle = service.run_turn(session, "show image")
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+
+            events = handle.drain_events()
+            tool_finished = next(event for event in events if event.type == "tool_finished")
+            self.assertEqual(tool_finished.payload["content_blocks"][1]["type"], "image_reference")
+            self.assertEqual(tool_finished.payload["content_blocks"][1]["path"], "qr.png")
         finally:
             service.close()
 

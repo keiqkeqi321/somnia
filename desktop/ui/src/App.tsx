@@ -38,6 +38,7 @@ import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
+  ConversationContentBlock,
   ConversationPendingTurn,
   ConversationRuntimeItem,
   ConversationToolCall,
@@ -1008,6 +1009,7 @@ function App() {
       output: stringifyToolValue(event.payload.output ?? "(no output)"),
       rawInput: event.payload.tool_input ?? {},
       rawOutput: event.payload.output ?? "(no output)",
+      contentBlocks: toolResultContentBlocksFromEvent(event.payload),
       logId: typeof event.payload.log_id === "string" ? event.payload.log_id : null,
       status: "finished" as const,
     };
@@ -2948,7 +2950,7 @@ function App() {
                         <MarkdownMessage key={part.id} text={part.text} />
                       ) : (
                         <div key={part.id} className="tool-call-stack">
-                          <ToolCallCard toolCall={part.toolCall} />
+                          <ToolCallWithImages toolCall={part.toolCall} baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""} />
                         </div>
                       ),
                     )
@@ -2964,7 +2966,9 @@ function App() {
                   ) : null}
                   {!row.parts?.length && row.toolCalls?.length ? (
                     <div className="tool-call-stack">
-                      {row.toolCalls.map((toolCall) => <ToolCallCard key={toolCall.id} toolCall={toolCall} />)}
+                      {row.toolCalls.map((toolCall) => (
+                        <ToolCallWithImages key={toolCall.id} toolCall={toolCall} baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""} />
+                      ))}
                     </div>
                   ) : null}
                   {row.id === latestStreamingAssistantRowId ? (
@@ -3876,6 +3880,22 @@ function clampMermaidZoom(value: number): number {
   return Math.min(MERMAID_MAX_ZOOM, Math.max(MERMAID_MIN_ZOOM, Number(value.toFixed(2))));
 }
 
+function ToolCallWithImages({ toolCall, baseUrl }: { toolCall: ConversationToolCall; baseUrl: string }) {
+  const imageReferences = toolCall.contentBlocks?.filter((block) => block.type === "image_reference") ?? [];
+  return (
+    <>
+      <ToolCallCard toolCall={toolCall} />
+      {imageReferences.length > 0 ? (
+        <div className="tool-image-list">
+          {imageReferences.map((image, index) => (
+            <ToolImagePreview key={`${image.path ?? image.absolute_path ?? image.image_url ?? "image"}-${index}`} image={image} baseUrl={baseUrl} />
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
   const { t } = useI18n();
   const resultState = toolCallResultState(toolCall);
@@ -3914,6 +3934,66 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
       )}
     </details>
   );
+}
+
+function ToolImagePreview({
+  image,
+  baseUrl,
+}: {
+  image: NonNullable<ConversationToolCall["contentBlocks"]>[number] & { type: "image_reference" };
+  baseUrl: string;
+}) {
+  const src = toolImageSource(image, baseUrl);
+  const label = image.path || image.absolute_path || image.image_url || "tool image";
+  if (!src) {
+    return <span className="tool-image-missing">{label}</span>;
+  }
+  return (
+    <a className="tool-image-preview" href={src} target="_blank" rel="noreferrer" title={label}>
+      <img src={src} alt={label} loading="lazy" />
+      <span>{label}</span>
+    </a>
+  );
+}
+
+function toolImageSource(image: { path?: string; absolute_path?: string; image_url?: string }, baseUrl: string): string {
+  const imageUrl = String(image.image_url ?? "").trim();
+  if (/^(?:https?:|data:image\/)/i.test(imageUrl)) {
+    return imageUrl;
+  }
+  const path = String(image.path || image.absolute_path || "").trim();
+  if (!path || !baseUrl.trim()) {
+    return "";
+  }
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  return `${normalizedBaseUrl}/workspace/images?path=${encodeURIComponent(path)}`;
+}
+
+function toolResultContentBlocksFromEvent(payload: Record<string, unknown>): ConversationContentBlock[] {
+  if (!Array.isArray(payload.content_blocks)) {
+    return [];
+  }
+  const blocks: ConversationContentBlock[] = [];
+  for (const item of payload.content_blocks) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (item.type === "text") {
+      blocks.push({ type: "text", text: String(item.text ?? "") });
+      continue;
+    }
+    if (item.type === "image_reference") {
+      blocks.push({
+        type: "image_reference",
+        path: typeof item.path === "string" ? item.path : undefined,
+        absolute_path: typeof item.absolute_path === "string" ? item.absolute_path : undefined,
+        media_type: typeof item.media_type === "string" ? item.media_type : undefined,
+        image_url: typeof item.image_url === "string" ? item.image_url : undefined,
+        origin: typeof item.origin === "string" ? item.origin : undefined,
+      });
+    }
+  }
+  return blocks;
 }
 
 type ToolResultState = "running" | "success" | "error";

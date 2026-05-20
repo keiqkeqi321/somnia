@@ -58,7 +58,7 @@ from open_somnia.path_completion import (
 )
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
-from open_somnia.runtime.messages import parse_image_data_url
+from open_somnia.runtime.messages import guess_image_media_type, parse_image_data_url
 from open_somnia.skills.loader import SkillLoader
 
 CLIPBOARD_TEMP_DIRNAME = "temp"
@@ -458,6 +458,27 @@ class SidecarServer:
             "absolute_path": str(image_path),
             "media_type": parsed_media_type,
         }
+
+    def resolve_workspace_image(self, image_path: str) -> tuple[Path, str]:
+        raw_path = str(image_path or "").strip()
+        if not raw_path:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "path is required.")
+        candidate = Path(raw_path)
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            resolved = (self.settings.workspace_root / candidate).resolve()
+        workspace_root = self.settings.workspace_root.resolve()
+        try:
+            resolved.relative_to(workspace_root)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.FORBIDDEN, "Image path must stay inside the workspace.") from exc
+        if not resolved.is_file():
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Image not found: {raw_path}")
+        media_type = guess_image_media_type(resolved)
+        if media_type is None:
+            raise SidecarAPIError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, f"Unsupported image format: {raw_path}")
+        return resolved, media_type
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.httpd.serve_forever(poll_interval=poll_interval)
@@ -960,6 +981,9 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/ws":
             self._handle_websocket()
             return
+        if parsed.path == "/workspace/images":
+            self._handle_workspace_image(parsed)
+            return
         try:
             payload = self._route_get(parsed)
             self._send_json(HTTPStatus.OK, payload)
@@ -1036,6 +1060,21 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             session_id = (query.get("session_id") or [None])[0]
             return {"tasks": self.sidecar.list_tasks(session_id)}
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
+
+    def _handle_workspace_image(self, parsed) -> None:
+        try:
+            query = parse_qs(parsed.query)
+            image_path = (query.get("path") or [""])[0]
+            resolved, media_type = self.sidecar.resolve_workspace_image(image_path)
+            data = resolved.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self._send_common_headers(content_type=media_type, content_length=len(data))
+            self.end_headers()
+            self.wfile.write(data)
+        except SidecarAPIError as exc:
+            self._send_json(exc.status_code, {"error": exc.message})
+        except Exception as exc:
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def _route_post(self, parsed, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
         path_parts = [part for part in parsed.path.split("/") if part]

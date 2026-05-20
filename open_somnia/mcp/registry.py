@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from open_somnia.config.models import MCPServerSettings
 from open_somnia.mcp.client import MCPClient
 from open_somnia.runtime.messages import (
+    guess_image_media_type,
     make_image_reference_block,
     parse_image_data_url,
     render_image_reference_text,
 )
 from open_somnia.tools.registry import ToolDefinition
+
+LOCAL_IMAGE_LINK_PATTERN = re.compile(r"!?\[[^\]]*]\(([^)\r\n]+)\)")
 
 
 def _mcp_image_data_url(item: dict[str, Any]) -> tuple[str, str] | None:
@@ -48,7 +52,40 @@ def _mcp_image_result_blocks(items: list[Any]) -> list[dict[str, Any]]:
     return blocks
 
 
-def _render_mcp_result(result: dict[str, Any]) -> Any:
+def _local_image_reference_blocks(text: str, *, cwd: Path | None = None) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in LOCAL_IMAGE_LINK_PATTERN.finditer(text):
+        raw_target = match.group(1).strip().strip("<>")
+        target = raw_target.split(None, 1)[0].strip().strip("'\"")
+        if not target or re.match(r"^[a-z][a-z0-9+.-]*:", target, re.IGNORECASE):
+            continue
+        media_type = guess_image_media_type(target)
+        if media_type is None:
+            continue
+        normalized_path = target.replace("\\", "/")
+        absolute_path = ""
+        target_path = Path(target)
+        if target_path.is_absolute():
+            absolute_path = str(target_path)
+        elif cwd is not None:
+            absolute_path = str((cwd / target_path).resolve())
+        key = f"{normalized_path}\0{absolute_path}"
+        if key in seen:
+            continue
+        seen.add(key)
+        blocks.append(
+            make_image_reference_block(
+                path=normalized_path,
+                absolute_path=absolute_path,
+                media_type=media_type,
+                origin="tool_result",
+            )
+        )
+    return blocks
+
+
+def _render_mcp_result(result: dict[str, Any], *, cwd: Path | None = None) -> Any:
     parts: list[str] = []
     raw_content = result.get("content", [])
     content_items = raw_content if isinstance(raw_content, list) else []
@@ -61,6 +98,7 @@ def _render_mcp_result(result: dict[str, Any]) -> Any:
             parts.append(str(item))
     text = "\n".join(part for part in parts if part) or "(no content)"
     image_blocks = _mcp_image_result_blocks(content_items)
+    local_image_references = _local_image_reference_blocks(text, cwd=cwd)
     if image_blocks and not result.get("isError"):
         references = [
             make_image_reference_block(
@@ -85,6 +123,18 @@ def _render_mcp_result(result: dict[str, Any]) -> Any:
                     }
                     for block in image_blocks
                 ],
+            ],
+        }
+    if local_image_references and not result.get("isError"):
+        image_summary = "\n".join(render_image_reference_text(reference, delivery=True) for reference in local_image_references)
+        summary = "\n".join(part for part in (text if text != "(no content)" else "", image_summary) if part)
+        return {
+            "status": "ok",
+            "message": summary,
+            "tool_result_text": summary,
+            "tool_result_content": [
+                {"type": "text", "text": summary},
+                *local_image_references,
             ],
         }
     if result.get("isError"):
@@ -118,6 +168,8 @@ class MCPRegistry:
         unregister_prefix = getattr(registry, "unregister_prefix", None)
         if callable(unregister_prefix):
             unregister_prefix(f"mcp__{server_name}__")
+        server = next((item for item in self.all_servers if item.name == server_name), None)
+        server_cwd = getattr(server, "cwd", None)
         for tool in tools:
             remote_name = tool["name"]
             local_name = f"mcp__{server_name}__{remote_name}"
@@ -126,9 +178,15 @@ class MCPRegistry:
                 "properties": {},
             }
 
-            def handler(ctx: Any, payload: dict[str, Any], server_name: str = server_name, name: str = remote_name) -> str:
+            def handler(
+                ctx: Any,
+                payload: dict[str, Any],
+                server_name: str = server_name,
+                name: str = remote_name,
+                cwd=server_cwd,
+            ) -> str:
                 result = self.clients[server_name].call_tool(name, payload)
-                return _render_mcp_result(result)
+                return _render_mcp_result(result, cwd=cwd)
 
             registry.register(
                 ToolDefinition(

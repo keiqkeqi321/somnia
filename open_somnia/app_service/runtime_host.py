@@ -28,7 +28,7 @@ from open_somnia.app_service.interaction_service import InteractionService
 from open_somnia.app_service.models import TurnHandle, TurnRunResult
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import decode_embedded_user_message, render_text_content
+from open_somnia.runtime.messages import decode_embedded_user_message, normalize_tool_result_content_blocks, render_text_content
 from open_somnia.runtime.session import AgentSession
 
 _MISSING = object()
@@ -327,6 +327,7 @@ class RuntimeHost:
 
         def wrapped_print_tool_event(actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
             category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
+            content_blocks = normalize_tool_result_content_blocks(output.get("tool_result_content")) if isinstance(output, dict) else []
             log_entry = active_turn.runtime.tool_log_store.write(
                 actor=actor,
                 tool_name=tool_name,
@@ -341,6 +342,7 @@ class RuntimeHost:
                 tool_name=tool_name,
                 tool_input=_clone_value(tool_input),
                 output=_clone_value(output),
+                content_blocks=_clone_value(content_blocks),
                 log_id=log_entry["id"],
                 category=category,
                 rendered_lines=renderer.render_tool_event_lines(

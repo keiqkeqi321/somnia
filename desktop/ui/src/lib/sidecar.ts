@@ -236,6 +236,10 @@ export class SidecarClient {
     );
   }
 
+  workspaceImageUrl(path: string): string {
+    return `${this.baseUrl}/workspace/images?path=${encodeURIComponent(path)}`;
+  }
+
   async switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string }> {
     return parseResponse<{ message: string; provider: string; model: string }>(
       await fetch(`${this.baseUrl}/providers/switch`, {
