@@ -665,6 +665,7 @@ function App() {
           const managedProjectKey = projectPathKey(managedConnection.workspaceRoot);
           await connectManagedProject(managedConnection, {
             selectProject: !lastOpenedProjectKey || managedProjectKey === lastOpenedProjectKey,
+            expandProject: !lastOpenedProjectKey || managedProjectKey === lastOpenedProjectKey,
           });
           for (const projectPath of savedProjectPaths) {
             if (projectPathKey(projectPath) === projectPathKey(managedConnection.workspaceRoot)) {
@@ -675,6 +676,7 @@ function App() {
               if (projectConnection) {
                 await connectManagedProject(projectConnection, {
                   selectProject: projectPathKey(projectPath) === lastOpenedProjectKey,
+                  expandProject: projectPathKey(projectPath) === lastOpenedProjectKey,
                 });
               }
             } catch (error) {
@@ -696,7 +698,7 @@ function App() {
 
   async function connectManagedProject(
     managedConnection: ManagedSidecarConnection,
-    options: { selectProject: boolean } = { selectProject: true },
+    options: { selectProject: boolean; expandProject?: boolean } = { selectProject: true },
   ) {
     const client = new SidecarClient(managedConnection.baseUrl);
     setConnectionState("connecting");
@@ -728,6 +730,12 @@ function App() {
     openEventSocket(client, runtimeStatus.ws_url, projectPath);
     setConnectionState("connected");
 
+    if (options.expandProject) {
+      setCollapsedProjects((previous) => ({
+        ...previous,
+        [projectPath]: false,
+      }));
+    }
     if (options.selectProject) {
       await activateProject(projectPath, client, project);
     } else if (!selectedProjectPathRef.current) {
@@ -834,6 +842,10 @@ function App() {
       setProjects((previous) => upsertProject(previous, project));
       setSelectedProjectPath(projectPath);
       setSessions(sortedSessions);
+      setCollapsedProjects((previous) => ({
+        ...previous,
+        [projectPath]: false,
+      }));
       const lastOpenedSession = readLastOpenedSession();
       const preferredSessionId =
         lastOpenedSession && projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)
@@ -1310,10 +1322,6 @@ function App() {
     }
     if (event.type === "turn_started") {
       if (event.session_id) {
-        setCollapsedProjects((previous) => ({
-          ...previous,
-          [projectPath]: false,
-        }));
         setActiveProjectTurns((previous) => ({
           ...previous,
           [projectPath]: [
@@ -1544,10 +1552,6 @@ function App() {
       setSidebarSection("sessions");
       if (projectPath) {
         persistLastOpenedSession(projectPath, created.id);
-        setCollapsedProjects((previous) => ({
-          ...previous,
-          [projectPath]: false,
-        }));
       }
     }
     return created;
@@ -1567,10 +1571,6 @@ function App() {
     setCurrentSession(loadedSession);
     if (projectPath) {
       persistLastOpenedSession(projectPath, sessionId);
-      setCollapsedProjects((previous) => ({
-        ...previous,
-        [projectPath]: false,
-      }));
     }
     setActiveTurnId(
       projectPath ? (activeProjectTurns[projectPath] ?? []).find((turn) => turn.sessionId === sessionId)?.turnId ?? null : null,
@@ -1721,7 +1721,7 @@ function App() {
         setBannerMessage(message);
         return;
       }
-      await connectManagedProject(managedConnection, { selectProject: true });
+      await connectManagedProject(managedConnection, { selectProject: true, expandProject: true });
       setBannerMessage(`Added project: ${managedConnection.workspaceRoot}`);
     } catch (error) {
       const message = formatErrorMessage(error);
@@ -1770,10 +1770,6 @@ function App() {
       setCurrentSession(session);
       if (projectPath) {
         persistLastOpenedSession(projectPath, session.id);
-        setCollapsedProjects((previous) => ({
-          ...previous,
-          [projectPath]: false,
-        }));
       }
       setSidebarSection("sessions");
       setContextPanelOpen(true);
@@ -2850,11 +2846,7 @@ function App() {
             ) : (
               <div className="project-groups">
                 {sessionProjectGroups.map((group) => {
-                  const hasActiveProjectTurn = (activeProjectTurns[group.path] ?? []).length > 0;
-                  const hasPendingInteraction = group.pendingInteractions.length > 0;
-                  const isSelectedProject = selectedProjectPath === group.path;
-                  const shouldForceExpanded = isSelectedProject || hasActiveProjectTurn || hasPendingInteraction;
-                  const isCollapsed = shouldForceExpanded ? false : (collapsedProjects[group.key] ?? true);
+                  const isCollapsed = collapsedProjects[group.key] ?? true;
                   return (
                     <section key={group.key} className="project-group">
                       <div className={`project-toggle ${isCollapsed ? "collapsed" : ""}`}>
