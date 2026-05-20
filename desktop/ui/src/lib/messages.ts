@@ -306,30 +306,87 @@ function toolResultOutput(result: Record<string, unknown> | undefined): unknown 
 }
 
 function toolResultContentBlocks(result: Record<string, unknown> | undefined): ConversationContentBlock[] {
-  if (!result || !Array.isArray(result.content_blocks)) {
+  if (!result) {
     return [];
   }
+  const contents: unknown[] = [result.content_blocks];
+  if (isRecord(result.raw_output)) {
+    contents.push(result.raw_output.content_blocks, result.raw_output.tool_result_content);
+  }
+  return normalizeToolContentBlocks(...contents);
+}
+
+export function normalizeToolContentBlocks(...contents: unknown[]): ConversationContentBlock[] {
   const blocks: ConversationContentBlock[] = [];
-  for (const item of result.content_blocks) {
-    if (!isRecord(item)) {
+  for (const content of contents) {
+    if (!Array.isArray(content)) {
       continue;
     }
-    if (item.type === "text") {
-      blocks.push({ type: "text", text: String(item.text ?? "") });
-      continue;
-    }
-    if (item.type === "image_reference") {
-      blocks.push({
-        type: "image_reference",
-        path: typeof item.path === "string" ? item.path : undefined,
-        absolute_path: typeof item.absolute_path === "string" ? item.absolute_path : undefined,
-        media_type: typeof item.media_type === "string" ? item.media_type : undefined,
-        image_url: typeof item.image_url === "string" ? item.image_url : undefined,
-        origin: typeof item.origin === "string" ? item.origin : undefined,
-      });
+    for (const item of content) {
+      if (!isRecord(item)) {
+        continue;
+      }
+      if (item.type === "text") {
+        blocks.push({ type: "text", text: String(item.text ?? "") });
+        continue;
+      }
+      const imageReference = toolImageReferenceBlock(item);
+      if (imageReference) {
+        blocks.push(imageReference);
+      }
     }
   }
   return blocks;
+}
+
+function toolImageReferenceBlock(item: Record<string, unknown>): ConversationContentBlock | null {
+  if (item.type === "image_reference") {
+    const path = typeof item.path === "string" ? item.path : undefined;
+    const absolutePath = typeof item.absolute_path === "string" ? item.absolute_path : undefined;
+    const imageUrl = typeof item.image_url === "string" ? item.image_url : undefined;
+    if (!path && !absolutePath && !imageUrl) {
+      return null;
+    }
+    return {
+      type: "image_reference",
+      path,
+      absolute_path: absolutePath,
+      media_type: typeof item.media_type === "string" ? item.media_type : undefined,
+      image_url: imageUrl,
+      origin: typeof item.origin === "string" ? item.origin : undefined,
+    };
+  }
+  if (item.type === "image_url") {
+    const imageUrl = isRecord(item.image_url) ? item.image_url.url : item.image_url;
+    if (typeof imageUrl !== "string" || !imageUrl.trim()) {
+      return null;
+    }
+    return {
+      type: "image_reference",
+      media_type: mediaTypeFromDataUrl(imageUrl),
+      image_url: imageUrl,
+      origin: "tool_result",
+    };
+  }
+  if (item.type === "image" && isRecord(item.source)) {
+    const data = typeof item.source.data === "string" ? item.source.data : "";
+    const mediaType = typeof item.source.media_type === "string" ? item.source.media_type : "image/png";
+    if (!data.trim()) {
+      return null;
+    }
+    return {
+      type: "image_reference",
+      media_type: mediaType,
+      image_url: `data:${mediaType};base64,${data}`,
+      origin: "tool_result",
+    };
+  }
+  return null;
+}
+
+function mediaTypeFromDataUrl(value: string): string | undefined {
+  const match = /^data:([^;,]+)[;,]/i.exec(value.trim());
+  return match?.[1];
 }
 
 export function stringifyToolValue(value: unknown): string {

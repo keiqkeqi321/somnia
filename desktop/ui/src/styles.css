@@ -2492,7 +2492,10 @@ button {
 
 .tool-image-preview span,
 .tool-image-missing {
-  overflow-wrap: anywhere;
+  max-width: min(100%, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 0.78rem;
 }

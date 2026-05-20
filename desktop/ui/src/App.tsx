@@ -31,6 +31,7 @@ import {
   buildSessionPreview,
   formatRelativeTime,
   formatTodoLabel,
+  normalizeToolContentBlocks,
   sortSessions,
   stringifyToolValue,
 } from "./lib/messages";
@@ -4001,6 +4002,7 @@ function ToolCallWithImages({
             <ToolImagePreview
               key={`${image.path ?? image.absolute_path ?? image.image_url ?? "image"}-${index}`}
               image={image}
+              index={index}
               baseUrl={baseUrl}
               onPreviewImage={onPreviewImage}
             />
@@ -4053,22 +4055,24 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
 
 function ToolImagePreview({
   image,
+  index,
   baseUrl,
   onPreviewImage,
 }: {
   image: NonNullable<ConversationToolCall["contentBlocks"]>[number] & { type: "image_reference" };
+  index: number;
   baseUrl: string;
   onPreviewImage: (preview: ToolImagePreviewState) => void;
 }) {
   const src = toolImageSource(image, baseUrl);
-  const label = image.path || image.absolute_path || image.image_url || "tool image";
+  const labels = toolImageLabels(image, index);
   if (!src) {
-    return <span className="tool-image-missing">{label}</span>;
+    return <span className="tool-image-missing" title={labels.title}>{labels.display}</span>;
   }
   return (
-    <button className="tool-image-preview" type="button" title={label} onClick={() => onPreviewImage({ src, label })}>
-      <img src={src} alt={label} loading="lazy" />
-      <span>{label}</span>
+    <button className="tool-image-preview" type="button" title={labels.title} onClick={() => onPreviewImage({ src, label: labels.display })}>
+      <img src={src} alt={labels.display} loading="lazy" />
+      <span>{labels.display}</span>
     </button>
   );
 }
@@ -4126,31 +4130,47 @@ function toolImageSource(image: { path?: string; absolute_path?: string; image_u
   return `${normalizedBaseUrl}/workspace/images?path=${encodeURIComponent(path)}`;
 }
 
+function toolImageLabels(image: { path?: string; absolute_path?: string; image_url?: string }, index: number): { display: string; title: string } {
+  const source = String(image.path || image.absolute_path || image.image_url || "").trim();
+  const fallback = `Tool image ${index + 1}`;
+  if (!source) {
+    return { display: fallback, title: fallback };
+  }
+  if (/^data:image\//i.test(source)) {
+    const mediaType = /^data:([^;,]+)[;,]/i.exec(source)?.[1] ?? "image";
+    return { display: `${fallback} (${mediaType})`, title: source };
+  }
+  if (/^https?:\/\//i.test(source)) {
+    return { display: compactImageUrlLabel(source, fallback), title: source };
+  }
+  return { display: fileNameFromPath(source) || compactInlineText(source, 42) || fallback, title: source };
+}
+
+function fileNameFromPath(path: string): string {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .pop()
+    ?.trim() ?? "";
+}
+
+function compactImageUrlLabel(value: string, fallback: string): string {
+  try {
+    const url = new URL(value);
+    const fileName = fileNameFromPath(url.pathname);
+    return fileName ? `${url.hostname}/${fileName}` : url.hostname || fallback;
+  } catch {
+    return compactInlineText(value, 42) || fallback;
+  }
+}
+
 function toolResultContentBlocksFromEvent(payload: Record<string, unknown>): ConversationContentBlock[] {
-  if (!Array.isArray(payload.content_blocks)) {
-    return [];
+  const contents: unknown[] = [payload.content_blocks];
+  if (isRecord(payload.output)) {
+    contents.push(payload.output.content_blocks, payload.output.tool_result_content);
   }
-  const blocks: ConversationContentBlock[] = [];
-  for (const item of payload.content_blocks) {
-    if (!isRecord(item)) {
-      continue;
-    }
-    if (item.type === "text") {
-      blocks.push({ type: "text", text: String(item.text ?? "") });
-      continue;
-    }
-    if (item.type === "image_reference") {
-      blocks.push({
-        type: "image_reference",
-        path: typeof item.path === "string" ? item.path : undefined,
-        absolute_path: typeof item.absolute_path === "string" ? item.absolute_path : undefined,
-        media_type: typeof item.media_type === "string" ? item.media_type : undefined,
-        image_url: typeof item.image_url === "string" ? item.image_url : undefined,
-        origin: typeof item.origin === "string" ? item.origin : undefined,
-      });
-    }
-  }
-  return blocks;
+  return normalizeToolContentBlocks(...contents);
 }
 
 type ToolResultState = "running" | "success" | "error";
