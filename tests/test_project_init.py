@@ -43,6 +43,18 @@ class ProjectInitTests(unittest.TestCase):
             self.assertIn("demo = demo.cli:main", init_prompt.prompt)
             self.assertIn("Do not paste the full AGENTS.md content", init_prompt.prompt)
 
+    def test_build_project_init_prompt_includes_extra_user_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "main.py").write_text("print('hello')\n", encoding="utf-8")
+
+            init_prompt = build_project_init_prompt(root, extra_prompt="重点分析 CLI 和测试命令")
+
+            self.assertEqual(init_prompt.extra_prompt, "重点分析 CLI 和测试命令")
+            self.assertIn("User extra instructions for this initialization:", init_prompt.prompt)
+            self.assertIn("重点分析 CLI 和测试命令", init_prompt.prompt)
+            self.assertIn("Do not copy them verbatim into AGENTS.md", init_prompt.prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

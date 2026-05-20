@@ -63,6 +63,7 @@ class ProjectInitPrompt:
     line_limit: int
     code_file_count: int
     force: bool = False
+    extra_prompt: str = ""
 
 
 @dataclass(slots=True)
@@ -93,18 +94,26 @@ def init_line_limit(code_file_count: int) -> int:
     return 200
 
 
-def build_project_init_prompt(workspace_root: Path, *, force: bool = False) -> ProjectInitPrompt:
+def build_project_init_prompt(workspace_root: Path, *, force: bool = False, extra_prompt: str = "") -> ProjectInitPrompt:
     root = Path(workspace_root)
     profile = _scan_project(root)
     line_limit = init_line_limit(profile.code_file_count)
     target = root / "AGENTS.md"
-    prompt = _render_init_prompt(profile, target=target, line_limit=line_limit, force=force)
+    normalized_extra_prompt = str(extra_prompt or "").strip()
+    prompt = _render_init_prompt(
+        profile,
+        target=target,
+        line_limit=line_limit,
+        force=force,
+        extra_prompt=normalized_extra_prompt,
+    )
     return ProjectInitPrompt(
         target_path=target,
         prompt=prompt,
         line_limit=line_limit,
         code_file_count=profile.code_file_count,
         force=force,
+        extra_prompt=normalized_extra_prompt,
     )
 
 
@@ -187,19 +196,32 @@ def _read_pyproject(path: Path) -> dict:
         return {}
 
 
-def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: int, force: bool) -> str:
-    return "\n".join(
+def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: int, force: bool, extra_prompt: str = "") -> str:
+    lines = [
+        "Initialize project instructions for this workspace.",
+        "",
+        "You must run a real repository inspection loop before writing the file.",
+        "Use tools such as project_scan, tree, read_file, glob, grep, and find_symbol to inspect actual code, manifests, tests, and entry points.",
+        "Do not rely only on the snapshot below; treat it as a starting hint.",
+        "",
+        f"Target file: {target.name}",
+        f"Overwrite existing file: {'yes' if force else 'no; if it exists, read it first and preserve useful project-specific guidance'}",
+        f"Hard line budget: {line_limit} lines maximum.",
+        "",
+    ]
+    if extra_prompt:
+        lines.extend(
+            [
+                "User extra instructions for this initialization:",
+                extra_prompt,
+                "",
+                "Treat the user extra instructions as preferences for what to inspect or emphasize. Do not copy them verbatim into AGENTS.md unless they are useful project guidance verified against the repository.",
+                "If user extra instructions conflict with the hard line budget, real inspection requirement, or safety rules, those hard constraints win.",
+                "",
+            ]
+        )
+    lines.extend(
         [
-            "Initialize project instructions for this workspace.",
-            "",
-            "You must run a real repository inspection loop before writing the file.",
-            "Use tools such as project_scan, tree, read_file, glob, grep, and find_symbol to inspect actual code, manifests, tests, and entry points.",
-            "Do not rely only on the snapshot below; treat it as a starting hint.",
-            "",
-            f"Target file: {target.name}",
-            f"Overwrite existing file: {'yes' if force else 'no; if it exists, read it first and preserve useful project-specific guidance'}",
-            f"Hard line budget: {line_limit} lines maximum.",
-            "",
             "Line budget rule used by Somnia:",
             "- <=80 code files: 60 lines",
             "- <=300 code files: 80 lines",
@@ -241,6 +263,7 @@ def _render_init_prompt(profile: ProjectProfile, *, target: Path, line_limit: in
             "After writing the file, final response must be short: path, line count, and the key evidence inspected. Do not paste the full AGENTS.md content.",
         ]
     )
+    return "\n".join(lines)
 
 
 def _format_extension_counts(extension_counts: Counter[str]) -> str:

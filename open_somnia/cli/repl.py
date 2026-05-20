@@ -1748,19 +1748,29 @@ def _is_exit_command(command: str) -> bool:
 
 
 def _build_init_query(runtime, command: str) -> str | None:
-    args = command.split()[1:]
-    valid_args = {"--force", "-f"}
-    unknown = [arg for arg in args if arg not in valid_args]
-    if unknown:
-        print(f"[init failed] unknown option(s): {', '.join(unknown)}")
-        print("Usage: /init [--force]")
-        return None
-    force = any(arg in {"--force", "-f"} for arg in args)
+    payload = command[len("/init") :].strip()
+    force = False
+    while payload:
+        if payload == "--force" or payload.startswith("--force "):
+            force = True
+            payload = payload[len("--force") :].strip()
+            continue
+        if payload == "-f" or payload.startswith("-f "):
+            force = True
+            payload = payload[len("-f") :].strip()
+            continue
+        if payload.startswith("--"):
+            option = payload.split(maxsplit=1)[0]
+            print(f"[init failed] unknown option: {option}")
+            print("Usage: /init [--force] [extra instructions]")
+            return None
+        break
+    extra_prompt = payload
     target = runtime.settings.workspace_root / "AGENTS.md"
     if target.exists() and not force:
         print("[init skipped] AGENTS.md already exists. Use /init --force to regenerate it.")
         return None
-    init_prompt = build_project_init_prompt(runtime.settings.workspace_root, force=force)
+    init_prompt = build_project_init_prompt(runtime.settings.workspace_root, force=force, extra_prompt=extra_prompt)
     print(
         f"[init queued] target=AGENTS.md line_budget={init_prompt.line_limit} "
         f"code_files={init_prompt.code_file_count}"

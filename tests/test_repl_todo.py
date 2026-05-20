@@ -100,6 +100,30 @@ class ReplTodoTests(unittest.TestCase):
         self.assertIn("write_file or edit_file", str(query))
         self.assertIn("[init queued]", mock_print.call_args[0][0])
 
+    def test_build_init_query_accepts_extra_prompt_after_options(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / f"repl-init-extra-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "AGENTS.md").write_text("existing\n", encoding="utf-8")
+        runtime = SimpleNamespace(settings=SimpleNamespace(workspace_root=root))
+
+        with patch("builtins.print"):
+            query = _build_init_query(runtime, "/init --force 重点分析 MCP 和权限模式")
+
+        self.assertIsNotNone(query)
+        self.assertIn("User extra instructions for this initialization:", str(query))
+        self.assertIn("重点分析 MCP 和权限模式", str(query))
+
+    def test_build_init_query_rejects_unknown_option_before_extra_prompt(self) -> None:
+        root = Path.cwd() / ".tmp-tests" / f"repl-init-unknown-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=True)
+        runtime = SimpleNamespace(settings=SimpleNamespace(workspace_root=root))
+
+        with patch("builtins.print") as mock_print:
+            query = _build_init_query(runtime, "/init --target CLAUDE.md")
+
+        self.assertIsNone(query)
+        self.assertIn("unknown option: --target", mock_print.call_args_list[0][0][0])
+
     def test_clipboard_image_command_targets_workspace_temp_image(self) -> None:
         workspace_root = Path.cwd()
         saved_path = workspace_root / ".open_somnia" / "temp" / "clipboard-test.png"
