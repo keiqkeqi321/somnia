@@ -1,145 +1,152 @@
 # Somnia Notes For AI Agents
 
+Higher-priority user instructions, runtime rules, and tool safety rules override this file.
+
 ## What This Project Is
 
-Somnia is a Python CLI agent framework packaged under `open_somnia/`. It is not just a demo script: it has a reusable runtime, persistent session storage, tool registration, MCP integration, background jobs, and teammate collaboration primitives.
+Somnia is a Python CLI agent framework (v0.5.2) packaged under `open_somnia/`.
+It provides a reusable runtime, persistent session storage, tool registration, MCP integration, background jobs, hooks, skills, and teammate collaboration primitives.
 
-The package entrypoint is:
+Entrypoints (`pyproject.toml` → `[project.scripts]`):
 
 - `somnia = open_somnia.cli.main:main`
+- `somnia-sidecar = desktop.backend.bootstrap:main`
 
 ## Main Execution Path
 
-For interactive use, the important call path is:
-
-1. `open_somnia.cli.main`
-2. `open_somnia.cli.commands`
-3. `open_somnia.cli.repl`
-4. `open_somnia.runtime.agent.OpenAgentRuntime`
-
-The runtime owns:
-
-- provider selection
-- tool registry
-- session persistence
-- background job manager
-- MCP registry
-- todo manager
-- team collaboration state
+1. `open_somnia.cli.main` → `open_somnia.cli.commands`
+2. `open_somnia.cli.repl` (interactive loop)
+3. `open_somnia.runtime.agent.OpenAgentRuntime` (owns providers, tools, sessions, MCP, todos, team state)
 
 ## Important Directories
 
-- `open_somnia/cli/`: CLI entrypoints, REPL, prompt UI
-- `open_somnia/runtime/`: agent loop, session manager, runtime composition
-- `open_somnia/tools/`: built-in tools such as `bash`, filesystem, todo, MCP, background jobs
-- `open_somnia/storage/`: persisted JSON/JSONL-backed stores under `.open_somnia/`
-- `open_somnia/config/`: TOML and env loading
-- `open_somnia/providers/`: Anthropic and OpenAI-compatible provider adapters
-- `open_somnia/mcp/`: MCP transports and registry
-- `tests/`: package-level regression tests
+| Directory | Purpose |
+|-----------|---------|
+| `open_somnia/cli/` | CLI entrypoints, REPL, prompt UI, provider management |
+| `open_somnia/runtime/` | Agent loop, session, execution modes, permissions, system prompt, subagent/teammate runners |
+| `open_somnia/tools/` | Built-in tools: shell, filesystem, todo, tasks, MCP, background jobs, subagent, team |
+| `open_somnia/storage/` | Persisted JSON/JSONL stores under `.open_somnia/` |
+| `open_somnia/config/` | TOML + env loading, provider profiles, settings models |
+| `open_somnia/providers/` | Anthropic and OpenAI-compatible provider adapters |
+| `open_somnia/mcp/` | MCP transports (stdio, HTTP) and registry |
+| `open_somnia/hooks/` | Hook system: manager, runner, SDK, user notifications |
+| `open_somnia/skills/` | Skill loader + builtin skills |
+| `open_somnia/collaboration/` | Message bus and collaboration protocols |
+| `open_somnia/app_service/` | Desktop-side API service layer (sessions, turns, providers, runtime host) |
+| `desktop/backend/` | Sidecar server, IPC, bootstrap for Tauri desktop app |
+| `desktop/ui/` | Tauri + React/TypeScript frontend (Vite) |
+| `tests/` | Unittest-based regression tests |
 
-## Current User-Facing Behaviors
+## Build and Test Commands
 
-- Running `somnia --workspace .` starts interactive chat directly.
-- Running `somnia -r` opens a session picker and resumes a selected session.
-- The REPL has four execution modes ordered by risk:
-  - `? for shortcuts`: read-only workspace access
-  - `⏸ plan mode on`: read-only plus planning-first behavior
-  - `⏵⏵ accept edits on`: file edits, persistent task mutations, and agent-team collaboration allowed; broader tools still blocked
-  - `! Yolo`: full autonomy
-- `Shift+Tab` cycles execution modes in the REPL.
-- The active execution mode is shown under `somnia >>` with color-coded risk.
-- When a needed tool is blocked by the current mode, the agent can call `request_authorization`.
-- The agent can call `request_mode_switch` to ask the user to switch to `? for shortcuts`, `⏸ plan mode on`, or `⏵⏵ accept edits on`.
-- The agent must not use `request_mode_switch` to request `! Yolo`.
-- Authorization prompts should offer:
-  - allow once
-  - allow in this workspace
-  - deny
-- `Allow in this workspace` should persist under `.open_somnia/permissions.json` so the workspace-scoped approval survives restarting Somnia.
-- Mode-switch prompts should let the user either switch to the requested non-Yolo mode or stay in the current mode.
-- After the user answers an authorization prompt, the agent should continue the same task without requiring the user to restate it.
-- Empty or incomplete sessions should not appear in resume history. A session must include both a visible user message and a visible assistant reply.
-- `TodoWrite` updates session-scoped todos.
-- While any todo item remains open, the runtime should inject a transient `TodoWrite` reminder into the model payload on every round.
-- The transient todo reminder must not be persisted into session message history or transcript snapshots.
-- Todos are shown persistently in the REPL status area above `somnia >>` while any item is still open.
-- When all todos are closed, the todo status block disappears.
-- Todo status markers are:
-  - `☐` pending
-  - `⏳` in progress
-  - `✅` completed
-- `TodoWrite` should not print the normal tool event box to the terminal, but tool logs are still recorded internally.
+```bash
+# Install (editable)
+pip install -e .
 
-## Shell Tool Expectations
+# Run key regression tests (unittest)
+python -m unittest tests.test_cli_resume tests.test_process_output tests.test_repl_todo tests.test_runtime_tool_output
 
-The tool name remains `bash`, but behavior is platform-aware.
+# Run all tests
+python -m unittest discover -s tests -p "test_*.py"
 
-- On Unix-like systems, it uses the system shell.
-- On Windows, it runs PowerShell-compatible commands.
-- The runtime system prompt explicitly tells the model which OS it is on.
-- The `bash` tool description also explains the platform behavior.
-- On Windows, common Unix commands are translated when safe:
-  - `ls -la` -> `Get-ChildItem -Force`
-  - `pwd` -> `Get-Location`
-  - `cat ...` -> `Get-Content ...`
-  - `find . -name "*.py" -type f | head -20` -> PowerShell equivalent
-- For Unix-only commands that are not safely translated, the tool should return a clear guidance message instead of a cryptic shell error.
+# Version is in VERSION file (currently 0.5.2)
+```
+
+Dependencies (from `pyproject.toml`): `anthropic>=0.25.0`, `Pillow>=10.3.0`, `prompt_toolkit>=3.0.43`, `tiktoken>=0.8.0`. Requires Python >=3.11.
 
 ## Configuration
 
 Primary config files:
 
-- `.env`
-- `open_somnia.toml`
-- global shared config at `~/.open_somnia/open_somnia.toml`
+- `.env` — environment variables (not checked in)
+- `open_somnia.toml` — project-level settings
+- `~/.open_somnia/open_somnia.toml` — global shared settings
 
-Key config sections in `open_somnia.toml`:
+Key sections: `[agent]`, `[providers]`, `[providers.<name>]`, `[runtime]`, `[mcp_servers.<name>]` / `[[mcp_servers]]`, `[hooks]`
 
-- `[agent]`
-- `[providers]`
-- `[providers.<name>]`
-- `[runtime]`
-- `[mcp_servers.<name>]` or `[[mcp_servers]]`
-
-If no providers are configured at startup, the CLI should guide the user through creating the first provider profile interactively and save it into the global shared config. The bootstrap flow should collect compatibility mode, provider name, base URL, API key, and model ids, while staying minimal: no default MCP entries and no extra sample clutter.
-
-The runtime appends execution-environment guidance to the system prompt, so changes to prompt construction should preserve that.
+On first run with no providers, the CLI bootstraps an interactive provider setup flow and saves to global config.
 
 ## Persistence Model
 
-State lives under `.open_somnia/` in the workspace root. Important subfolders:
+All state lives under `.open_somnia/` in the workspace root:
 
-- `.open_somnia/sessions`
-- `.open_somnia/transcripts`
-- `.open_somnia/tasks`
-- `.open_somnia/inbox`
-- `.open_somnia/team`
-- `.open_somnia/jobs`
-- `.open_somnia/logs`
-- `.open_somnia/permissions.json`
+- `sessions/`, `transcripts/`, `tasks/`, `inbox/`, `team/`, `jobs/`, `logs/`
+- `permissions.json` — workspace-scoped tool authorizations
 
-Do not casually change storage shape unless you also update load/save paths and compatibility expectations.
+Do not change storage shape without updating load/save paths.
 
-## Tests That Matter
+## REPL Execution Modes
 
-Useful regression tests for recent behavior:
+Four modes ordered by risk (`Shift+Tab` cycles):
 
-- `tests/test_cli_resume.py`
-- `tests/test_process_output.py`
-- `tests/test_repl_todo.py`
-- `tests/test_runtime_tool_output.py`
+1. `? shortcuts` — read-only workspace access
+2. `⏸ plan mode` — read-only + planning-first
+3. `⏵⏵ accept edits` — file edits, task mutations, team collaboration
+4. `! Yolo` — full autonomy
 
-Run them with:
+Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode switches via `request_mode_switch`. "Allow in this workspace" persists to `.open_somnia/permissions.json`.
 
-```bash
-python -m unittest tests.test_cli_resume tests.test_process_output tests.test_repl_todo tests.test_runtime_tool_output
-```
+## TodoWrite Behavior
+
+- Session-scoped; shown in REPL status while any item is open (☐ pending, ⏳ in progress, ✅ completed)
+- Runtime injects a transient reminder on every turn while todos remain open; this reminder is NOT persisted
+- Tool event box is suppressed in terminal output; internal logs still recorded
+
+## Shell Tool (`bash`)
+
+Platform-aware: Unix uses system shell; Windows uses PowerShell. Common Unix commands are auto-translated on Windows. Untranslatable commands return guidance instead of cryptic errors.
+
+## Session Resume
+
+`somnia -r` opens a session picker. Incomplete sessions (missing user message or assistant reply) are filtered out. `somnia -c` continues the latest session.
 
 ## Editing Guidance
 
-- Keep tool behavior consistent with the current REPL UX.
-- Prefer fixing behavior in runtime/tool layers instead of papering over it in docs.
-- If changing prompt or shell behavior, check both Unix and Windows assumptions.
-- If changing todo behavior, verify both tool output and REPL status rendering.
-- If changing resume/session behavior, preserve the filter that hides non-conversation sessions.
+- Keep tool behavior consistent with REPL UX.
+- Fix in runtime/tool layers, not UI docs.
+- Check both Unix and Windows for prompt/shell changes.
+- Verify both tool output and REPL status rendering for todo changes.
+- Preserve the session filter for resume behavior.
+- The runtime appends execution-environment guidance to the system prompt — preserve that when modifying prompt construction.
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **somnia**. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **Run impact analysis before editing any symbol.** Use `gitnexus_impact` and report blast radius to the user.
+- **Run `gitnexus_detect_changes()` before committing** to verify expected scope.
+- **Warn the user** if impact returns HIGH or CRITICAL risk.
+
+## Never Do
+
+- NEVER edit without `gitnexus_impact`.
+- NEVER ignore HIGH/CRITICAL risk warnings.
+- NEVER rename with find-and-replace — use `gitnexus_rename`.
+- NEVER commit without `gitnexus_detect_changes()`.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/somnia/context` | Codebase overview |
+| `gitnexus://repo/somnia/clusters` | Functional areas |
+| `gitnexus://repo/somnia/processes` | All execution flows |
+| `gitnexus://repo/somnia/process/{name}` | Step-by-step trace |
+
+## CLI
+
+| Task | Skill file |
+|------|-----------|
+| Architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools/resources reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index/status/clean CLI | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->
