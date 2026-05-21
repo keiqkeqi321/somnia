@@ -4,6 +4,7 @@ from typing import Any
 
 from open_somnia.config.models import MCPServerSettings
 from open_somnia.mcp.transport_http import StreamableHTTPTransport
+from open_somnia.mcp.transport_sse import SSETransport
 from open_somnia.mcp.transport_stdio import StdioTransport
 
 
@@ -14,6 +15,15 @@ class MCPClient:
             if not settings.url:
                 raise ValueError(f"MCP server '{settings.name}' requires a url for http transport")
             self.transport = StreamableHTTPTransport(
+                url=settings.url,
+                headers=settings.http_headers,
+                timeout_seconds=settings.timeout_seconds,
+                startup_timeout_seconds=settings.startup_timeout_seconds,
+            )
+        elif settings.transport == "sse":
+            if not settings.url:
+                raise ValueError(f"MCP server '{settings.name}' requires a url for sse transport")
+            self.transport = SSETransport(
                 url=settings.url,
                 headers=settings.http_headers,
                 timeout_seconds=settings.timeout_seconds,

@@ -452,6 +452,36 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(unity.command, "C:/Users/user/.local/bin/uvx.exe")
         self.assertTrue(unity.enabled)
 
+    def test_load_settings_preserves_sse_mcp_url(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "workspace-key"
+
+                [mcp_servers.playwright]
+                transport = "sse"
+                url = "http://localhost:8931/sse"
+                enabled = true
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        playwright = next(server for server in settings.mcp_servers if server.name == "playwright")
+        self.assertEqual(playwright.transport, "sse")
+        self.assertEqual(playwright.url, "http://localhost:8931/sse")
+        self.assertTrue(playwright.enabled)
+
     def test_persist_provider_selection_updates_openagent_toml_and_roundtrips(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
