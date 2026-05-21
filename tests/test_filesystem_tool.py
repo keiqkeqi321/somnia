@@ -98,6 +98,41 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(resolved.value, r"C:\Users\keqikeqi321\AppData\Local\Temp\tmpabcd\demo.txt")
 
+    def test_safe_path_accepts_textually_nested_windows_absolute_path(self) -> None:
+        class _FakeResolvedPath:
+            def __init__(self, value: str, relative: bool) -> None:
+                self.value = value
+                self.relative = relative
+
+            def resolve(self):
+                return self
+
+            def __truediv__(self, relative: str):
+                if relative.startswith(("D:\\", "D:/")):
+                    return _FakeJoinedPath(relative, self.relative)
+                return _FakeJoinedPath(f"{self.value}\\{relative}", self.relative)
+
+            def is_relative_to(self, other) -> bool:
+                return self.relative
+
+            def __str__(self) -> str:
+                return self.value
+
+        class _FakeJoinedPath:
+            def __init__(self, value: str, relative: bool) -> None:
+                self.value = value
+                self.relative = relative
+
+            def resolve(self):
+                return _FakeResolvedPath(self.value, self.relative)
+
+        resolved = safe_path(
+            _FakeResolvedPath(r"D:\Project\Git\somnia", False),
+            r"D:\Project\Git\somnia/open_somnia/mcp",
+        )
+
+        self.assertEqual(resolved.value, r"D:\Project\Git\somnia/open_somnia/mcp")
+
     def test_write_file_returns_diff_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

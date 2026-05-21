@@ -167,9 +167,22 @@ def safe_path(workspace_root: Path, relative_path: str) -> Path:
     """
     workspace_root = workspace_root.resolve()
     path = (workspace_root / relative_path).resolve()
-    if not path.is_relative_to(workspace_root):
+    if not path.is_relative_to(workspace_root) and not _is_workspace_relative_text_path(
+        workspace_root,
+        path,
+    ):
         raise ValueError(f"Path escapes workspace: {relative_path}")
     return path
+
+
+def _is_workspace_relative_text_path(workspace_root: Path, path: Path) -> bool:
+    workspace_label = _normal_boundary_path_text(workspace_root)
+    path_label = _normal_boundary_path_text(path)
+    return path_label == workspace_label or path_label.startswith(f"{workspace_label}/")
+
+
+def _normal_boundary_path_text(path: Path) -> str:
+    return os.path.normcase(str(path)).replace("\\", "/").rstrip("/")
 
 
 def _read_text_with_fallback(path: Path) -> str:
