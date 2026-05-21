@@ -888,6 +888,38 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "src/app.py:2:beta")
 
+    def test_grep_search_uses_focused_recursive_glob_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "open_somnia" / "config").mkdir(parents=True)
+            (root / "open_somnia" / "config" / "settings.py").write_text(
+                "class MCPServerSettings:\n    pass\n",
+                encoding="utf-8",
+            )
+            (root / "node_modules" / "package").mkdir(parents=True)
+            (root / "node_modules" / "package" / "large.txt").write_text("class MCPServerSettings\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+            path_type = type(root)
+            original_rglob = path_type.rglob
+
+            def guarded_rglob(self: Path, pattern: str):
+                if pattern == "*":
+                    raise AssertionError("grep_search should not scan every file before applying **/*.py")
+                return original_rglob(self, pattern)
+
+            with patch.object(path_type, "rglob", guarded_rglob):
+                result = grep_search(ctx, {"pattern": "class MCPServerSettings", "glob": "**/*.py"})
+
+        self.assertEqual(result, "open_somnia/config/settings.py:1:class MCPServerSettings:")
+
     def test_grep_search_supports_brace_expansion_and_base_relative_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

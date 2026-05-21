@@ -1016,39 +1016,45 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     needle = pattern if case_sensitive else pattern.lower()
 
     if base_path.is_file():
-        iterator = [base_path]
+        iterators = [[base_path]]
     elif base_path.is_dir():
-        iterator = base_path.rglob("*") if recursive else base_path.glob("*")
+        iterators = []
+        for glob_pattern in glob_patterns:
+            iterators.append(base_path.glob(glob_pattern))
+            if recursive and "**" not in glob_pattern:
+                iterators.append(base_path.rglob(glob_pattern))
     else:
         return f"Error: Unsupported path type: {payload.get('path', '.')}"
 
     matches: list[str] = []
+    seen: set[Path] = set()
     truncated = False
-    for candidate in iterator:
-        _raise_if_tool_interrupted(ctx)
-        if not candidate.is_file():
-            continue
-        relative = candidate.relative_to(workspace_root).as_posix()
-        if base_path.is_dir() and not _matches_glob_patterns(
-            _candidate_glob_labels(workspace_root, base_path, candidate),
-            glob_patterns,
-        ):
-            continue
-        try:
+    for iterator in iterators:
+        for candidate in iterator:
             _raise_if_tool_interrupted(ctx)
-            lines = _read_text_with_fallback(candidate).splitlines()
-        except Exception:
-            continue
-        for line_number, line in enumerate(lines, start=1):
-            if line_number == 1 or line_number % 128 == 0:
-                _raise_if_tool_interrupted(ctx)
-            haystack = line if case_sensitive else line.lower()
-            found = bool(matcher.search(line)) if matcher is not None else needle in haystack
-            if not found:
+            if candidate in seen:
                 continue
-            matches.append(f"{relative}:{line_number}:{line}")
-            if len(matches) >= limit:
-                truncated = True
+            seen.add(candidate)
+            if not candidate.is_file():
+                continue
+            relative = candidate.relative_to(workspace_root).as_posix()
+            try:
+                _raise_if_tool_interrupted(ctx)
+                lines = _read_text_with_fallback(candidate).splitlines()
+            except Exception:
+                continue
+            for line_number, line in enumerate(lines, start=1):
+                if line_number == 1 or line_number % 128 == 0:
+                    _raise_if_tool_interrupted(ctx)
+                haystack = line if case_sensitive else line.lower()
+                found = bool(matcher.search(line)) if matcher is not None else needle in haystack
+                if not found:
+                    continue
+                matches.append(f"{relative}:{line_number}:{line}")
+                if len(matches) >= limit:
+                    truncated = True
+                    break
+            if truncated:
                 break
         if truncated:
             break
