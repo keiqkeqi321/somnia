@@ -14,12 +14,21 @@ DANGEROUS_SNIPPETS = [
     " shutdown",
     " reboot",
     "mkfs",
-    "format ",
+]
+DANGEROUS_COMMAND_PATTERNS = [
+    re.compile(r"(?im)(?:^|[;&|]\s*)format(?:\.com|\.exe)?(?:\s|$)"),
 ]
 
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _is_dangerous_command(command: str) -> bool:
+    lowered = f" {command.lower()} "
+    if any(snippet in lowered for snippet in DANGEROUS_SNIPPETS):
+        return True
+    return any(pattern.search(command) for pattern in DANGEROUS_COMMAND_PATTERNS)
 
 
 def _translate_windows_command(command: str) -> str | None:
@@ -69,8 +78,7 @@ def _windows_shell_guidance(command: str) -> str | None:
 
 def run_shell(ctx: Any, payload: dict[str, Any]) -> str:
     command = str(payload["command"])
-    lowered = f" {command.lower()} "
-    if any(snippet in lowered for snippet in DANGEROUS_SNIPPETS):
+    if _is_dangerous_command(command):
         return "Error: Dangerous command blocked"
 
     run_args: str | list[str]

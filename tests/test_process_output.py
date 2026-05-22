@@ -177,6 +177,46 @@ class ProcessOutputTests(unittest.TestCase):
         self.assertIn("Select-String", result)
         mock_run.assert_not_called()
 
+    def test_run_shell_allows_ruff_format_subcommand(self) -> None:
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=Path.cwd(),
+                    runtime=SimpleNamespace(command_timeout_seconds=15, max_tool_output_chars=500),
+                )
+            )
+        )
+        command = (
+            "cd D:\\Project\\Git\\LibiCrab; uv run ruff format "
+            "backend/libicrab/services/model_multimodal_registry.py 2>&1"
+        )
+
+        with patch("open_somnia.tools.shell._is_windows", return_value=True), patch(
+            "open_somnia.tools.shell.run_command"
+        ) as mock_run:
+            mock_run.return_value = CommandResult(args=[], returncode=0, stdout="1 file left unchanged", stderr="")
+
+            result = run_shell(ctx, {"command": command})
+
+        self.assertEqual(result, "1 file left unchanged")
+        self.assertEqual(mock_run.call_args.args[0], ["powershell", "-NoLogo", "-NoProfile", "-Command", command])
+
+    def test_run_shell_still_blocks_format_command(self) -> None:
+        ctx = SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=Path.cwd(),
+                    runtime=SimpleNamespace(command_timeout_seconds=15, max_tool_output_chars=500),
+                )
+            )
+        )
+
+        with patch("open_somnia.tools.shell.run_command") as mock_run:
+            result = run_shell(ctx, {"command": "format C:"})
+
+        self.assertEqual(result, "Error: Dangerous command blocked")
+        mock_run.assert_not_called()
+
     def test_background_manager_records_unicode_result(self) -> None:
         store = _FakeJobStore()
         root = self._stable_test_dir("process-output-bg")
