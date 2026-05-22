@@ -664,6 +664,27 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertIn("match=files", result)
         self.assertIn("Try `match=dirs` or `match=all`", result)
 
+    def test_glob_search_skips_venv_during_recursive_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "backend" / "app").mkdir(parents=True)
+            (root / "backend" / "app" / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            (root / "backend" / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+            (root / "backend" / ".venv" / "Lib" / "site-packages" / "hidden.py").write_text("pass\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = glob_search(ctx, {"path": "backend", "pattern": "*.py", "recursive": True})
+
+        self.assertEqual(result, "backend/app/main.py")
+
     def test_read_file_falls_back_for_gbk_encoded_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -868,6 +889,26 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertIn("Runtime/OrigamiLevelConfig.cs", result)
         self.assertIn("Runtime/OrigamiPaperConfig.cs", result)
 
+    def test_read_file_missing_path_suggestions_skip_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "backend" / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+            (root / "backend" / ".venv" / "Lib" / "site-packages" / "settings.py").write_text("hidden", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = read_file(ctx, {"path": "backend/settings.py"})
+
+        self.assertIn("Error: File not found: backend/settings.py", result)
+        self.assertNotIn(".venv", result)
+
     def test_grep_search_returns_matching_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -919,6 +960,37 @@ class FilesystemToolTests(unittest.TestCase):
                 result = grep_search(ctx, {"pattern": "class MCPServerSettings", "glob": "**/*.py"})
 
         self.assertEqual(result, "open_somnia/config/settings.py:1:class MCPServerSettings:")
+
+    def test_grep_search_skips_venv_during_recursive_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "backend" / "app").mkdir(parents=True)
+            (root / "backend" / "app" / "main.py").write_text("print('ready')\n", encoding="utf-8")
+            (root / "backend" / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+            (root / "backend" / ".venv" / "Lib" / "site-packages" / "package.py").write_text(
+                "appendToolResultImageBridge\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(
+                ctx,
+                {
+                    "path": "backend",
+                    "pattern": "appendToolResultImageBridge",
+                    "recursive": True,
+                },
+            )
+
+        self.assertEqual(result, "(no matches)")
 
     def test_grep_search_supports_brace_expansion_and_base_relative_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

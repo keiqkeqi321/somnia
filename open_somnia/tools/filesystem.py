@@ -234,6 +234,15 @@ def _filtered_walk(base_path: Path, *, include_hidden: bool = False, ctx: Any | 
         yield Path(current_root), dir_names, filtered_files
 
 
+def _iter_filtered_files(base_path: Path, *, include_hidden: bool = False, ctx: Any | None = None):
+    for current_root, _dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx):
+        current_path = Path(current_root)
+        for file_name in file_names:
+            if ctx is not None:
+                _raise_if_tool_interrupted(ctx)
+            yield current_path / file_name
+
+
 def _relative_label(workspace_root: Path, path: Path) -> str:
     try:
         return path.relative_to(workspace_root).as_posix() or "."
@@ -257,10 +266,10 @@ def _path_candidates_for_missing_file(workspace_root: Path, requested_path: str,
     if not file_name:
         return []
     search_root = _nearest_existing_parent(missing_path, workspace_root)
-    local_matches = [candidate for candidate in search_root.rglob(file_name) if candidate.is_file()]
+    local_matches = [candidate for candidate in _iter_filtered_files(search_root) if candidate.name == file_name]
     if local_matches:
         return local_matches[:limit]
-    workspace_matches = [candidate for candidate in workspace_root.rglob(file_name) if candidate.is_file()]
+    workspace_matches = [candidate for candidate in _iter_filtered_files(workspace_root) if candidate.name == file_name]
     return workspace_matches[:limit]
 
 
@@ -270,8 +279,8 @@ def _fuzzy_path_candidates_for_missing_file(workspace_root: Path, missing_path: 
     if not file_name:
         return []
     search_root = _nearest_existing_parent(missing_path, workspace_root)
-    local_files = [candidate for candidate in search_root.rglob("*") if candidate.is_file()]
-    workspace_files = [candidate for candidate in workspace_root.rglob("*") if candidate.is_file()]
+    local_files = list(_iter_filtered_files(search_root))
+    workspace_files = list(_iter_filtered_files(workspace_root))
     pool = local_files or workspace_files
     if not pool:
         return []
@@ -927,6 +936,74 @@ def _compile_grep_matcher(
         return None, None
 
 
+def _grep_candidate_matches_glob(
+    workspace_root: Path,
+    base_path: Path,
+    candidate: Path,
+    glob_patterns: list[str],
+) -> bool:
+    base_relative = candidate.relative_to(base_path).as_posix()
+    workspace_relative = candidate.relative_to(workspace_root).as_posix()
+    labels = [candidate.name, base_relative, workspace_relative]
+    return _matches_glob_patterns(labels, glob_patterns)
+
+
+def _iter_grep_candidates(
+    ctx: Any,
+    workspace_root: Path,
+    base_path: Path,
+    glob_patterns: list[str],
+    *,
+    recursive: bool,
+):
+    if not recursive:
+        for candidate in sorted(base_path.iterdir(), key=lambda item: item.name.lower()):
+            _raise_if_tool_interrupted(ctx)
+            if not candidate.is_file():
+                continue
+            if _grep_candidate_matches_glob(workspace_root, base_path, candidate, glob_patterns):
+                yield candidate
+        return
+
+    for current_root, _dir_names, file_names in _filtered_walk(base_path, ctx=ctx):
+        current_path = Path(current_root)
+        for file_name in file_names:
+            _raise_if_tool_interrupted(ctx)
+            candidate = current_path / file_name
+            if _grep_candidate_matches_glob(workspace_root, base_path, candidate, glob_patterns):
+                yield candidate
+
+
+def _iter_recursive_glob_candidates(
+    ctx: Any,
+    workspace_root: Path,
+    base_path: Path,
+    pattern_variants: list[str],
+):
+    for current_root, dir_names, file_names in _filtered_walk(base_path, ctx=ctx):
+        current_path = Path(current_root)
+        for dir_name in dir_names:
+            _raise_if_tool_interrupted(ctx)
+            candidate = current_path / dir_name
+            labels = [
+                candidate.name,
+                candidate.relative_to(base_path).as_posix(),
+                candidate.relative_to(workspace_root).as_posix(),
+            ]
+            if _matches_glob_patterns(labels, pattern_variants):
+                yield candidate
+        for file_name in file_names:
+            _raise_if_tool_interrupted(ctx)
+            candidate = current_path / file_name
+            labels = [
+                candidate.name,
+                candidate.relative_to(base_path).as_posix(),
+                candidate.relative_to(workspace_root).as_posix(),
+            ]
+            if _matches_glob_patterns(labels, pattern_variants):
+                yield candidate
+
+
 def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
     base_path = safe_path(workspace_root, str(payload.get("path", ".")))
@@ -945,10 +1022,11 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     normalized_pattern = pattern.replace("\\", "/")
     pattern_variants = _glob_pattern_variants(workspace_root, base_path, pattern)
     iterators = []
-    for pattern_variant in pattern_variants:
-        iterators.append(base_path.glob(pattern_variant))
-        if recursive and "**" not in pattern_variant:
-            iterators.append(base_path.rglob(pattern_variant))
+    if recursive:
+        iterators.append(_iter_recursive_glob_candidates(ctx, workspace_root, base_path, pattern_variants))
+    else:
+        for pattern_variant in pattern_variants:
+            iterators.append(base_path.glob(pattern_variant))
 
     results: list[str] = []
     seen: set[Path] = set()
@@ -1018,11 +1096,7 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     if base_path.is_file():
         iterators = [[base_path]]
     elif base_path.is_dir():
-        iterators = []
-        for glob_pattern in glob_patterns:
-            iterators.append(base_path.glob(glob_pattern))
-            if recursive and "**" not in glob_pattern:
-                iterators.append(base_path.rglob(glob_pattern))
+        iterators = [_iter_grep_candidates(ctx, workspace_root, base_path, glob_patterns, recursive=recursive)]
     else:
         return f"Error: Unsupported path type: {payload.get('path', '.')}"
 
