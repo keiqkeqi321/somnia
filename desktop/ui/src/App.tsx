@@ -78,6 +78,7 @@ const CONTEXT_MAX_WIDTH = 540;
 const CONVERSATION_MIN_WIDTH = 430;
 const RESIZER_WIDTH = 10;
 const REASONING_LEVEL_OPTIONS = ["auto", "low", "medium", "high", "deep"] as const;
+const CONVERSATION_BOTTOM_STICKY_THRESHOLD = 64;
 let mermaidRenderCounter = 0;
 const MERMAID_MIN_ZOOM = 0.25;
 const MERMAID_MAX_ZOOM = 4;
@@ -308,11 +309,27 @@ function App() {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationBodyRef = useRef<HTMLDivElement | null>(null);
+  const conversationPinnedToBottomRef = useRef(true);
+  const conversationScrollFrameRef = useRef<number | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
   selectedProjectPathRef.current = selectedProjectPath;
   currentSessionRef.current = currentSession;
   queuedPromptsRef.current = queuedPrompts;
+
+  function scrollConversationBodyToBottom() {
+    if (conversationScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(conversationScrollFrameRef.current);
+    }
+    conversationScrollFrameRef.current = window.requestAnimationFrame(() => {
+      conversationScrollFrameRef.current = null;
+      const el = conversationBodyRef.current;
+      if (!el) {
+        return;
+      }
+      el.scrollTop = el.scrollHeight;
+    });
+  }
 
   useEffect(() => {
     void initializeConnection();
@@ -553,11 +570,55 @@ function App() {
   }, [projectLimitNotice, projects.length]);
 
   useLayoutEffect(() => {
-    const el = conversationBodyRef.current;
-    if (el && selectedSessionId) {
-      el.scrollTop = el.scrollHeight;
+    if (!selectedSessionId) {
+      return;
     }
+    conversationPinnedToBottomRef.current = true;
+    scrollConversationBodyToBottom();
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    const el = conversationBodyRef.current;
+    if (!el) {
+      return;
+    }
+
+    const handleScroll = () => {
+      conversationPinnedToBottomRef.current =
+        el.scrollHeight - el.clientHeight - el.scrollTop <= CONVERSATION_BOTTOM_STICKY_THRESHOLD;
+    };
+
+    handleScroll();
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+    };
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    const el = conversationBodyRef.current;
+    if (!el || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (conversationPinnedToBottomRef.current) {
+        scrollConversationBodyToBottom();
+      }
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (conversationScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(conversationScrollFrameRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const projectPath = selectedProjectPath;
@@ -2735,6 +2796,7 @@ function App() {
   const latestStreamingAssistantRowId =
     [...conversationRows].reverse().find((row) => row.role === "assistant" && row.isStreaming)?.id ?? null;
   const currentSessionInteraction = currentSession ? findSessionInteraction(pendingInteractions, currentSession.id) : null;
+  const latestConversationRowId = conversationRows.length > 0 ? conversationRows[conversationRows.length - 1].id : "";
   const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
   const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
   const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
@@ -2769,6 +2831,10 @@ function App() {
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
   const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || t("conversation.newConversation"));
   const todoSummary = currentSession ? buildTodoSummary(currentSession.todo_items) : null;
+  const todoLayoutKey =
+    todoSummary?.visibleItems
+      .map((item) => `${normalizeTodoStatus(item.status)}:${formatTodoLabel(item)}`)
+      .join("|") ?? "";
   const workspaceRootPath = status?.workspace_root ?? "";
   const workspaceRootName = workspaceRootPath ? getPathLeafName(workspaceRootPath) : t("common.workspace");
   const archivedSessionEntries = buildArchivedSessionEntries(projects, archivedSessions);
@@ -2790,6 +2856,25 @@ function App() {
     "--context-width": `${layout.contextWidth}px`,
   } as CSSProperties;
   const maximizeTitle = windowMaximized ? t("titlebar.restore") : t("titlebar.maximize");
+
+  useLayoutEffect(() => {
+    if (conversationPinnedToBottomRef.current) {
+      scrollConversationBodyToBottom();
+    }
+  }, [
+    activePendingTurn?.placeholderText,
+    activePendingTurn?.userText,
+    activeQueuedPrompts.length,
+    conversationRows.length,
+    currentSessionInteraction?.id,
+    draft,
+    latestConversationRowId,
+    latestStreamingAssistantRowId,
+    pendingImages.length,
+    todoExpanded,
+    todoLayoutKey,
+  ]);
+
   return (
     <div className="shell">
       <header
