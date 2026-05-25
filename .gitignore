@@ -27,3 +27,5 @@ desktop/ui/src-tauri/binaries/
 desktop/ui/src-tauri/target/
 .local-tools/
 *.tsbuildinfo
+playwright-mcp
+.playwright-mcp
