@@ -379,6 +379,8 @@ class SidecarServer:
             "ws_url": self.ws_url,
             "provider": str(self.runtime.settings.provider.name),
             "model": str(self.runtime.settings.provider.model),
+            "vision_provider": getattr(self.runtime.settings.provider, "vision_provider", None),
+            "vision_model": getattr(self.runtime.settings.provider, "vision_model", None),
             "reasoning_level": self.runtime.settings.provider.reasoning_level,
             "execution_mode": execution_mode,
             "execution_mode_title": execution_mode_spec(execution_mode).title,
@@ -741,8 +743,25 @@ class SidecarServer:
             "message": message,
             "provider": str(self.runtime.settings.provider.name),
             "model": str(self.runtime.settings.provider.model),
+            "vision_provider": getattr(self.runtime.settings.provider, "vision_provider", None),
+            "vision_model": getattr(self.runtime.settings.provider, "vision_model", None),
         }
         self.broadcast_event(make_sidecar_event("provider_switched", payload=payload))
+        return payload
+
+    def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> dict[str, Any]:
+        try:
+            message = self.service.set_vision_model(provider_name, vision_provider, vision_model)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        payload = {
+            "message": message,
+            "provider": str(self.runtime.settings.provider.name),
+            "model": str(self.runtime.settings.provider.model),
+            "vision_provider": getattr(self.runtime.settings.provider, "vision_provider", None),
+            "vision_model": getattr(self.runtime.settings.provider, "vision_model", None),
+        }
+        self.broadcast_event(make_sidecar_event("vision_model_updated", payload=payload))
         return payload
 
     def set_reasoning_level(self, reasoning_level: str | None) -> dict[str, Any]:
@@ -751,6 +770,8 @@ class SidecarServer:
             "message": message,
             "provider": str(self.runtime.settings.provider.name),
             "model": str(self.runtime.settings.provider.model),
+            "vision_provider": getattr(self.runtime.settings.provider, "vision_provider", None),
+            "vision_model": getattr(self.runtime.settings.provider, "vision_model", None),
             "reasoning_level": self.runtime.settings.provider.reasoning_level,
         }
         self.broadcast_event(make_sidecar_event("reasoning_level_updated", payload=payload))
@@ -1123,6 +1144,15 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if not provider_name or not model:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "provider_name and model are required.")
             return self.sidecar.switch_provider_model(provider_name, model), HTTPStatus.OK
+        if path_parts == ["vision-model"]:
+            provider_name = str(body.get("provider_name", "")).strip()
+            if not provider_name:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "provider_name is required.")
+            raw_provider = body.get("vision_provider")
+            raw_model = body.get("vision_model")
+            vision_provider = None if raw_provider in {None, "", "none", "auto"} else str(raw_provider).strip()
+            vision_model = None if raw_model in {None, "", "none", "auto"} else str(raw_model).strip()
+            return self.sidecar.set_vision_model(provider_name, vision_provider, vision_model), HTTPStatus.OK
         if path_parts == ["reasoning"]:
             raw_level = body.get("reasoning_level")
             return self.sidecar.set_reasoning_level(None if raw_level in {"", "auto"} else raw_level), HTTPStatus.OK

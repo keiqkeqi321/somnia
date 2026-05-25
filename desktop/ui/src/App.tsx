@@ -99,6 +99,7 @@ const COMMAND_SPECS = [
   { command: "/image", descriptionKey: "cmd.image" as const },
   { command: "/paste-image", descriptionKey: "cmd.pasteImage" as const },
   { command: "/model", descriptionKey: "cmd.model" as const },
+  { command: "/vision", descriptionKey: "cmd.vision" as const },
   { command: "/reasoning", descriptionKey: "cmd.reasoning" as const },
   { command: "/providers", descriptionKey: "cmd.providers" as const },
   { command: "/hooks", descriptionKey: "cmd.hooks" as const },
@@ -242,8 +243,11 @@ function App() {
   const [pendingInteractions, setPendingInteractions] = useState<InteractionRequestState[]>([]);
   const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
   const [models, setModels] = useState<ModelDescriptor[]>([]);
+  const [visionModels, setVisionModels] = useState<ModelDescriptor[]>([]);
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedVisionProvider, setSelectedVisionProvider] = useState("");
+  const [selectedVisionModel, setSelectedVisionModel] = useState("");
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevelOption>("auto");
   const [promptHistory, setPromptHistory] = useState<string[]>(() => readStoredPromptHistory());
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
@@ -270,6 +274,7 @@ function App() {
   const [settingsConfigSection, setSettingsConfigSection] = useState<SettingsConfigSectionKey>("provider");
   const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
   const [settingsConfigSaving, setSettingsConfigSaving] = useState(false);
+  const [visionModelSaving, setVisionModelSaving] = useState(false);
   const [settingsConfigMessage, setSettingsConfigMessage] = useState("");
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
@@ -761,8 +766,11 @@ function App() {
     setToolLogs(nextProject.toolLogs);
     setProviders(await client.listProviders());
     setSelectedProvider(nextProject.status.provider);
+    setSelectedVisionProvider(nextProject.status.vision_provider ?? "");
+    setSelectedVisionModel(nextProject.status.vision_model ?? "");
     setSelectedReasoningLevel(normalizeReasoningLevel(nextProject.status.reasoning_level));
     await refreshModels(nextProject.status.provider, client, nextProject.status.model);
+    await refreshVisionModels(nextProject.status.vision_provider ?? "", client, nextProject.status.vision_model ?? "");
 
     const visibleSessions = visibleSessionsForProject(projectPath, nextProject.sessions, archivedSessions);
     const lastOpenedSession = readLastOpenedSession();
@@ -813,6 +821,8 @@ function App() {
       setToolLogs(logList);
       setProviders(providerList);
       setSelectedProvider(runtimeStatus.provider);
+      setSelectedVisionProvider(runtimeStatus.vision_provider ?? "");
+      setSelectedVisionModel(runtimeStatus.vision_model ?? "");
       setSelectedReasoningLevel(normalizeReasoningLevel(runtimeStatus.reasoning_level));
       setBannerMessage(
         managedConnection ? `Connected to bundled sidecar at ${runtimeStatus.base_url}` : `Connected to ${runtimeStatus.base_url}`,
@@ -861,6 +871,7 @@ function App() {
         clearLastOpenedSession(projectPath);
       }
       await refreshModels(runtimeStatus.provider, nextClient, runtimeStatus.model);
+      await refreshVisionModels(runtimeStatus.vision_provider ?? "", nextClient, runtimeStatus.vision_model ?? "");
       openEventSocket(nextClient, runtimeStatus.ws_url, runtimeStatus.workspace_root);
     } catch (error) {
       clientRef.current = null;
@@ -1403,7 +1414,12 @@ function App() {
       noteSubagentActivity(projectPath, event);
       return;
     }
-    if (event.type === "provider_switched" || event.type === "reasoning_level_updated" || event.type === "execution_mode_updated") {
+    if (
+      event.type === "provider_switched" ||
+      event.type === "vision_model_updated" ||
+      event.type === "reasoning_level_updated" ||
+      event.type === "execution_mode_updated"
+    ) {
       if (isActiveProject) {
         void refreshStatusAndProviders();
       }
@@ -1471,9 +1487,12 @@ function App() {
     setProviders(providerList);
     setPendingInteractions(interactionList);
     setSelectedProvider(runtimeStatus.provider);
+    setSelectedVisionProvider(runtimeStatus.vision_provider ?? "");
+    setSelectedVisionModel(runtimeStatus.vision_model ?? "");
     setSelectedReasoningLevel(normalizeReasoningLevel(runtimeStatus.reasoning_level));
     updateActiveProject({ status: runtimeStatus, pendingInteractions: interactionList });
     await refreshModels(runtimeStatus.provider, client, runtimeStatus.model);
+    await refreshVisionModels(runtimeStatus.vision_provider ?? "", client, runtimeStatus.vision_model ?? "");
   }
 
   async function refreshModels(providerName: string, client = clientRef.current, preferredModel?: string) {
@@ -1484,6 +1503,17 @@ function App() {
     setModels(nextModels);
     const activeModel = preferredModel ?? nextModels.find((model) => model.is_active)?.name ?? nextModels[0]?.name ?? "";
     setSelectedModel(activeModel);
+  }
+
+  async function refreshVisionModels(providerName: string, client = clientRef.current, preferredModel?: string) {
+    if (!client || !providerName) {
+      setVisionModels([]);
+      setSelectedVisionModel("");
+      return;
+    }
+    const nextModels = await client.listModels(providerName);
+    setVisionModels(nextModels);
+    setSelectedVisionModel(preferredModel ?? nextModels.find((model) => model.is_vision)?.name ?? nextModels[0]?.name ?? "");
   }
 
   async function refreshInteractions() {
@@ -1996,9 +2026,23 @@ function App() {
 
   async function handleProviderChange(nextProvider: string) {
     setSelectedProvider(nextProvider);
+    const nextVisionProvider = providers.find((provider) => provider.name === nextProvider)?.vision_provider ?? "";
+    const nextVisionModel = providers.find((provider) => provider.name === nextProvider)?.vision_model ?? "";
+    setSelectedVisionProvider(nextVisionProvider);
+    setSelectedVisionModel(nextVisionModel);
     setSelectedReasoningLevel(normalizeReasoningLevel(providers.find((provider) => provider.name === nextProvider)?.reasoning_level));
     try {
       await refreshModels(nextProvider);
+      await refreshVisionModels(nextVisionProvider, undefined, nextVisionModel);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
+  async function handleVisionProviderChange(nextProvider: string) {
+    setSelectedVisionProvider(nextProvider);
+    try {
+      await refreshVisionModels(nextProvider);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     }
@@ -2012,6 +2056,7 @@ function App() {
     setBusyAction("switch-provider");
     try {
       await client.switchProviderModel(selectedProvider, selectedModel);
+      await client.setVisionModel(selectedProvider, selectedVisionProvider || null, selectedVisionModel || null);
       await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
       await refreshStatusAndProviders();
       setModelPickerOpen(false);
@@ -2456,6 +2501,25 @@ function App() {
     }
   }
 
+  async function handleSaveVisionModel() {
+    const client = clientRef.current;
+    if (!client || !selectedProvider) {
+      setSettingsConfigMessage("Connect to a sidecar before saving vision model.");
+      return;
+    }
+    setVisionModelSaving(true);
+    try {
+      const result = await client.setVisionModel(selectedProvider, selectedVisionProvider || null, selectedVisionModel || null);
+      await refreshStatusAndProviders();
+      await refreshSettingsConfig();
+      setSettingsConfigMessage(result.message);
+    } catch (error) {
+      setSettingsConfigMessage(formatErrorMessage(error));
+    } finally {
+      setVisionModelSaving(false);
+    }
+  }
+
   async function handleWindowControl(action: "minimize" | "toggle-maximize" | "close") {
     try {
       if (action === "minimize") {
@@ -2810,6 +2874,16 @@ function App() {
           onDebugMcpServer={handleDebugMcpServer}
           onSetMcpServerEnabled={handleSetMcpServerEnabled}
           onReloadConfig={refreshSettingsConfig}
+          providers={providers}
+          models={models}
+          visionModels={visionModels}
+          selectedProvider={selectedProvider}
+          selectedVisionProvider={selectedVisionProvider}
+          selectedVisionModel={selectedVisionModel}
+          visionModelSaving={visionModelSaving}
+          onSetVisionProviderDraft={(providerName) => void handleVisionProviderChange(providerName)}
+          onSetVisionModelDraft={setSelectedVisionModel}
+          onSaveVisionModel={handleSaveVisionModel}
         />
       ) : null}
       <main
@@ -3233,6 +3307,47 @@ function App() {
                               ))}
                             </div>
                           </div>
+                          <div className="picker-column">
+                            <span className="picker-label">{t("composer.visionModel")}</span>
+                            <div className="picker-options">
+                              <button
+                                className={`picker-option ${selectedVisionProvider === "" ? "selected" : ""}`}
+                                onClick={() => {
+                                  setSelectedVisionProvider("");
+                                  setSelectedVisionModel("");
+                                  setVisionModels([]);
+                                }}
+                                disabled={busyAction !== null}
+                              >
+                                {t("composer.visionModelNone")}
+                              </button>
+                              {providers.map((provider) => (
+                                <button
+                                  key={provider.name}
+                                  className={`picker-option ${selectedVisionProvider === provider.name ? "selected" : ""}`}
+                                  onClick={() => void handleVisionProviderChange(provider.name)}
+                                  disabled={busyAction !== null}
+                                >
+                                  {provider.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="picker-column">
+                            <span className="picker-label">{t("composer.visionModelId")}</span>
+                            <div className="picker-options">
+                              {visionModels.map((model) => (
+                                <button
+                                  key={model.name}
+                                  className={`picker-option ${selectedVisionModel === model.name ? "selected" : ""}`}
+                                  onClick={() => setSelectedVisionModel(model.name)}
+                                  disabled={busyAction !== null}
+                                >
+                                  {model.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
                         <div className="model-picker-footer">
                           <div className="reasoning-levels" role="group" aria-label={t("composer.reasoningLevel")}>
@@ -3250,7 +3365,12 @@ function App() {
                           <button
                             className="action secondary picker-apply"
                             onClick={() => void handleApplyProviderModel()}
-                            disabled={!selectedProvider || !selectedModel || busyAction !== null}
+                            disabled={
+                              !selectedProvider ||
+                              !selectedModel ||
+                              Boolean(selectedVisionProvider) !== Boolean(selectedVisionModel) ||
+                              busyAction !== null
+                            }
                           >
                             {t("composer.apply")}
                           </button>
@@ -5094,7 +5214,7 @@ function uiCommandTarget(command: string): UiCommandTarget | null {
   if (normalized === "/skills") {
     return { kind: "config", target: "skills" };
   }
-  if (normalized === "/model" || normalized === "/reasoning") {
+  if (normalized === "/model" || normalized === "/vision" || normalized === "/reasoning") {
     return { kind: "model" };
   }
   if (normalized === "/compact") {

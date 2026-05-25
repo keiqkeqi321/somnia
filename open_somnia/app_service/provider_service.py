@@ -24,6 +24,8 @@ class ProviderService:
                     default_model=profile.default_model,
                     models=list(profile.models),
                     active_model=current_model if is_active else None,
+                    vision_provider=profile.vision_provider,
+                    vision_model=profile.vision_model,
                     reasoning_level=normalize_reasoning_level(profile.reasoning_level),
                     is_active=is_active,
                 )
@@ -50,12 +52,19 @@ class ProviderService:
                     supports_adaptive_reasoning=traits.supports_adaptive_reasoning,
                     is_default=model_name == profile.default_model,
                     is_active=normalized_provider == current_provider and model_name == current_model,
+                    is_vision=(
+                        normalized_provider == str(getattr(self.runtime.settings.provider, "vision_provider", "") or "").strip().lower()
+                        and model_name == str(getattr(self.runtime.settings.provider, "vision_model", "") or "").strip()
+                    ),
                 )
             )
         return descriptors
 
     def switch_provider_model(self, provider_name: str, model: str) -> str:
         return self.runtime.switch_provider_model(provider_name, model)
+
+    def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> str:
+        return self.runtime.set_vision_model(provider_name, vision_provider, vision_model)
 
     def set_reasoning_level(self, reasoning_level: str | None) -> str:
         return self.runtime.set_reasoning_level(reasoning_level)

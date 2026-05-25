@@ -80,6 +80,9 @@ class AppService:
     def switch_provider_model(self, provider_name: str, model: str) -> str:
         return self.provider_service.switch_provider_model(provider_name, model)
 
+    def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> str:
+        return self.provider_service.set_vision_model(provider_name, vision_provider, vision_model)
+
     def set_reasoning_level(self, reasoning_level: str | None) -> str:
         return self.provider_service.set_reasoning_level(reasoning_level)
 

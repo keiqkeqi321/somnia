@@ -502,6 +502,30 @@ button {
   margin: 0;
 }
 
+.vision-model-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.vision-model-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.vision-model-controls select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #10141b;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
 .config-settings-group {
   display: flex;
   flex-direction: column;
@@ -3089,7 +3113,7 @@ button {
   position: absolute;
   left: 0;
   bottom: calc(100% + 10px);
-  width: min(30rem, calc(100vw - 72px));
+  width: min(54rem, calc(100vw - 72px));
   padding: 10px;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -3100,7 +3124,7 @@ button {
 
 .model-picker-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 

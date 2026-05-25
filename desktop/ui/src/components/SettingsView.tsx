@@ -1,6 +1,6 @@
 import { formatRelativeTime } from "../lib/messages";
 import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "../lib/i18n";
-import type { McpServerSummary, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
+import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useState } from "react";
 
 const SETTINGS_SECTIONS = [
@@ -51,6 +51,16 @@ type SettingsViewProps = {
   onDebugMcpServer: (serverName: string) => Promise<number>;
   onSetMcpServerEnabled: (serverName: string, enabled: boolean) => Promise<number>;
   onReloadConfig: () => void | Promise<void>;
+  providers: ProviderDescriptor[];
+  models: ModelDescriptor[];
+  visionModels: ModelDescriptor[];
+  selectedProvider: string;
+  selectedVisionProvider: string;
+  selectedVisionModel: string;
+  visionModelSaving: boolean;
+  onSetVisionProviderDraft: (provider: string) => void;
+  onSetVisionModelDraft: (model: string) => void;
+  onSaveVisionModel: () => void | Promise<void>;
 };
 
 const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: TranslationKey; titleKey: TranslationKey }> = [
@@ -90,6 +100,16 @@ function SettingsView({
   onDebugMcpServer,
   onSetMcpServerEnabled,
   onReloadConfig,
+  providers,
+  models,
+  visionModels,
+  selectedProvider,
+  selectedVisionProvider,
+  selectedVisionModel,
+  visionModelSaving,
+  onSetVisionProviderDraft,
+  onSetVisionModelDraft,
+  onSaveVisionModel,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
@@ -220,6 +240,65 @@ function SettingsView({
             </div>
             {activeConfigScope ? (
               <>
+                <section className="config-panel vision-model-panel">
+                  <div className="config-editor-head">
+                    <div>
+                      <strong>{t("settings.config.visionModel")}</strong>
+                      <p>{t("settings.config.visionModelHint")}</p>
+                    </div>
+                    <button
+                      className="settings-action-button"
+                      type="button"
+                      onClick={onSaveVisionModel}
+                      disabled={visionModelSaving || !selectedProvider}
+                    >
+                      {visionModelSaving ? t("settings.config.saving") : t("settings.config.saveVisionModel")}
+                    </button>
+                  </div>
+                  <div className="vision-model-controls">
+                    <label>
+                      <span>{t("settings.config.activeProvider")}</span>
+                      <select value={selectedProvider} disabled>
+                        {providers.map((provider) => (
+                          <option key={provider.name} value={provider.name}>
+                            {provider.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t("settings.config.visionProvider")}</span>
+                      <select
+                        value={selectedVisionProvider}
+                        onChange={(event) => onSetVisionProviderDraft(event.currentTarget.value)}
+                        disabled={visionModelSaving || !selectedProvider}
+                      >
+                        <option value="">{t("settings.config.noVisionModel")}</option>
+                        {providers.map((provider) => (
+                          <option key={provider.name} value={provider.name}>
+                            {provider.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t("settings.config.visionModel")}</span>
+                      <select
+                        value={selectedVisionModel}
+                        onChange={(event) => onSetVisionModelDraft(event.currentTarget.value)}
+                        disabled={visionModelSaving || !selectedVisionProvider}
+                      >
+                        <option value="">{t("settings.config.noVisionModel")}</option>
+                        {visionModels.map((model) => (
+                          <option key={model.name} value={model.name}>
+                            {model.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
                 <section className="config-panel">
                   <div className="config-path-row">
                     <span>{activeConfigScope.label} {t("settings.config.configLabel")}</span>
@@ -501,7 +580,7 @@ function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
 
 function configPlaceholder(section: SettingsConfigSectionKey): string {
   if (section === "provider") {
-    return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1"]\ndefault_model = "gpt-4.1"\napi_key = "..."';
+    return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1", "gpt-4.1-mini"]\ndefault_model = "gpt-4.1"\nvision_provider = "openai"\nvision_model = "gpt-4.1-mini"\napi_key = "..."';
   }
   if (section === "mcp") {
     return '[mcp_servers.example]\ntransport = "stdio"\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-filesystem"]';

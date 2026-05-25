@@ -48,6 +48,8 @@ export interface SidecarStatus {
   ws_url: string;
   provider: string;
   model: string;
+  vision_provider?: string | null;
+  vision_model?: string | null;
   reasoning_level?: string | null;
   execution_mode?: string | null;
   execution_mode_title?: string | null;
@@ -67,6 +69,8 @@ export interface ProviderDescriptor {
   default_model: string;
   models: string[];
   active_model?: string | null;
+  vision_provider?: string | null;
+  vision_model?: string | null;
   reasoning_level?: string | null;
   is_active: boolean;
 }
@@ -79,6 +83,7 @@ export interface ModelDescriptor {
   supports_adaptive_reasoning?: boolean | null;
   is_default: boolean;
   is_active: boolean;
+  is_vision: boolean;
 }
 
 export interface TurnStartResponse {

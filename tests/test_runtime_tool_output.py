@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
+from open_somnia.config.settings import _build_provider_profile, _load_provider_profiles, _materialize_provider, load_settings
 from open_somnia.mcp.registry import _render_mcp_result
 from open_somnia.providers.base import ProviderError
 from open_somnia.providers.anthropic_provider import AnthropicProvider
@@ -78,6 +79,151 @@ class RuntimeToolOutputTests(unittest.TestCase):
             output_preview=output_preview or content[:220],
             has_error=has_error,
         )
+
+    def test_provider_profile_materializes_configured_vision_model(self) -> None:
+        profile = _build_provider_profile(
+            "openai",
+            {
+                "provider_type": "openai",
+                "models": ["kimi-k2-thinking", "doubao-1-5-vision-pro-32k"],
+                "default_model": "kimi-k2-thinking",
+                "vision_provider": "openai",
+                "vision_model": "doubao-1-5-vision-pro-32k",
+                "api_key": "fake",
+                "base_url": "http://localhost",
+            },
+            {},
+        )
+
+        settings = _materialize_provider(profile)
+
+        self.assertEqual(profile.models, ["kimi-k2-thinking", "doubao-1-5-vision-pro-32k"])
+        self.assertEqual(settings.model, "kimi-k2-thinking")
+        self.assertEqual(settings.vision_provider, "openai")
+        self.assertEqual(settings.vision_model, "doubao-1-5-vision-pro-32k")
+
+    def test_provider_profile_rejects_unconfigured_vision_model(self) -> None:
+        raw = {
+            "providers": {
+                "default": "openai",
+                "openai": {
+                    "provider_type": "openai",
+                    "models": ["strong-text-model"],
+                    "default_model": "strong-text-model",
+                    "vision_provider": "openai",
+                    "vision_model": "vision-only",
+                    "api_key": "fake",
+                },
+            }
+        }
+
+        with self.assertRaisesRegex(ValueError, "Vision model 'vision-only' is not configured"):
+            _load_provider_profiles(raw)
+
+    def test_workspace_config_overrides_global_vision_model(self) -> None:
+        root = self._stable_test_dir("vision-model-config-override")
+        global_config = root / "global.toml"
+        workspace_config = root / ".open_somnia" / "open_somnia.toml"
+        workspace_config.parent.mkdir(parents=True, exist_ok=True)
+        global_config.write_text(
+            "\n".join(
+                [
+                    "[providers]",
+                    'default = "openai"',
+                    "",
+                    "[providers.openai]",
+                    'provider_type = "openai"',
+                    'models = ["strong-text-model", "global-vision", "workspace-vision"]',
+                    'default_model = "strong-text-model"',
+                    'vision_provider = "openai"',
+                    'vision_model = "global-vision"',
+                    'api_key = "fake"',
+                    'base_url = "http://localhost"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        workspace_config.write_text(
+            "\n".join(
+                [
+                    "[providers.openai]",
+                    'vision_model = "workspace-vision"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("open_somnia.config.settings.global_config_path", return_value=global_config):
+            settings = load_settings(root)
+
+        self.assertEqual(settings.provider.model, "strong-text-model")
+        self.assertEqual(settings.provider.vision_provider, "openai")
+        self.assertEqual(settings.provider.vision_model, "workspace-vision")
+
+    def test_complete_uses_vision_model_only_for_image_payloads(self) -> None:
+        calls: list[tuple[str, int]] = []
+
+        class _Provider:
+            def __init__(self, settings):
+                self.settings = settings
+
+            def complete(self, **kwargs):
+                calls.append((self.settings.model, kwargs["max_tokens"]))
+                return AssistantTurn(stop_reason="end_turn", text_blocks=[self.settings.model])
+
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.provider = _Provider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="strong-text-model",
+                vision_provider="vision",
+                vision_model="vision-model",
+                max_tokens=321,
+            )
+        )
+        runtime.settings = SimpleNamespace(
+            provider=runtime.provider.settings,
+            provider_profiles={
+                "openai": ProviderProfileSettings(
+                    name="openai",
+                    provider_type="openai",
+                    models=["strong-text-model"],
+                    default_model="strong-text-model",
+                    max_tokens=654,
+                ),
+                "vision": ProviderProfileSettings(
+                    name="vision",
+                    provider_type="openai",
+                    models=["vision-model"],
+                    default_model="vision-model",
+                    max_tokens=654,
+                )
+            },
+        )
+        runtime._instantiate_provider = lambda provider_settings: _Provider(provider_settings)
+        runtime._raise_if_interrupted = lambda should_interrupt=None: None
+        runtime._wait_before_provider_retry = lambda should_interrupt=None: None
+
+        text_turn = OpenAgentRuntime.complete(runtime, "system", [{"role": "user", "content": "hello"}], [])
+        image_turn = OpenAgentRuntime.complete(
+            runtime,
+            "system",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {"type": "input_image", "absolute_path": "D:/workspace/image.png", "media_type": "image/png"},
+                    ],
+                }
+            ],
+            [],
+        )
+
+        self.assertEqual(text_turn.text_blocks, ["strong-text-model"])
+        self.assertEqual(image_turn.text_blocks, ["vision-model"])
+        self.assertEqual(calls, [("strong-text-model", 321), ("vision-model", 654)])
 
     def _tool_round_messages(self, *contents: str) -> list[dict]:
         messages: list[dict] = []
@@ -1582,6 +1728,53 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(runtime.compact_manager.model_max_tokens, 4096)
         self.assertEqual(runtime.settings.provider_profiles["openai"].default_model, "gpt-4.1-mini")
         mock_persist.assert_called_once_with(runtime.settings, "openai", "gpt-4.1-mini")
+
+    def test_set_vision_model_updates_runtime_and_persists(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            raw_config={"providers": {}},
+            provider=ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="text-model",
+                vision_provider=None,
+                vision_model=None,
+                max_tokens=8000,
+            ),
+            provider_profiles={
+                "openai": ProviderProfileSettings(
+                    name="openai",
+                    provider_type="openai",
+                    models=["text-model", "vision-model"],
+                    default_model="text-model",
+                    api_key="",
+                    base_url="https://api.openai.com/v1",
+                    max_tokens=4096,
+                    timeout_seconds=60,
+                )
+            },
+        )
+        runtime.compact_manager = SimpleNamespace(provider=None, model_max_tokens=0)
+        runtime.provider = "old-provider"
+        runtime._instantiate_provider = lambda provider_settings: {
+            "provider": provider_settings.name,
+            "model": provider_settings.model,
+            "vision_provider": provider_settings.vision_provider,
+            "vision_model": provider_settings.vision_model,
+        }
+
+        with patch("open_somnia.runtime.agent.persist_provider_vision_model") as mock_persist:
+            message = OpenAgentRuntime.set_vision_model(runtime, "openai", "openai", "vision-model")
+
+        self.assertIn("vision-model", message)
+        self.assertEqual(runtime.settings.provider.vision_provider, "openai")
+        self.assertEqual(runtime.settings.provider.vision_model, "vision-model")
+        self.assertEqual(runtime.settings.provider_profiles["openai"].vision_provider, "openai")
+        self.assertEqual(runtime.settings.provider_profiles["openai"].vision_model, "vision-model")
+        self.assertEqual(runtime.provider["vision_provider"], "openai")
+        self.assertEqual(runtime.provider["vision_model"], "vision-model")
+        mock_persist.assert_called_once_with(runtime.settings, "openai", "vision-model", "openai")
 
     def test_set_reasoning_level_updates_runtime_and_compact_manager(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

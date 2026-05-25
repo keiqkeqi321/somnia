@@ -1874,6 +1874,73 @@ def _handle_model_command(runtime) -> None:
     print(runtime.switch_provider_model(selected_provider, selected_model))
 
 
+def _handle_vision_command(runtime, command: str) -> None:
+    profiles = runtime.configured_provider_profiles()
+    target_provider = str(getattr(runtime.settings.provider, "name", "")).strip().lower()
+    if not target_provider or target_provider not in profiles:
+        print("[active provider is not configured]")
+        return
+    parts = command.strip().split(maxsplit=1)
+    if len(parts) > 1:
+        values = parts[1].split()
+        if len(values) == 1 and values[0].strip().lower() in {"auto", "none", "clear"}:
+            print(runtime.set_vision_model(target_provider, None, None))
+            return
+        if len(values) != 2:
+            print("[usage: /vision <provider> <model>]")
+            return
+        vision_provider, raw_model = values[0].strip().lower(), values[1].strip()
+        vision_profile = profiles.get(vision_provider)
+        if vision_profile is None:
+            print(f"[vision provider '{vision_provider}' is not configured]")
+            return
+        if raw_model not in vision_profile.models:
+            print(f"[vision model '{raw_model}' is not configured for provider '{vision_provider}']")
+            return
+        print(runtime.set_vision_model(target_provider, vision_provider, raw_model))
+        return
+
+    current_vision_provider = str(getattr(runtime.settings.provider, "vision_provider", "") or "").strip().lower()
+    current_vision_model = str(getattr(runtime.settings.provider, "vision_model", "") or "").strip()
+    provider_items = [
+        (
+            name,
+            f"{name}{' (current vision)' if name == current_vision_provider else ''} | models={len(profile.models)}",
+        )
+        for name, profile in sorted(profiles.items())
+    ]
+    if current_vision_model:
+        provider_items.insert(0, ("__clear__", "Clear vision model"))
+    selected_provider = choose_item_interactively(
+        "Choose Vision Provider",
+        "Select the provider to use for image understanding.",
+        provider_items,
+    )
+    if not selected_provider:
+        print("[vision model selection cancelled]")
+        return
+    if selected_provider == "__clear__":
+        print(runtime.set_vision_model(target_provider, None, None))
+        return
+    vision_profile = profiles[selected_provider]
+    model_items = [
+        (
+            model,
+            f"{model}{' (current vision)' if model == current_vision_model else ''}{' (active text)' if model == runtime.settings.provider.model else ''}",
+        )
+        for model in vision_profile.models
+    ]
+    selected_model = choose_item_interactively(
+        "Choose Vision Model",
+        f"Select the model to use for image understanding under provider '{selected_provider}'.",
+        model_items,
+    )
+    if not selected_model:
+        print("[vision model selection cancelled]")
+        return
+    print(runtime.set_vision_model(target_provider, selected_provider, selected_model))
+
+
 def _handle_reasoning_command(runtime, command: str) -> None:
     parts = command.strip().split(maxsplit=1)
     if len(parts) > 1:
@@ -2550,6 +2617,12 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                         print("[busy; wait for queued responses before /reasoning]")
                         continue
                     _handle_reasoning_command(runtime, stripped)
+                    continue
+                if stripped == "/vision" or stripped.startswith("/vision "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /vision]")
+                        continue
+                    _handle_vision_command(runtime, stripped)
                     continue
                 if stripped == "/providers":
                     if runner.has_inflight_work():

@@ -18,6 +18,7 @@ class ModelDescriptor:
     supports_adaptive_reasoning: bool | None = None
     is_default: bool = False
     is_active: bool = False
+    is_vision: bool = False
 
 
 @dataclass(slots=True)
@@ -27,6 +28,8 @@ class ProviderDescriptor:
     default_model: str
     models: list[str] = field(default_factory=list)
     active_model: str | None = None
+    vision_provider: str | None = None
+    vision_model: str | None = None
     reasoning_level: str | None = None
     is_active: bool = False
 

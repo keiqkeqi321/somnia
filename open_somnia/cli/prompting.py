@@ -43,6 +43,7 @@ VISIBLE_COMMAND_SPECS = [
     ("/image", "Send a local image to the active multimodal model"),
     ("/paste-image", "Read an image from the system clipboard"),
     ("/model", "Choose the active provider and model"),
+    ("/vision", "Choose the image understanding model"),
     ("/reasoning", "Set the active provider reasoning level"),
     ("/providers", "Add or edit shared provider profiles"),
     ("/hooks", "Browse hooks by event and toggle them on or off"),

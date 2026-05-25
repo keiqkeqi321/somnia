@@ -91,6 +91,8 @@ default = "openai"
 provider_type = "openai"
 models = ["gpt-4.1", "gpt-4.1-mini"]
 default_model = "gpt-4.1"
+vision_provider = "openai"
+vision_model = "gpt-4.1-mini"
 api_key = "${OPENAI_API_KEY}"
 base_url = "https://api.openai.com/v1"
 organization = "org_optional"
@@ -106,6 +108,7 @@ Fields:
 - `provider_type`: `"openai"` or `"anthropic"`.
 - `models`: list of model ids available for this provider.
 - `default_model`: active/default model for this provider. If absent, Somnia uses the profile default.
+- `vision_provider` + `vision_model`: optional provider/model pair to use only for turns that include image inputs. The provider must be configured and the model must be listed under that provider.
 - `api_key`: API key. Prefer env placeholders such as `"${OPENAI_API_KEY}"` unless the user explicitly wants a literal key.
 - `base_url`: API base URL. OpenAI-compatible providers should usually set this.
 - `organization`: optional provider organization id.

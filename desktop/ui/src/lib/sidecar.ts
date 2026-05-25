@@ -240,8 +240,8 @@ export class SidecarClient {
     return `${this.baseUrl}/workspace/images?path=${encodeURIComponent(path)}`;
   }
 
-  async switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string }> {
-    return parseResponse<{ message: string; provider: string; model: string }>(
+  async switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string; vision_model?: string | null }> {
+    return parseResponse<{ message: string; provider: string; model: string; vision_model?: string | null }>(
       await fetch(`${this.baseUrl}/providers/switch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -250,8 +250,22 @@ export class SidecarClient {
     );
   }
 
-  async setReasoningLevel(reasoningLevel: string | null): Promise<{ message: string; provider: string; model: string; reasoning_level?: string | null }> {
-    return parseResponse<{ message: string; provider: string; model: string; reasoning_level?: string | null }>(
+  async setVisionModel(
+    providerName: string,
+    visionProvider: string | null,
+    visionModel: string | null,
+  ): Promise<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }> {
+    return parseResponse<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }>(
+      await fetch(`${this.baseUrl}/vision-model`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider_name: providerName, vision_provider: visionProvider ?? "", vision_model: visionModel ?? "" }),
+      }),
+    );
+  }
+
+  async setReasoningLevel(reasoningLevel: string | null): Promise<{ message: string; provider: string; model: string; vision_model?: string | null; reasoning_level?: string | null }> {
+    return parseResponse<{ message: string; provider: string; model: string; vision_model?: string | null; reasoning_level?: string | null }>(
       await fetch(`${this.baseUrl}/reasoning`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -30,6 +30,7 @@ from open_somnia.config.settings import (
     persist_hook_enabled,
     persist_provider_reasoning_level,
     persist_provider_selection,
+    persist_provider_vision_model,
 )
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
@@ -430,6 +431,34 @@ class OpenAgentRuntime:
 
         return AnthropicProvider(provider_settings)
 
+    def _messages_include_image_input(self, messages: list[dict[str, Any]]) -> bool:
+        def visit(value: Any) -> bool:
+            if isinstance(value, dict):
+                block_type = str(value.get("type", "")).strip()
+                if block_type in {"input_image", "image_url"}:
+                    return True
+                return any(visit(item) for item in value.values())
+            if isinstance(value, list):
+                return any(visit(item) for item in value)
+            return False
+
+        return visit(messages)
+
+    def _provider_for_messages(self, messages: list[dict[str, Any]]) -> LLMProvider | None:
+        active_provider = getattr(self, "provider", None)
+        if active_provider is None:
+            return None
+        vision_provider = str(getattr(self.settings.provider, "vision_provider", "") or "").strip().lower()
+        vision_model = str(getattr(self.settings.provider, "vision_model", "") or "").strip()
+        if not vision_provider or not vision_model:
+            return active_provider
+        if not self._messages_include_image_input(messages):
+            return active_provider
+        profile = self.settings.provider_profiles.get(vision_provider)
+        if profile is None:
+            raise ValueError(f"Vision provider '{vision_provider}' is not configured.")
+        return self._instantiate_provider(_materialize_provider(profile, vision_model))
+
     def configured_provider_profiles(self) -> dict[str, ProviderProfileSettings]:
         return dict(self.settings.provider_profiles)
 
@@ -508,6 +537,49 @@ class OpenAgentRuntime:
         return (
             f"Set reasoning level for provider '{self.settings.provider.name}' to "
             f"'{normalized_level}' and saved it to .open_somnia/open_somnia.toml."
+        )
+
+    def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> str:
+        normalized_provider = provider_name.strip().lower()
+        normalized_vision_provider = str(vision_provider or "").strip().lower()
+        normalized_model = str(vision_model or "").strip()
+        if normalized_provider not in self.settings.provider_profiles:
+            raise ValueError(f"Provider '{normalized_provider}' is not configured.")
+        if bool(normalized_vision_provider) != bool(normalized_model):
+            raise ValueError("vision_provider and vision_model must be set together.")
+        profile = self.settings.provider_profiles[normalized_provider]
+        if normalized_vision_provider and normalized_vision_provider not in self.settings.provider_profiles:
+            raise ValueError(f"Vision provider '{normalized_vision_provider}' is not configured.")
+        if normalized_model and normalized_model not in self.settings.provider_profiles[normalized_vision_provider].models:
+            raise ValueError(
+                f"Vision model '{normalized_model}' is not configured for provider '{normalized_vision_provider}'."
+            )
+        profile.vision_provider = normalized_vision_provider or None
+        profile.vision_model = normalized_model or None
+        if self.settings.provider.name == normalized_provider:
+            self.settings.provider = _materialize_provider(profile, self.settings.provider.model)
+            self.provider = self._instantiate_provider(self.settings.provider)
+            self.compact_manager.provider = self.provider
+            self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
+            self._context_usage_cache = {}
+            self._payload_message_cache = {}
+            self._recent_context_usage = {}
+            self._janitor_state = {}
+        persist_provider_vision_model(
+            self.settings,
+            normalized_provider,
+            normalized_model or None,
+            normalized_vision_provider or None,
+        )
+        if normalized_model:
+            return (
+                f"Set vision model for provider '{normalized_provider}' to "
+                f"'{normalized_vision_provider}/{normalized_model}' "
+                "and saved it to .open_somnia/open_somnia.toml."
+            )
+        return (
+            f"Cleared vision model for provider '{normalized_provider}' "
+            "and saved it to .open_somnia/open_somnia.toml."
         )
 
     def reload_provider_configuration(self, *, provider_name: str | None = None, model: str | None = None) -> None:
@@ -757,6 +829,7 @@ class OpenAgentRuntime:
         payload_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         max_tokens: int,
+        provider: LLMProvider | None = None,
         actor: str = "lead",
         stream: bool = False,
         kind: str = "turn",
@@ -768,7 +841,7 @@ class OpenAgentRuntime:
         if not logs_dir:
             return None
         logs_root = Path(logs_dir)
-        provider = getattr(self, "provider", None)
+        provider = provider or getattr(self, "provider", None)
         usage = self._count_payload_usage(system_prompt, payload_messages, tools)
         provider_payload: dict[str, Any] | None = None
         serializer = getattr(provider, "debug_request_payload", None)
@@ -789,10 +862,18 @@ class OpenAgentRuntime:
             "actor": actor,
             "kind": str(kind).strip().lower() or "turn",
             "provider": {
-                "name": getattr(getattr(self.settings, "provider", None), "name", ""),
-                "type": getattr(getattr(self.settings, "provider", None), "provider_type", ""),
-                "model": getattr(getattr(self.settings, "provider", None), "model", ""),
-                "base_url": getattr(getattr(self.settings, "provider", None), "base_url", None),
+                "name": getattr(getattr(provider, "settings", None), "name", getattr(getattr(self.settings, "provider", None), "name", "")),
+                "type": getattr(
+                    getattr(provider, "settings", None),
+                    "provider_type",
+                    getattr(getattr(self.settings, "provider", None), "provider_type", ""),
+                ),
+                "model": getattr(getattr(provider, "settings", None), "model", getattr(getattr(self.settings, "provider", None), "model", "")),
+                "base_url": getattr(
+                    getattr(provider, "settings", None),
+                    "base_url",
+                    getattr(getattr(self.settings, "provider", None), "base_url", None),
+                ),
             },
             "context_usage": {
                 "used_tokens": usage.used_tokens,
@@ -2207,16 +2288,18 @@ class OpenAgentRuntime:
     ):
         last_error: Exception | None = None
         attempts = 0
+        provider = self._provider_for_messages(messages) or self.provider
+        provider_settings = getattr(provider, "settings", self.settings.provider)
         for attempt in range(1, 4):
             attempts = attempt
             self._raise_if_interrupted(should_interrupt)
             try:
                 if should_interrupt is None:
-                    return self.provider.complete(
+                    return provider.complete(
                         system_prompt=system_prompt,
                         messages=messages,
                         tools=tools,
-                        max_tokens=self.settings.provider.max_tokens,
+                        max_tokens=provider_settings.max_tokens,
                         text_callback=text_callback,
                         stop_checker=None,
                     )
@@ -2224,6 +2307,8 @@ class OpenAgentRuntime:
                     system_prompt=system_prompt,
                     messages=messages,
                     tools=tools,
+                    provider=provider,
+                    max_tokens=provider_settings.max_tokens,
                     text_callback=text_callback,
                     should_interrupt=should_interrupt,
                 )
@@ -2262,9 +2347,14 @@ class OpenAgentRuntime:
         system_prompt: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        provider: LLMProvider | None = None,
+        max_tokens: int | None = None,
         text_callback=None,
         should_interrupt=None,
     ):
+        provider = provider or self.provider
+        if max_tokens is None:
+            max_tokens = self.settings.provider.max_tokens
         cancel_event = Event()
         result_queue: Queue[tuple[str, Any]] = Queue(maxsize=1)
 
@@ -2286,11 +2376,11 @@ class OpenAgentRuntime:
 
         def run_provider() -> None:
             try:
-                turn = self.provider.complete(
+                turn = provider.complete(
                     system_prompt=system_prompt,
                     messages=messages,
                     tools=tools,
-                    max_tokens=self.settings.provider.max_tokens,
+                    max_tokens=max_tokens,
                     text_callback=interruptible_callback if (text_callback is not None or should_interrupt is not None) else text_callback,
                     stop_checker=provider_stop_checker,
                 )
@@ -2718,6 +2808,7 @@ class OpenAgentRuntime:
                     system_prompt=system_prompt,
                     tools=tool_schemas,
                 )
+                request_provider = self._provider_for_messages(payload_messages)
                 self._consume_ephemeral_image_history(session.messages, session_id=session.id)
                 dump_path = self._dump_provider_payload_if_enabled(
                     session=session,
@@ -2725,6 +2816,7 @@ class OpenAgentRuntime:
                     payload_messages=payload_messages,
                     tools=tool_schemas,
                     max_tokens=self.settings.provider.max_tokens,
+                    provider=request_provider,
                     actor="lead",
                     stream=text_callback is not None or should_interrupt is not None,
                     kind="turn",
