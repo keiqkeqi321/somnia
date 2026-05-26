@@ -6,6 +6,7 @@ from typing import Any
 
 from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, execution_mode_spec
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
+from open_somnia.runtime.prompt_sections import PromptBundle, PromptSection
 
 
 class SystemPromptBuilder:
@@ -33,9 +34,8 @@ class SystemPromptBuilder:
             f"- {bash_hint}"
         )
 
-    def build_system_prompt(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> str:
-        base_prompt = self.base_system_prompt()
-        environment_guidance = self.environment_guidance()
+    def build_prompt_bundle(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> PromptBundle:
+        del session
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
         working_file_context_getter = getattr(self.runtime, "current_working_file_context", None)
         working_file_context = working_file_context_getter() if callable(working_file_context_getter) else ""
@@ -49,17 +49,19 @@ class SystemPromptBuilder:
         )
         tool_selection_guidance = (
             "Tool selection rules:\n"
+            "- If project instructions explicitly require specific tools for tasks that overlap with general tools, "
+            "use the project-specified tools first; general tools such as `tree`, `grep`, and `read_file` are fallback options for that overlapping work.\n"
             "- Prefer dedicated tools over `bash` whenever a relevant tool exists.\n"
-            "- At the start of repository exploration, prefer `project_scan` or a focused `tree` to build a project map.\n"
-            "- Use `find_symbol` to locate classes, functions, methods, or interfaces before guessing code paths from docs or memory.\n"
-            "- Use `read_file` instead of shell commands such as `cat`, `head`, `tail`, or `sed` for reading files.\n"
+            "- When project instructions do not specify an overlapping code-intelligence tool, use `project_scan` or a focused `tree` to build a project map.\n"
+            "- When project instructions do not specify an overlapping symbol tool, use `find_symbol` to locate classes, functions, methods, or interfaces before guessing code paths from docs or memory.\n"
+            "- When project instructions do not specify an overlapping file-reading tool, use `read_file` instead of shell commands such as `cat`, `head`, `tail`, or `sed`.\n"
             "- Use `edit_file` instead of shell text replacement via `sed` or `awk`.\n"
             "- Use `write_file` instead of shell redirection or heredocs for file creation.\n"
-            "- Use `tree` for shallow structure inspection instead of broad file enumeration.\n"
+            "- Use `tree` for shallow structure inspection instead of broad file enumeration only when no project-specific tool is required for that inspection.\n"
             "- Use `glob` instead of shell file discovery commands such as `find`, `ls`, or recursive directory listings.\n"
-            "- Use `grep` instead of shell content search commands such as `grep` or `rg`.\n"
+            "- Use `grep` instead of shell content search commands such as `grep` or `rg` only when no project-specific search or code-intelligence tool applies.\n"
             "- Do not start with broad `glob` patterns such as `**/*` unless the user explicitly wants a full tree dump.\n"
-            "- After reading project guidance files such as AGENTS.md or CLAUDE.md, use `project_scan`, `tree`, or `find_symbol` to validate the documented structure against the actual repository.\n"
+            "- After reading project guidance files such as AGENTS.md or CLAUDE.md, use their specified tools first; otherwise use `project_scan`, `tree`, or `find_symbol` to validate the documented structure against the actual repository.\n"
             "- Prefer precise `glob` patterns such as an exact filename, a suffix filter like `**/*.cs`, or a narrowed directory such as `Runtime/UI/**/*.cs`.\n"
             "- Before `read_file` or `edit_file`, confirm the exact path with a focused `glob`; do not guess file paths from broad directory listings.\n"
             "- For `edit_file`, always wrap replacements as `edits=[{old_text,new_text}, ...]`; do not send top-level `old_text` or `new_text`.\n"
@@ -84,39 +86,49 @@ class SystemPromptBuilder:
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
             "- Treat repository exploration as an investigation: gather evidence, update hypotheses, then conclude."
         )
-        working_file_guidance = f"\n{working_file_context}" if working_file_context else ""
-        if actor == "lead":
-            return (
-                f"{base_prompt}\n\n"
-                f"You are '{actor}', role: {role}, operating inside workspace {self.runtime.settings.workspace_root}.\n"
-                "Use tools to solve coding tasks. Prefer task_create/task_update/task_list for longer work.\n"
-                "Use TodoWrite for short checklists. Use subagent for isolated subagent work. Use load_skill only when needed.\n"
-                "When collaborating, keep teammates informed through inbox messages and respect shutdown and plan protocols.\n"
-                "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing.\n"
-                f"{identity_guidance}\n"
-                f"{mode_guidance}\n"
-                f"{tool_selection_guidance}\n"
-                f"{workflow_guidance}\n"
-                f"{project_instructions}\n"
-                f"{environment_guidance}\n"
-                f"{working_file_guidance}\n"
-                f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
-            )
-        return (
-            f"{base_prompt}\n\n"
+        runtime_identity = (
             f"You are '{actor}', role: {role}, operating inside workspace {self.runtime.settings.workspace_root}.\n"
-            "You are a persistent teammate following the s11 work/idle loop.\n"
-            "Use tools to complete current work, send messages when needed, and call idle when you have finished the current unit of work.\n"
-            "While idle you may be resumed by inbox messages or unclaimed tasks.\n"
             f"{identity_guidance}\n"
             f"{mode_guidance}\n"
-            f"{tool_selection_guidance}\n"
-            f"{workflow_guidance}\n"
-            f"{project_instructions}\n"
-            f"{environment_guidance}\n"
-            f"{working_file_guidance}\n"
-            f"Available skills:\n{self.runtime.skill_loader.descriptions()}"
+            f"{self.environment_guidance()}"
         )
+        lead_guidance = (
+            "Use tools to solve coding tasks. Prefer task_create/task_update/task_list for longer work.\n"
+            "Use TodoWrite for short checklists. Use subagent for isolated subagent work. Use load_skill only when needed.\n"
+            "When collaborating, keep teammates informed through inbox messages and respect shutdown and plan protocols.\n"
+            "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing."
+        )
+        teammate_guidance = (
+            "You are a persistent teammate following the s11 work/idle loop.\n"
+            "Use tools to complete current work, send messages when needed, and call idle when you have finished the current unit of work.\n"
+            "While idle you may be resumed by inbox messages or unclaimed tasks."
+        )
+        runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance
+        skill_descriptions = self.runtime.skill_loader.descriptions()
+        sections = (
+            PromptSection("core", "A. Core System Prompt", self.base_system_prompt(), dynamic=False),
+            PromptSection(
+                "runtime",
+                "B. Runtime Injection",
+                f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}\n{working_file_context}",
+                dynamic=True,
+            ),
+            PromptSection("skills", "C. Skill Prompt", f"Available skills:\n{skill_descriptions}", dynamic=True),
+            PromptSection(
+                "mcp",
+                "D. MCP Prompt",
+                "MCP tools are supplied through the provider tool schema. Use project- or task-specific MCP tools before overlapping general tools.",
+                dynamic=True,
+            ),
+            PromptSection("repo", "E. Repo Prompt", project_instructions, dynamic=True),
+        )
+        return PromptBundle(sections)
+
+    def build_system_prompt(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> str:
+        return self.build_prompt_bundle(actor=actor, role=role, session=session).render()
+
+    def build_system_prompt_sections(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> list[dict[str, object]]:
+        return self.build_prompt_bundle(actor=actor, role=role, session=session).to_payload()
 
     def base_system_prompt(self) -> str:
         configured_prompt = self.runtime.settings.agent.system_prompt

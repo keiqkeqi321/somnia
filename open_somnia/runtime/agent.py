@@ -856,6 +856,20 @@ class OpenAgentRuntime:
                 )
             except Exception as exc:
                 provider_payload = {"error": f"failed to serialize provider payload: {exc}"}
+        system_prompt_sections: list[dict[str, object]] | None = None
+        section_builder = getattr(self, "build_system_prompt_sections", None)
+        if callable(section_builder) and kind == "turn":
+            try:
+                system_prompt_sections = section_builder(actor=actor, session=session)
+            except Exception as exc:
+                system_prompt_sections = [
+                    {
+                        "id": "error",
+                        "title": "System Prompt Sections",
+                        "dynamic": True,
+                        "content": f"failed to build system prompt sections: {exc}",
+                    }
+                ]
         dump_payload = {
             "timestamp": time.time(),
             "session_id": str(getattr(session, "id", "")).strip(),
@@ -883,6 +897,7 @@ class OpenAgentRuntime:
                 "counter_name": usage.counter_name,
             },
             "system_prompt": system_prompt,
+            "system_prompt_sections": system_prompt_sections,
             "messages": payload_messages,
             "tools": tools,
             "max_tokens": max_tokens,
@@ -2210,6 +2225,14 @@ class OpenAgentRuntime:
         session: AgentSession | None = None,
     ) -> str:
         return self._system_prompt_builder().build_system_prompt(actor=actor, role=role, session=session)
+
+    def build_system_prompt_sections(
+        self,
+        actor: str = "lead",
+        role: str = "lead coding agent",
+        session: AgentSession | None = None,
+    ) -> list[dict[str, object]]:
+        return self._system_prompt_builder().build_system_prompt_sections(actor=actor, role=role, session=session)
 
     def _base_system_prompt(self) -> str:
         return self._system_prompt_builder().base_system_prompt()

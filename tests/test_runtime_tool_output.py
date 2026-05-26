@@ -486,10 +486,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Workspace:", prompt)
         self.assertIn("bash", prompt)
         self.assertIn("Prefer dedicated tools over `bash`", prompt)
-        self.assertIn("prefer `project_scan` or a focused `tree`", prompt)
-        self.assertIn("Use `find_symbol` to locate classes", prompt)
+        self.assertIn("When project instructions do not specify an overlapping code-intelligence tool", prompt)
+        self.assertIn("When project instructions do not specify an overlapping symbol tool", prompt)
         self.assertIn("Use `glob` instead of shell file discovery commands", prompt)
-        self.assertIn("Use `grep` instead of shell content search commands", prompt)
+        self.assertIn("only when no project-specific search or code-intelligence tool applies", prompt)
         self.assertIn("Do not start with broad `glob` patterns such as `**/*`", prompt)
         self.assertIn("Before `read_file` or `edit_file`, confirm the exact path", prompt)
         self.assertIn("always wrap replacements as `edits=[{old_text,new_text}, ...]`", prompt)
@@ -510,6 +510,29 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("request_mode_switch", prompt)
         self.assertIn("Use subagent for isolated subagent work.", prompt)
         self.assertIn("Do not claim to be Claude", prompt)
+
+    def test_build_system_prompt_sections_are_structured_for_debug_payloads(self) -> None:
+        root = self._stable_test_dir("prompt-sections")
+        (root / "AGENTS.md").write_text("Use repo guidance.\n", encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=root,
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.current_working_file_context = lambda: "Active working file cache:\n- Path: app.py"
+
+        sections = OpenAgentRuntime.build_system_prompt_sections(runtime)
+
+        self.assertEqual([section["id"] for section in sections], ["core", "runtime", "skills", "mcp", "repo"])
+        self.assertEqual(sections[0]["title"], "A. Core System Prompt")
+        self.assertEqual(sections[1]["title"], "B. Runtime Injection")
+        self.assertIn("Active working file cache:", sections[1]["content"])
+        self.assertIn("Available skills:", sections[2]["content"])
+        self.assertIn("MCP tools are supplied", sections[3]["content"])
+        self.assertIn("Use repo guidance.", sections[4]["content"])
 
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -545,6 +568,26 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn('source="AGENTS.md"', prompt)
         self.assertIn("Use project tests.", prompt)
         self.assertNotIn("Use claude tests.", prompt)
+
+    def test_build_system_prompt_prioritizes_project_specific_tools_over_general_fallbacks(self) -> None:
+        root = self._stable_test_dir("project-tool-priority")
+        (root / "AGENTS.md").write_text("Use indexed tools before grep.\n", encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=root,
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime)
+
+        project_tool_priority = "use the project-specified tools first"
+        general_tree_guidance = "When project instructions do not specify an overlapping code-intelligence tool"
+        self.assertIn(project_tool_priority, prompt)
+        self.assertIn(general_tree_guidance, prompt)
+        self.assertLess(prompt.index(project_tool_priority), prompt.index(general_tree_guidance))
 
     def test_build_system_prompt_uses_claude_md_when_agents_md_is_missing(self) -> None:
         root = self._stable_test_dir("project-instructions-claude")
@@ -2883,6 +2926,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._serialize_provider_response = OpenAgentRuntime._serialize_provider_response.__get__(runtime, OpenAgentRuntime)
         runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
         runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
+        runtime.build_system_prompt_sections = lambda actor="lead", role="lead coding agent", session=None: [
+            {"id": "core", "title": "A. Core System Prompt", "dynamic": False, "content": "system"}
+        ]
         runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
         session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
 
@@ -2916,6 +2962,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(dumped["kind"], "turn")
         self.assertEqual(dumped["provider"]["model"], "gpt-4.1")
         self.assertEqual(dumped["context_usage"]["used_tokens"], 12_345)
+        self.assertEqual(dumped["system_prompt"], "system")
+        self.assertEqual(dumped["system_prompt_sections"][0]["id"], "core")
         self.assertEqual(dumped["provider_request"]["body"]["stream"], True)
         self.assertEqual(dumped["provider_response"]["stop_reason"], "end_turn")
         self.assertEqual(dumped["response_text"], "hello world")
