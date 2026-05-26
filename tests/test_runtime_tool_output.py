@@ -514,6 +514,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_build_system_prompt_sections_are_structured_for_debug_payloads(self) -> None:
         root = self._stable_test_dir("prompt-sections")
         (root / "AGENTS.md").write_text("Use repo guidance.\n", encoding="utf-8")
+        nested = root / "app"
+        nested.mkdir(exist_ok=True)
+        (nested / "AGENTS.md").write_text("Use app guidance.\n", encoding="utf-8")
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             workspace_root=root,
@@ -523,6 +526,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.execution_mode = "accept_edits"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
         runtime.current_working_file_context = lambda: "Active working file cache:\n- Path: app.py"
+        runtime.current_working_file_path = lambda: "app/main.py"
 
         sections = OpenAgentRuntime.build_system_prompt_sections(runtime)
 
@@ -533,6 +537,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Available skills:", sections[2]["content"])
         self.assertIn("MCP tools are supplied", sections[3]["content"])
         self.assertIn("Use repo guidance.", sections[4]["content"])
+        self.assertIn("Use app guidance.", sections[4]["content"])
 
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

@@ -355,6 +355,12 @@ class OpenAgentRuntime:
             f"{snippet}"
         )
 
+    def current_working_file_path(self) -> str:
+        entry = getattr(self, "_current_working_file", None)
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get("path", "")).strip()
+
     def print_last_turn_file_summary(self, session: AgentSession) -> bool:
         return self._tool_event_renderer().print_last_turn_file_summary(session)
 

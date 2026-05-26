@@ -39,7 +39,10 @@ class SystemPromptBuilder:
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
         working_file_context_getter = getattr(self.runtime, "current_working_file_context", None)
         working_file_context = working_file_context_getter() if callable(working_file_context_getter) else ""
-        project_instructions = ProjectInstructionsLoader(self.runtime.settings.workspace_root).render()
+        working_file_path_getter = getattr(self.runtime, "current_working_file_path", None)
+        working_file_path = working_file_path_getter() if callable(working_file_path_getter) else ""
+        project_instruction_paths = [working_file_path] if working_file_path else None
+        project_instructions = ProjectInstructionsLoader(self.runtime.settings.workspace_root).render(paths=project_instruction_paths)
         identity_guidance = (
             "Identity rules:\n"
             f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
