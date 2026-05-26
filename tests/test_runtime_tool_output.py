@@ -486,13 +486,14 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Workspace:", prompt)
         self.assertIn("bash", prompt)
         self.assertIn("Prefer dedicated tools over `bash`", prompt)
-        self.assertIn("When project instructions do not specify an overlapping code-intelligence tool", prompt)
-        self.assertIn("When project instructions do not specify an overlapping symbol tool", prompt)
-        self.assertIn("Use `glob` instead of shell file discovery commands", prompt)
-        self.assertIn("only when no project-specific search or code-intelligence tool applies", prompt)
-        self.assertIn("Do not start with broad `glob` patterns such as `**/*`", prompt)
-        self.assertIn("Before `read_file` or `edit_file`, confirm the exact path", prompt)
+        self.assertIn("Follow project instructions first", prompt)
+        self.assertIn("Prefer MCP and project-specific tools over generic filesystem/search tools", prompt)
+        self.assertIn("Treat generic workspace tools as fallbacks for overlapping work", prompt)
+        self.assertIn("Avoid broad repository sweeps", prompt)
+        self.assertIn("establish the exact path through the most specific available evidence", prompt)
         self.assertIn("always wrap replacements as `edits=[{old_text,new_text}, ...]`", prompt)
+        self.assertNotIn("Use `grep` instead of shell content search commands", prompt)
+        self.assertNotIn("Use `project_scan` or a focused `tree`", prompt)
         self.assertIn("Use `TodoWrite` to break down meaningful work", prompt)
         self.assertIn("Problem solving workflow:", prompt)
         self.assertIn("understand local evidence, plan the smallest coherent change", prompt)
@@ -592,11 +593,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
-        project_tool_priority = "use the project-specified tools first"
-        general_tree_guidance = "When project instructions do not specify an overlapping code-intelligence tool"
+        project_tool_priority = "Follow project instructions first"
+        generic_fallback_guidance = "Treat generic workspace tools as fallbacks for overlapping work"
         self.assertIn(project_tool_priority, prompt)
-        self.assertIn(general_tree_guidance, prompt)
-        self.assertLess(prompt.index(project_tool_priority), prompt.index(general_tree_guidance))
+        self.assertIn(generic_fallback_guidance, prompt)
+        self.assertLess(prompt.index(project_tool_priority), prompt.index(generic_fallback_guidance))
+        self.assertIn("Prefer MCP and project-specific tools over generic filesystem/search tools", prompt)
+        self.assertNotIn("Use `grep` instead of shell content search commands", prompt)
 
     def test_build_system_prompt_uses_claude_md_when_agents_md_is_missing(self) -> None:
         root = self._stable_test_dir("project-instructions-claude")
