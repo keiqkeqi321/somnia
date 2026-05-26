@@ -827,6 +827,49 @@ class OpenAgentRuntime:
         raw = str(os.environ.get(self.DEBUG_PROVIDER_PAYLOAD_ENV, "")).strip().lower()
         return raw in {"1", "true", "yes", "on"}
 
+    def _tool_schema_summary(self, tools: list[dict[str, Any]]) -> dict[str, Any]:
+        groups: dict[str, int] = {}
+        for tool in tools:
+            name = str(tool.get("name", "")).strip()
+            group = self._tool_schema_group(name)
+            groups[group] = groups.get(group, 0) + 1
+        return {
+            "total": len(tools),
+            "groups": dict(sorted(groups.items())),
+        }
+
+    def _message_payload_summary(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        roles: dict[str, int] = {}
+        chars = 0
+        for message in messages:
+            role = str(message.get("role", "unknown"))
+            roles[role] = roles.get(role, 0) + 1
+            chars += len(json.dumps(message.get("content", ""), ensure_ascii=False, default=str))
+        return {
+            "total": len(messages),
+            "roles": dict(sorted(roles.items())),
+            "content_chars": chars,
+        }
+
+    def _tool_schema_group(self, name: str) -> str:
+        if name.startswith("mcp__"):
+            parts = name.split("__", 2)
+            server = parts[1] if len(parts) > 1 and parts[1] else "unknown"
+            return f"mcp:{server}"
+        if name in {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}:
+            return "core"
+        if name == "load_skill":
+            return "skill"
+        if name in {"TodoWrite"} or name.startswith("task_"):
+            return "task"
+        if name in {"bash", "project_scan", "tree", "glob", "grep", "read_file", "read_image", "write_file", "edit_file", "find_symbol"}:
+            return "filesystem"
+        if name.startswith("background_"):
+            return "background"
+        if name.startswith("teammate_") or name.startswith("inbox_") or name.startswith("team_"):
+            return "team"
+        return "other"
+
     def _dump_provider_payload_if_enabled(
         self,
         *,
@@ -876,6 +919,18 @@ class OpenAgentRuntime:
                         "content": f"failed to build system prompt sections: {exc}",
                     }
                 ]
+        tool_schema_summary = self._tool_schema_summary(tools)
+        message_summary = self._message_payload_summary(payload_messages)
+        payload_summary = {
+            "kind": str(kind).strip().lower() or "turn",
+            "system_prompt_chars": len(system_prompt),
+            "system_prompt_section_count": len(system_prompt_sections or []),
+            "message_count": len(payload_messages),
+            "message_content_chars": message_summary["content_chars"],
+            "tool_count": len(tools),
+            "max_tokens": max_tokens,
+            "stream": stream,
+        }
         dump_payload = {
             "timestamp": time.time(),
             "session_id": str(getattr(session, "id", "")).strip(),
@@ -902,10 +957,12 @@ class OpenAgentRuntime:
                 "usage_percent": usage.usage_percent,
                 "counter_name": usage.counter_name,
             },
-            "system_prompt": system_prompt,
             "system_prompt_sections": system_prompt_sections,
             "messages": payload_messages,
+            "message_summary": message_summary,
             "tools": tools,
+            "tool_schema_summary": tool_schema_summary,
+            "payload_summary": payload_summary,
             "max_tokens": max_tokens,
             "stream": stream,
             "provider_request": provider_payload,

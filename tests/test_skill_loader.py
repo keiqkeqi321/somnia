@@ -54,6 +54,30 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("TOML configuration", loader.descriptions())
             self.assertIn("Complete TOML Map", loader.load("somnia-config"))
 
+    def test_prompt_index_is_short_and_keeps_full_body_lazy_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skills_dir = root / "skills"
+            for name in ["Alpha", "Beta", "Gamma"]:
+                skill_dir = skills_dir / name
+                skill_dir.mkdir(parents=True)
+                skill_dir.joinpath("SKILL.md").write_text(
+                    f"---\ndescription: {'word ' * 80}\n---\n{name} full body with detailed instructions\n",
+                    encoding="utf-8",
+                )
+
+            loader = SkillLoader([skills_dir])
+            rendered = loader.prompt_index(max_description_chars=40, max_entries=2)
+
+            self.assertIn("Skill index (summaries only; full instructions are lazy-loaded):", rendered)
+            self.assertIn("Use `load_skill`", rendered)
+            self.assertIn("- Alpha:", rendered)
+            self.assertIn("- Beta:", rendered)
+            self.assertNotIn("- Gamma:", rendered)
+            self.assertIn("1 more skill(s) omitted", rendered)
+            self.assertNotIn("full body with detailed instructions", rendered)
+            self.assertIn("Alpha full body with detailed instructions", loader.load("Alpha"))
+
     def test_for_workspace_loads_project_claude_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -4,6 +4,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS = 96
+DEFAULT_SKILL_PROMPT_ENTRY_LIMIT = 24
+
 
 class SkillLoader:
     def __init__(self, skill_dirs: Path | Iterable[Path]):
@@ -88,6 +91,36 @@ class SkillLoader:
             f"- {skill['name']}: {skill['meta'].get('description', '-')}"
             for skill in sorted(self.skills.values(), key=lambda item: item["name"].casefold())
         )
+
+    def prompt_index(
+        self,
+        *,
+        max_description_chars: int = DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS,
+        max_entries: int = DEFAULT_SKILL_PROMPT_ENTRY_LIMIT,
+    ) -> str:
+        self.reload()
+        if not self.skills:
+            return "(no skills)\nUse `load_skill` only when specialized guidance is needed."
+        entries = sorted(self.skills.values(), key=lambda item: item["name"].casefold())
+        limit = max(1, int(max_entries))
+        description_limit = max(24, int(max_description_chars))
+        lines = [
+            "Skill index (summaries only; full instructions are lazy-loaded):",
+            "Use `load_skill` with a skill name when a task matches one of these summaries.",
+        ]
+        for skill in entries[:limit]:
+            description = self._compact_description(skill["meta"].get("description", "-"), description_limit)
+            lines.append(f"- {skill['name']}: {description}")
+        omitted = len(entries) - limit
+        if omitted > 0:
+            lines.append(f"- ... {omitted} more skill(s) omitted from the prompt index. Use `/skills` or `load_skill` when needed.")
+        return "\n".join(lines)
+
+    def _compact_description(self, value: object, max_chars: int) -> str:
+        description = re.sub(r"\s+", " ", str(value or "-")).strip() or "-"
+        if len(description) <= max_chars:
+            return description
+        return description[: max_chars - 3].rstrip() + "..."
 
     def load(self, name: str) -> str:
         self.reload()

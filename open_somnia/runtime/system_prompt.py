@@ -107,7 +107,8 @@ class SystemPromptBuilder:
             "While idle you may be resumed by inbox messages or unclaimed tasks."
         )
         runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance
-        skill_descriptions = self.runtime.skill_loader.descriptions()
+        skill_prompt_getter = getattr(self.runtime.skill_loader, "prompt_index", None)
+        skill_descriptions = skill_prompt_getter() if callable(skill_prompt_getter) else self.runtime.skill_loader.descriptions()
         sections = (
             PromptSection("core", "A. Core System Prompt", self.base_system_prompt(), dynamic=False),
             PromptSection(
@@ -120,7 +121,10 @@ class SystemPromptBuilder:
             PromptSection(
                 "mcp",
                 "D. MCP Prompt",
-                "MCP tools are supplied through the provider tool schema. Use project- or task-specific MCP tools before overlapping general tools.",
+                "MCP tools are provided through the tool schema and are not repeated here.\n"
+                "Use MCP tools when they are more specific to the task than generic filesystem or shell tools.\n"
+                "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
+                "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters.",
                 dynamic=True,
             ),
             PromptSection("repo", "E. Repo Prompt", project_instructions, dynamic=True),

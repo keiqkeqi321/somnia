@@ -524,7 +524,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             provider=SimpleNamespace(name="openai", model="gpt-5"),
         )
         runtime.execution_mode = "accept_edits"
-        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.skill_loader = SimpleNamespace(prompt_index=lambda: "short skill index", descriptions=lambda: "long skill description")
         runtime.current_working_file_context = lambda: "Active working file cache:\n- Path: app.py"
         runtime.current_working_file_path = lambda: "app/main.py"
 
@@ -535,7 +535,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(sections[1]["title"], "B. Runtime Injection")
         self.assertIn("Active working file cache:", sections[1]["content"])
         self.assertIn("Available skills:", sections[2]["content"])
-        self.assertIn("MCP tools are supplied", sections[3]["content"])
+        self.assertIn("short skill index", sections[2]["content"])
+        self.assertNotIn("long skill description", sections[2]["content"])
+        self.assertIn("MCP tools are provided through the tool schema", sections[3]["content"])
+        self.assertNotIn("gitnexus", sections[3]["content"].lower())
+        self.assertNotIn("playwright", sections[3]["content"].lower())
         self.assertIn("Use repo guidance.", sections[4]["content"])
         self.assertIn("Use app guidance.", sections[4]["content"])
 
@@ -2932,7 +2936,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
         runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
         runtime.build_system_prompt_sections = lambda actor="lead", role="lead coding agent", session=None: [
-            {"id": "core", "title": "A. Core System Prompt", "dynamic": False, "content": "system"}
+            {"id": "core", "title": "A. Core System Prompt", "dynamic": False, "chars": 6, "lines": 1, "content": "system"}
         ]
         runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
         session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
@@ -2943,7 +2947,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 session=session,
                 system_prompt="system",
                 payload_messages=[{"role": "user", "content": "hello"}],
-                tools=[],
+                tools=[
+                    {"name": "read_file"},
+                    {"name": "load_skill"},
+                    {"name": "mcp__gitnexus__query"},
+                    {"name": "TodoWrite"},
+                ],
                 max_tokens=4096,
                 actor="lead",
                 stream=True,
@@ -2967,8 +2976,21 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(dumped["kind"], "turn")
         self.assertEqual(dumped["provider"]["model"], "gpt-4.1")
         self.assertEqual(dumped["context_usage"]["used_tokens"], 12_345)
-        self.assertEqual(dumped["system_prompt"], "system")
+        self.assertNotIn("system_prompt", dumped)
+        self.assertNotIn("system_prompt_section_summary", dumped)
         self.assertEqual(dumped["system_prompt_sections"][0]["id"], "core")
+        self.assertEqual(dumped["system_prompt_sections"][0]["chars"], 6)
+        self.assertEqual(dumped["message_summary"]["total"], 1)
+        self.assertEqual(dumped["message_summary"]["roles"]["user"], 1)
+        self.assertEqual(dumped["tool_schema_summary"]["total"], 4)
+        self.assertEqual(dumped["tool_schema_summary"]["groups"]["filesystem"], 1)
+        self.assertEqual(dumped["tool_schema_summary"]["groups"]["skill"], 1)
+        self.assertEqual(dumped["tool_schema_summary"]["groups"]["mcp:gitnexus"], 1)
+        self.assertEqual(dumped["tool_schema_summary"]["groups"]["task"], 1)
+        self.assertEqual(dumped["payload_summary"]["kind"], "turn")
+        self.assertEqual(dumped["payload_summary"]["system_prompt_chars"], 6)
+        self.assertEqual(dumped["payload_summary"]["message_count"], 1)
+        self.assertEqual(dumped["payload_summary"]["tool_count"], 4)
         self.assertEqual(dumped["provider_request"]["body"]["stream"], True)
         self.assertEqual(dumped["provider_response"]["stop_reason"], "end_turn")
         self.assertEqual(dumped["response_text"], "hello world")

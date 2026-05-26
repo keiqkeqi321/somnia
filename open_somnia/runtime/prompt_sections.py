@@ -21,6 +21,8 @@ class PromptSection:
             "id": self.id,
             "title": self.title,
             "dynamic": self.dynamic,
+            "chars": len(self.content),
+            "lines": len(self.content.splitlines()),
             "content": self.content,
         }
 
