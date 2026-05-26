@@ -222,6 +222,7 @@ export interface ConversationRow {
   isPending?: boolean;
   parts?: ConversationRowPart[];
   toolCalls?: ConversationToolCall[];
+  images?: ConversationImageReferenceBlock[];
 }
 
 export type ConversationRowPart =

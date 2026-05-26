@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   ConversationContentBlock,
+  ConversationImageReferenceBlock,
   ConversationPendingTurn,
   ConversationRow,
   ConversationRowPart,
@@ -62,9 +63,53 @@ function isVisibleUserMessage(message: SessionMessage): boolean {
     return false;
   }
   if (typeof message.content !== "string") {
-    return extractTextContent(message.content).trim().length > 0;
+    const text = extractTextContent(message.content).trim();
+    if (text.length > 0) {
+      return true;
+    }
+    return extractUserImages(message.content).length > 0;
   }
   return !message.content.startsWith("<background-results>") && !message.content.startsWith("<inbox>");
+}
+
+function extractUserImages(content: unknown): ConversationImageReferenceBlock[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const blocks: ConversationImageReferenceBlock[] = [];
+  for (const item of content) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const ref = userImageBlock(item);
+    if (ref) {
+      blocks.push(ref);
+    }
+  }
+  return blocks;
+}
+
+function userImageBlock(item: Record<string, unknown>): ConversationImageReferenceBlock | null {
+  if (item.type === "input_image") {
+    const path = typeof item.path === "string" ? item.path : undefined;
+    const absolutePath = typeof item.absolute_path === "string" ? item.absolute_path : undefined;
+    const mediaType = typeof item.media_type === "string" ? item.media_type : undefined;
+    if (!path && !absolutePath) {
+      return null;
+    }
+    return {
+      type: "image_reference",
+      path,
+      absolute_path: absolutePath,
+      media_type: mediaType,
+      origin: "user_input",
+    };
+  }
+  const generic = toolImageReferenceBlock(item);
+  if (generic && generic.type === "image_reference") {
+    return generic;
+  }
+  return null;
 }
 
 export function buildConversationRows(
@@ -103,8 +148,9 @@ export function buildConversationRows(
       index += 1;
       continue;
     }
-    if (text) {
-      rows.push({ id: `${session.id}-user-${index}`, role: "user", text });
+    const images = extractUserImages(message.content);
+    if (text || images.length > 0) {
+      rows.push({ id: `${session.id}-user-${index}`, role: "user", text: text || "", ...(images.length > 0 ? { images } : {}) });
     }
     index += 1;
   }

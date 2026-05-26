@@ -3212,6 +3212,19 @@ function App() {
                   ) : row.text ? (
                     <MarkdownMessage text={row.text} />
                   ) : null}
+                  {row.images?.length ? (
+                    <div className="user-image-list">
+                      {row.images.map((image, index) => (
+                        <UserImagePreview
+                          key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
+                          image={image}
+                          index={index}
+                          baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                          onPreviewImage={setToolImagePreview}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                   {row.isLoading ? (
                     <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
                       <span />
@@ -4255,6 +4268,28 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
         </>
       )}
     </details>
+  );
+}
+
+function UserImagePreview({
+  image,
+  index,
+  baseUrl,
+  onPreviewImage,
+}: {
+  image: import("./types").ConversationImageReferenceBlock;
+  index: number;
+  baseUrl: string;
+  onPreviewImage: (preview: ToolImagePreviewState) => void;
+}) {
+  const src = toolImageSource(image, baseUrl);
+  if (!src) {
+    return null;
+  }
+  return (
+    <button className="tool-image-preview" type="button" title={image.path ?? image.absolute_path ?? `Image ${index + 1}`} onClick={() => onPreviewImage({ src, label: image.path ?? `Image ${index + 1}` })}>
+      <img src={src} alt={`User image ${index + 1}`} loading="lazy" />
+    </button>
   );
 }
 
