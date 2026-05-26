@@ -166,7 +166,11 @@ def safe_path(workspace_root: Path, relative_path: str) -> Path:
         ValueError: 如果路径尝试逃逸工作空间。
     """
     workspace_root = workspace_root.resolve()
-    path = (workspace_root / relative_path).resolve()
+    requested_path = Path(relative_path)
+    if requested_path.is_absolute() and hasattr(workspace_root, "anchor"):
+        path = requested_path.resolve()
+    else:
+        path = (workspace_root / relative_path).resolve()
     if not path.is_relative_to(workspace_root) and not _is_workspace_relative_text_path(
         workspace_root,
         path,

@@ -133,6 +133,19 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(resolved.value, r"D:\Project\Git\somnia/open_somnia/mcp")
 
+    def test_safe_path_accepts_absolute_path_inside_workspace(self) -> None:
+        root = Path.cwd().resolve()
+
+        self.assertEqual(safe_path(root, str(root)), root)
+        self.assertEqual(safe_path(root, str(root / "open_somnia")), root / "open_somnia")
+
+    def test_safe_path_rejects_absolute_path_outside_workspace(self) -> None:
+        root = Path.cwd().resolve()
+        outside = root.parent / f"{root.name}-outside"
+
+        with self.assertRaisesRegex(ValueError, "Path escapes workspace"):
+            safe_path(root, str(outside))
+
     def test_write_file_returns_diff_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
