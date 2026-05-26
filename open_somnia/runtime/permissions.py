@@ -68,6 +68,10 @@ class PermissionManager:
     def authorize_tool_call(self, tool_name: str, payload: dict[str, Any], *, ctx=None) -> str | None:
         if tool_name in {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}:
             return None
+        if tool_name.startswith("mcp__"):
+            parts = tool_name.split("__", 2)
+            if len(parts) >= 3 and parts[1].lower() == "gitnexus":
+                return None
         if tool_name in self.runtime._workspace_authorized_tools:
             return None
         remaining = self.runtime._once_authorized_tools.get(tool_name, 0)

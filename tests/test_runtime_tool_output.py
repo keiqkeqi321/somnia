@@ -1467,6 +1467,26 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(allowed)
         self.assertIsNone(read_image_allowed)
 
+    def test_authorize_tool_call_allows_gitnexus_mcp_tools_by_default(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "plan"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+
+        allowed = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "mcp__gitnexus__impact",
+            {"target": "authorize_tool_call", "direction": "upstream"},
+        )
+        blocked_other_mcp = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "mcp__filesystem__read_file",
+            {"path": "demo.txt"},
+        )
+
+        self.assertIsNone(allowed)
+        self.assertIn("requires broader tool access", blocked_other_mcp)
+
     def test_authorize_tool_call_blocks_file_edits_in_plan_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "plan"
