@@ -4789,6 +4789,188 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(len(payloads), 2)
         self.assertEqual(json.dumps(payloads[1], ensure_ascii=False).count(reconcile_reminder), 1)
 
+    def test_agent_loop_injects_exploration_summary_reminder_after_soft_limit(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                return "file content"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(f"call-{index}", "read_file", {"path": f"file-{index}.py"})
+                        for index in range(OpenAgentRuntime.EXPLORATION_SOFT_LIMIT)
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Interim conclusion."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+
+        result = OpenAgentRuntime.run_turn(runtime, AgentSession(id="session-1"), "inspect")
+
+        self.assertEqual(result, "Interim conclusion.")
+        self.assertEqual(len(payloads), 2)
+        self.assertIn("You have been exploring for 10 consecutive", json.dumps(payloads[1], ensure_ascii=False))
+        self.assertNotIn("You have been exploring", json.dumps(payloads[0], ensure_ascii=False))
+        self.assertNotIn("You have been exploring", json.dumps(runtime.registry.__dict__, ensure_ascii=False))
+
+    def test_agent_loop_blocks_exploration_after_hard_streak_limit(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        executed: list[str] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                executed.append(str(payload.get("path", "")))
+                return "file content"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(f"call-{index}", "read_file", {"path": f"file-{index}.py"})
+                        for index in range(OpenAgentRuntime.EXPLORATION_HARD_STREAK_LIMIT + 1)
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Interim conclusion."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        rendered_session = json.dumps(session.messages, ensure_ascii=False)
+
+        self.assertEqual(result, "Interim conclusion.")
+        self.assertEqual(len(executed), OpenAgentRuntime.EXPLORATION_HARD_STREAK_LIMIT)
+        self.assertIn("exploration_budget_exceeded", rendered_session)
+        self.assertIn("You have been exploring for 14 consecutive", json.dumps(payloads[1], ensure_ascii=False))
+
+    def test_agent_loop_blocks_exploration_after_total_limit_even_with_action_between(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        executed: list[str] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                executed.append(name)
+                return "ok"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        *[
+                            ToolCall(f"read-a-{index}", "read_file", {"path": f"a-{index}.py"})
+                            for index in range(OpenAgentRuntime.EXPLORATION_HARD_STREAK_LIMIT)
+                        ],
+                        ToolCall("todo-1", "TodoWrite", {"items": []}),
+                        *[
+                            ToolCall(f"read-b-{index}", "read_file", {"path": f"b-{index}.py"})
+                            for index in range(
+                                OpenAgentRuntime.EXPLORATION_HARD_TOTAL_LIMIT
+                                - OpenAgentRuntime.EXPLORATION_HARD_STREAK_LIMIT
+                            )
+                        ],
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("read-over-total", "read_file", {"path": "too-much.py"})],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Interim conclusion."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        rendered_session = json.dumps(session.messages, ensure_ascii=False)
+
+        self.assertEqual(result, "Interim conclusion.")
+        self.assertEqual(executed.count("read_file"), OpenAgentRuntime.EXPLORATION_HARD_TOTAL_LIMIT)
+        self.assertEqual(executed.count("TodoWrite"), 1)
+        self.assertIn("exploration_budget_exceeded", rendered_session)
+        self.assertIn("25 total this turn", json.dumps(payloads[2], ensure_ascii=False))
+
     def test_agent_loop_injects_next_user_message_after_current_tool_boundary(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

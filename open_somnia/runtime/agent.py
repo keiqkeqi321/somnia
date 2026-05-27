@@ -126,9 +126,51 @@ class AgentLoopResult(str):
 
 class OpenAgentRuntime:
     DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
+    EXPLORATION_SOFT_LIMIT = 10
+    EXPLORATION_HARD_STREAK_LIMIT = 14
+    EXPLORATION_HARD_TOTAL_LIMIT = 25
+    EXPLORATION_TOOL_NAMES = frozenset({"project_scan", "tree", "glob", "grep", "read_file", "find_symbol"})
+    EXPLORATION_GITNEXUS_TOOL_NAMES = frozenset(
+        {
+            "api_impact",
+            "context",
+            "cypher",
+            "group_list",
+            "impact",
+            "query",
+            "route_map",
+            "shape_check",
+            "tool_map",
+        }
+    )
+    EXPLORATION_SHELL_PREFIXES = (
+        "cat ",
+        "dir",
+        "find ",
+        "get-childitem",
+        "get-content",
+        "git diff",
+        "git log",
+        "git show",
+        "git status",
+        "grep ",
+        "head ",
+        "ls",
+        "pwd",
+        "rg ",
+        "select-string",
+        "tail ",
+        "tree",
+        "type ",
+    )
     TODO_REMINDER_TEXT = (
         "<reminder>If any todo changed, call TodoWrite now. "
         "Do not just say you will. If nothing changed, ignore this and continue.</reminder>"
+    )
+    EXPLORATION_SUMMARY_REMINDER_TEXT = (
+        "<reminder>You have been exploring for {streak} consecutive read/search step(s) "
+        "({total} total this turn). Stop broad exploration and provide a concise interim conclusion before reading more: "
+        "state the likely finding, evidence already gathered, confidence, and the smallest remaining verification if any.</reminder>"
     )
     TODO_RECONCILE_REMINDER_TEXT = (
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
@@ -870,6 +912,34 @@ class OpenAgentRuntime:
         if name.startswith("teammate_") or name.startswith("inbox_") or name.startswith("team_"):
             return "team"
         return "other"
+
+    def _is_exploration_tool_call(self, name: str, payload: dict[str, Any] | None = None) -> bool:
+        tool_name = str(name or "").strip()
+        normalized = tool_name.lower()
+        if normalized in self.EXPLORATION_TOOL_NAMES:
+            return True
+        if normalized.startswith("mcp__gitnexus__"):
+            parts = normalized.split("__", 2)
+            gitnexus_tool = parts[2] if len(parts) > 2 else ""
+            return gitnexus_tool in self.EXPLORATION_GITNEXUS_TOOL_NAMES
+        if normalized != "bash":
+            return False
+        command = str((payload or {}).get("command", "")).strip().lower()
+        return any(command == prefix.rstrip() or command.startswith(prefix) for prefix in self.EXPLORATION_SHELL_PREFIXES)
+
+    def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
+        return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
+
+    def _exploration_guard_error(self, name: str, *, streak: int, total: int) -> dict[str, Any]:
+        return make_tool_error(
+            name,
+            "exploration_budget_exceeded",
+            (
+                f"Exploration budget exceeded ({streak} consecutive read/search step(s), {total} total this turn). "
+                "Stop using read/search tools for now and respond with an interim conclusion, evidence gathered, "
+                "confidence, and the smallest remaining verification if any."
+            ),
+        )
 
     def _dump_provider_payload_if_enabled(
         self,
@@ -2825,6 +2895,9 @@ class OpenAgentRuntime:
         final_text = ""
         pending_tool_repair_hints: list[dict[str, Any]] = []
         pending_todo_reconcile = False
+        exploration_streak = 0
+        exploration_total = 0
+        pending_exploration_summary_reminder = False
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -2878,6 +2951,13 @@ class OpenAgentRuntime:
                     transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
                 if pending_todo_reconcile:
                     transient_payload_messages.append(make_user_text_message(self.TODO_RECONCILE_REMINDER_TEXT))
+                if pending_exploration_summary_reminder:
+                    transient_payload_messages.append(
+                        make_user_text_message(
+                            self._exploration_summary_reminder(streak=exploration_streak, total=exploration_total)
+                        )
+                    )
+                    pending_exploration_summary_reminder = False
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -2992,6 +3072,7 @@ class OpenAgentRuntime:
                         should_interrupt=should_interrupt,
                     )
                     tool_name = str(tool_call.name or "")
+                    is_exploration_tool = self._is_exploration_tool_call(tool_name, tool_call.input)
                     output: Any | None = None
                     if reported_tool_calls >= max_tool_calls:
                         output = make_tool_error(
@@ -3002,6 +3083,17 @@ class OpenAgentRuntime:
                                 f"call(s); skipped the remaining {max(0, len(turn.tool_calls) - reported_tool_calls)}."
                             ),
                         )
+                        end_turn_after_tool = True
+                    elif is_exploration_tool and (
+                        exploration_streak >= self.EXPLORATION_HARD_STREAK_LIMIT
+                        or exploration_total >= self.EXPLORATION_HARD_TOTAL_LIMIT
+                    ):
+                        output = self._exploration_guard_error(
+                            tool_name,
+                            streak=exploration_streak,
+                            total=exploration_total,
+                        )
+                        pending_exploration_summary_reminder = True
                         end_turn_after_tool = True
                     else:
                         malformed_reason = self._malformed_tool_name_reason(tool_name)
@@ -3066,6 +3158,17 @@ class OpenAgentRuntime:
                             "output": result["content"],
                         },
                     )
+                    if is_exploration_tool and output is not None and not (
+                        isinstance(output, dict)
+                        and str(output.get("error_type", "")).strip() == "exploration_budget_exceeded"
+                    ):
+                        exploration_streak += 1
+                        exploration_total += 1
+                        if exploration_streak >= self.EXPLORATION_SOFT_LIMIT:
+                            pending_exploration_summary_reminder = True
+                    elif not is_exploration_tool:
+                        exploration_streak = 0
+                        pending_exploration_summary_reminder = False
                     if tool_name == "TodoWrite":
                         used_todo = True
                     if tool_name == "read_file":
