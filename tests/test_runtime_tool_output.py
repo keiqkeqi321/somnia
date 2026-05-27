@@ -470,6 +470,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             agent=SimpleNamespace(system_prompt=None, name="OpenAgent"),
             provider=SimpleNamespace(name="openai", model="kimi-k2.5"),
         )
+        runtime.mcp_registry = SimpleNamespace(all_servers=[], server_tools={})
         runtime.execution_mode = "plan"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
         runtime.current_working_file_context = lambda: (
@@ -524,6 +525,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             agent=SimpleNamespace(system_prompt=None, name="Somnia"),
             provider=SimpleNamespace(name="openai", model="gpt-5"),
         )
+        runtime.mcp_registry = SimpleNamespace(all_servers=[], server_tools={})
         runtime.execution_mode = "accept_edits"
         runtime.skill_loader = SimpleNamespace(prompt_index=lambda: "short skill index", descriptions=lambda: "long skill description")
         runtime.current_working_file_context = lambda: "Active working file cache:\n- Path: app.py"
@@ -543,6 +545,27 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("playwright", sections[3]["content"].lower())
         self.assertIn("Use repo guidance.", sections[4]["content"])
         self.assertIn("Use app guidance.", sections[4]["content"])
+
+    def test_build_system_prompt_includes_gitnexus_guidance_only_when_available(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.current_working_file_context = lambda: ""
+        runtime.mcp_registry = SimpleNamespace(
+            all_servers=[SimpleNamespace(name="gitnexus", enabled=True)],
+            server_tools={"gitnexus": ["query", "impact"]},
+        )
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime)
+
+        self.assertIn("GitNexus integration:", prompt)
+        self.assertIn("optional MCP-backed code intelligence integration", prompt)
+        self.assertIn("require normal Somnia authorization", prompt)
 
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -1470,16 +1493,31 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(allowed)
         self.assertIsNone(read_image_allowed)
 
-    def test_authorize_tool_call_allows_gitnexus_mcp_tools_by_default(self) -> None:
+    def test_authorize_tool_call_allows_read_only_gitnexus_mcp_tools_by_default(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "plan"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
-        allowed = OpenAgentRuntime.authorize_tool_call(
+        impact_allowed = OpenAgentRuntime.authorize_tool_call(
             runtime,
             "mcp__gitnexus__impact",
             {"target": "authorize_tool_call", "direction": "upstream"},
+        )
+        detect_changes_allowed = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "mcp__gitnexus__detect_changes",
+            {"scope": "all"},
+        )
+        rename_blocked = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "mcp__gitnexus__rename",
+            {"symbol_name": "OldName", "new_name": "NewName", "dry_run": False},
+        )
+        group_sync_blocked = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "mcp__gitnexus__group_sync",
+            {"name": "workspace"},
         )
         blocked_other_mcp = OpenAgentRuntime.authorize_tool_call(
             runtime,
@@ -1487,7 +1525,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
             {"path": "demo.txt"},
         )
 
-        self.assertIsNone(allowed)
+        self.assertIsNone(impact_allowed)
+        self.assertIsNone(detect_changes_allowed)
+        self.assertIn("requires broader tool access", rename_blocked)
+        self.assertIn("requires broader tool access", group_sync_blocked)
         self.assertIn("requires broader tool access", blocked_other_mcp)
 
     def test_authorize_tool_call_blocks_file_edits_in_plan_mode(self) -> None:

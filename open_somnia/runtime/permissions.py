@@ -15,6 +15,7 @@ from open_somnia.runtime.execution_mode import (
     execution_mode_spec,
     tool_block_message,
 )
+from open_somnia.integrations.gitnexus import should_allow_gitnexus_tool_without_authorization
 from open_somnia.storage.common import read_json, write_json
 
 
@@ -68,10 +69,8 @@ class PermissionManager:
     def authorize_tool_call(self, tool_name: str, payload: dict[str, Any], *, ctx=None) -> str | None:
         if tool_name in {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}:
             return None
-        if tool_name.startswith("mcp__"):
-            parts = tool_name.split("__", 2)
-            if len(parts) >= 3 and parts[1].lower() == "gitnexus":
-                return None
+        if should_allow_gitnexus_tool_without_authorization(tool_name):
+            return None
         if tool_name in self.runtime._workspace_authorized_tools:
             return None
         remaining = self.runtime._once_authorized_tools.get(tool_name, 0)

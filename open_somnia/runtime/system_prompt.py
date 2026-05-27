@@ -4,6 +4,7 @@ import platform
 import sys
 from typing import Any
 
+from open_somnia.integrations.gitnexus import prompt_guidance as gitnexus_prompt_guidance
 from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, execution_mode_spec
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
 from open_somnia.runtime.prompt_sections import PromptBundle, PromptSection
@@ -101,6 +102,15 @@ class SystemPromptBuilder:
         runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance
         skill_prompt_getter = getattr(self.runtime.skill_loader, "prompt_index", None)
         skill_descriptions = skill_prompt_getter() if callable(skill_prompt_getter) else self.runtime.skill_loader.descriptions()
+        gitnexus_guidance = gitnexus_prompt_guidance(self.runtime)
+        mcp_guidance = (
+            "MCP tools are provided through the tool schema and are not repeated here.\n"
+            "Use MCP tools when they are more specific to the task than generic filesystem or shell tools.\n"
+            "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
+            "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters."
+        )
+        if gitnexus_guidance:
+            mcp_guidance = f"{mcp_guidance}\n{gitnexus_guidance}"
         sections = (
             PromptSection("core", "A. Core System Prompt", self.base_system_prompt(), dynamic=False),
             PromptSection(
@@ -113,10 +123,7 @@ class SystemPromptBuilder:
             PromptSection(
                 "mcp",
                 "D. MCP Prompt",
-                "MCP tools are provided through the tool schema and are not repeated here.\n"
-                "Use MCP tools when they are more specific to the task than generic filesystem or shell tools.\n"
-                "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
-                "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters.",
+                mcp_guidance,
                 dynamic=True,
             ),
             PromptSection("repo", "E. Repo Prompt", project_instructions, dynamic=True),
