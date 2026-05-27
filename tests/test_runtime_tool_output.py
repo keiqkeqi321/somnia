@@ -4704,6 +4704,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
                         )
                     ],
                 ),
+                AssistantTurn(
+                    stop_reason="end_turn",
+                    text_blocks=["Still open."],
+                ),
             ]
         )
 
@@ -4726,15 +4730,16 @@ class RuntimeToolOutputTests(unittest.TestCase):
         result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
         reconcile_reminder = OpenAgentRuntime.TODO_RECONCILE_REMINDER_TEXT
 
-        self.assertEqual(result, "Done.")
+        self.assertEqual(result, "Still open.")
         self.assertEqual(getattr(result, "status", None), "completed")
         self.assertEqual(session.todo_items[0]["status"], "completed")
         self.assertEqual(session.todo_items[1]["status"], "in_progress")
         self.assertEqual(session.rounds_without_todo, 0)
-        self.assertEqual(len(payloads), 2)
+        self.assertEqual(len(payloads), 3)
         self.assertNotIn(reconcile_reminder, json.dumps(session.messages, ensure_ascii=False))
         self.assertEqual(json.dumps(payloads[0], ensure_ascii=False).count(reconcile_reminder), 0)
         self.assertEqual(json.dumps(payloads[1], ensure_ascii=False).count(reconcile_reminder), 1)
+        self.assertEqual(json.dumps(payloads[2], ensure_ascii=False).count(reconcile_reminder), 0)
 
     def test_agent_loop_does_not_loop_forever_if_todo_reconcile_is_ignored_once(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

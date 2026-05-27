@@ -3103,7 +3103,10 @@ class OpenAgentRuntime:
                 self.session_manager.save(session)
                 if pending_todo_reconcile and used_todo:
                     if executed_tool_calls and all(tool_call.name == "TodoWrite" for tool_call in executed_tool_calls):
-                        return self._agent_loop_result(final_text, status="completed", session=session)
+                        if not self.todo_manager.has_open_items(session):
+                            return self._agent_loop_result(final_text, status="completed", session=session)
+                        pending_todo_reconcile = False
+                        continue
                     pending_todo_reconcile = False
                 if end_turn_after_tool:
                     continue
