@@ -285,23 +285,29 @@ def clear_stale_provider_config(workspace_root: Path) -> None:
 
 
 def persist_provider_selection(settings: AppSettings, provider_name: str, model: str) -> None:
+    normalized_provider = str(provider_name).strip().lower()
+    normalized_model = _normalize_model_id(model)
+    if not normalized_provider:
+        raise ValueError("A provider name is required to persist provider selection.")
+    if not normalized_model:
+        raise ValueError("A model id is required to persist provider selection.")
     config_path = workspace_config_path(settings.workspace_root)
     ensure_app_dir_ignored(config_path.parent)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
-    _upsert_section_value(lines, "providers", "default", _toml_string(provider_name))
-    _upsert_section_value(lines, f"providers.{provider_name}", "default_model", _toml_string(model))
+    _upsert_section_value(lines, "providers", "default", _toml_string(normalized_provider))
+    _upsert_section_value(lines, f"providers.{normalized_provider}", "default_model", _toml_string(normalized_model))
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     providers_raw = settings.raw_config.setdefault("providers", {})
     if not isinstance(providers_raw, dict):
         providers_raw = {}
         settings.raw_config["providers"] = providers_raw
-    providers_raw["default"] = provider_name
-    provider_raw = providers_raw.setdefault(provider_name, {})
+    providers_raw["default"] = normalized_provider
+    provider_raw = providers_raw.setdefault(normalized_provider, {})
     if not isinstance(provider_raw, dict):
         provider_raw = {}
-        providers_raw[provider_name] = provider_raw
-    provider_raw["default_model"] = model
+        providers_raw[normalized_provider] = provider_raw
+    provider_raw["default_model"] = normalized_model
 
 
 def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, reasoning_level: str | None) -> None:
@@ -345,7 +351,7 @@ def persist_provider_vision_model(
 ) -> None:
     normalized_provider = str(provider_name).strip().lower()
     normalized_vision_provider = str(vision_provider or "").strip().lower()
-    normalized_model = str(vision_model or "").strip()
+    normalized_model = _normalize_model_id(vision_model or "")
     if not normalized_provider:
         raise ValueError("A provider name is required to persist vision model.")
     if bool(normalized_vision_provider) != bool(normalized_model):
@@ -422,7 +428,7 @@ def persist_provider_profile(
     normalized_provider_type = _normalize_provider_type(provider_type, profile_name=normalized_provider_name)
     normalized_models: list[str] = []
     for model in models:
-        normalized_model = str(model).strip()
+        normalized_model = _normalize_model_id(model)
         if normalized_model and normalized_model not in normalized_models:
             normalized_models.append(normalized_model)
     if not normalized_models:
@@ -442,7 +448,7 @@ def persist_provider_profile(
     current_default_name = str(providers_raw.get("default", "")).strip().lower()
     existing_raw = providers_raw.get(previous_name or normalized_provider_name, {})
     existing_default_model = (
-        str(existing_raw.get("default_model", "")).strip() if isinstance(existing_raw, dict) else ""
+        _normalize_model_id(existing_raw.get("default_model", "")) if isinstance(existing_raw, dict) else ""
     )
 
     if previous_name and previous_name != normalized_provider_name:
@@ -829,6 +835,10 @@ def _normalize_provider_type(value: str | None, *, profile_name: str) -> str:
     return provider_type
 
 
+def _normalize_model_id(model: object) -> str:
+    return str(model or "").strip().lower()
+
+
 def _context_window_lookup_candidates(model: str) -> tuple[str, ...]:
     raw = model.strip().lower()
     candidates: list[str] = []
@@ -913,7 +923,7 @@ def _load_global_model_traits(raw: dict) -> dict[str, ModelTraits]:
     for model_name, item in traits_root.items():
         if not _is_model_traits_leaf(item):
             continue
-        normalized_model_name = str(model_name).strip()
+        normalized_model_name = _normalize_model_id(model_name)
         if not normalized_model_name:
             continue
         model_traits[normalized_model_name] = _build_model_traits(item)
@@ -935,7 +945,7 @@ def _load_provider_model_traits(raw: dict, provider_name: str) -> dict[str, Mode
     for model_name, item in provider_traits_raw.items():
         if not _is_model_traits_leaf(item):
             continue
-        normalized_model_name = str(model_name).strip()
+        normalized_model_name = _normalize_model_id(model_name)
         if not normalized_model_name:
             continue
         model_traits[normalized_model_name] = _build_model_traits(item)
@@ -947,12 +957,16 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
     defaults = _default_provider_profile(provider_name)
     provider_type = _normalize_provider_type(item.get("provider_type"), profile_name=provider_name)
     raw_models = item.get("models", [])
-    models = [str(model).strip() for model in raw_models if str(model).strip()]
-    default_model = str(item.get("default_model", "")).strip() or defaults.default_model
+    models: list[str] = []
+    for model in raw_models:
+        normalized_model = _normalize_model_id(model)
+        if normalized_model and normalized_model not in models:
+            models.append(normalized_model)
+    default_model = _normalize_model_id(item.get("default_model", "")) or defaults.default_model
     if default_model and default_model not in models:
         models = [*models, default_model]
     vision_provider = str(item.get("vision_provider", "")).strip().lower()
-    vision_model = str(item.get("vision_model", "")).strip()
+    vision_model = _normalize_model_id(item.get("vision_model", ""))
     if not models:
         models = list(defaults.models)
         default_model = defaults.default_model
@@ -1006,7 +1020,7 @@ def _load_provider_profiles(raw: dict) -> tuple[dict[str, ProviderProfileSetting
 def _validate_vision_provider_models(profiles: dict[str, ProviderProfileSettings]) -> None:
     for provider_name, profile in profiles.items():
         vision_provider = str(profile.vision_provider or "").strip().lower()
-        vision_model = str(profile.vision_model or "").strip()
+        vision_model = _normalize_model_id(profile.vision_model or "")
         if not vision_provider and not vision_model:
             continue
         if not vision_provider or not vision_model:
@@ -1024,10 +1038,10 @@ def _has_configured_api_key(profiles: dict[str, ProviderProfileSettings]) -> boo
 
 
 def _materialize_provider(profile: ProviderProfileSettings, model: str | None = None) -> ProviderSettings:
-    selected_model = (model or profile.default_model).strip()
+    selected_model = _normalize_model_id(model or profile.default_model)
     if selected_model not in profile.models:
         raise ValueError(f"Model '{selected_model}' is not configured for provider '{profile.name}'.")
-    vision_model = str(profile.vision_model or "").strip() or None
+    vision_model = _normalize_model_id(profile.vision_model or "") or None
     vision_provider = str(profile.vision_provider or "").strip().lower() or None
     model_traits = profile.model_traits.get(selected_model)
     return ProviderSettings(

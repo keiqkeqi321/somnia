@@ -93,6 +93,35 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.model, "glm-5")
         self.assertEqual(settings.provider_profiles["anthropic"].models, ["glm-5", "claude-sonnet-4-5"])
 
+    def test_load_settings_normalizes_provider_model_ids_to_lowercase(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openrouter"
+
+                [providers.openrouter]
+                provider_type = "openai"
+                models = ["MiMo-V2.5-Pro", "MIMO-V2.5-PRO"]
+                default_model = "MiMo-V2.5-Pro"
+                api_key = "openrouter-test-key"
+
+                [model_traits."MIMO-V2.5-PRO"]
+                context_window_tokens = 262144
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root, provider_override="openrouter", model_override="MIMO-V2.5-PRO")
+
+        self.assertEqual(settings.provider.model, "mimo-v2.5-pro")
+        self.assertEqual(settings.provider.context_window_tokens, 262144)
+        self.assertEqual(settings.provider_profiles["openrouter"].models, ["mimo-v2.5-pro"])
+        self.assertEqual(settings.provider_profiles["openrouter"].default_model, "mimo-v2.5-pro")
+
     def test_load_settings_defaults_max_agent_rounds_to_100(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
@@ -574,6 +603,28 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertIn('managed_by = "somnia_builtin_notify"', rendered)
             self.assertIn('event = "TurnFailed"', rendered)
             self.assertTrue(builtin_script.exists())
+
+    def test_persist_provider_profile_normalizes_model_ids_to_lowercase(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            global_config = home / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                persist_provider_profile(
+                    "openrouter",
+                    "openai",
+                    ["MiMo-V2.5-Pro", "MIMO-V2.5-PRO"],
+                    api_key="sk-test",
+                    base_url="https://openrouter.ai/api/v1",
+                )
+                settings = load_settings(root)
+
+            rendered = global_config.read_text(encoding="utf-8")
+            self.assertEqual(settings.provider.model, "mimo-v2.5-pro")
+            self.assertEqual(settings.provider_profiles["openrouter"].models, ["mimo-v2.5-pro"])
+            self.assertIn('models = ["mimo-v2.5-pro"]', rendered)
+            self.assertIn('default_model = "mimo-v2.5-pro"', rendered)
 
     def test_persist_provider_profile_renames_existing_default_profile(self) -> None:
         with self._tempdir() as tmpdir:

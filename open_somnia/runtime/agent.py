@@ -26,6 +26,7 @@ from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.config.models import AppSettings, HookSettings, ProviderProfileSettings, ProviderSettings
 from open_somnia.config.settings import (
     _materialize_provider,
+    _normalize_model_id,
     load_settings,
     persist_hook_enabled,
     persist_provider_reasoning_level,
@@ -494,7 +495,7 @@ class OpenAgentRuntime:
 
     def switch_provider_model(self, provider_name: str, model: str) -> str:
         normalized_provider = provider_name.strip().lower()
-        normalized_model = model.strip()
+        normalized_model = _normalize_model_id(model)
         if normalized_provider not in self.settings.provider_profiles:
             raise ValueError(f"Provider '{normalized_provider}' is not configured.")
         profile = self.settings.provider_profiles[normalized_provider]
@@ -548,7 +549,7 @@ class OpenAgentRuntime:
     def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> str:
         normalized_provider = provider_name.strip().lower()
         normalized_vision_provider = str(vision_provider or "").strip().lower()
-        normalized_model = str(vision_model or "").strip()
+        normalized_model = _normalize_model_id(vision_model)
         if normalized_provider not in self.settings.provider_profiles:
             raise ValueError(f"Provider '{normalized_provider}' is not configured.")
         if bool(normalized_vision_provider) != bool(normalized_model):
