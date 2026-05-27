@@ -567,6 +567,26 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("optional MCP-backed code intelligence integration", prompt)
         self.assertIn("require normal Somnia authorization", prompt)
 
+    def test_build_system_prompt_omits_gitnexus_guidance_when_server_is_disabled(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            agent=SimpleNamespace(system_prompt=None, name="Somnia"),
+            provider=SimpleNamespace(name="openai", model="gpt-5"),
+        )
+        runtime.execution_mode = "accept_edits"
+        runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
+        runtime.current_working_file_context = lambda: ""
+        runtime.mcp_registry = SimpleNamespace(
+            all_servers=[SimpleNamespace(name="gitnexus", enabled=False)],
+            server_tools={"gitnexus": ["query", "impact"]},
+        )
+
+        prompt = OpenAgentRuntime.build_system_prompt(runtime)
+
+        self.assertNotIn("GitNexus integration:", prompt)
+        self.assertNotIn("optional MCP-backed code intelligence integration", prompt)
+
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

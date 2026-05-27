@@ -66,11 +66,17 @@ def gitnexus_is_available(runtime: Any) -> bool:
     if mcp_registry is None:
         return False
     all_servers = getattr(mcp_registry, "all_servers", []) or []
+    found_configured_server = False
     for server in all_servers:
         if str(getattr(server, "name", "")).strip().lower() == SERVER_NAME:
-            return True
+            found_configured_server = True
+            if not bool(getattr(server, "enabled", True)):
+                return False
     server_tools = getattr(mcp_registry, "server_tools", {}) or {}
-    return any(str(name).strip().lower() == SERVER_NAME for name in server_tools)
+    has_registered_tools = any(str(name).strip().lower() == SERVER_NAME for name in server_tools)
+    if found_configured_server:
+        return has_registered_tools
+    return has_registered_tools
 
 
 def prompt_guidance(runtime: Any) -> str:
