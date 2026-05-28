@@ -564,7 +564,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
         self.assertIn("GitNexus integration:", prompt)
-        self.assertIn("optional MCP-backed code intelligence integration", prompt)
+        self.assertIn("GitNexus is available through MCP-backed code intelligence tools", prompt)
+        self.assertIn("treat those requirements as binding", prompt)
+        self.assertIn("retry with a narrower target, file_path, or route", prompt)
         self.assertIn("require normal Somnia authorization", prompt)
 
     def test_build_system_prompt_omits_gitnexus_guidance_when_server_is_disabled(self) -> None:
@@ -585,7 +587,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
         self.assertNotIn("GitNexus integration:", prompt)
-        self.assertNotIn("optional MCP-backed code intelligence integration", prompt)
+        self.assertNotIn("GitNexus is available through MCP-backed code intelligence tools", prompt)
 
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -618,6 +620,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
         self.assertIn("Project instructions:", prompt)
+        self.assertIn("repository-owner operating rules", prompt)
+        self.assertIn("MUST, NEVER, and required workflow", prompt)
+        self.assertIn("binding instructions, not suggestions", prompt)
         self.assertIn('source="AGENTS.md"', prompt)
         self.assertIn("Use project tests.", prompt)
         self.assertNotIn("Use claude tests.", prompt)

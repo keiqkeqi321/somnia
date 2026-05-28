@@ -84,9 +84,11 @@ def prompt_guidance(runtime: Any) -> str:
         return ""
     return (
         "GitNexus integration:\n"
-        "- GitNexus is available as an optional MCP-backed code intelligence integration.\n"
-        "- Prefer read-only GitNexus tools for code graph context, symbol impact, route/API shape checks, and change-scope verification when they fit the task.\n"
+        "- GitNexus is available through MCP-backed code intelligence tools.\n"
+        "- When repository instructions require GitNexus, treat those requirements as binding while the tools are available; do not downgrade MUST/NEVER language to suggestions.\n"
+        "- Use read-only GitNexus tools for code graph context, symbol impact, route/API shape checks, and change-scope verification when they fit the task.\n"
         "- Before editing an existing function, class, method, API route handler, or shared symbol, run the relevant GitNexus impact/context check when available.\n"
+        "- If a specific GitNexus symbol lookup fails, retry with a narrower target, file_path, or route before falling back to focused generic search.\n"
         "- Before committing or finalizing a broad code change, use GitNexus change detection when available.\n"
         "- If GitNexus reports a stale or missing index, say so and fall back to focused generic tools unless the user authorizes index maintenance.\n"
         "- GitNexus tools that rename code, rebuild indexes, sync generated registries, or otherwise mutate workspace state require normal Somnia authorization."

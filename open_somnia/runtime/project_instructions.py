@@ -101,8 +101,10 @@ class ProjectInstructionsLoader:
             )
         return (
             "Project instructions:\n"
-            "Follow these workspace-specific instructions unless they conflict with higher-priority "
-            "runtime, execution-mode, or tool safety rules. When multiple project instruction files apply, "
-            "more specific directory scopes override broader scopes.\n"
+            "These are repository-owner operating rules for this workspace. Treat MUST, NEVER, and required workflow "
+            "statements in these files as binding instructions, not suggestions, unless they conflict with higher-priority "
+            "runtime, execution-mode, user, or tool safety rules. If an instruction cannot be followed because a tool is "
+            "unavailable, failed, or conflicts with a higher-priority rule, state the reason and use the closest safe fallback. "
+            "When multiple project instruction files apply, more specific directory scopes override broader scopes.\n"
             + "\n".join(rendered_blocks)
         )

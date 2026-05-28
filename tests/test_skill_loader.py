@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from open_somnia.skills.loader import SkillLoader
+from open_somnia.skills.loader import DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS, SkillLoader
 
 
 class SkillLoaderTests(unittest.TestCase):
@@ -54,7 +54,7 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("TOML configuration", loader.descriptions())
             self.assertIn("Complete TOML Map", loader.load("somnia-config"))
 
-    def test_prompt_index_is_short_and_keeps_full_body_lazy_loaded(self) -> None:
+    def test_prompt_index_shows_names_without_descriptions_after_described_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             skills_dir = root / "skills"
@@ -62,7 +62,7 @@ class SkillLoaderTests(unittest.TestCase):
                 skill_dir = skills_dir / name
                 skill_dir.mkdir(parents=True)
                 skill_dir.joinpath("SKILL.md").write_text(
-                    f"---\ndescription: {'word ' * 80}\n---\n{name} full body with detailed instructions\n",
+                    f"---\ndescription: {name} {'word ' * 80}\n---\n{name} full body with detailed instructions\n",
                     encoding="utf-8",
                 )
 
@@ -73,10 +73,28 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("Use `load_skill`", rendered)
             self.assertIn("- Alpha:", rendered)
             self.assertIn("- Beta:", rendered)
+            self.assertIn("- Gamma", rendered)
             self.assertNotIn("- Gamma:", rendered)
-            self.assertIn("1 more skill(s) omitted", rendered)
+            self.assertNotIn("more skill(s) omitted", rendered)
             self.assertNotIn("full body with detailed instructions", rendered)
             self.assertIn("Alpha full body with detailed instructions", loader.load("Alpha"))
+
+    def test_prompt_index_default_description_limit_is_250_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skill_dir = root / "skills" / "Long"
+            skill_dir.mkdir(parents=True)
+            long_description = "x" * 280
+            skill_dir.joinpath("SKILL.md").write_text(
+                f"---\ndescription: {long_description}\n---\nfull body\n",
+                encoding="utf-8",
+            )
+
+            loader = SkillLoader([root / "skills"])
+            rendered = loader.prompt_index()
+
+            self.assertEqual(DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS, 250)
+            self.assertIn(f"- Long: {'x' * 247}...", rendered)
 
     def test_for_workspace_loads_project_claude_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
