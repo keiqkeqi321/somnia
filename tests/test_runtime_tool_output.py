@@ -4902,6 +4902,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result, "Interim conclusion.")
         self.assertEqual(len(executed), OpenAgentRuntime.EXPLORATION_HARD_STREAK_LIMIT)
         self.assertIn("exploration_budget_exceeded", rendered_session)
+        self.assertIn("Exploration consecutive budget exceeded", rendered_session)
+        self.assertIn('"limit_type": "streak"', rendered_session)
         self.assertIn("You have been exploring for 14 consecutive", json.dumps(payloads[1], ensure_ascii=False))
 
     def test_agent_loop_blocks_exploration_after_total_limit_even_with_action_between(self) -> None:
@@ -4974,7 +4976,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(executed.count("read_file"), OpenAgentRuntime.EXPLORATION_HARD_TOTAL_LIMIT)
         self.assertEqual(executed.count("TodoWrite"), 1)
         self.assertIn("exploration_budget_exceeded", rendered_session)
-        self.assertIn("25 total this turn", json.dumps(payloads[2], ensure_ascii=False))
+        self.assertIn("Exploration total budget exceeded", rendered_session)
+        self.assertIn('"limit_type": "total"', rendered_session)
+        self.assertIn("25/25 read/search tool call", json.dumps(payloads[2], ensure_ascii=False))
 
     def test_agent_loop_injects_next_user_message_after_current_tool_boundary(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
