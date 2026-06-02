@@ -930,35 +930,6 @@ class OpenAgentRuntime:
     def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
         return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
 
-    def _exploration_guard_error(self, name: str, *, streak: int, total: int) -> dict[str, Any]:
-        if total >= self.EXPLORATION_HARD_TOTAL_LIMIT:
-            reason = (
-                f"Exploration total budget exceeded ({total}/{self.EXPLORATION_HARD_TOTAL_LIMIT} "
-                f"read/search tool call(s) this turn; current consecutive streak: "
-                f"{streak}/{self.EXPLORATION_HARD_STREAK_LIMIT})."
-            )
-            limit_type = "total"
-        else:
-            reason = (
-                f"Exploration consecutive budget exceeded ({streak}/{self.EXPLORATION_HARD_STREAK_LIMIT} "
-                f"consecutive read/search step(s); total this turn: "
-                f"{total}/{self.EXPLORATION_HARD_TOTAL_LIMIT})."
-            )
-            limit_type = "streak"
-        error = make_tool_error(
-            name,
-            "exploration_budget_exceeded",
-            (
-                f"{reason} This is a runtime exploration guard, not a {name} execution failure. "
-                "Stop using read/search tools for now and respond with an interim conclusion, evidence gathered, "
-                "confidence, and the smallest remaining verification if any."
-            ),
-        )
-        error["limit_type"] = limit_type
-        error["streak"] = streak
-        error["total"] = total
-        return error
-
     def _dump_provider_payload_if_enabled(
         self,
         *,
@@ -3102,17 +3073,6 @@ class OpenAgentRuntime:
                             ),
                         )
                         end_turn_after_tool = True
-                    elif is_exploration_tool and (
-                        exploration_streak >= self.EXPLORATION_HARD_STREAK_LIMIT
-                        or exploration_total >= self.EXPLORATION_HARD_TOTAL_LIMIT
-                    ):
-                        output = self._exploration_guard_error(
-                            tool_name,
-                            streak=exploration_streak,
-                            total=exploration_total,
-                        )
-                        pending_exploration_summary_reminder = True
-                        end_turn_after_tool = True
                     else:
                         malformed_reason = self._malformed_tool_name_reason(tool_name)
                         if malformed_reason is not None:
@@ -3182,7 +3142,11 @@ class OpenAgentRuntime:
                     ):
                         exploration_streak += 1
                         exploration_total += 1
-                        if exploration_streak >= self.EXPLORATION_SOFT_LIMIT:
+                        if (
+                            exploration_streak >= self.EXPLORATION_SOFT_LIMIT
+                            or exploration_streak >= self.EXPLORATION_HARD_STREAK_LIMIT
+                            or exploration_total >= self.EXPLORATION_HARD_TOTAL_LIMIT
+                        ):
                             pending_exploration_summary_reminder = True
                     elif not is_exploration_tool:
                         exploration_streak = 0
