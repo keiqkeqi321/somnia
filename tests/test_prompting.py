@@ -188,6 +188,11 @@ class PromptingTests(unittest.TestCase):
                 return binding.handler
         self.fail(f"binding not found: {target!r}")
 
+    def test_create_prompt_session_uses_multiline_layout_for_dynamic_prompt_height(self) -> None:
+        prompt_session = self._capture_prompt_session()
+
+        self.assertTrue(prompt_session.kwargs["multiline"])
+
     def test_tab_accepts_inline_history_suggestion(self) -> None:
         inserted: list[str] = []
         buffer = SimpleNamespace(

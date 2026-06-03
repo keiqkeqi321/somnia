@@ -607,6 +607,7 @@ def create_prompt_session(
 
     prompt_session = PromptSession(
         history=FileHistory(str(_history_file(workspace_root))),
+        multiline=True,
         auto_suggest=AutoSuggestFromHistory(),
         completer=OpenAgentCompleter(workspace_root, skill_names_getter=skill_names_getter),
         complete_while_typing=True,
