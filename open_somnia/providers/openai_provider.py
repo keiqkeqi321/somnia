@@ -307,6 +307,16 @@ def _wrap_openai_exception(exc: Exception) -> ProviderError:
     )
 
 
+def _first_openai_choice(body: dict[str, Any]) -> dict[str, Any]:
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ProviderError("OpenAI response did not include any choices.", retryable=False)
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise ProviderError("OpenAI response choice was not an object.", retryable=False)
+    return choice
+
+
 class OpenAIProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         self.settings = settings
@@ -424,8 +434,10 @@ class OpenAIProvider(LLMProvider):
         except Exception as exc:
             raise _wrap_openai_exception(exc) from exc
 
-        choice = body["choices"][0]
-        message = choice["message"]
+        choice = _first_openai_choice(body)
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ProviderError("OpenAI response choice did not include a message.", retryable=False)
         text_blocks: list[str] = []
         content = message.get("content")
         if isinstance(content, str) and content:
@@ -482,7 +494,12 @@ class OpenAIProvider(LLMProvider):
             if data == "[DONE]":
                 break
             event = json.loads(data)
-            choice = event["choices"][0]
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
             delta = choice.get("delta", {})
             finish_reason = choice.get("finish_reason") or finish_reason
 

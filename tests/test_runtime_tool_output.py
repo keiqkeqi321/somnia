@@ -3463,6 +3463,76 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("OpenAI request failed", str(context.exception))
         self.assertIn("temporary upstream network error", str(context.exception))
 
+    def test_openai_provider_reports_empty_choices_as_non_retryable_response_error(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5.5",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"choices":[]}'
+
+        with patch("urllib.request.urlopen", return_value=_Response()):
+            with self.assertRaises(ProviderError) as context:
+                provider.complete("system", [{"role": "user", "content": "hello"}], [], max_tokens=1024)
+
+        self.assertFalse(context.exception.retryable)
+        self.assertIn("did not include any choices", str(context.exception))
+
+    def test_openai_provider_streaming_skips_empty_choice_events(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5.5",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b'data: {"choices":[]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
+                        b'data: [DONE]\n\n',
+                    ]
+                )
+
+        chunks: list[str] = []
+        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=chunks.append,
+            )
+
+        self.assertEqual(turn.text_blocks, ["hello"])
+        self.assertEqual(chunks, ["hello"])
+
     def test_openai_provider_debug_request_payload_includes_reasoning_effort(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(
