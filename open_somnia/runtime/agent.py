@@ -178,7 +178,7 @@ class OpenAgentRuntime:
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
     )
-    NO_VISIBLE_PROGRESS_LIMIT = 3
+    NO_VISIBLE_PROGRESS_LIMIT = 5
     VISIBLE_PROGRESS_REMINDER_TEXT = (
         "<reminder>\n"
         "Stop exploratory looping. First produce a concise visible working summary from the recent tool results and conversation. "
@@ -2977,6 +2977,7 @@ class OpenAgentRuntime:
         *,
         thinking_log: ThinkingLogWriter | None,
         thinking_callback=None,
+        notify_finished: bool = True,
     ) -> dict[str, Any]:
         thinking_blocks = extract_thinking_blocks(assistant_message)
         if thinking_blocks and thinking_log is not None and not thinking_log.has_content:
@@ -2996,7 +2997,7 @@ class OpenAgentRuntime:
             message["content"] = blocks
         else:
             message["content"] = [marker]
-        if callable(thinking_callback):
+        if notify_finished and callable(thinking_callback):
             thinking_callback({"event": "finished", **marker})
         return message
 
@@ -3280,6 +3281,13 @@ class OpenAgentRuntime:
                         continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
 
+                pre_tool_thinking_message = self._attach_thinking_log_marker(
+                    turn.as_message([]),
+                    thinking_log=thinking_log,
+                    thinking_callback=thinking_callback,
+                )
+                thinking_finished_notified = self._assistant_message_has_thinking_log(pre_tool_thinking_message)
+
                 tool_results: list[dict[str, Any]] = []
                 executed_tool_calls = []
                 used_todo = False
@@ -3408,6 +3416,7 @@ class OpenAgentRuntime:
                     assistant_message,
                     thinking_log=thinking_log,
                     thinking_callback=thinking_callback,
+                    notify_finished=not thinking_finished_notified,
                 )
                 session.messages.append(assistant_message)
                 self._append_transcript_entry(session.id, assistant_message)

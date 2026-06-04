@@ -4627,6 +4627,62 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertLess(order.index(("text", "I need to inspect first.")), order.index(("flush", "")))
         self.assertLess(order.index(("flush", "")), order.index(("tool", "bash")))
 
+    def test_agent_loop_emits_thinking_finished_before_tool_execution(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_root = self._stable_test_dir("thinking-before-tool") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: order.append(("print_tool", args[1]))
+        runtime.build_system_prompt = lambda: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        order: list[tuple[str, str]] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                order.append(("tool", name))
+                return "ok"
+
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-1", "bash", {"command": "pwd"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "inspect before calling tool"},
+                        {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+            ]
+        )
+
+        def thinking_callback(payload: dict[str, object]) -> None:
+            event = str(payload.get("event", "")).strip()
+            if event == "finished":
+                order.append(("thinking", str(payload.get("characters", ""))))
+
+        runtime.complete = lambda *args, **kwargs: next(turns)
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect", thinking_callback=thinking_callback)
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual([item[0] for item in order].count("thinking"), 1)
+        self.assertLess(order.index(("thinking", "27")), order.index(("tool", "bash")))
+        self.assertLess(order.index(("thinking", "27")), order.index(("print_tool", "bash")))
+
     def test_agent_loop_auto_compact_preserves_last_conversation_and_active_task_window(self) -> None:
         captured: dict[str, object] = {}
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -5034,10 +5090,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("You have been exploring", json.dumps(payloads[0], ensure_ascii=False))
         self.assertNotIn("You have been exploring", json.dumps(runtime.registry.__dict__, ensure_ascii=False))
 
-    def test_agent_loop_injects_transient_visible_progress_reminder_after_three_silent_rounds(self) -> None:
+    def test_agent_loop_injects_transient_visible_progress_reminder_after_five_silent_rounds(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=7, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5086,6 +5142,22 @@ class RuntimeToolOutputTests(unittest.TestCase):
                         {"type": "tool_call", "id": "call-3", "name": "bash", "input": {"command": "ls"}},
                     ],
                 ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-4", "bash", {"command": "git log"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "checking history"},
+                        {"type": "tool_call", "id": "call-4", "name": "bash", "input": {"command": "git log"}},
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-5", "bash", {"command": "tree"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "checking layout"},
+                        {"type": "tool_call", "id": "call-5", "name": "bash", "input": {"command": "tree"}},
+                    ],
+                ),
                 AssistantTurn(stop_reason="end_turn", text_blocks=["Known: checked workspace. Hypothesis: continue narrowly."]),
             ]
         )
@@ -5102,7 +5174,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         reminder = "Stop exploratory looping"
 
         self.assertIn("Known: checked workspace", result)
-        self.assertEqual([json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads], [0, 0, 0, 1])
+        self.assertEqual(
+            [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads],
+            [0, 0, 0, 0, 0, 1],
+        )
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
     def test_agent_loop_visible_progress_reminder_counts_prior_continue_history(self) -> None:
@@ -5139,6 +5214,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 {"role": "user", "content": "\u7ee7\u7eed"},
                 {"role": "assistant", "content": [{"type": "thinking_log", "path": "b.jsonl"}]},
                 {"role": "assistant", "content": [{"type": "thinking_log", "path": "c.jsonl"}]},
+                {"role": "assistant", "content": [{"type": "thinking_log", "path": "d.jsonl"}]},
+                {"role": "assistant", "content": [{"type": "thinking_log", "path": "e.jsonl"}]},
             ],
         )
 

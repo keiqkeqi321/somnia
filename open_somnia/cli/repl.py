@@ -99,6 +99,8 @@ HOOK_EVENT_ORDER = (
 AUTHORIZATION_PROMPT_SENTINEL = "__open_somnia_authorization__"
 CLIPBOARD_TEMP_DIRNAME = "temp"
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+THINKING_BULLET = "\u25cf"
+THINKING_BULLET_ANSI = "\x1b[38;2;167;139;250m\u25cf\x1b[0m"
 
 
 def _parse_skill_command(query: str) -> tuple[str, str] | None:
@@ -567,6 +569,21 @@ def _assistant_thinking_logs(content: object) -> list[dict[str, object]]:
     return logs
 
 
+def _thinking_log_label(characters: int, path: str, *, ansi: bool = False) -> str:
+    bullet = THINKING_BULLET_ANSI if ansi else THINKING_BULLET
+    label = f"{bullet} think {characters} chars"
+    if path:
+        label = f"{label} -> {path}"
+    return label
+
+
+def _supports_repl_ansi(runtime: object | None, *, fallback: bool = False) -> bool:
+    supports_ansi = getattr(runtime, "_supports_ansi_output", None)
+    if callable(supports_ansi):
+        return bool(supports_ansi())
+    return fallback
+
+
 def _tool_result_map(content: object) -> dict[str, object]:
     if not isinstance(content, list):
         return {}
@@ -588,6 +605,56 @@ def _print_resumed_tool_call(runtime, tool_name: str, payload: dict[str, object]
     for line in runtime.render_tool_event_lines(tool_name, payload, output, log_id=log_id):
         print(line)
     print()
+
+
+def _print_resumed_assistant_text(text: str) -> bool:
+    rendered = render_markdown_text(text, ansi=sys.stdout.isatty()).strip()
+    if not rendered:
+        return False
+    print()
+    print(_prefix_first_line(rendered, _assistant_prefix(ansi=sys.stdout.isatty())))
+    print()
+    return True
+
+
+def _print_resumed_assistant_content_in_order(content: list[object], runtime, tool_results: dict[str, object]) -> bool:
+    printed_any = False
+    pending_text: list[str] = []
+
+    def flush_text() -> None:
+        nonlocal printed_any, pending_text
+        text = "\n".join(part for part in pending_text if part).strip()
+        pending_text = []
+        if _print_resumed_assistant_text(text):
+            printed_any = True
+
+    for item in content:
+        if isinstance(item, str):
+            pending_text.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", "")).strip()
+        if item_type == "text":
+            pending_text.append(str(item.get("text", "")))
+            continue
+        flush_text()
+        if item_type == "thinking_log":
+            path = str(item.get("path", "")).strip()
+            characters = int(item.get("characters") or 0)
+            print(_thinking_log_label(characters, path, ansi=_supports_repl_ansi(runtime)))
+            printed_any = True
+            continue
+        if item_type == "tool_call" and runtime is not None:
+            _print_resumed_tool_call(
+                runtime,
+                str(item.get("name", "")),
+                dict(item.get("input", {}) or {}),
+                tool_results.get(str(item.get("id", "")), "(no output)"),
+            )
+            printed_any = True
+    flush_text()
+    return printed_any
 
 
 def _print_resumed_history(session, runtime=None) -> None:
@@ -612,27 +679,6 @@ def _print_resumed_history(session, runtime=None) -> None:
             index += 1
             continue
         if role == "assistant":
-            text = render_message_content(content, ansi=sys.stdout.isatty()).strip()
-            if text:
-                if not header_printed:
-                    print("[resumed history]")
-                    header_printed = True
-                print()
-                print(_prefix_first_line(text, _assistant_prefix(ansi=sys.stdout.isatty())))
-                print()
-                printed_any = True
-            for thinking_log in _assistant_thinking_logs(content):
-                path = str(thinking_log.get("path", "")).strip()
-                characters = int(thinking_log.get("characters") or 0)
-                if not header_printed:
-                    print("[resumed history]")
-                    header_printed = True
-                label = f"[think] {characters} chars"
-                if path:
-                    label = f"{label} -> {path}"
-                print(label)
-                printed_any = True
-            tool_calls = _assistant_tool_calls(content)
             tool_results = {}
             if index + 1 < len(messages):
                 next_message = messages[index + 1]
@@ -640,20 +686,19 @@ def _print_resumed_history(session, runtime=None) -> None:
                     tool_results = _tool_result_map(next_message.get("content"))
                     if tool_results:
                         index += 1
-            for tool_call in tool_calls:
+            if isinstance(content, list):
                 if not header_printed:
                     print("[resumed history]")
                     header_printed = True
-                if runtime is None:
-                    index += 1
-                    continue
-                _print_resumed_tool_call(
-                    runtime,
-                    str(tool_call.get("name", "")),
-                    dict(tool_call.get("input", {}) or {}),
-                    tool_results.get(str(tool_call.get("id", "")), "(no output)"),
-                )
-                printed_any = True
+                printed_any = _print_resumed_assistant_content_in_order(content, runtime, tool_results) or printed_any
+            else:
+                text = render_message_content(content, ansi=sys.stdout.isatty()).strip()
+                if text:
+                    if not header_printed:
+                        print("[resumed history]")
+                        header_printed = True
+                    if _print_resumed_assistant_text(text):
+                        printed_any = True
         index += 1
     if not printed_any:
         print("[resumed session has no visible chat history]")
@@ -1557,7 +1602,13 @@ class TurnQueueRunner:
                 self._thinking_preview_text = ""
                 self._thinking_log_path = path or self._thinking_log_path
             if path:
-                print(f"[think] {characters} chars -> {path}")
+                print(
+                    _thinking_log_label(
+                        characters,
+                        path,
+                        ansi=_supports_repl_ansi(self.runtime, fallback=sys.stdout.isatty()),
+                    )
+                )
             self._invalidate_ui()
             return
         delta = str(payload.get("delta", "") or "")
@@ -1577,7 +1628,7 @@ class TurnQueueRunner:
         lines = self._wrap_thinking_preview(text)
         if not lines:
             return []
-        output: list[tuple[str, str]] = [("fg:#a78bfa", "● think。。。。。。")]
+        output: list[tuple[str, str]] = [("fg:#a78bfa", "think")]
         output.extend(("fg:#c4b5fd", f"↳ {line}") for line in lines[-self.THINKING_PREVIEW_LINES :])
         if path:
             output.append(("fg:#64748b", f"log: {path}"))

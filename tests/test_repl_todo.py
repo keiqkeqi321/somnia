@@ -31,6 +31,7 @@ from open_somnia.cli.repl import (
     _handle_vision_command,
     _handle_skills_command,
     _handle_undo_command,
+    _thinking_log_label,
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
     _save_windows_clipboard_image,
@@ -348,11 +349,22 @@ class ReplTodoTests(unittest.TestCase):
 
         lines = [line for _, line in runner._thinking_lines()]
 
-        self.assertEqual(lines[0], "● think。。。。。。")
+        self.assertEqual(lines[0], "think")
         self.assertTrue(any("I am checking the current implementation before editing." in line for line in lines))
         self.assertFalse(any(line == "↳ I" for line in lines))
         self.assertLessEqual(len([line for line in lines if line.startswith("↳ ")]), 5)
         self.assertEqual(lines[-1], "")
+
+    def test_thinking_log_label_uses_bullet_prefix(self) -> None:
+        self.assertEqual(
+            _thinking_log_label(99, "thinking/session.turn.jsonl"),
+            "● think 99 chars -> thinking/session.turn.jsonl",
+        )
+        self.assertEqual(_thinking_log_label(99, ""), "● think 99 chars")
+        self.assertIn(
+            "\x1b[38;2;167;139;250m●\x1b[0m think 99 chars",
+            _thinking_log_label(99, "", ansi=True),
+        )
 
     def test_prompt_message_keeps_status_bar_and_todos_in_one_persistent_panel(self) -> None:
         runtime = SimpleNamespace(

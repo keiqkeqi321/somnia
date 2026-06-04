@@ -492,8 +492,11 @@ class CliResumeTests(unittest.TestCase):
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "text", "text": "# Title\n\n- item"},
+                        {"type": "thinking_log", "path": "thinking/session.turn.jsonl", "characters": 99},
                         {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "git status"}},
+                        {"type": "text", "text": "# Title\n\n- item"},
+                        {"type": "thinking_log", "path": "thinking/session.final.jsonl", "characters": 7},
+                        {"type": "text", "text": "Final answer."},
                     ],
                 },
                 {
@@ -545,9 +548,15 @@ class CliResumeTests(unittest.TestCase):
         self.assertIn("❯ history question", rendered)
         self.assertIn("● Title\n=====", rendered)
         self.assertIn("• item", rendered)
+        self.assertIn("● think 99 chars -> thinking/session.turn.jsonl", rendered)
+        self.assertIn("● think 7 chars -> thinking/session.final.jsonl", rendered)
         self.assertIn("● bash(git status)", rendered)
         self.assertIn("All clean", rendered)
         self.assertIn("Log: /toollog log-1", rendered)
+        self.assertLess(rendered.index("● think 99 chars"), rendered.index("● bash(git status)"))
+        self.assertLess(rendered.index("● bash(git status)"), rendered.index("● Title"))
+        self.assertLess(rendered.index("● Title"), rendered.index("● think 7 chars"))
+        self.assertLess(rendered.index("● think 7 chars"), rendered.index("Final answer."))
         self.assertNotIn("You:", rendered)
         self.assertNotIn("Assistant:", rendered)
         self.assertNotIn(PROMPT_BORDER, rendered)
