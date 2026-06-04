@@ -127,6 +127,11 @@ export interface ToolLogDetail extends ToolLogIndexEntry {
   rendered: string;
 }
 
+export interface ThinkingLogDetail {
+  path: string;
+  text: string;
+}
+
 export interface TeamMemberActivity {
   name: string;
   role?: string;
@@ -233,6 +238,11 @@ export type ConversationRowPart =
     }
   | {
       id: string;
+      type: "thinking_log";
+      thinkingLog: ConversationThinkingLog;
+    }
+  | {
+      id: string;
       type: "tool_call";
       toolCall: ConversationToolCall;
     };
@@ -251,9 +261,25 @@ export type ConversationRuntimeItem =
     }
   | {
       id: string;
+      type: "thinking_log";
+      thinkingLog: ConversationThinkingLog;
+      isStreaming?: boolean;
+    }
+  | {
+      id: string;
       type: "tool_call";
       toolCall: ConversationToolCall;
     };
+
+export interface ConversationThinkingLog {
+  turnId?: string | null;
+  path?: string | null;
+  text?: string;
+  characters?: number;
+  blockCount?: number;
+  durationMs?: number | null;
+  status?: "running" | "finished";
+}
 
 export interface ConversationToolCall {
   id: string;

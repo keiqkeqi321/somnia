@@ -7,7 +7,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from open_somnia.config.models import ProviderSettings
-from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
+from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback, ThinkingCallback
 from open_somnia.reasoning import anthropic_reasoning_payload
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
@@ -85,21 +85,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                 image_block = _anthropic_image_block(item)
                 if image_block is not None:
                     blocks.append(image_block)
-            elif item["type"] == "thinking":
-                blocks.append(
-                    {
-                        "type": "thinking",
-                        "thinking": str(item.get("thinking", "")),
-                        "signature": str(item.get("signature", "")),
-                    }
-                )
-            elif item["type"] == "redacted_thinking":
-                blocks.append(
-                    {
-                        "type": "redacted_thinking",
-                        "data": item.get("data"),
-                    }
-                )
+            elif item["type"] in {"thinking", "redacted_thinking", "thinking_log"}:
+                continue
             elif item["type"] == "tool_call":
                 blocks.append(
                     {
@@ -278,6 +265,7 @@ class AnthropicProvider(LLMProvider):
         tools: list[dict[str, Any]],
         max_tokens: int,
         text_callback: TextCallback | None = None,
+        thinking_callback: ThinkingCallback | None = None,
         stop_checker: StopChecker | None = None,
     ) -> AssistantTurn:
         request_kwargs = self.debug_request_payload(
@@ -288,6 +276,8 @@ class AnthropicProvider(LLMProvider):
             stream=text_callback is not None or stop_checker is not None,
         )
         request_kwargs.pop("stream", None)
+        streamed_thinking_delta = False
+        streamed_redacted_thinking = False
         try:
             if text_callback is None and stop_checker is None:
                 response = self.client.messages.create(**request_kwargs)
@@ -295,11 +285,27 @@ class AnthropicProvider(LLMProvider):
                 with self.client.messages.stream(**request_kwargs) as stream:
                     if stop_checker is not None and stop_checker():
                         raise TurnInterrupted("Interrupted by user.")
-                    for text in stream.text_stream:
+                    for event in stream:
                         if stop_checker is not None and stop_checker():
                             raise TurnInterrupted("Interrupted by user.")
-                        if text_callback is not None:
-                            text_callback(text)
+                        if getattr(event, "type", None) != "content_block_delta":
+                            continue
+                        delta = getattr(event, "delta", None)
+                        delta_type = getattr(delta, "type", None)
+                        if delta_type == "text_delta":
+                            text = str(getattr(delta, "text", "") or "")
+                            if text and text_callback is not None:
+                                text_callback(text)
+                        elif delta_type == "thinking_delta":
+                            thinking = str(getattr(delta, "thinking", "") or "")
+                            if thinking and thinking_callback is not None:
+                                streamed_thinking_delta = True
+                                thinking_callback({"event": "delta", "type": "thinking_delta", "delta": thinking})
+                        elif delta_type == "redacted_thinking":
+                            data = getattr(delta, "data", None)
+                            if data and thinking_callback is not None:
+                                streamed_redacted_thinking = True
+                                thinking_callback({"event": "delta", "type": "redacted_thinking", "delta": str(data)})
                     if stop_checker is not None and stop_checker():
                         raise TurnInterrupted("Interrupted by user.")
                     response = stream.get_final_message()
@@ -313,20 +319,22 @@ class AnthropicProvider(LLMProvider):
         for block in response.content:
             block_type = getattr(block, "type", None)
             if block_type == "thinking":
-                content_blocks.append(
-                    {
-                        "type": "thinking",
-                        "thinking": str(getattr(block, "thinking", "") or ""),
-                        "signature": str(getattr(block, "signature", "") or ""),
-                    }
-                )
+                thinking_block = {
+                    "type": "thinking",
+                    "thinking": str(getattr(block, "thinking", "") or ""),
+                    "signature": str(getattr(block, "signature", "") or ""),
+                }
+                content_blocks.append(thinking_block)
+                if thinking_callback is not None and not streamed_thinking_delta:
+                    thinking_callback(dict(thinking_block))
             elif block_type == "redacted_thinking":
-                content_blocks.append(
-                    {
-                        "type": "redacted_thinking",
-                        "data": getattr(block, "data", None),
-                    }
-                )
+                thinking_block = {
+                    "type": "redacted_thinking",
+                    "data": getattr(block, "data", None),
+                }
+                content_blocks.append(thinking_block)
+                if thinking_callback is not None and not streamed_redacted_thinking:
+                    thinking_callback(dict(thinking_block))
             elif block_type == "text":
                 text_blocks.append(block.text)
                 content_blocks.append({"type": "text", "text": block.text})

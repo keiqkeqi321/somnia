@@ -2445,6 +2445,82 @@ button {
   white-space: nowrap;
 }
 
+.thinking-log-card {
+  border: 1px solid rgba(167, 139, 250, 0.24);
+  border-radius: 10px;
+  background: rgba(15, 12, 26, 0.62);
+  overflow: hidden;
+}
+
+.thinking-log-card summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #f5f3ff;
+  font-size: 0.85rem;
+}
+
+.thinking-log-card summary::marker {
+  color: var(--muted);
+}
+
+.thinking-log-summary-main,
+.thinking-log-summary-meta {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thinking-log-summary-main {
+  flex: 1 1 auto;
+}
+
+.thinking-log-summary-meta {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+
+.thinking-log-summary-meta em {
+  min-width: 0;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thinking-log-body {
+  max-height: 13rem;
+  margin: 0 12px 12px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid rgba(167, 139, 250, 0.16);
+  border-radius: 8px;
+  background: rgba(7, 7, 12, 0.62);
+  color: #ddd6fe;
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.thinking-log-detail {
+  padding: 0 12px 12px;
+}
+
+.thinking-log-detail > span {
+  display: block;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", "Cascadia Code", monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
 .file-change-stat {
   flex: none;
   min-width: 2.4rem;

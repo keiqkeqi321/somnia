@@ -10,6 +10,7 @@ import random
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
@@ -21,6 +22,8 @@ from open_somnia.app_service.events import (
     MODE_SWITCH_REQUESTED,
     SESSION_UPDATED,
     SUBAGENT_ACTIVITY,
+    THINKING_DELTA,
+    THINKING_FINISHED,
     TODO_UPDATED,
     TOOL_FINISHED,
     TOOL_STARTED,
@@ -554,6 +557,16 @@ def _assistant_tool_calls(content: object) -> list[dict[str, object]]:
     return calls
 
 
+def _assistant_thinking_logs(content: object) -> list[dict[str, object]]:
+    if not isinstance(content, list):
+        return []
+    logs: list[dict[str, object]] = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "thinking_log":
+            logs.append(item)
+    return logs
+
+
 def _tool_result_map(content: object) -> dict[str, object]:
     if not isinstance(content, list):
         return {}
@@ -607,6 +620,17 @@ def _print_resumed_history(session, runtime=None) -> None:
                 print()
                 print(_prefix_first_line(text, _assistant_prefix(ansi=sys.stdout.isatty())))
                 print()
+                printed_any = True
+            for thinking_log in _assistant_thinking_logs(content):
+                path = str(thinking_log.get("path", "")).strip()
+                characters = int(thinking_log.get("characters") or 0)
+                if not header_printed:
+                    print("[resumed history]")
+                    header_printed = True
+                label = f"[think] {characters} chars"
+                if path:
+                    label = f"{label} -> {path}"
+                print(label)
                 printed_any = True
             tool_calls = _assistant_tool_calls(content)
             tool_results = {}
@@ -681,6 +705,8 @@ class TurnQueueRunner:
     QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
     QUEUED_MESSAGES_ARMED_NOTICE = "Queued: next one sends after current tool"
     THINKING_FRAME_SECONDS = 0.25
+    THINKING_PREVIEW_LINES = 5
+    THINKING_PREVIEW_MAX_CHARS = 2_000
     SUBAGENT_FACT_FRAME_SECONDS = 1.7
     SUBAGENT_FACTS_LIMIT = 8
     CONTEXT_HEALTHY_STYLE = "fg:#22c55e"
@@ -716,6 +742,8 @@ class TurnQueueRunner:
         self._mode_switch_requests: list[ModeSwitchRequest] = []
         self._active_turn_handle = None
         self._active_subagents: dict[str, dict[str, object]] = {}
+        self._thinking_preview_text = ""
+        self._thinking_log_path: str | None = None
 
     def start(self) -> None:
         self._worker.start()
@@ -1006,6 +1034,7 @@ class TurnQueueRunner:
         run_turn = getattr(self.runtime, "run_turn")
         turn_kwargs = {
             "text_callback": streamer,
+            "thinking_callback": self._note_thinking_event,
             "should_interrupt": self.should_interrupt,
         }
         try:
@@ -1016,6 +1045,8 @@ class TurnQueueRunner:
             parameter.kind == inspect.Parameter.VAR_KEYWORD
             for parameter in run_turn_parameters.values()
         )
+        if "thinking_callback" not in run_turn_parameters and not accepts_var_kwargs:
+            turn_kwargs.pop("thinking_callback", None)
         if "take_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
             turn_kwargs["take_next_loop_user_message"] = self.take_next_loop_injection
         if "prepare_next_loop_user_message" in run_turn_parameters or accepts_var_kwargs:
@@ -1134,6 +1165,12 @@ class TurnQueueRunner:
         if event_type == ASSISTANT_DELTA:
             streamer(str(payload.get("delta", "")))
             return
+        if event_type == THINKING_DELTA:
+            self._note_thinking_event(payload)
+            return
+        if event_type == THINKING_FINISHED:
+            self._note_thinking_event(payload)
+            return
         if event_type == TOOL_STARTED:
             self._note_tool_started(payload)
             return
@@ -1195,6 +1232,8 @@ class TurnQueueRunner:
                     if preview_id != task.id
                 ]
                 self._active_turn_handle = None
+                self._thinking_preview_text = ""
+                self._thinking_log_path = None
             self._set_status("compacting" if task.kind == "compact" else "thinking")
             response = None
             try:
@@ -1226,6 +1265,8 @@ class TurnQueueRunner:
                     self._ready_loop_injections = []
                     self._ready_loop_injection_previews = []
                     self._active_turn_handle = None
+                    self._thinking_preview_text = ""
+                    self._thinking_log_path = None
                 self._set_status(self._status_for_response(response))
                 self._queue.task_done()
 
@@ -1258,6 +1299,8 @@ class TurnQueueRunner:
             for style, line in todo_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in subagent_lines:
+                fragments.extend([panel_prefix, (style, line), ("", "\n")])
+            for style, line in self._thinking_lines():
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in team_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
@@ -1504,6 +1547,57 @@ class TurnQueueRunner:
                 suffix = ""
             lines.append((style, f"{marker} {text}{suffix}"))
         return lines
+
+    def _note_thinking_event(self, payload: dict[str, object]) -> None:
+        event = str(payload.get("event", "")).strip()
+        if event == "finished":
+            path = str(payload.get("path", "")).strip()
+            characters = int(payload.get("characters") or 0)
+            with self._lock:
+                self._thinking_preview_text = ""
+                self._thinking_log_path = path or self._thinking_log_path
+            if path:
+                print(f"[think] {characters} chars -> {path}")
+            self._invalidate_ui()
+            return
+        delta = str(payload.get("delta", "") or "")
+        path = str(payload.get("path", "")).strip()
+        if not delta:
+            return
+        with self._lock:
+            if path:
+                self._thinking_log_path = path
+            self._thinking_preview_text = f"{self._thinking_preview_text}{delta}"[-self.THINKING_PREVIEW_MAX_CHARS :]
+        self._invalidate_ui()
+
+    def _thinking_lines(self) -> list[tuple[str, str]]:
+        with self._lock:
+            text = self._thinking_preview_text
+            path = self._thinking_log_path
+        lines = self._wrap_thinking_preview(text)
+        if not lines:
+            return []
+        output: list[tuple[str, str]] = [("fg:#a78bfa", "● think。。。。。。")]
+        output.extend(("fg:#c4b5fd", f"↳ {line}") for line in lines[-self.THINKING_PREVIEW_LINES :])
+        if path:
+            output.append(("fg:#64748b", f"log: {path}"))
+        output.append(("fg:#64748b", ""))
+        return output
+
+    def _wrap_thinking_preview(self, text: str) -> list[str]:
+        normalized = " ".join(str(text or "").split())
+        if not normalized:
+            return []
+        width = max(24, min(120, shutil.get_terminal_size((100, 24)).columns - 6))
+        wrapped = textwrap.wrap(
+            normalized,
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=True,
+            drop_whitespace=True,
+        )
+        return wrapped[-self.THINKING_PREVIEW_LINES :]
 
     @contextmanager
     def _runtime_tool_activity_tracking(self):

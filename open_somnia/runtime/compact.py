@@ -9,6 +9,7 @@ from typing import Any
 
 from open_somnia.providers.base import ProviderError
 from open_somnia.runtime.messages import image_source_block_to_reference, normalize_tool_importance
+from open_somnia.runtime.thinking import strip_thinking_blocks_from_messages
 
 
 SEMANTIC_JANITOR_TRIGGER_RATIO = 0.60
@@ -707,7 +708,15 @@ def build_payload_messages(
     semantic_decisions: list[SemanticCompressionDecision] | None = None,
     read_file_overlap_state: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    payload_messages = _clone_messages_for_payload(messages)
+    payload_messages = strip_thinking_blocks_from_messages(_clone_messages_for_payload(messages))
+    payload_messages = [
+        message
+        for message in payload_messages
+        if not (
+            message.get("content") == []
+            or (isinstance(message.get("content"), str) and not str(message.get("content")).strip())
+        )
+    ]
     apply_semantic_compression(payload_messages, semantic_decisions)
     _strip_stale_user_image_blocks(payload_messages)
     rounds = _tool_result_rounds(payload_messages)
@@ -745,6 +754,7 @@ class CompactManager:
         self.last_usage: dict[str, Any] | None = None
 
     def _summarize_messages(self, messages: list[dict[str, Any]]) -> str:
+        summary_messages = strip_thinking_blocks_from_messages(messages)
         try:
             summary_turn = self.provider.complete(
                 system_prompt=(
@@ -765,7 +775,7 @@ class CompactManager:
                             "Summarize this conversation so the agent can continue working without the full history.\n"
                             "Keep it compact and implementation-focused.\n\n"
                             "Conversation:\n"
-                            + json.dumps(messages, ensure_ascii=False, default=str)[:80_000]
+                            + json.dumps(summary_messages, ensure_ascii=False, default=str)[:80_000]
                         ),
                     }
                 ],

@@ -12,6 +12,7 @@ import type {
   SidecarStatus,
   TaskGraphItem,
   TeamMemberActivity,
+  ThinkingLogDetail,
   ToolLogDetail,
   ToolLogIndexEntry,
   TurnStartResponse,
@@ -335,6 +336,13 @@ export class SidecarClient {
   async getToolLog(logId: string): Promise<ToolLogDetail> {
     const payload = await parseResponse<{ tool_log: ToolLogDetail }>(await fetch(`${this.baseUrl}/tool-logs/${logId}`));
     return payload.tool_log;
+  }
+
+  async getThinkingLog(path: string): Promise<ThinkingLogDetail> {
+    const payload = await parseResponse<{ thinking_log: ThinkingLogDetail }>(
+      await fetch(`${this.baseUrl}/thinking-log?path=${encodeURIComponent(path)}`),
+    );
+    return payload.thinking_log;
   }
 
   async listActiveTeamMembers(sessionId?: string | null): Promise<TeamMemberActivity[]> {

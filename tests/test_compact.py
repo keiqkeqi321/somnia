@@ -98,6 +98,47 @@ class CompactTests(unittest.TestCase):
         self.assertIn("raw_output", messages[1]["content"][0])
         self.assertIn("log_id", messages[1]["content"][0])
 
+    def test_build_payload_messages_strips_thinking_blocks_without_mutating_history(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+                    {"type": "thinking_log", "path": ".open_somnia/transcripts/thinking/session.turn.jsonl", "characters": 17},
+                    {"type": "text", "text": "Visible answer."},
+                ],
+            }
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        self.assertEqual(
+            payload_messages,
+            [{"role": "assistant", "content": [{"type": "text", "text": "Visible answer."}]}],
+        )
+        self.assertEqual(messages[0]["content"][0]["type"], "thinking")
+        self.assertEqual(messages[0]["content"][1]["type"], "thinking_log")
+
+    def test_build_payload_messages_drops_messages_left_empty_after_stripping_thinking(self) -> None:
+        messages = [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking_log",
+                        "path": ".open_somnia/transcripts/thinking/session.turn.jsonl",
+                        "characters": 32600,
+                    }
+                ],
+            },
+        ]
+
+        payload_messages = build_payload_messages(messages)
+
+        self.assertEqual(payload_messages, [{"role": "user", "content": "inspect"}])
+        self.assertEqual(messages[1]["content"][0]["type"], "thinking_log")
+
     def test_build_payload_messages_can_apply_semantic_compression_without_mutating_history(self) -> None:
         messages = [
             _tool_call("call-1", "grep"),

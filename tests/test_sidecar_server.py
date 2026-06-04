@@ -7,6 +7,7 @@ import socket
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -663,6 +664,40 @@ class SidecarServerTests(unittest.TestCase):
                 for ignored in ["node_modules", ".local-tools", ".tmp-system", "tmp04u5700e", ".open_somnia"]
             )
         )
+
+    def test_sidecar_thinking_log_endpoint_reads_only_workspace_thinking_logs(self) -> None:
+        root = self._stable_test_dir("sidecar-thinking-log")
+        settings = self._make_settings(root)
+        thinking_root = settings.storage.transcripts_dir / "thinking"
+        thinking_root.mkdir(parents=True, exist_ok=True)
+        thinking_path = thinking_root / "session.turn.jsonl"
+        thinking_path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "thinking_delta", "delta": "private "}),
+                    json.dumps({"type": "thinking", "thinking": "reasoning"}),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        outside_path = root / "outside.jsonl"
+        outside_path.write_text(json.dumps({"type": "thinking_delta", "delta": "outside"}), encoding="utf-8")
+        server = SidecarServer.from_settings(settings, host="127.0.0.1", port=0)
+        server.start_background()
+        self.assertTrue(server.wait_until_ready())
+        try:
+            query = urllib.parse.urlencode({"path": str(thinking_path)})
+            status, payload = self._request_json("GET", f"{server.base_url}/thinking-log?{query}")
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["thinking_log"]["text"], "private reasoning")
+
+            outside_query = urllib.parse.urlencode({"path": str(outside_path)})
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("GET", f"{server.base_url}/thinking-log?{outside_query}")
+            self.assertEqual(context.exception.code, 403)
+        finally:
+            server.close()
 
     def _streaming_complete(self, final_text: str):
         def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):

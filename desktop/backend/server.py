@@ -887,6 +887,34 @@ class SidecarServer:
         payload["rendered"] = self.runtime.render_tool_log(log_id)
         return payload
 
+    def get_thinking_log(self, path: str) -> dict[str, Any]:
+        raw_path = str(path or "").strip()
+        if not raw_path:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "path is required.")
+        transcript_root = Path(getattr(self.runtime.transcript_store, "root", ""))
+        thinking_root = (transcript_root / "thinking").resolve()
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = (thinking_root / candidate.name).resolve()
+        else:
+            candidate = candidate.resolve()
+        if thinking_root not in candidate.parents and candidate != thinking_root:
+            raise SidecarAPIError(HTTPStatus.FORBIDDEN, "Thinking log path is outside this workspace.")
+        if not candidate.exists() or not candidate.is_file():
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, "Thinking log was not found.")
+        text_parts: list[str] = []
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            value = item.get("delta", item.get("thinking", item.get("data", "")))
+            if value:
+                text_parts.append(str(value))
+        return {"thinking_log": {"path": str(candidate), "text": "".join(text_parts)}}
+
     def resolve_authorization(
         self,
         request_id: str,
@@ -1074,6 +1102,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"tool_logs": self.sidecar.list_tool_logs(limit=limit)}
         if len(path_parts) == 2 and path_parts[0] == "tool-logs":
             return {"tool_log": self.sidecar.get_tool_log(path_parts[1])}
+        if path_parts == ["thinking-log"]:
+            return self.sidecar.get_thinking_log((query.get("path") or [""])[0])
         if path_parts == ["team", "active"]:
             session_id = (query.get("session_id") or [None])[0]
             return {"members": self.sidecar.active_team_members(session_id)}

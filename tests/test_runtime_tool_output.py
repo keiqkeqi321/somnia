@@ -39,6 +39,7 @@ from open_somnia.runtime.messages import (
     prepare_image_bytes_for_model,
 )
 from open_somnia.runtime.session import AgentSession
+from open_somnia.runtime.thinking import THINKING_LOG_MAX_CHARS, ThinkingLogWriter
 from open_somnia.tools.filesystem import read_image
 
 
@@ -79,6 +80,29 @@ class RuntimeToolOutputTests(unittest.TestCase):
             output_preview=output_preview or content[:220],
             has_error=has_error,
         )
+
+    def test_thinking_log_writer_flushes_merged_capped_record(self) -> None:
+        root = self._stable_test_dir("thinking-log-writer")
+        writer = ThinkingLogWriter(root, "session", "turn")
+
+        writer.append_delta("one ")
+        writer.append_delta("two ")
+        writer.append_delta("three")
+        marker = writer.marker()
+
+        lines = writer.path.read_text(encoding="utf-8").splitlines()
+        payload = json.loads(lines[0])
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(payload["thinking"], "one two three")
+        self.assertEqual(marker["characters"], len("one two three"))
+        self.assertEqual(marker["block_count"], 3)
+
+        capped = ThinkingLogWriter(root, "session", "capped")
+        capped.append_delta("x" * (THINKING_LOG_MAX_CHARS + 25))
+        capped.marker()
+        capped_payload = json.loads(capped.path.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(len(capped_payload["thinking"]), THINKING_LOG_MAX_CHARS)
+        self.assertEqual(capped_payload["truncated_characters"], 25)
 
     def test_provider_profile_materializes_configured_vision_model(self) -> None:
         profile = _build_provider_profile(
@@ -2121,7 +2145,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
         runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
         runtime._run_automatic_context_janitor = OpenAgentRuntime._run_automatic_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
 
         def _analyze(**kwargs):
             visible_messages = kwargs["messages"]
@@ -3950,7 +3975,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(len([item for item in message["content"] if item["type"] == "tool_call"]), 1)
         self.assertEqual(message["content"][2]["id"], "call-1")
 
-    def test_anthropic_provider_roundtrip_preserves_thinking_blocks_in_messages(self) -> None:
+    def test_anthropic_provider_keeps_thinking_in_turn_but_strips_provider_payload_history(self) -> None:
         provider = AnthropicProvider(
             ProviderSettings(
                 name="anthropic",
@@ -3976,16 +4001,85 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        turn = provider.complete("system", [{"role": "user", "content": "inspect"}], [], max_tokens=4096)
+        thinking_events: list[dict] = []
+        turn = provider.complete(
+            "system",
+            [{"role": "user", "content": "inspect"}],
+            [],
+            max_tokens=4096,
+            thinking_callback=thinking_events.append,
+        )
         payload = provider.debug_request_payload("system", [turn.as_message()], [], 4096, stream=False)
 
         assistant_content = payload["messages"][0]["content"]
 
-        self.assertEqual(assistant_content[0]["type"], "thinking")
-        self.assertEqual(assistant_content[0]["signature"], "sig-1")
-        self.assertEqual(assistant_content[1], {"type": "text", "text": "I need a tool."})
-        self.assertEqual(assistant_content[2]["type"], "tool_use")
-        self.assertEqual(assistant_content[2]["name"], "bash")
+        self.assertEqual(turn.content_blocks[0]["type"], "thinking")
+        self.assertEqual(thinking_events[0]["thinking"], "private reasoning")
+        self.assertEqual(assistant_content[0], {"type": "text", "text": "I need a tool."})
+        self.assertEqual(assistant_content[1]["type"], "tool_use")
+        self.assertEqual(assistant_content[1]["name"], "bash")
+
+    def test_anthropic_provider_streams_thinking_delta_without_replaying_final_block(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://example.com/anthropic",
+                timeout_seconds=30,
+                reasoning_level="medium",
+            )
+        )
+
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="thinking_delta", thinking="private "),
+                )
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="thinking_delta", thinking="reasoning"),
+                )
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="Visible answer."),
+                )
+
+            def get_final_message(self):
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(type="thinking", thinking="private reasoning", signature="sig-1"),
+                        SimpleNamespace(type="text", text="Visible answer."),
+                    ],
+                    stop_reason="end_turn",
+                    usage=None,
+                )
+
+        provider.client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kwargs: FakeStream()))
+
+        text_chunks: list[str] = []
+        thinking_events: list[dict] = []
+        turn = provider.complete(
+            "system",
+            [{"role": "user", "content": "inspect"}],
+            [],
+            max_tokens=4096,
+            text_callback=text_chunks.append,
+            thinking_callback=thinking_events.append,
+        )
+
+        self.assertEqual(text_chunks, ["Visible answer."])
+        self.assertEqual([event["delta"] for event in thinking_events], ["private ", "reasoning"])
+        self.assertEqual(turn.content_blocks[0]["thinking"], "private reasoning")
+        self.assertEqual(turn.text_blocks, ["Visible answer."])
 
     def test_anthropic_provider_wraps_transient_exception_as_retryable_provider_error(self) -> None:
         provider = AnthropicProvider(
@@ -4136,7 +4230,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
@@ -4179,7 +4274,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
@@ -4246,7 +4342,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-history") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda: "system"
         runtime._capture_turn_file_changes = lambda session: None
@@ -4320,7 +4417,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: "log-1"
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
@@ -4375,7 +4473,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        transcript_root = self._stable_test_dir("visible-progress-history") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: "log-1"
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
@@ -4934,6 +5033,121 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("You have been exploring for 10 consecutive", json.dumps(payloads[1], ensure_ascii=False))
         self.assertNotIn("You have been exploring", json.dumps(payloads[0], ensure_ascii=False))
         self.assertNotIn("You have been exploring", json.dumps(runtime.registry.__dict__, ensure_ascii=False))
+
+    def test_agent_loop_injects_transient_visible_progress_reminder_after_three_silent_rounds(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                return "tool output"
+
+        payloads: list[list[dict]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-1", "bash", {"command": "pwd"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "checking workspace"},
+                        {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-2", "bash", {"command": "git status"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "checking status"},
+                        {"type": "tool_call", "id": "call-2", "name": "bash", "input": {"command": "git status"}},
+                    ],
+                ),
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-3", "bash", {"command": "ls"})],
+                    content_blocks=[
+                        {"type": "thinking", "thinking": "listing files"},
+                        {"type": "tool_call", "id": "call-3", "name": "bash", "input": {"command": "ls"}},
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Known: checked workspace. Hypothesis: continue narrowly."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        reminder = "Stop exploratory looping"
+
+        self.assertIn("Known: checked workspace", result)
+        self.assertEqual([json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads], [0, 0, 0, 1])
+        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
+
+    def test_agent_loop_visible_progress_reminder_counts_prior_continue_history(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_root = self._stable_test_dir("visible-progress-history") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime.registry = SimpleNamespace(schemas=lambda: [], execute=lambda ctx, name, payload: "tool output")
+
+        payloads: list[list[dict]] = []
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["Working summary."])
+
+        runtime.complete = fake_complete
+        session = AgentSession(
+            id="session-1",
+            messages=[
+                {"role": "user", "content": "inspect"},
+                {"role": "assistant", "content": [{"type": "thinking_log", "path": "a.jsonl"}]},
+                {"role": "user", "content": "\u7ee7\u7eed"},
+                {"role": "assistant", "content": [{"type": "thinking_log", "path": "b.jsonl"}]},
+                {"role": "assistant", "content": [{"type": "thinking_log", "path": "c.jsonl"}]},
+            ],
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "\u7ee7\u7eed")
+        reminder = "Stop exploratory looping"
+
+        self.assertEqual(result, "Working summary.")
+        self.assertEqual(json.dumps(payloads[0], ensure_ascii=False).count(reminder), 1)
+        self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
     def test_agent_loop_continues_exploration_after_hard_streak_checkpoint(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

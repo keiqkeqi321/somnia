@@ -392,6 +392,7 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict[str, Any]],
         max_tokens: int,
         text_callback: TextCallback | None = None,
+        thinking_callback=None,
         stop_checker: StopChecker | None = None,
     ) -> AssistantTurn:
         url = f"{self.settings.base_url.rstrip('/')}/chat/completions"

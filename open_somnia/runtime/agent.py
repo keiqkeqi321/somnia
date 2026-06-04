@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import inspect
 import json
 import os
 import re
@@ -73,6 +74,7 @@ from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
 from open_somnia.runtime.teammate import TeammateRuntimeManager
+from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, strip_thinking_blocks_from_message
 from open_somnia.runtime.tool_events import ToolEventRenderer
 from open_somnia.skills.loader import SkillLoader
 from open_somnia.storage.inbox import InboxStore
@@ -175,6 +177,19 @@ class OpenAgentRuntime:
     TODO_RECONCILE_REMINDER_TEXT = (
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
+    )
+    NO_VISIBLE_PROGRESS_LIMIT = 3
+    VISIBLE_PROGRESS_REMINDER_TEXT = (
+        "<reminder>\n"
+        "Stop exploratory looping. First produce a concise visible working summary from the recent tool results and conversation. "
+        "Do not reveal hidden reasoning.\n\n"
+        "Your summary must state:\n"
+        "1. What is already known\n"
+        "2. What has been ruled out\n"
+        "3. The current best hypothesis\n"
+        "4. What exact evidence is still missing, or the final answer if enough evidence exists\n\n"
+        "After this summary, use at most one targeted tool call unless the user asks for broader investigation.\n"
+        "</reminder>"
     )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
@@ -929,6 +944,90 @@ class OpenAgentRuntime:
 
     def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
         return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
+
+    def _assistant_message_has_visible_text(self, message: dict[str, Any]) -> bool:
+        content = message.get("content")
+        if isinstance(content, str):
+            return bool(content.strip())
+        if not isinstance(content, list):
+            return False
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, dict):
+                if str(item.get("type", "")).strip() == "text" and str(item.get("text", "")).strip():
+                    return True
+        return False
+
+    def _assistant_message_has_tool_call(self, message: dict[str, Any], tool_name: str) -> bool:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        target = str(tool_name or "").strip()
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type", "")).strip() == "tool_call" and str(item.get("name", "")).strip() == target:
+                return True
+        return False
+
+    def _assistant_message_has_thinking_log(self, message: dict[str, Any]) -> bool:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        for item in content:
+            if isinstance(item, dict) and str(item.get("type", "")).strip() == "thinking_log":
+                return True
+        return False
+
+    def _is_continue_only_user_message(self, message: dict[str, Any]) -> bool:
+        if message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip().lower()
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    item_type = str(item.get("type", "")).strip()
+                    if item_type == "text":
+                        parts.append(str(item.get("text", "")))
+                    elif item_type != "tool_result":
+                        return False
+            text = " ".join(parts).strip().lower()
+        else:
+            return False
+        normalized = re.sub(r"\s+", " ", text)
+        return normalized in {"继续", "继续。", "go on", "continue", "continue.", "keep going", "resume"}
+
+    def _is_tool_result_user_message(self, message: dict[str, Any]) -> bool:
+        if message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(isinstance(item, dict) and str(item.get("type", "")).strip() == "tool_result" for item in content)
+
+    def _initial_no_visible_progress_count(self, session: AgentSession) -> int:
+        count = 0
+        for message in reversed(getattr(session, "messages", []) or []):
+            role = message.get("role") if isinstance(message, dict) else None
+            if role == "assistant":
+                if self._assistant_message_has_visible_text(message) or self._assistant_message_has_tool_call(message, "TodoWrite"):
+                    break
+                if self._assistant_message_has_thinking_log(message):
+                    count += 1
+                continue
+            if role == "user" and self._is_tool_result_user_message(message):
+                continue
+            if role == "user" and self._is_continue_only_user_message(message):
+                continue
+            if role == "user":
+                break
+        return count
 
     def _dump_provider_payload_if_enabled(
         self,
@@ -2430,25 +2529,39 @@ class OpenAgentRuntime:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         text_callback=None,
+        thinking_callback=None,
         should_interrupt=None,
     ):
         last_error: Exception | None = None
         attempts = 0
         provider = self._provider_for_messages(messages) or self.provider
         provider_settings = getattr(provider, "settings", self.settings.provider)
+        provider_complete = getattr(provider, "complete")
+        try:
+            provider_parameters = inspect.signature(provider_complete).parameters
+        except (TypeError, ValueError):
+            provider_parameters = {}
+        provider_accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in provider_parameters.values()
+        )
+        include_thinking_callback = "thinking_callback" in provider_parameters or provider_accepts_kwargs
         for attempt in range(1, 4):
             attempts = attempt
             self._raise_if_interrupted(should_interrupt)
             try:
                 if should_interrupt is None:
-                    return provider.complete(
-                        system_prompt=system_prompt,
-                        messages=messages,
-                        tools=tools,
-                        max_tokens=provider_settings.max_tokens,
-                        text_callback=text_callback,
-                        stop_checker=None,
-                    )
+                    kwargs = {
+                        "system_prompt": system_prompt,
+                        "messages": messages,
+                        "tools": tools,
+                        "max_tokens": provider_settings.max_tokens,
+                        "text_callback": text_callback,
+                        "stop_checker": None,
+                    }
+                    if include_thinking_callback:
+                        kwargs["thinking_callback"] = thinking_callback
+                    return provider_complete(**kwargs)
                 return self._complete_with_interrupt_polling(
                     system_prompt=system_prompt,
                     messages=messages,
@@ -2456,6 +2569,7 @@ class OpenAgentRuntime:
                     provider=provider,
                     max_tokens=provider_settings.max_tokens,
                     text_callback=text_callback,
+                    thinking_callback=thinking_callback,
                     should_interrupt=should_interrupt,
                 )
             except TurnInterrupted:
@@ -2496,6 +2610,7 @@ class OpenAgentRuntime:
         provider: LLMProvider | None = None,
         max_tokens: int | None = None,
         text_callback=None,
+        thinking_callback=None,
         should_interrupt=None,
     ):
         provider = provider or self.provider
@@ -2522,14 +2637,26 @@ class OpenAgentRuntime:
 
         def run_provider() -> None:
             try:
-                turn = provider.complete(
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                    text_callback=interruptible_callback if (text_callback is not None or should_interrupt is not None) else text_callback,
-                    stop_checker=provider_stop_checker,
+                provider_complete = getattr(provider, "complete")
+                try:
+                    provider_parameters = inspect.signature(provider_complete).parameters
+                except (TypeError, ValueError):
+                    provider_parameters = {}
+                provider_accepts_kwargs = any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in provider_parameters.values()
                 )
+                kwargs = {
+                    "system_prompt": system_prompt,
+                    "messages": messages,
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                    "text_callback": interruptible_callback if (text_callback is not None or should_interrupt is not None) else text_callback,
+                    "stop_checker": provider_stop_checker,
+                }
+                if "thinking_callback" in provider_parameters or provider_accepts_kwargs:
+                    kwargs["thinking_callback"] = thinking_callback
+                turn = provider_complete(**kwargs)
                 result_queue.put(("result", turn))
             except BaseException as exc:  # pragma: no cover - exercised via caller assertions
                 result_queue.put(("error", exc))
@@ -2844,11 +2971,41 @@ class OpenAgentRuntime:
             consume_ephemeral_image_blocks([transcript_entry])
         self.transcript_store.append(session_id, transcript_entry)
 
+    def _attach_thinking_log_marker(
+        self,
+        assistant_message: dict[str, Any],
+        *,
+        thinking_log: ThinkingLogWriter | None,
+        thinking_callback=None,
+    ) -> dict[str, Any]:
+        thinking_blocks = extract_thinking_blocks(assistant_message)
+        if thinking_blocks and thinking_log is not None and not thinking_log.has_content:
+            for block in thinking_blocks:
+                thinking_log.append_block(block)
+        message = strip_thinking_blocks_from_message(assistant_message)
+        if thinking_log is None or not thinking_log.has_content:
+            return message
+        marker = thinking_log.marker()
+        content = message.get("content")
+        if isinstance(content, list):
+            message["content"] = [marker, *content]
+        elif isinstance(content, str):
+            blocks: list[dict[str, Any]] = [marker]
+            if content:
+                blocks.append({"type": "text", "text": content})
+            message["content"] = blocks
+        else:
+            message["content"] = [marker]
+        if callable(thinking_callback):
+            thinking_callback({"event": "finished", **marker})
+        return message
+
     def run_turn(
         self,
         session: AgentSession,
         user_input: str | dict[str, Any],
         text_callback=None,
+        thinking_callback=None,
         should_interrupt=None,
         take_next_loop_user_message=None,
         prepare_next_loop_user_message=None,
@@ -2866,6 +3023,7 @@ class OpenAgentRuntime:
         return self._agent_loop(
             session,
             text_callback=text_callback,
+            thinking_callback=thinking_callback,
             should_interrupt=should_interrupt,
             task_anchor_message=task_anchor_message,
             take_next_loop_user_message=take_next_loop_user_message,
@@ -2876,6 +3034,7 @@ class OpenAgentRuntime:
         self,
         session: AgentSession,
         text_callback=None,
+        thinking_callback=None,
         should_interrupt=None,
         task_anchor_message=None,
         take_next_loop_user_message=None,
@@ -2887,6 +3046,7 @@ class OpenAgentRuntime:
         exploration_streak = 0
         exploration_total = 0
         pending_exploration_summary_reminder = False
+        no_visible_progress_count = self._initial_no_visible_progress_count(session)
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -2947,6 +3107,12 @@ class OpenAgentRuntime:
                         )
                     )
                     pending_exploration_summary_reminder = False
+                no_visible_progress_count = max(
+                    no_visible_progress_count,
+                    self._initial_no_visible_progress_count(session),
+                )
+                if no_visible_progress_count >= self.NO_VISIBLE_PROGRESS_LIMIT:
+                    transient_payload_messages.append(make_user_text_message(self.VISIBLE_PROGRESS_REMINDER_TEXT))
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -2957,13 +3123,18 @@ class OpenAgentRuntime:
                 if transient_payload_messages:
                     payload_source_messages = [*session.messages, *transient_payload_messages]
                     payload_session = None
-                payload_messages = self._messages_for_model(
-                    payload_source_messages,
-                    session=payload_session,
-                    read_file_overlap_state=self._session_read_file_overlap_state(session),
-                    system_prompt=system_prompt,
-                    tools=tool_schemas,
-                )
+                    payload_messages = build_payload_messages(
+                        payload_source_messages,
+                        read_file_overlap_state=self._session_read_file_overlap_state(session),
+                    )
+                else:
+                    payload_messages = self._messages_for_model(
+                        payload_source_messages,
+                        session=payload_session,
+                        read_file_overlap_state=self._session_read_file_overlap_state(session),
+                        system_prompt=system_prompt,
+                        tools=tool_schemas,
+                    )
                 request_provider = self._provider_for_messages(payload_messages)
                 self._consume_ephemeral_image_history(session.messages, session_id=session.id)
                 dump_path = self._dump_provider_payload_if_enabled(
@@ -2977,14 +3148,74 @@ class OpenAgentRuntime:
                     stream=text_callback is not None or should_interrupt is not None,
                     kind="turn",
                 )
+                session.latest_turn_id = uuid.uuid4().hex[:8]
+                provider_turn_id = str(session.latest_turn_id)
+                transcript_root = getattr(getattr(self, "transcript_store", None), "root", None)
+                thinking_log = (
+                    ThinkingLogWriter(Path(transcript_root), session.id, provider_turn_id)
+                    if transcript_root is not None
+                    else None
+                )
+
+                def record_thinking(block: dict[str, Any]) -> None:
+                    event_type = str(block.get("event", "") or "").strip()
+                    if event_type == "delta":
+                        delta = str(block.get("delta", "") or "")
+                        if thinking_log is not None:
+                            thinking_log.append_delta(delta)
+                        if callable(thinking_callback):
+                            thinking_callback(
+                                {
+                                    "event": "delta",
+                                    "session_id": session.id,
+                                    "turn_id": provider_turn_id,
+                                    "delta": delta,
+                                    "block": dict(block),
+                                    "path": str(thinking_log.path) if thinking_log is not None else "",
+                                    "characters": thinking_log.characters if thinking_log is not None else len(delta),
+                                    "block_count": thinking_log.block_count if thinking_log is not None else 0,
+                                }
+                            )
+                        return
+                    if thinking_log is not None:
+                        thinking_log.append_block(block)
+                    delta = str(block.get("thinking", "") or block.get("data", "") or "")
+                    if callable(thinking_callback):
+                        thinking_callback(
+                            {
+                                "event": "delta",
+                                "session_id": session.id,
+                                "turn_id": provider_turn_id,
+                                "delta": delta,
+                                "block": dict(block),
+                                "path": str(thinking_log.path) if thinking_log is not None else "",
+                                "characters": thinking_log.characters if thinking_log is not None else len(delta),
+                                "block_count": thinking_log.block_count if thinking_log is not None else 0,
+                            }
+                        )
+
                 started_at = time.monotonic()
                 try:
-                    turn = self.complete(
+                    complete = getattr(self, "complete")
+                    try:
+                        complete_parameters = inspect.signature(complete).parameters
+                    except (TypeError, ValueError):
+                        complete_parameters = {}
+                    complete_accepts_kwargs = any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in complete_parameters.values()
+                    )
+                    complete_kwargs = {
+                        "text_callback": completion_text_callback,
+                        "should_interrupt": should_interrupt,
+                    }
+                    if "thinking_callback" in complete_parameters or complete_accepts_kwargs:
+                        complete_kwargs["thinking_callback"] = record_thinking
+                    turn = complete(
                         system_prompt,
                         payload_messages,
                         tool_schemas,
-                        text_callback=completion_text_callback,
-                        should_interrupt=should_interrupt,
+                        **complete_kwargs,
                     )
                 except Exception as exc:
                     self._record_provider_payload_result(
@@ -3014,12 +3245,20 @@ class OpenAgentRuntime:
                         text_callback(unstreamed_tool_text)
                 if callable(stream_flush_callback):
                     stream_flush_callback()
-                session.latest_turn_id = uuid.uuid4().hex[:8]
                 if not turn.has_tool_calls():
                     assistant_message = turn.as_message()
+                    assistant_message = self._attach_thinking_log_marker(
+                        assistant_message,
+                        thinking_log=thinking_log,
+                        thinking_callback=thinking_callback,
+                    )
                     session.messages.append(assistant_message)
                     self._append_transcript_entry(session.id, assistant_message)
                     final_text = "\n\n".join(turn.text_blocks).strip()
+                    if final_text:
+                        no_visible_progress_count = 0
+                    else:
+                        no_visible_progress_count += 1
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
                     self._hook_manager().on_assistant_response(
@@ -3165,9 +3404,18 @@ class OpenAgentRuntime:
                         break
 
                 assistant_message = turn.as_message(executed_tool_calls)
+                assistant_message = self._attach_thinking_log_marker(
+                    assistant_message,
+                    thinking_log=thinking_log,
+                    thinking_callback=thinking_callback,
+                )
                 session.messages.append(assistant_message)
                 self._append_transcript_entry(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
+                if used_todo or self._assistant_message_has_visible_text(assistant_message):
+                    no_visible_progress_count = 0
+                elif self._assistant_message_has_thinking_log(assistant_message):
+                    no_visible_progress_count += 1
                 tool_result_message = make_tool_result_message(tool_results)
                 session.messages.append(tool_result_message)
                 if used_read_file:

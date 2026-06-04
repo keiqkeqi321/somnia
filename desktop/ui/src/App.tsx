@@ -43,6 +43,7 @@ import type {
   ConversationContentBlock,
   ConversationPendingTurn,
   ConversationRuntimeItem,
+  ConversationThinkingLog,
   ConversationToolCall,
   InteractionRequestState,
   ManagedSidecarConnection,
@@ -1057,6 +1058,48 @@ function App() {
     });
   }
 
+  function upsertRuntimeThinkingLog(
+    projectPath: string | null | undefined,
+    sessionId: string | null | undefined,
+    turnId: string | null | undefined,
+    payload: Record<string, unknown>,
+    status: "running" | "finished",
+  ) {
+    const key = conversationStateKey(projectPath, sessionId);
+    if (!key) {
+      return;
+    }
+    const itemId = `thinking-${String(turnId ?? payload.turn_id ?? "turn")}`;
+    const delta = typeof payload.delta === "string" ? payload.delta : "";
+    setRuntimeConversationItems((previous) => {
+      const current = previous[key] ?? [];
+      const matchIndex = current.findIndex((item) => item.type === "thinking_log" && item.id === itemId);
+      const previousLog = matchIndex >= 0 && current[matchIndex].type === "thinking_log" ? current[matchIndex].thinkingLog : null;
+      const characters = Number(payload.characters ?? previousLog?.characters ?? 0);
+      const blockCount = Number(payload.block_count ?? previousLog?.blockCount ?? 0);
+      const durationMs = Number(payload.duration_ms ?? previousLog?.durationMs ?? 0);
+      const thinkingLog: ConversationThinkingLog = {
+        turnId: typeof payload.turn_id === "string" ? payload.turn_id : turnId ?? previousLog?.turnId ?? null,
+        path: typeof payload.path === "string" ? payload.path : previousLog?.path ?? null,
+        text: status === "running" ? `${previousLog?.text ?? ""}${delta}` : previousLog?.text ?? "",
+        characters: Number.isFinite(characters) ? Math.max(0, characters) : previousLog?.characters ?? 0,
+        blockCount: Number.isFinite(blockCount) ? Math.max(0, blockCount) : previousLog?.blockCount ?? 0,
+        durationMs: Number.isFinite(durationMs) ? Math.max(0, durationMs) : previousLog?.durationMs ?? null,
+        status,
+      };
+      const item: ConversationRuntimeItem = {
+        id: itemId,
+        type: "thinking_log",
+        thinkingLog,
+        isStreaming: status === "running",
+      };
+      if (matchIndex < 0) {
+        return { ...previous, [key]: [...current, item] };
+      }
+      return { ...previous, [key]: current.map((existing, index) => (index === matchIndex ? item : existing)) };
+    });
+  }
+
   function appendRuntimeUserMessage(
     projectPath: string | null | undefined,
     sessionId: string | null | undefined,
@@ -1416,6 +1459,14 @@ function App() {
       if (delta) {
         appendAssistantRuntimeDelta(projectPath, event.session_id, event.turn_id, delta);
       }
+      return;
+    }
+    if (event.type === "thinking_delta") {
+      upsertRuntimeThinkingLog(projectPath, event.session_id, event.turn_id, event.payload, "running");
+      return;
+    }
+    if (event.type === "thinking_finished") {
+      upsertRuntimeThinkingLog(projectPath, event.session_id, event.turn_id, event.payload, "finished");
       return;
     }
     if (event.type === "session_updated") {
@@ -3199,6 +3250,8 @@ function App() {
                     row.parts.map((part) =>
                       part.type === "text" ? (
                         <MarkdownMessage key={part.id} text={part.text} />
+                      ) : part.type === "thinking_log" ? (
+                        <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
                       ) : (
                         <div key={part.id} className="tool-call-stack">
                           <ToolCallWithImages
@@ -3985,6 +4038,107 @@ function PromptQueueCard({
 
 function MarkdownMessage({ text }: { text: string }) {
   return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
+}
+
+function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationThinkingLog; client: SidecarClient | null }) {
+  const bodyRef = useRef<HTMLPreElement | null>(null);
+  const isRunning = thinkingLog.status === "running";
+  const path = thinkingLog.path?.trim() ?? "";
+  const incomingText = thinkingLog.text ?? "";
+  const [expanded, setExpanded] = useState(isRunning);
+  const [loadedText, setLoadedText] = useState(incomingText);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const text = loadedText.trim();
+
+  useEffect(() => {
+    setExpanded(isRunning);
+    setLoadedText(incomingText);
+    setLoading(false);
+    setLoadError(null);
+  }, [incomingText, isRunning, path]);
+
+  useEffect(() => {
+    if (!expanded || isRunning || text || !path || !client) {
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    client
+      .getThinkingLog(path)
+      .then((detail) => {
+        if (cancelled) {
+          return;
+        }
+        setLoadedText(detail.text ?? "");
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        setLoadError(formatErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, expanded, isRunning, path, text]);
+
+  useEffect(() => {
+    if (!expanded || !bodyRef.current) {
+      return;
+    }
+    bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [expanded, isRunning, text]);
+
+  return (
+    <details
+      className={`thinking-log-card ${isRunning ? "running" : "finished"}`}
+      open={expanded}
+      onToggle={(event) => {
+        const nextOpen = event.currentTarget.open;
+        setExpanded(isRunning ? true : nextOpen);
+      }}
+    >
+      <summary>
+        <span className="thinking-log-summary-main">
+          <span className={`tool-result-dot ${isRunning ? "running" : "success"}`} aria-hidden="true" />
+          <span>Thinking</span>
+        </span>
+        <span className="thinking-log-summary-meta">
+          {typeof thinkingLog.characters === "number" ? <em>{formatCharacterCount(thinkingLog.characters)}</em> : null}
+          {path ? <em>{compactInlineText(path, 54)}</em> : null}
+        </span>
+      </summary>
+      {text ? (
+        <pre ref={bodyRef} className="thinking-log-body">
+          {loadedText}
+        </pre>
+      ) : loading ? (
+        <div className="thinking-log-detail">
+          <span>Loading thinking log...</span>
+        </div>
+      ) : loadError ? (
+        <div className="thinking-log-detail error">
+          <span>{loadError}</span>
+        </div>
+      ) : (
+        <div className="thinking-log-detail">
+          <span>{path || "Thinking log is available after the turn finishes."}</span>
+        </div>
+      )}
+      {path ? (
+        <div className="thinking-log-detail">
+          <span>{path}</span>
+        </div>
+      ) : null}
+    </details>
+  );
 }
 
 function MermaidDiagram({ source }: { source: string }) {
@@ -5741,6 +5895,17 @@ function formatTokenCount(tokenCount: number | null | undefined): string {
     return `${(value / 1_000).toFixed(1)}k`;
   }
   return String(Math.round(value));
+}
+
+function formatCharacterCount(characterCount: number | null | undefined): string {
+  const value = Math.max(0, Number(characterCount) || 0);
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M chars`;
+  }
+  if (value >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}k chars`;
+  }
+  return `${Math.round(value)} chars`;
 }
 
 function truncateTopic(value: string, maxLength = 15): string {

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
+import inspect
 import json
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -18,6 +19,8 @@ from open_somnia.app_service.events import (
     LOOP_USER_MESSAGE_INJECTED,
     SESSION_UPDATED,
     SUBAGENT_ACTIVITY,
+    THINKING_DELTA,
+    THINKING_FINISHED,
     TODO_UPDATED,
     TOOL_FINISHED,
     TOOL_STARTED,
@@ -398,14 +401,32 @@ class RuntimeHost:
                     self._patched_tool_logging(active_turn),
                     self._patched_subagent_activity(active_turn),
                 ):
-                    response = active_turn.runtime.run_turn(
-                        active_turn.session,
-                        active_turn.user_input,
-                        text_callback=lambda text: self._emit_for_turn(active_turn, ASSISTANT_DELTA, delta=text),
-                        should_interrupt=active_turn.interrupt_event.is_set,
-                        take_next_loop_user_message=active_turn.take_next_loop_user_message,
-                        prepare_next_loop_user_message=active_turn.prepare_next_loop_user_message,
+                    run_turn = getattr(active_turn.runtime, "run_turn")
+                    turn_kwargs = {
+                        "text_callback": lambda text: self._emit_for_turn(active_turn, ASSISTANT_DELTA, delta=text),
+                        "thinking_callback": lambda payload: self._emit_for_turn(
+                            active_turn,
+                            THINKING_FINISHED if str(payload.get("event", "")).strip() == "finished" else THINKING_DELTA,
+                            **_clone_value(payload),
+                        ),
+                        "should_interrupt": active_turn.interrupt_event.is_set,
+                        "take_next_loop_user_message": active_turn.take_next_loop_user_message,
+                        "prepare_next_loop_user_message": active_turn.prepare_next_loop_user_message,
+                    }
+                    try:
+                        run_turn_parameters = inspect.signature(run_turn).parameters
+                    except (TypeError, ValueError):
+                        run_turn_parameters = {}
+                    accepts_var_kwargs = any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in run_turn_parameters.values()
                     )
+                    turn_kwargs = {
+                        key: value
+                        for key, value in turn_kwargs.items()
+                        if key in run_turn_parameters or accepts_var_kwargs
+                    }
+                    response = run_turn(active_turn.session, active_turn.user_input, **turn_kwargs)
             turn_result = TurnRunResult(
                 session=active_turn.session,
                 text=str(response),

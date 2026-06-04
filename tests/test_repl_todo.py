@@ -339,6 +339,21 @@ class ReplTodoTests(unittest.TestCase):
         self.assertLess(rendered.rindex(PROMPT_BORDER), rendered.index("❯ "))
         self.assertNotIn("model: unknown", rendered)
 
+    def test_thinking_preview_wraps_word_deltas_into_lines(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner.THINKING_PREVIEW_LINES = 5
+
+        for delta in ["I ", "am ", "checking ", "the ", "current ", "implementation ", "before ", "editing."]:
+            runner._note_thinking_event({"event": "delta", "delta": delta, "path": "thinking/session.turn.jsonl"})
+
+        lines = [line for _, line in runner._thinking_lines()]
+
+        self.assertEqual(lines[0], "● think。。。。。。")
+        self.assertTrue(any("I am checking the current implementation before editing." in line for line in lines))
+        self.assertFalse(any(line == "↳ I" for line in lines))
+        self.assertLessEqual(len([line for line in lines if line.startswith("↳ ")]), 5)
+        self.assertEqual(lines[-1], "")
+
     def test_prompt_message_keeps_status_bar_and_todos_in_one_persistent_panel(self) -> None:
         runtime = SimpleNamespace(
             settings=SimpleNamespace(

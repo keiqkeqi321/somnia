@@ -7,6 +7,8 @@ from typing import Any
 
 TURN_STARTED = "turn_started"
 ASSISTANT_DELTA = "assistant_delta"
+THINKING_DELTA = "thinking_delta"
+THINKING_FINISHED = "thinking_finished"
 ASSISTANT_COMPLETED = "assistant_completed"
 TOOL_STARTED = "tool_started"
 TOOL_FINISHED = "tool_finished"
@@ -24,6 +26,8 @@ EVENT_TYPES = frozenset(
     {
         TURN_STARTED,
         ASSISTANT_DELTA,
+        THINKING_DELTA,
+        THINKING_FINISHED,
         ASSISTANT_COMPLETED,
         TOOL_STARTED,
         TOOL_FINISHED,

@@ -6,6 +6,7 @@ import type {
   ConversationRow,
   ConversationRowPart,
   ConversationRuntimeItem,
+  ConversationThinkingLog,
   ConversationToolCall,
   SessionMessage,
 } from "../types";
@@ -45,7 +46,7 @@ export function extractTextContent(content: unknown): string {
       parts.push(item.text);
       continue;
     }
-    if (item.type === "tool_call" || item.type === "tool_result") {
+    if (item.type === "tool_call" || item.type === "tool_result" || item.type === "thinking_log") {
       continue;
     }
     if (typeof item.content === "string") {
@@ -211,6 +212,16 @@ function appendRuntimeItems(rows: ConversationRow[], runtimeItems: ConversationR
       });
       continue;
     }
+    if (item.type === "thinking_log") {
+      appendAssistantRow(rows, {
+        id: item.id,
+        role: "assistant",
+        text: "",
+        parts: [{ id: `${item.id}-thinking`, type: "thinking_log", thinkingLog: item.thinkingLog }],
+        isStreaming: item.isStreaming ?? (item.thinkingLog.status === "running"),
+      });
+      continue;
+    }
     appendAssistantRow(rows, {
       id: item.id,
       role: "assistant",
@@ -290,6 +301,10 @@ function buildAssistantParts(rowId: string, assistantContent: unknown, nextUserC
     if (!isRecord(item)) {
       continue;
     }
+    if (item.type === "thinking_log") {
+      parts.push({ id: `${rowId}-thinking`, type: "thinking_log", thinkingLog: thinkingLogFromRecord(item) });
+      continue;
+    }
     const text = assistantPartText(item).trim();
     if (text) {
       textCount += 1;
@@ -315,6 +330,21 @@ function buildAssistantParts(rowId: string, assistantContent: unknown, nextUserC
     parts.push({ id: `${rowId}-${toolCall.id || `tool-${toolCount}`}`, type: "tool_call", toolCall });
   }
   return parts;
+}
+
+function thinkingLogFromRecord(item: Record<string, unknown>): ConversationThinkingLog {
+  const characters = typeof item.characters === "number" ? item.characters : Number(item.characters ?? 0);
+  const blockCount = typeof item.block_count === "number" ? item.block_count : Number(item.block_count ?? 0);
+  const durationMs = typeof item.duration_ms === "number" ? item.duration_ms : Number(item.duration_ms ?? 0);
+  return {
+    turnId: typeof item.turn_id === "string" ? item.turn_id : null,
+    path: typeof item.path === "string" ? item.path : null,
+    text: typeof item.text === "string" ? item.text : "",
+    characters: Number.isFinite(characters) ? Math.max(0, characters) : 0,
+    blockCount: Number.isFinite(blockCount) ? Math.max(0, blockCount) : 0,
+    durationMs: Number.isFinite(durationMs) ? Math.max(0, durationMs) : null,
+    status: item.status === "running" ? "running" : "finished",
+  };
 }
 
 function assistantPartText(item: Record<string, unknown>): string {
