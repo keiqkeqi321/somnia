@@ -4683,6 +4683,63 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertLess(order.index(("thinking", "27")), order.index(("tool", "bash")))
         self.assertLess(order.index(("thinking", "27")), order.index(("print_tool", "bash")))
 
+    def test_agent_loop_emits_thinking_finished_before_streamed_text(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_root = self._stable_test_dir("thinking-before-text") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        order: list[tuple[str, str]] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+        class _Streamer:
+            def __call__(self, text: str):
+                order.append(("text", text))
+
+            def finish(self):
+                order.append(("flush", ""))
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, thinking_callback=None, should_interrupt=None):
+            if thinking_callback is not None:
+                thinking_callback({"event": "delta", "delta": "checking final answer"})
+            if text_callback is not None:
+                text_callback("Final answer.")
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["Final answer."])
+
+        def thinking_callback(payload: dict[str, object]) -> None:
+            event = str(payload.get("event", "")).strip()
+            if event == "finished":
+                order.append(("thinking", str(payload.get("characters", ""))))
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(
+            runtime,
+            session,
+            "inspect",
+            text_callback=_Streamer(),
+            thinking_callback=thinking_callback,
+        )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertEqual([item[0] for item in order].count("thinking"), 1)
+        self.assertLess(order.index(("thinking", "21")), order.index(("text", "Final answer.")))
+
     def test_agent_loop_auto_compact_preserves_last_conversation_and_active_task_window(self) -> None:
         captured: dict[str, object] = {}
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

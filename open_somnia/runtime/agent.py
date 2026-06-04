@@ -3086,10 +3086,6 @@ class OpenAgentRuntime:
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 streamed_text_chunks: list[str] = []
                 completion_text_callback = text_callback
-                if text_callback is not None:
-                    def completion_text_callback(text: str) -> None:
-                        streamed_text_chunks.append(str(text))
-                        text_callback(text)
 
                 try:
                     system_prompt = self.build_system_prompt(session=session)
@@ -3157,6 +3153,19 @@ class OpenAgentRuntime:
                     if transcript_root is not None
                     else None
                 )
+                thinking_finished_notified = False
+
+                def notify_thinking_finished_if_needed() -> bool:
+                    nonlocal thinking_finished_notified
+                    if thinking_finished_notified:
+                        return False
+                    if thinking_log is None or not thinking_log.has_content:
+                        return False
+                    if callable(thinking_callback):
+                        thinking_callback({"event": "finished", **thinking_log.marker()})
+                        thinking_finished_notified = True
+                        return True
+                    return False
 
                 def record_thinking(block: dict[str, Any]) -> None:
                     event_type = str(block.get("event", "") or "").strip()
@@ -3196,6 +3205,14 @@ class OpenAgentRuntime:
                         )
 
                 started_at = time.monotonic()
+                if text_callback is not None:
+                    def completion_text_callback(text: str) -> None:
+                        text_value = str(text)
+                        streamed_text_chunks.append(text_value)
+                        if text_value.strip():
+                            notify_thinking_finished_if_needed()
+                        text_callback(text)
+
                 try:
                     complete = getattr(self, "complete")
                     try:
@@ -3243,6 +3260,7 @@ class OpenAgentRuntime:
                 if turn.has_tool_calls() and text_callback is not None and not "".join(streamed_text_chunks).strip():
                     unstreamed_tool_text = "\n\n".join(turn.text_blocks).strip()
                     if unstreamed_tool_text:
+                        notify_thinking_finished_if_needed()
                         text_callback(unstreamed_tool_text)
                 if callable(stream_flush_callback):
                     stream_flush_callback()
@@ -3252,6 +3270,7 @@ class OpenAgentRuntime:
                         assistant_message,
                         thinking_log=thinking_log,
                         thinking_callback=thinking_callback,
+                        notify_finished=not thinking_finished_notified,
                     )
                     session.messages.append(assistant_message)
                     self._append_transcript_entry(session.id, assistant_message)
@@ -3281,12 +3300,13 @@ class OpenAgentRuntime:
                         continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
 
-                pre_tool_thinking_message = self._attach_thinking_log_marker(
-                    turn.as_message([]),
-                    thinking_log=thinking_log,
-                    thinking_callback=thinking_callback,
-                )
-                thinking_finished_notified = self._assistant_message_has_thinking_log(pre_tool_thinking_message)
+                if not thinking_finished_notified:
+                    pre_tool_thinking_message = self._attach_thinking_log_marker(
+                        turn.as_message([]),
+                        thinking_log=thinking_log,
+                        thinking_callback=thinking_callback,
+                    )
+                    thinking_finished_notified = self._assistant_message_has_thinking_log(pre_tool_thinking_message)
 
                 tool_results: list[dict[str, Any]] = []
                 executed_tool_calls = []
