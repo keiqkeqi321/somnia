@@ -328,7 +328,14 @@ class RuntimeHost:
         original_print_tool_event = active_turn.runtime.print_tool_event
         renderer = active_turn.runtime._tool_event_renderer()
 
-        def wrapped_print_tool_event(actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
+        def wrapped_print_tool_event(
+            actor: str,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            output: Any,
+            *,
+            intent: str | None = None,
+        ) -> str:
             category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
             content_blocks = normalize_tool_result_content_blocks(output.get("tool_result_content")) if isinstance(output, dict) else []
             log_entry = active_turn.runtime.tool_log_store.write(
@@ -337,6 +344,7 @@ class RuntimeHost:
                 tool_input=tool_input,
                 output=output,
                 category=category,
+                intent=intent,
             )
             self._emit_for_turn(
                 active_turn,
@@ -348,6 +356,7 @@ class RuntimeHost:
                 content_blocks=_clone_value(content_blocks),
                 log_id=log_entry["id"],
                 category=category,
+                intent=log_entry.get("intent"),
                 rendered_lines=renderer.render_tool_event_lines(
                     tool_name,
                     tool_input,

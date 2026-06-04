@@ -102,6 +102,11 @@ from open_somnia.tools.tool_errors import (
     serialize_tool_output,
     tool_error_from_exception,
 )
+from open_somnia.tools.tool_inputs import (
+    TOOL_INTENT_MAX_CHARS,
+    normalize_tool_input_for_history,
+    strip_reserved_tool_input_for_execution,
+)
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 from open_somnia.reasoning import normalize_reasoning_level
 
@@ -337,8 +342,16 @@ class OpenAgentRuntime:
             self.subagent_runner = runner
         return runner
 
-    def print_tool_event(self, actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
-        return self._tool_event_renderer().print_tool_event(actor, tool_name, tool_input, output)
+    def print_tool_event(
+        self,
+        actor: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        output: Any,
+        *,
+        intent: str | None = None,
+    ) -> str:
+        return self._tool_event_renderer().print_tool_event(actor, tool_name, tool_input, output, intent=intent)
 
     def render_tool_event_lines(
         self,
@@ -698,6 +711,16 @@ class OpenAgentRuntime:
                             "Optional context-governance hint. "
                             "Use 'glance' for disposable checks, 'investigate' for normal exploration, "
                             "or 'foundation' for evidence that should be preserved more strongly."
+                        ),
+                    }
+                if "intent" not in properties:
+                    properties["intent"] = {
+                        "type": "string",
+                        "maxLength": TOOL_INTENT_MAX_CHARS,
+                        "description": (
+                            "Optional brief visible purpose for this tool call. "
+                            "Use a short non-reasoning summary of the hypothesis, fact, or step being checked; "
+                            "the runtime ignores it during actual tool execution."
                         ),
                     }
             augmented.append(clone)
@@ -3217,6 +3240,8 @@ class OpenAgentRuntime:
                         tool_schemas,
                         **complete_kwargs,
                     )
+                    for tool_call in list(getattr(turn, "tool_calls", []) or []):
+                        tool_call.input = normalize_tool_input_for_history(tool_call.input)
                 except Exception as exc:
                     self._record_provider_payload_result(
                         dump_path,
@@ -3292,6 +3317,7 @@ class OpenAgentRuntime:
                 reported_tool_calls = 0
                 for tool_call in turn.tool_calls:
                     self._raise_if_interrupted(should_interrupt)
+                    tool_input_for_execution = strip_reserved_tool_input_for_execution(tool_call.input)
                     ctx = ToolExecutionContext(
                         runtime=self,
                         session=session,
@@ -3300,7 +3326,7 @@ class OpenAgentRuntime:
                         should_interrupt=should_interrupt,
                     )
                     tool_name = str(tool_call.name or "")
-                    is_exploration_tool = self._is_exploration_tool_call(tool_name, tool_call.input)
+                    is_exploration_tool = self._is_exploration_tool_call(tool_name, tool_input_for_execution)
                     output: Any | None = None
                     if reported_tool_calls >= max_tool_calls:
                         output = make_tool_error(
@@ -3344,7 +3370,7 @@ class OpenAgentRuntime:
                         manual_compact = True
                     if output is None:
                         try:
-                            output = self.registry.execute(ctx, tool_name, tool_call.input)
+                            output = self.registry.execute(ctx, tool_name, tool_input_for_execution)
                         except TurnInterrupted:
                             raise
                         except Exception as exc:
@@ -3354,7 +3380,13 @@ class OpenAgentRuntime:
                         pending_tool_repair_hints.append(repair_hint)
                     persisted_output = sanitize_tool_output_for_persistence(output)
                     rendered_output = serialize_tool_output(persisted_output)
-                    log_id = self.print_tool_event("lead", tool_name, tool_call.input, persisted_output)
+                    log_id = self.print_tool_event(
+                        "lead",
+                        tool_name,
+                        tool_input_for_execution,
+                        persisted_output,
+                        intent=tool_call.input.get("intent"),
+                    )
                     executed_tool_calls.append(tool_call)
                     reported_tool_calls += 1
                     result = make_tool_result_item(
@@ -3371,7 +3403,7 @@ class OpenAgentRuntime:
                         {
                             "role": "tool",
                             "name": tool_name,
-                            "input": tool_call.input,
+                            "input": tool_input_for_execution,
                             "output": result["content"],
                         },
                     )

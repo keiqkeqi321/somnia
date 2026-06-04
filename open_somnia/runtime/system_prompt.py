@@ -75,6 +75,8 @@ class SystemPromptBuilder:
             "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
             "- When a tool result matters for later context governance, you may set `importance` on the tool input: "
             "`glance`, `investigate`, or `foundation`.\n"
+            "- When hidden reasoning leads to a tool call, set a brief `intent` on the tool input with the purpose or hypothesis being checked. "
+            "`intent` is visible context, capped short, and ignored by actual tool execution.\n"
             "- Use `edit_file` with `edits=[...]` for every text replacement, including a single replacement.\n"
             "- When editing one file in several nearby places, prefer a single `edit_file` call with multiple `edits` items over many tiny follow-up patches.\n"
             "- After `write_file` or `edit_file`, use the returned updated snippet or active working file cache before rereading the same file.\n"

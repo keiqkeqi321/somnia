@@ -18,7 +18,15 @@ class ToolEventRenderer:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
-    def print_tool_event(self, actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
+    def print_tool_event(
+        self,
+        actor: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        output: Any,
+        *,
+        intent: str | None = None,
+    ) -> str:
         category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
         log_entry = self.runtime.tool_log_store.write(
             actor=actor,
@@ -26,6 +34,7 @@ class ToolEventRenderer:
             tool_input=tool_input,
             output=output,
             category=category,
+            intent=intent,
         )
         if tool_name in self.SILENT_TOOL_NAMES:
             return log_entry["id"]
@@ -478,15 +487,14 @@ class ToolEventRenderer:
         if entry is None:
             return f"Tool log '{log_id}' not found."
         args_text = json.dumps(entry["tool_input"], ensure_ascii=False, indent=2)
-        return "\n".join(
-            [
-                f"[tool log {entry['id']}]",
-                f"Category: {entry['category']}",
-                f"Actor: {entry['actor']}",
-                f"Tool: {self._display_tool_name(entry['tool_name'])}",
-                "Args:",
-                args_text,
-                "Result:",
-                str(entry["output"]),
-            ]
-        )
+        lines = [
+            f"[tool log {entry['id']}]",
+            f"Category: {entry['category']}",
+            f"Actor: {entry['actor']}",
+            f"Tool: {self._display_tool_name(entry['tool_name'])}",
+        ]
+        intent = str(entry.get("intent", "")).strip()
+        if intent:
+            lines.extend(["Intent:", intent])
+        lines.extend(["Args:", args_text, "Result:", str(entry["output"])])
+        return "\n".join(lines)

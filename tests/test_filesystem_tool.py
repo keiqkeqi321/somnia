@@ -36,6 +36,30 @@ class FilesystemToolTests(unittest.TestCase):
         with self.assertRaises(TurnInterrupted):
             registry.execute(SimpleNamespace(runtime=None), "probe", {})
 
+    def test_tool_registry_strips_reserved_input_fields_before_execution(self) -> None:
+        registry = ToolRegistry()
+        observed_payloads: list[dict[str, object]] = []
+        registry.register(
+            ToolDefinition(
+                name="probe",
+                description="Return the payload for testing.",
+                input_schema={"type": "object", "properties": {"value": {"type": "string"}}},
+                handler=lambda ctx, payload: observed_payloads.append(dict(payload)) or "ok",
+            )
+        )
+        original_payload = {
+            "value": "kept",
+            "intent": "explain why this tool is being called",
+            "importance": "foundation",
+        }
+
+        result = registry.execute(SimpleNamespace(runtime=None), "probe", original_payload)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(observed_payloads, [{"value": "kept"}])
+        self.assertNotIn("intent", original_payload)
+        self.assertNotIn("importance", original_payload)
+
     def test_grep_search_raises_turn_interrupted_when_context_requests_stop(self) -> None:
         ctx = SimpleNamespace(
             runtime=SimpleNamespace(

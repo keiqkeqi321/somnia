@@ -40,6 +40,7 @@ from open_somnia.runtime.messages import (
 )
 from open_somnia.runtime.session import AgentSession
 from open_somnia.runtime.thinking import THINKING_LOG_MAX_CHARS, ThinkingLogWriter
+from open_somnia.tools.tool_inputs import TOOL_INTENT_MAX_CHARS
 from open_somnia.tools.filesystem import read_image
 
 
@@ -377,6 +378,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 "category": "TOOL",
                 "actor": "lead",
                 "tool_name": "edit_file",
+                "intent": "update demo content after locating the target",
                 "tool_input": {"path": "demo.txt", "edits": [{"old_text": "a", "new_text": "b"}]},
                 "output": {"status": "ok", "path": "demo.txt"},
             }
@@ -391,6 +393,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("-> Update", recent)
         self.assertNotIn("-> edit_file", recent)
         self.assertIn("Tool: Update", rendered_log)
+        self.assertIn("Intent:", rendered_log)
+        self.assertIn("update demo content after locating the target", rendered_log)
         self.assertNotIn("Tool: edit_file", rendered_log)
 
     def test_bash_tool_event_uses_compact_heading_and_result_preview(self) -> None:
@@ -536,6 +540,37 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("request_mode_switch", prompt)
         self.assertIn("Use subagent for isolated subagent work.", prompt)
         self.assertIn("Do not claim to be Claude", prompt)
+        self.assertIn("set a brief `intent` on the tool input", prompt)
+        self.assertIn("ignored by actual tool execution", prompt)
+
+    def test_tool_schemas_include_brief_intent_field(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+
+        schemas = OpenAgentRuntime._augment_tool_schemas_with_importance(
+            runtime,
+            [
+                {
+                    "name": "probe",
+                    "description": "Probe a value.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    },
+                },
+                {
+                    "name": "raw",
+                    "description": "Raw input.",
+                    "input_schema": {"type": "string"},
+                },
+            ],
+        )
+
+        properties = schemas[0]["input_schema"]["properties"]
+        self.assertIn("importance", properties)
+        self.assertIn("intent", properties)
+        self.assertEqual(properties["intent"]["maxLength"], TOOL_INTENT_MAX_CHARS)
+        self.assertIn("brief visible purpose", properties["intent"]["description"])
+        self.assertNotIn("intent", schemas[1]["input_schema"])
 
     def test_build_system_prompt_sections_are_structured_for_debug_payloads(self) -> None:
         root = self._stable_test_dir("prompt-sections")
@@ -4626,6 +4661,111 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(result, "Done.")
         self.assertLess(order.index(("text", "I need to inspect first.")), order.index(("flush", "")))
         self.assertLess(order.index(("flush", "")), order.index(("tool", "bash")))
+
+    def test_agent_loop_preserves_short_intent_for_history_but_strips_reserved_fields_for_execution(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_entries: list[dict[str, object]] = []
+        runtime.transcript_store = SimpleNamespace(
+            append=lambda session_id, entry: transcript_entries.append(json.loads(json.dumps(entry, ensure_ascii=False)))
+        )
+        tool_events: list[dict[str, object]] = []
+        tool_event_intents: list[str | None] = []
+
+        def capture_tool_event(actor, tool_name, tool_input, output, **kwargs):
+            tool_events.append(json.loads(json.dumps(tool_input)))
+            tool_event_intents.append(kwargs.get("intent"))
+            return "log-1"
+
+        runtime.print_tool_event = capture_tool_event
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
+        runtime._run_automatic_context_janitor = lambda session: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._messages_for_model = lambda messages, **kwargs: json.loads(json.dumps(messages, ensure_ascii=False))
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=0, max_tokens=1000)
+        runtime._agent_loop_result = lambda final_text, status="completed", session=None, **kwargs: final_text
+        runtime.interrupt_active_teammates = lambda reason="lead_interrupt": 0
+        runtime._hook_manager = lambda: SimpleNamespace(
+            on_assistant_response=lambda *args, **kwargs: None,
+            on_turn_failed=lambda *args, **kwargs: None,
+        )
+
+        executed_inputs: list[dict[str, object]] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def names(self):
+                return ["bash"]
+
+            def execute(self, ctx, name, payload):
+                executed_inputs.append(json.loads(json.dumps(payload, ensure_ascii=False)))
+                return "ok"
+
+        long_intent = "check current directory before choosing edit target " + ("detail " * 80)
+        payloads: list[list[dict[str, object]]] = []
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call-1",
+                            "bash",
+                            {
+                                "command": "pwd",
+                                "intent": long_intent,
+                                "importance": "foundation",
+                            },
+                        )
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+            ]
+        )
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return next(turns)
+
+        runtime.complete = fake_complete
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+
+        self.assertEqual(result, "Done.")
+        self.assertEqual(executed_inputs, [{"command": "pwd"}])
+        self.assertEqual(tool_events, [{"command": "pwd"}])
+        self.assertEqual(len(tool_event_intents), 1)
+        self.assertLessEqual(len(tool_event_intents[0] or ""), TOOL_INTENT_MAX_CHARS)
+        assistant_message = session.messages[1]
+        tool_call_block = next(item for item in assistant_message["content"] if item.get("type") == "tool_call")
+        self.assertIn("intent", tool_call_block["input"])
+        self.assertLessEqual(len(tool_call_block["input"]["intent"]), TOOL_INTENT_MAX_CHARS)
+        self.assertTrue(tool_call_block["input"]["intent"].endswith("..."))
+        self.assertEqual(tool_call_block["input"]["importance"], "foundation")
+        transcript_tool_entry = next(entry for entry in transcript_entries if entry.get("role") == "tool")
+        self.assertEqual(transcript_tool_entry["input"], {"command": "pwd"})
+        second_provider_payload = json.dumps(payloads[1], ensure_ascii=False)
+        self.assertIn('"intent"', second_provider_payload)
+        self.assertIn('"importance"', second_provider_payload)
+        self.assertNotIn(long_intent, second_provider_payload)
 
     def test_agent_loop_auto_compact_preserves_last_conversation_and_active_task_window(self) -> None:
         captured: dict[str, object] = {}

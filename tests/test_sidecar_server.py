@@ -611,6 +611,7 @@ class SidecarServerTests(unittest.TestCase):
                 tool_input={"command": "git status"},
                 output="clean",
                 category="TOOL",
+                intent="check repository cleanliness before editing",
             )
 
             list_status, list_payload = self._request_json("GET", f"{server.base_url}/tool-logs?limit=10")
@@ -622,8 +623,10 @@ class SidecarServerTests(unittest.TestCase):
             detail_status, detail_payload = self._request_json("GET", f"{server.base_url}/tool-logs/{log_entry['id']}")
             self.assertEqual(detail_status, 200)
             self.assertEqual(detail_payload["tool_log"]["id"], log_entry["id"])
+            self.assertEqual(detail_payload["tool_log"]["intent"], "check repository cleanliness before editing")
             self.assertEqual(detail_payload["tool_log"]["tool_input"]["command"], "git status")
             self.assertIn("rendered", detail_payload["tool_log"])
+            self.assertIn("Intent:", detail_payload["tool_log"]["rendered"])
         finally:
             server.close()
 

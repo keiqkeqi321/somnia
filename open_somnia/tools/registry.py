@@ -10,6 +10,7 @@ from open_somnia.tools.tool_errors import (
     tool_error_from_exception,
     validate_tool_payload,
 )
+from open_somnia.tools.tool_inputs import strip_reserved_tool_input_for_execution_in_place
 
 
 ToolHandler = Callable[[Any, dict[str, Any]], Any]
@@ -47,6 +48,7 @@ class ToolRegistry:
         return [tool.schema() for tool in self._tools.values()]
 
     def execute(self, ctx: Any, name: str, payload: dict[str, Any]) -> Any:
+        payload = strip_reserved_tool_input_for_execution_in_place(payload)
         tool = self._tools.get(name)
         if tool is None:
             return make_tool_error(name, "unknown_tool", f"Unknown tool: {name}")
@@ -71,6 +73,7 @@ class ToolRegistry:
             if decision.replacement_input is not None:
                 payload.clear()
                 payload.update(decision.replacement_input)
+                strip_reserved_tool_input_for_execution_in_place(payload)
         validation_error = validate_tool_payload(name, payload, tool.input_schema)
         if validation_error is not None:
             if hook_manager is not None:

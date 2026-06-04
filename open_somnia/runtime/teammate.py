@@ -20,6 +20,7 @@ from open_somnia.tools.tool_errors import (
     serialize_tool_output,
     tool_error_from_exception,
 )
+from open_somnia.tools.tool_inputs import normalize_tool_input_for_history, strip_reserved_tool_input_for_execution
 
 UNSET = object()
 
@@ -604,14 +605,18 @@ class TeammateRuntimeManager:
                     else:
                         payload_messages = messages
                     consume_ephemeral_image_blocks(messages)
+                    schema_augmenter = getattr(self.runtime, "_augment_tool_schemas_with_importance", None)
+                    tool_schemas = schema_augmenter(registry.schemas()) if callable(schema_augmenter) else registry.schemas()
                     turn = self.runtime.complete(
                         system_prompt,
                         payload_messages,
-                        registry.schemas(),
+                        tool_schemas,
                         should_interrupt=lambda: self._stop_reason(name) is not None,
                     )
                     if self._shutdown_if_stop_requested(name, activity="interrupted_after_model"):
                         return
+                    for tool_call in turn.tool_calls:
+                        tool_call.input = normalize_tool_input_for_history(tool_call.input)
                     assistant_message = turn.as_message()
                     messages.append(assistant_message)
                     self._append_log(name, "assistant_message", {"content": assistant_message.get("content")})
@@ -633,12 +638,14 @@ class TeammateRuntimeManager:
                             idle_requested = True
                             self._update_member(name, status="working", activity="preparing_for_idle")
                             output = "Entering idle phase."
+                            tool_input_for_execution = {}
                         else:
+                            tool_input_for_execution = strip_reserved_tool_input_for_execution(tool_call.input)
                             self._update_member(name, status="working", activity=f"running_tool:{tool_call.name}")
                             try:
-                                output = registry.execute(ctx, tool_call.name, tool_call.input)
+                                output = registry.execute(ctx, tool_call.name, tool_input_for_execution)
                                 if tool_call.name == "claim_task":
-                                    task_id = int(tool_call.input["task_id"])
+                                    task_id = int(tool_input_for_execution["task_id"])
                                     self._update_member(name, current_task_id=task_id)
                             except TurnInterrupted:
                                 if self._shutdown_if_stop_requested(name, activity="interrupted_during_tool"):
@@ -652,14 +659,20 @@ class TeammateRuntimeManager:
                             pending_tool_repair_hints.append(repair_hint)
                         persisted_output = sanitize_tool_output_for_persistence(output)
                         rendered_output = serialize_tool_output(persisted_output)
-                        log_id = self.runtime.print_tool_event(name, tool_call.name, tool_call.input, persisted_output)
+                        log_id = self.runtime.print_tool_event(
+                            name,
+                            tool_call.name,
+                            tool_input_for_execution,
+                            persisted_output,
+                            intent=tool_call.input.get("intent"),
+                        )
                         self._update_member(name, current_tool_log_id=log_id)
                         self._append_log(
                             name,
                             "tool_call",
                             {
                                 "tool_name": tool_call.name,
-                                "tool_input": tool_call.input,
+                                "tool_input": tool_input_for_execution,
                                 "output_preview": self.runtime._compact_preview(rendered_output, limit=120),
                                 "tool_log_id": log_id,
                             },

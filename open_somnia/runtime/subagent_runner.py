@@ -32,6 +32,7 @@ from open_somnia.tools.tool_errors import (
     serialize_tool_output,
     tool_error_from_exception,
 )
+from open_somnia.tools.tool_inputs import normalize_tool_input_for_history, strip_reserved_tool_input_for_execution
 
 
 class SubagentRunner:
@@ -64,7 +65,11 @@ class SubagentRunner:
                     messages.append(make_user_text_message(repair_message))
             payload_messages = self.runtime._build_payload_messages(messages, session=None)
             consume_ephemeral_image_blocks(messages)
-            turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
+            schema_augmenter = getattr(self.runtime, "_augment_tool_schemas_with_importance", None)
+            tool_schemas = schema_augmenter(registry.schemas()) if callable(schema_augmenter) else registry.schemas()
+            turn = self.runtime.complete(system_prompt, payload_messages, tool_schemas)
+            for tool_call in turn.tool_calls:
+                tool_call.input = normalize_tool_input_for_history(tool_call.input)
             messages.append(turn.as_message())
             turn_text = "\n".join(turn.text_blocks).strip()
             if turn_text:
@@ -85,8 +90,9 @@ class SubagentRunner:
                 trace_id=f"subagent-{uuid.uuid4().hex[:8]}",
             )
             for tool_call in turn.tool_calls:
+                tool_input_for_execution = strip_reserved_tool_input_for_execution(tool_call.input)
                 try:
-                    output = registry.execute(ctx, tool_call.name, tool_call.input)
+                    output = registry.execute(ctx, tool_call.name, tool_input_for_execution)
                 except TurnInterrupted:
                     raise
                 except Exception as exc:
@@ -100,7 +106,7 @@ class SubagentRunner:
                     agent_type=agent_type,
                     prompt=prompt,
                     kind="tool_result",
-                    text=self._format_tool_activity(tool_call.name, tool_call.input, persisted_output),
+                    text=self._format_tool_activity(tool_call.name, tool_input_for_execution, persisted_output),
                 )
                 results.append(
                     make_tool_result_item(

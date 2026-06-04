@@ -7,6 +7,7 @@ from typing import Any
 
 from open_somnia.storage.common import append_jsonl, now_ts
 from open_somnia.tools.tool_errors import serialize_tool_output
+from open_somnia.tools.tool_inputs import normalize_tool_intent
 
 
 class ToolLogStore:
@@ -23,8 +24,10 @@ class ToolLogStore:
         tool_input: dict[str, Any],
         output: Any,
         category: str,
+        intent: str | None = None,
     ) -> dict[str, Any]:
         log_id = uuid.uuid4().hex[:8]
+        normalized_intent = normalize_tool_intent(intent)
         payload = {
             "id": log_id,
             "timestamp": now_ts(),
@@ -34,6 +37,8 @@ class ToolLogStore:
             "output": serialize_tool_output(output),
             "category": category,
         }
+        if normalized_intent:
+            payload["intent"] = normalized_intent
         path = self.root / f"{log_id}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         append_jsonl(
