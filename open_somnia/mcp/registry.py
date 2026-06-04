@@ -52,7 +52,12 @@ def _mcp_image_result_blocks(items: list[Any]) -> list[dict[str, Any]]:
     return blocks
 
 
-def _local_image_reference_blocks(text: str, *, cwd: Path | None = None) -> list[dict[str, Any]]:
+def _local_image_reference_blocks(
+    text: str,
+    *,
+    cwd: Path | None = None,
+    transport: str | None = None,
+) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     seen: set[str] = set()
     for match in LOCAL_IMAGE_LINK_PATTERN.finditer(text):
@@ -80,12 +85,18 @@ def _local_image_reference_blocks(text: str, *, cwd: Path | None = None) -> list
                 absolute_path=absolute_path,
                 media_type=media_type,
                 origin="tool_result",
+                transport=transport,
             )
         )
     return blocks
 
 
-def _render_mcp_result(result: dict[str, Any], *, cwd: Path | None = None) -> Any:
+def _render_mcp_result(
+    result: dict[str, Any],
+    *,
+    cwd: Path | None = None,
+    transport: str | None = None,
+) -> Any:
     parts: list[str] = []
     raw_content = result.get("content", [])
     content_items = raw_content if isinstance(raw_content, list) else []
@@ -98,7 +109,7 @@ def _render_mcp_result(result: dict[str, Any], *, cwd: Path | None = None) -> An
             parts.append(str(item))
     text = "\n".join(part for part in parts if part) or "(no content)"
     image_blocks = _mcp_image_result_blocks(content_items)
-    local_image_references = _local_image_reference_blocks(text, cwd=cwd)
+    local_image_references = _local_image_reference_blocks(text, cwd=cwd, transport=transport)
     if image_blocks and not result.get("isError"):
         references = [
             make_image_reference_block(
@@ -184,9 +195,10 @@ class MCPRegistry:
                 server_name: str = server_name,
                 name: str = remote_name,
                 cwd=server_cwd,
+                transport: str = str(getattr(server, "transport", "")),
             ) -> str:
                 result = self.clients[server_name].call_tool(name, payload)
-                return _render_mcp_result(result, cwd=cwd)
+                return _render_mcp_result(result, cwd=cwd, transport=transport)
 
             registry.register(
                 ToolDefinition(

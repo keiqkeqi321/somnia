@@ -2301,6 +2301,24 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(result_item["content_blocks"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
 
+    def test_mcp_remote_image_link_uses_remote_hint_instead_of_read_image(self) -> None:
+        rendered = _render_mcp_result(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "### Result\n- [Screenshot of viewport](./captcha.png)",
+                    }
+                ]
+            },
+            transport="http",
+        )
+
+        self.assertIsInstance(rendered, dict)
+        self.assertEqual(rendered["status"], "ok")
+        self.assertNotIn('read_image(path="./captcha.png")', rendered["tool_result_text"])
+        self.assertIn("hosted by the MCP server", rendered["tool_result_text"])
+
     def test_consume_ephemeral_image_blocks_rewrites_user_image_inputs_to_references(self) -> None:
         messages = [
             {

@@ -288,6 +288,7 @@ def make_image_reference_block(
     media_type: str | None = None,
     image_url: str | None = None,
     origin: str | None = None,
+    transport: str | None = None,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {"type": IMAGE_REFERENCE_BLOCK_TYPE}
     normalized_path = str(path or "").strip().replace("\\", "/")
@@ -295,6 +296,7 @@ def make_image_reference_block(
     normalized_media_type = str(media_type or "").strip().lower()
     normalized_image_url = str(image_url or "").strip()
     normalized_origin = str(origin or "").strip().lower()
+    normalized_transport = str(transport or "").strip().lower()
     if normalized_path:
         block["path"] = normalized_path
     if normalized_absolute_path:
@@ -305,6 +307,8 @@ def make_image_reference_block(
         block["image_url"] = normalized_image_url
     if normalized_origin:
         block["origin"] = normalized_origin
+    if normalized_transport:
+        block["transport"] = normalized_transport
     return block
 
 
@@ -350,6 +354,9 @@ def _image_reference_label(block: dict[str, Any]) -> str:
 
 
 def _image_reference_read_hint(block: dict[str, Any]) -> str:
+    transport = str(block.get("transport", "")).strip().lower()
+    if transport in {"http", "sse"}:
+        return "Image file is hosted by the MCP server; re-send or fetch it from that server if needed."
     command_path = str(block.get("path") or "").strip().replace("\\", "/")
     if command_path:
         return f'Re-read with read_image(path="{command_path}") if needed.'
