@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
@@ -37,6 +38,27 @@ def _schema_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
             "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
         },
     }
+
+
+def _schema_to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+    }
+
+
+def _is_official_openai_base_url(base_url: str | None) -> bool:
+    parsed = urlparse(str(base_url or "").strip())
+    return parsed.scheme in {"http", "https"} and parsed.netloc.lower() == "api.openai.com"
+
+
+def _responses_api_url(base_url: str | None) -> str:
+    normalized = str(base_url or "https://api.openai.com/v1").rstrip("/")
+    if normalized.endswith("/v1"):
+        return f"{normalized[:-3]}/v1/responses"
+    return f"{normalized}/responses"
 
 
 def _openai_image_part(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -174,6 +196,78 @@ def _openai_multimodal_content(blocks: list[dict[str, Any]]) -> str | list[dict[
     if has_non_text_parts:
         return content_parts
     return "\n".join(part for part in text_parts if part)
+
+
+def _responses_content_from_openai_content(content: Any, *, role: str) -> str | list[dict[str, Any]]:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type", "")).strip()
+        if item_type == "text":
+            text = str(item.get("text", ""))
+            parts.append({"type": "output_text" if role == "assistant" else "input_text", "text": text})
+            continue
+        if item_type == "image_url":
+            image_payload = item.get("image_url", {})
+            image_url = str(image_payload.get("url", "") if isinstance(image_payload, dict) else image_payload).strip()
+            if image_url:
+                part: dict[str, Any] = {"type": "input_image", "image_url": image_url}
+                if isinstance(image_payload, dict) and image_payload.get("detail"):
+                    part["detail"] = image_payload["detail"]
+                parts.append(part)
+    if not parts:
+        return ""
+    return parts
+
+
+def _to_responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    response_input: list[dict[str, Any]] = []
+    for message in _to_openai_messages(messages):
+        role = str(message.get("role", "")).strip()
+        if role == "tool":
+            response_input.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(message.get("tool_call_id", "")),
+                    "output": str(message.get("content", "")),
+                }
+            )
+            continue
+        if role == "assistant":
+            content = message.get("content", "")
+            if isinstance(content, str) and content.strip():
+                response_input.append({"role": "assistant", "content": content})
+            elif isinstance(content, list):
+                converted = _responses_content_from_openai_content(content, role="assistant")
+                if converted:
+                    response_input.append({"role": "assistant", "content": converted})
+            for tool_call in message.get("tool_calls", []) or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function", {})
+                response_input.append(
+                    {
+                        "type": "function_call",
+                        "call_id": str(tool_call.get("id", "")),
+                        "name": str(function.get("name", "")),
+                        "arguments": str(function.get("arguments", "{}") or "{}"),
+                        "status": "completed",
+                    }
+                )
+            continue
+        if role in {"user", "system", "developer"}:
+            response_input.append(
+                {
+                    "role": role,
+                    "content": _responses_content_from_openai_content(message.get("content", ""), role=role),
+                }
+            )
+    return response_input
 
 
 def _encoding_for_openai_model(model: str):
@@ -328,16 +422,7 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict[str, Any]],
     ) -> int:
         encoding = _encoding_for_openai_model(self.settings.model)
-        payload = {
-            "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
-            "tools": [_schema_to_openai_tool(tool) for tool in tools],
-            "tool_choice": "auto",
-            **openai_reasoning_payload(
-                model=self.settings.model,
-                reasoning_level=getattr(self.settings, "reasoning_level", None),
-                supports_reasoning=getattr(self.settings, "supports_reasoning", None),
-            ),
-        }
+        payload = self.debug_request_payload(system_prompt, messages, tools, self.settings.max_tokens, stream=False)["body"]
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return len(encoding.encode(serialized))
 
@@ -348,8 +433,8 @@ class OpenAIProvider(LLMProvider):
         usage = body.get("usage")
         if not isinstance(usage, dict):
             return None
-        input_tokens = int(usage.get("prompt_tokens") or 0)
-        output_tokens = int(usage.get("completion_tokens") or 0)
+        input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
         return {
             "input_tokens": input_tokens,
@@ -357,6 +442,22 @@ class OpenAIProvider(LLMProvider):
             "total_tokens": total_tokens,
             "source": "provider",
         }
+
+    def _responses_reasoning_payload(self) -> dict[str, Any]:
+        reasoning_payload = openai_reasoning_payload(
+            model=self.settings.model,
+            reasoning_level=getattr(self.settings, "reasoning_level", None),
+            supports_reasoning=getattr(self.settings, "supports_reasoning", None),
+        )
+        reasoning = reasoning_payload.get("reasoning")
+        if isinstance(reasoning, dict):
+            return {"reasoning": {**reasoning, "summary": "auto"}}
+        return {}
+
+    def _use_responses_api(self) -> bool:
+        if not _is_official_openai_base_url(self.settings.base_url):
+            return False
+        return bool(self._responses_reasoning_payload())
 
     def debug_request_payload(
         self,
@@ -372,6 +473,20 @@ class OpenAIProvider(LLMProvider):
             reasoning_level=getattr(self.settings, "reasoning_level", None),
             supports_reasoning=getattr(self.settings, "supports_reasoning", None),
         )
+        if self._use_responses_api():
+            return {
+                "url": _responses_api_url(self.settings.base_url),
+                "body": {
+                    "model": self.settings.model,
+                    "instructions": system_prompt,
+                    "input": _to_responses_input(messages),
+                    "tools": [_schema_to_responses_tool(tool) for tool in tools],
+                    "tool_choice": "auto",
+                    "max_output_tokens": max_tokens,
+                    "stream": stream,
+                    **self._responses_reasoning_payload(),
+                },
+            }
         return {
             "url": f"{self.settings.base_url.rstrip('/')}/chat/completions",
             "body": {
@@ -395,15 +510,16 @@ class OpenAIProvider(LLMProvider):
         thinking_callback=None,
         stop_checker: StopChecker | None = None,
     ) -> AssistantTurn:
-        url = f"{self.settings.base_url.rstrip('/')}/chat/completions"
         should_stream = text_callback is not None or stop_checker is not None
-        payload = self.debug_request_payload(
+        debug_payload = self.debug_request_payload(
             system_prompt,
             messages,
             tools,
             max_tokens,
             stream=should_stream,
-        )["body"]
+        )
+        url = str(debug_payload["url"])
+        payload = debug_payload["body"]
         headers = {
             "Authorization": f"Bearer {self.settings.api_key}",
             "Content-Type": "application/json",
@@ -420,8 +536,18 @@ class OpenAIProvider(LLMProvider):
             with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
                 if not should_stream:
                     body = json.loads(response.read().decode("utf-8"))
+                    if self._use_responses_api():
+                        self._emit_responses_reasoning_summary(body, thinking_callback)
                 else:
-                    body = self._read_streaming_response(response, text_callback, stop_checker=stop_checker)
+                    if self._use_responses_api():
+                        body = self._read_responses_streaming_response(
+                            response,
+                            text_callback,
+                            thinking_callback=thinking_callback,
+                            stop_checker=stop_checker,
+                        )
+                    else:
+                        body = self._read_streaming_response(response, text_callback, stop_checker=stop_checker)
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")
             retryable = exc.code >= 500 and not _is_overloaded_error(exc.code, details) and not _is_forbidden_like_error(exc.code, details)
@@ -434,6 +560,9 @@ class OpenAIProvider(LLMProvider):
             raise ProviderError(f"OpenAI request failed: {exc}", retryable=retryable) from exc
         except Exception as exc:
             raise _wrap_openai_exception(exc) from exc
+
+        if self._use_responses_api():
+            return self._assistant_turn_from_responses_body(body)
 
         choice = _first_openai_choice(body)
         message = choice.get("message")
@@ -473,6 +602,81 @@ class OpenAIProvider(LLMProvider):
             usage=self._extract_usage(body),
             raw_response=body,
         )
+
+    def _assistant_turn_from_responses_body(self, body: dict[str, Any]) -> AssistantTurn:
+        output = body.get("output")
+        if not isinstance(output, list):
+            raise ProviderError("OpenAI Responses API response did not include output items.", retryable=False)
+        text_blocks: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "")).strip()
+            if item_type == "message":
+                content = item.get("content", [])
+                if isinstance(content, str) and content:
+                    text_blocks.append(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        part_type = str(part.get("type", "")).strip()
+                        if part_type in {"output_text", "text"} and str(part.get("text", "")).strip():
+                            text_blocks.append(str(part.get("text", "")))
+                continue
+            if item_type == "function_call":
+                arguments = str(item.get("arguments", "{}") or "{}")
+                try:
+                    parsed_arguments = json.loads(arguments)
+                except Exception:
+                    parsed_arguments = {}
+                if not isinstance(parsed_arguments, dict):
+                    parsed_arguments = {}
+                importance = normalize_tool_importance(parsed_arguments.pop("importance", None))
+                tool_calls.append(
+                    ToolCall(
+                        id=str(item.get("call_id") or item.get("id") or ""),
+                        name=str(item.get("name", "")),
+                        input=parsed_arguments,
+                        importance=importance,
+                    )
+                )
+        return AssistantTurn(
+            stop_reason="tool_use" if tool_calls else "end_turn",
+            text_blocks=text_blocks,
+            tool_calls=tool_calls,
+            usage=self._extract_usage(body),
+            raw_response=body,
+        )
+
+    def _extract_responses_reasoning_summary(self, body: dict[str, Any]) -> str:
+        output = body.get("output")
+        if not isinstance(output, list):
+            return ""
+        parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict) or str(item.get("type", "")).strip() != "reasoning":
+                continue
+            summary = item.get("summary", [])
+            if isinstance(summary, str):
+                parts.append(summary)
+                continue
+            if not isinstance(summary, list):
+                continue
+            for part in summary:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    text = str(part.get("text", "") or part.get("summary_text", "") or "")
+                    if text:
+                        parts.append(text)
+        return "".join(parts)
+
+    def _emit_responses_reasoning_summary(self, body: dict[str, Any], thinking_callback) -> None:
+        summary = self._extract_responses_reasoning_summary(body)
+        if summary and callable(thinking_callback):
+            thinking_callback({"event": "delta", "type": "reasoning_summary", "delta": summary})
 
     def _read_streaming_response(
         self,
@@ -545,3 +749,66 @@ class OpenAIProvider(LLMProvider):
                 }
             ]
         }
+
+    def _read_responses_streaming_response(
+        self,
+        response,
+        text_callback: TextCallback | None,
+        *,
+        thinking_callback=None,
+        stop_checker: StopChecker | None = None,
+    ) -> dict[str, Any]:
+        completed_body: dict[str, Any] | None = None
+        output_items: list[dict[str, Any]] = []
+        current_event = ""
+        data_lines: list[str] = []
+
+        def dispatch_event(event_name: str, data_text: str) -> None:
+            nonlocal completed_body
+            if not data_text or data_text == "[DONE]":
+                return
+            try:
+                event = json.loads(data_text)
+            except Exception:
+                return
+            event_type = str(event_name or event.get("type", "")).strip()
+            if event_type == "response.reasoning_summary_text.delta":
+                delta = str(event.get("delta", "") or "")
+                if delta and callable(thinking_callback):
+                    thinking_callback({"event": "delta", "type": "reasoning_summary", "delta": delta})
+                return
+            if event_type == "response.output_text.delta":
+                delta = str(event.get("delta", "") or "")
+                if delta and text_callback is not None:
+                    text_callback(delta)
+                return
+            if event_type == "response.output_item.done":
+                item = event.get("item")
+                if isinstance(item, dict):
+                    output_items.append(item)
+                return
+            if event_type == "response.completed":
+                response_body = event.get("response")
+                if isinstance(response_body, dict):
+                    completed_body = response_body
+
+        for raw_line in response:
+            if stop_checker is not None and stop_checker():
+                raise TurnInterrupted("Interrupted by user.")
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                dispatch_event(current_event, "\n".join(data_lines).strip())
+                current_event = ""
+                data_lines = []
+                continue
+            if line.startswith("event:"):
+                current_event = line[6:].strip()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+
+        if data_lines:
+            dispatch_event(current_event, "\n".join(data_lines).strip())
+        if completed_body is not None:
+            return completed_body
+        return {"output": output_items}

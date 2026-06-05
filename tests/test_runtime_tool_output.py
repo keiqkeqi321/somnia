@@ -3610,6 +3610,189 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(payload["body"]["reasoning"], {"effort": "high"})
 
+    def test_openai_provider_uses_responses_api_for_official_reasoning_summary(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                reasoning_level="high",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertEqual(payload["url"], "https://api.openai.com/v1/responses")
+        self.assertEqual(payload["body"]["instructions"], "system")
+        self.assertEqual(payload["body"]["input"], [{"role": "user", "content": "hello"}])
+        self.assertEqual(payload["body"]["max_output_tokens"], 1024)
+        self.assertEqual(payload["body"]["reasoning"], {"effort": "high", "summary": "auto"})
+
+    def test_openai_provider_maps_responses_reasoning_summary_to_thinking_callback(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                reasoning_level="medium",
+            )
+        )
+        captured_requests: list[dict] = []
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "reasoning",
+                                "summary": [{"type": "summary_text", "text": "Checked constraints."}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Done."}],
+                            },
+                        ],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            captured_requests.append(json.loads(request.data.decode("utf-8")))
+            return _Response()
+
+        thinking_events: list[dict] = []
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                thinking_callback=thinking_events.append,
+            )
+
+        self.assertEqual(captured_requests[0]["reasoning"], {"effort": "medium", "summary": "auto"})
+        self.assertEqual(thinking_events, [{"event": "delta", "type": "reasoning_summary", "delta": "Checked constraints."}])
+        self.assertEqual(turn.text_blocks, ["Done."])
+        self.assertEqual(turn.stop_reason, "end_turn")
+        self.assertEqual(turn.usage, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "source": "provider"})
+
+    def test_openai_provider_maps_responses_function_call_to_tool_call(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                reasoning_level="medium",
+            )
+        )
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "call_id": "call-1",
+                                "name": "bash",
+                                "arguments": '{"command":"pwd","importance":"glance"}',
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Response()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [{"name": "bash", "description": "Run shell", "input_schema": {"type": "object"}}],
+                max_tokens=1024,
+            )
+
+        self.assertEqual(turn.stop_reason, "tool_use")
+        self.assertEqual(len(turn.tool_calls), 1)
+        self.assertEqual(turn.tool_calls[0].id, "call-1")
+        self.assertEqual(turn.tool_calls[0].name, "bash")
+        self.assertEqual(turn.tool_calls[0].input, {"command": "pwd"})
+        self.assertEqual(turn.tool_calls[0].importance, "glance")
+
+    def test_openai_provider_streams_responses_reasoning_summary(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                reasoning_level="low",
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b"event: response.reasoning_summary_text.delta\n",
+                        b'data: {"delta":"Checked "}\n',
+                        b"\n",
+                        b"event: response.reasoning_summary_text.delta\n",
+                        b'data: {"delta":"constraints."}\n',
+                        b"\n",
+                        b"event: response.output_text.delta\n",
+                        b'data: {"delta":"Done."}\n',
+                        b"\n",
+                        b"event: response.completed\n",
+                        b'data: {"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}]}}\n',
+                        b"\n",
+                    ]
+                )
+
+        text_chunks: list[str] = []
+        thinking_events: list[dict] = []
+        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=text_chunks.append,
+                thinking_callback=thinking_events.append,
+            )
+
+        self.assertEqual(text_chunks, ["Done."])
+        self.assertEqual([event["delta"] for event in thinking_events], ["Checked ", "constraints."])
+        self.assertEqual(turn.text_blocks, ["Done."])
+
     def test_openai_provider_debug_request_payload_supports_local_input_image_blocks(self) -> None:
         image_root = self._stable_test_dir("vision-openai")
         image_path = image_root / "tiny.png"
