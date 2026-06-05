@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import time
 import unittest
 from pathlib import Path
@@ -34,6 +35,7 @@ from open_somnia.cli.repl import (
     _thinking_log_label,
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
+    run_repl,
     _save_windows_clipboard_image,
 )
 from open_somnia.runtime.compact import ContextWindowUsage
@@ -1381,6 +1383,33 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertTrue(allowed)
         self.assertEqual(runner.current_execution_mode().key, "accept_edits")
+
+    def test_run_repl_falls_back_when_prompt_toolkit_prompt_fails(self) -> None:
+        class _BrokenPromptSession:
+            app = SimpleNamespace(invalidate=lambda: None, exit=lambda result=None: None)
+
+            def prompt(self, *args, **kwargs):
+                raise OSError(10055, "buffer space unavailable")
+
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=Path.cwd(),
+                provider=SimpleNamespace(name="anthropic", model="glm-5"),
+            ),
+            execution_mode="accept_edits",
+        )
+        session = SimpleNamespace(id="session-1", todo_items=[])
+        stderr = io.StringIO()
+
+        with patch("open_somnia.cli.repl.create_prompt_session", return_value=_BrokenPromptSession()):
+            with patch("open_somnia.cli.repl.patch_stdout", None):
+                with patch("builtins.input", return_value="/exit") as mock_input:
+                    with patch("sys.stderr", stderr):
+                        exit_code = run_repl(runtime, session)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("prompt unavailable; falling back to basic input", stderr.getvalue())
+        self.assertIn("accept edits on", mock_input.call_args[0][0])
 
 
 if __name__ == "__main__":

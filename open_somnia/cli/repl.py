@@ -2535,6 +2535,25 @@ def _resolve_mode_switch_requests(runner: TurnQueueRunner) -> bool:
     return True
 
 
+def _read_fallback_query(runner: TurnQueueRunner, pending_query_prefix: str) -> str:
+    prefix = pending_query_prefix
+    if sys.stdout.isatty():
+        query = input(
+            f"{runner.execution_mode_ansi_label()}\n"
+            f"{runner.current_status_label()}\n"
+            f"{fallback_prompt_message()}{prefix}"
+        )
+    else:
+        query = input(
+            f"{runner.execution_mode_label()}\n"
+            f"{runner.current_status_label()}\n"
+            f"{PROMPT_TEXT}{prefix}"
+        )
+    if prefix:
+        query = prefix + query
+    return query
+
+
 def run_repl(runtime, session, resumed: bool = False, service: AppService | None = None) -> int:
     runner = TurnQueueRunner(runtime, session, stable_prompt=False, service=service)
     if service is None:
@@ -2583,26 +2602,22 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                             prompt_kwargs["bottom_toolbar"] = runner.bottom_toolbar
                         if pending_query_prefix:
                             prompt_kwargs["default"] = pending_query_prefix
-                        query = prompt_session.prompt(
-                            runner.prompt_message,
-                            **prompt_kwargs,
-                        )
+                        try:
+                            query = prompt_session.prompt(
+                                runner.prompt_message,
+                                **prompt_kwargs,
+                            )
+                        except EOFError:
+                            raise
+                        except Exception as exc:
+                            print(f"[prompt unavailable; falling back to basic input] {exc}", file=sys.stderr)
+                            prompt_session = None
+                            runner.stable_prompt = False
+                            runner.set_ui_invalidator(None)
+                            runner.set_prompt_interrupter(None)
+                            query = _read_fallback_query(runner, pending_query_prefix)
                     else:
-                        prefix = pending_query_prefix
-                        if sys.stdout.isatty():
-                            query = input(
-                                f"{runner.execution_mode_ansi_label()}\n"
-                                f"{runner.current_status_label()}\n"
-                                f"{fallback_prompt_message()}{prefix}"
-                            )
-                        else:
-                            query = input(
-                                f"{runner.execution_mode_label()}\n"
-                                f"{runner.current_status_label()}\n"
-                                f"{PROMPT_TEXT}{prefix}"
-                            )
-                        if prefix:
-                            query = prefix + query
+                        query = _read_fallback_query(runner, pending_query_prefix)
                     pending_query_prefix = ""
                 except (EOFError, KeyboardInterrupt):
                     print()
