@@ -244,10 +244,10 @@ class SettingsOverrideTests(unittest.TestCase):
             with self._patched_home(home):
                 settings = load_settings(root)
 
-        self.assertEqual(settings.provider.reasoning_level, "high")
+        self.assertIsNone(settings.provider.reasoning_level)
         self.assertTrue(settings.provider.supports_reasoning)
         self.assertTrue(settings.provider.supports_adaptive_reasoning)
-        self.assertEqual(settings.provider_profiles["anthropic"].reasoning_level, "high")
+        self.assertIsNone(settings.provider_profiles["anthropic"].reasoning_level)
         self.assertTrue(settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-6"].supports_reasoning)
         self.assertTrue(
             settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-6"].supports_adaptive_reasoning
@@ -345,7 +345,7 @@ class SettingsOverrideTests(unittest.TestCase):
                 sonnet_settings = load_settings(root, provider_override="anthropic", model_override="claude-sonnet-4-6")
                 haiku_settings = load_settings(root, provider_override="anthropic", model_override="claude-haiku-4-5")
 
-        self.assertEqual(sonnet_settings.provider.reasoning_level, "medium")
+        self.assertIsNone(sonnet_settings.provider.reasoning_level)
         self.assertEqual(haiku_settings.provider.reasoning_level, "low")
         self.assertEqual(
             haiku_settings.provider_profiles["anthropic"].model_traits["claude-haiku-4-5"].reasoning_level,
@@ -606,7 +606,7 @@ class SettingsOverrideTests(unittest.TestCase):
                 self.assertEqual(reloaded.provider_profiles["openai"].default_model, "kimi-k2.5")
                 self.assertTrue(config_path.exists())
 
-    def test_persist_provider_reasoning_level_auto_removes_workspace_override_and_roundtrips(self) -> None:
+    def test_persist_provider_reasoning_level_writes_model_traits_and_roundtrips(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
             home = root / "home"
@@ -627,12 +627,14 @@ class SettingsOverrideTests(unittest.TestCase):
 
             with self._patched_home(home):
                 settings = load_settings(root)
-                persist_provider_reasoning_level(settings, "anthropic", "auto")
+                persist_provider_reasoning_level(settings, "anthropic", "claude-sonnet-4-6", "medium")
                 reloaded = load_settings(root)
 
             rendered = config_path.read_text(encoding="utf-8")
             self.assertNotIn('reasoning_level = "high"', rendered)
-            self.assertIsNone(reloaded.provider.reasoning_level)
+            self.assertIn('[model_traits.anthropic."claude-sonnet-4-6"]', rendered)
+            self.assertIn('reasoning_level = "medium"', rendered)
+            self.assertEqual(reloaded.provider.reasoning_level, "medium")
             self.assertIsNone(reloaded.provider_profiles["anthropic"].reasoning_level)
 
     def test_persist_initial_provider_setup_writes_global_config_and_roundtrips(self) -> None:

@@ -1963,12 +1963,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
                     name="anthropic",
                     provider_type="anthropic",
                     models=["claude-sonnet-4-5"],
+                    model_traits={"claude-sonnet-4-5": ModelTraits(reasoning_level="medium")},
                     default_model="claude-sonnet-4-5",
                     api_key="",
                     base_url="https://api.anthropic.com",
                     max_tokens=8000,
                     timeout_seconds=60,
-                    reasoning_level="medium",
                 )
             },
         )
@@ -1993,8 +1993,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
             {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": "high"},
         )
         self.assertEqual(runtime.compact_manager.model_max_tokens, 8000)
-        self.assertEqual(runtime.settings.provider_profiles["anthropic"].reasoning_level, "high")
-        mock_persist.assert_called_once_with(runtime.settings, "anthropic", "high")
+        self.assertEqual(runtime.settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-5"].reasoning_level, "high")
+        self.assertIsNone(runtime.settings.provider_profiles["anthropic"].reasoning_level)
+        mock_persist.assert_called_once_with(runtime.settings, "anthropic", "claude-sonnet-4-5", "high")
 
     def test_set_reasoning_level_auto_clears_runtime_and_compact_manager_state(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -2013,12 +2014,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
                     name="anthropic",
                     provider_type="anthropic",
                     models=["claude-sonnet-4-5"],
+                    model_traits={"claude-sonnet-4-5": ModelTraits(reasoning_level="high")},
                     default_model="claude-sonnet-4-5",
                     api_key="",
                     base_url="https://api.anthropic.com",
                     max_tokens=8000,
                     timeout_seconds=60,
-                    reasoning_level="high",
                 )
             },
         )
@@ -2041,8 +2042,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
             {"provider": "anthropic", "model": "claude-sonnet-4-5", "reasoning_level": None},
         )
         self.assertEqual(runtime.compact_manager.model_max_tokens, 8000)
+        self.assertIsNone(runtime.settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-5"].reasoning_level)
         self.assertEqual(runtime.settings.provider_profiles["anthropic"].reasoning_level, None)
-        mock_persist.assert_called_once_with(runtime.settings, "anthropic", None)
+        mock_persist.assert_called_once_with(runtime.settings, "anthropic", "claude-sonnet-4-5", None)
 
     def test_context_window_usage_prefers_provider_counter(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

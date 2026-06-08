@@ -19,6 +19,7 @@ class ProviderService:
         providers: list[ProviderDescriptor] = []
         for name, profile in sorted(profiles.items()):
             is_active = name == current_provider
+            default_traits = profile.model_traits.get(profile.default_model, ModelTraits())
             providers.append(
                 ProviderDescriptor(
                     name=name,
@@ -26,7 +27,7 @@ class ProviderService:
                     default_model=profile.default_model,
                     models=list(profile.models),
                     active_model=current_model if is_active else None,
-                    reasoning_level=normalize_reasoning_level(profile.reasoning_level),
+                    reasoning_level=normalize_reasoning_level(default_traits.reasoning_level),
                     is_active=is_active,
                 )
             )

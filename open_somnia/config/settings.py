@@ -310,23 +310,28 @@ def persist_provider_selection(settings: AppSettings, provider_name: str, model:
     provider_raw["default_model"] = normalized_model
 
 
-def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, reasoning_level: str | None) -> None:
+def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, model: str, reasoning_level: str | None) -> None:
     normalized_provider = str(provider_name).strip().lower()
+    normalized_model = _normalize_model_id(model)
     raw_level = str(reasoning_level or "").strip().lower() if reasoning_level is not None else ""
     clear_requested = reasoning_level is None or raw_level in {"auto", "none"}
     normalized_level = None if clear_requested else normalize_reasoning_level(reasoning_level)
     if not normalized_provider:
         raise ValueError("A provider name is required to persist reasoning level.")
+    if not normalized_model:
+        raise ValueError("A model id is required to persist reasoning level.")
     if not clear_requested and normalized_level is None:
         raise ValueError("Reasoning level must be one of: auto, low, medium, high, deep.")
 
     config_path = workspace_config_path(settings.workspace_root)
     ensure_app_dir_ignored(config_path.parent)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    lines = _remove_section_value(lines, f"providers.{normalized_provider}", "reasoning_level")
+    section_name = f"model_traits.{normalized_provider}.{_toml_string(normalized_model)}"
     if clear_requested:
-        lines = _remove_section_value(lines, f"providers.{normalized_provider}", "reasoning_level")
+        lines = _remove_section_value(lines, section_name, "reasoning_level")
     else:
-        _upsert_section_value(lines, f"providers.{normalized_provider}", "reasoning_level", _toml_string(normalized_level))
+        _upsert_section_value(lines, section_name, "reasoning_level", _toml_string(normalized_level))
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     providers_raw = settings.raw_config.setdefault("providers", {})
@@ -337,10 +342,23 @@ def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, 
     if not isinstance(provider_raw, dict):
         provider_raw = {}
         providers_raw[normalized_provider] = provider_raw
+    provider_raw.pop("reasoning_level", None)
+    traits_raw = settings.raw_config.setdefault("model_traits", {})
+    if not isinstance(traits_raw, dict):
+        traits_raw = {}
+        settings.raw_config["model_traits"] = traits_raw
+    provider_traits_raw = traits_raw.setdefault(normalized_provider, {})
+    if not isinstance(provider_traits_raw, dict):
+        provider_traits_raw = {}
+        traits_raw[normalized_provider] = provider_traits_raw
+    model_traits_raw = provider_traits_raw.setdefault(normalized_model, {})
+    if not isinstance(model_traits_raw, dict):
+        model_traits_raw = {}
+        provider_traits_raw[normalized_model] = model_traits_raw
     if clear_requested:
-        provider_raw.pop("reasoning_level", None)
+        model_traits_raw.pop("reasoning_level", None)
     else:
-        provider_raw["reasoning_level"] = normalized_level
+        model_traits_raw["reasoning_level"] = normalized_level
 
 
 def persist_vision_model(
@@ -975,7 +993,7 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
         else defaults.context_window_tokens,
         max_tokens=int(item.get("max_tokens", defaults.max_tokens)),
         timeout_seconds=int(item.get("timeout_seconds", defaults.timeout_seconds)),
-        reasoning_level=normalize_reasoning_level(item.get("reasoning_level")),
+        reasoning_level=None,
     )
 
 
@@ -1040,7 +1058,7 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
         ),
         max_tokens=model_traits.max_tokens if model_traits and model_traits.max_tokens is not None else profile.max_tokens,
         timeout_seconds=profile.timeout_seconds,
-        reasoning_level=model_traits.reasoning_level if model_traits and model_traits.reasoning_level is not None else profile.reasoning_level,
+        reasoning_level=model_traits.reasoning_level if model_traits and model_traits.reasoning_level is not None else None,
         supports_reasoning=model_traits.supports_reasoning if model_traits is not None else None,
         supports_adaptive_reasoning=model_traits.supports_adaptive_reasoning if model_traits is not None else None,
     )

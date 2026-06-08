@@ -24,7 +24,7 @@ from typing import Any
 
 from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
-from open_somnia.config.models import AppSettings, HookSettings, ProviderProfileSettings, ProviderSettings
+from open_somnia.config.models import AppSettings, HookSettings, ModelTraits, ProviderProfileSettings, ProviderSettings
 from open_somnia.config.settings import (
     _materialize_provider,
     _normalize_model_id,
@@ -583,7 +583,10 @@ class OpenAgentRuntime:
         profile = self.settings.provider_profiles.get(provider_name)
         if profile is None:
             raise ValueError(f"Provider '{provider_name}' is not configured.")
-        profile.reasoning_level = normalized_level
+        model_name = self.settings.provider.model
+        model_traits = profile.model_traits.get(model_name, ModelTraits())
+        model_traits.reasoning_level = normalized_level
+        profile.model_traits[model_name] = model_traits
         self.settings.provider = _materialize_provider(profile, self.settings.provider.model)
         self.provider = self._instantiate_provider(self.settings.provider)
         self.compact_manager.provider = self.provider
@@ -592,14 +595,14 @@ class OpenAgentRuntime:
         self._payload_message_cache = {}
         self._recent_context_usage = {}
         self._janitor_state = {}
-        persist_provider_reasoning_level(self.settings, provider_name, normalized_level)
+        persist_provider_reasoning_level(self.settings, provider_name, model_name, normalized_level)
         if clear_requested:
             return (
-                f"Set reasoning level for provider '{self.settings.provider.name}' to 'auto' "
+                f"Set reasoning level for model '{self.settings.provider.model}' to 'auto' "
                 "and saved it to .open_somnia/open_somnia.toml."
             )
         return (
-            f"Set reasoning level for provider '{self.settings.provider.name}' to "
+            f"Set reasoning level for model '{self.settings.provider.model}' to "
             f"'{normalized_level}' and saved it to .open_somnia/open_somnia.toml."
         )
 

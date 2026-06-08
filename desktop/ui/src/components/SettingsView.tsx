@@ -1194,7 +1194,7 @@ function mergeProviderProfileDrafts(
     contextWindowTokens: projectProfile?.contextWindowTokens || inheritedProfile?.contextWindowTokens || "",
     maxTokens: projectProfile?.maxTokens || inheritedProfile?.maxTokens || "",
     timeoutSeconds: projectProfile?.timeoutSeconds || inheritedProfile?.timeoutSeconds || "",
-    reasoningLevel: projectProfile?.reasoningLevel || inheritedProfile?.reasoningLevel || "",
+    reasoningLevel: "",
   };
 }
 
@@ -1232,8 +1232,7 @@ function isEmptyProviderProfile(profile: ProviderProfileDraft): boolean {
     !profile.organization.trim() &&
     !profile.contextWindowTokens.trim() &&
     !profile.maxTokens.trim() &&
-    !profile.timeoutSeconds.trim() &&
-    !profile.reasoningLevel.trim()
+    !profile.timeoutSeconds.trim()
   );
 }
 
@@ -1246,7 +1245,7 @@ function providerSource(
   if (!isProjectScope) {
     return "project";
   }
-  return projectConfig.profiles.some((profile) => profile.name === profileName) ||
+  return projectConfig.profiles.some((profile) => profile.name === profileName && !isEmptyProviderProfile(profile)) ||
     !inheritedConfig.profiles.some((profile) => profile.name === profileName)
     ? "project"
     : "inherited";
@@ -1299,7 +1298,7 @@ function parseProviderConfigDraft(text: string): ProviderConfigDraft {
         contextWindowTokens: readTomlBare(readTomlValue(section.lines, "context_window_tokens")),
         maxTokens: readTomlBare(readTomlValue(section.lines, "max_tokens")),
         timeoutSeconds: readTomlBare(readTomlValue(section.lines, "timeout_seconds")),
-        reasoningLevel: readTomlString(readTomlValue(section.lines, "reasoning_level")),
+        reasoningLevel: "",
       };
     });
   const extraSections = sections
@@ -1325,7 +1324,7 @@ function renderProviderConfigDraft(config: ProviderConfigDraft): string {
   if (config.defaultProvider) {
     lines.push(`default = ${tomlString(config.defaultProvider)}`);
   }
-  for (const profile of config.profiles) {
+  for (const profile of config.profiles.filter((item) => !isEmptyProviderProfile(item))) {
     const models = modelsFromText(profile.modelsText);
     lines.push("", `[providers.${normalizeProviderName(profile.name)}]`);
     appendTomlString(lines, "provider_type", profile.providerType);
@@ -1339,7 +1338,6 @@ function renderProviderConfigDraft(config: ProviderConfigDraft): string {
     appendTomlBare(lines, "context_window_tokens", profile.contextWindowTokens);
     appendTomlBare(lines, "max_tokens", profile.maxTokens);
     appendTomlBare(lines, "timeout_seconds", profile.timeoutSeconds);
-    appendTomlString(lines, "reasoning_level", profile.reasoningLevel);
   }
   for (const trait of Object.values(config.modelTraits).filter((item) => !isEmptyModelTrait(item))) {
     lines.push("", `[model_traits.${normalizeProviderName(trait.provider)}.${tomlString(trait.model)}]`);
