@@ -406,6 +406,9 @@ class TeammateRuntimeManager:
     def assign_claimable_tasks(self, session_id: str | None = None) -> int:
         """Assign ready tasks to available teammates after dependencies unblock."""
         normalized_session_id = str(session_id or self._active_session_id or "").strip() or None
+        is_paused = getattr(self.task_store, "is_auto_assign_paused", None)
+        if callable(is_paused) and is_paused(normalized_session_id):
+            return 0
         list_claimable = getattr(self.task_store, "list_claimable", None)
         if not callable(list_claimable):
             return 0
@@ -733,6 +736,10 @@ class TeammateRuntimeManager:
                         if has_open_task:
                             current_task_id = owned_open[0]["id"] if owned_open else member.get("current_task_id") if (member := self._find(name)) else None
                             self._update_member(name, status="idle", activity="idle_waiting_on_owned_task", current_task_id=current_task_id)
+                            continue
+                        is_paused = getattr(self.task_store, "is_auto_assign_paused", None)
+                        if callable(is_paused) and is_paused(self._member_session_id(name)):
+                            self._update_member(name, status="idle", activity="idle_auto_assign_paused")
                             continue
                         list_claimable_for = getattr(self.task_store, "list_claimable_for", None)
                         if callable(list_claimable_for):

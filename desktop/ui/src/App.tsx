@@ -2632,6 +2632,18 @@ function App() {
     }
   }
 
+  async function handleOpenProjectWorkspace(path: string) {
+    const targetPath = path.trim();
+    if (!targetPath) {
+      return;
+    }
+    try {
+      await openWorkspaceRoot(targetPath);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
   async function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLElement>) {
     if (event.button !== 0 || event.detail > 1 || (event.target as HTMLElement).closest("button")) {
       return;
@@ -3113,6 +3125,15 @@ function App() {
                           </button>
                           {projectMenuOpenKey === group.key ? (
                             <div className="project-menu-panel">
+                              <button
+                                className="project-menu-item"
+                                onClick={() => {
+                                  setProjectMenuOpenKey(null);
+                                  void handleOpenProjectWorkspace(group.path);
+                                }}
+                              >
+                                {t("sidebar.openWorkspace")}
+                              </button>
                               <button
                                 className="project-menu-item"
                                 onClick={() => {
@@ -3693,11 +3714,26 @@ function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpen
   const sortedTasks = [...tasks].sort((left, right) => Number(left.id) - Number(right.id));
   const counts = taskStatusCounts(sortedTasks);
   const graph = buildTaskGraphLayout(sortedTasks);
-  const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
-  const selectedTask = sortedTasks.find((task) => task.id === selectedTaskId) ?? null;
+  const interactive = sortedTasks.length > 0;
 
   return (
-    <section className="task-graph-panel">
+    <section
+      className={`task-graph-panel ${interactive ? "interactive" : "disabled"}`}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? t("taskGraph.expand") : undefined}
+      onClick={interactive ? onOpenPanel : undefined}
+      onKeyDown={
+        interactive
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpenPanel();
+              }
+            }
+          : undefined
+      }
+    >
       <div className="task-graph-head">
         <div>
           <h3>{t("taskGraph.title")}</h3>
@@ -3707,18 +3743,29 @@ function TaskGraphPanel({ tasks, onOpenPanel }: { tasks: TaskGraphItem[]; onOpen
               : t("taskGraph.summary", { completed: counts.completed, total: counts.total, inProgress: counts.inProgress, pending: counts.pending })}
           </p>
         </div>
-        <button className="settings-inline-button" type="button" onClick={onOpenPanel} disabled={sortedTasks.length === 0}>
-          {t("taskGraph.expand")}
+        <button
+          className="task-graph-expand-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenPanel();
+          }}
+          disabled={!interactive}
+          title={t("taskGraph.expand")}
+          aria-label={t("taskGraph.expand")}
+        >
+          <svg viewBox="0 0 1024 1024" aria-hidden="true">
+            <path d="M853.333333 213.333333a42.666667 42.666667 0 0 0-42.666666-42.666666h-213.333334a42.666667 42.666667 0 0 0 0 85.333333h109.653334l-139.946667 140.373333a42.666667 42.666667 0 0 0 0 60.586667 42.666667 42.666667 0 0 0 60.586667 0L768 316.586667V426.666667a42.666667 42.666667 0 0 0 42.666667 42.666666 42.666667 42.666667 0 0 0 42.666666-42.666666zM456.96 567.04a42.666667 42.666667 0 0 0-60.586667 0L256 706.986667V597.333333a42.666667 42.666667 0 0 0-42.666667-42.666666 42.666667 42.666667 0 0 0-42.666666 42.666666v213.333334a42.666667 42.666667 0 0 0 42.666666 42.666666h213.333334a42.666667 42.666667 0 0 0 0-85.333333H316.586667l140.373333-140.373333a42.666667 42.666667 0 0 0 0-60.586667z" />
+          </svg>
         </button>
       </div>
       {sortedTasks.length === 0 ? (
         <div className="task-graph-empty">{t("taskGraph.hint")}</div>
       ) : (
         <div className="task-graph-canvas">
-          <TaskGraphSvg graph={graph} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} compact />
+          <TaskGraphSvg graph={graph} selectedTaskId={null} onSelectTask={() => {}} compact />
         </div>
       )}
-      {selectedTask ? <TaskGraphDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} /> : null}
     </section>
   );
 }
@@ -4086,10 +4133,6 @@ function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationTh
           <span className={`tool-result-dot ${isRunning ? "running" : "success"}`} aria-hidden="true" />
           <span>Thinking</span>
         </span>
-        <span className="thinking-log-summary-meta">
-          {typeof thinkingLog.characters === "number" ? <em>{formatCharacterCount(thinkingLog.characters)}</em> : null}
-          {path ? <em>{compactInlineText(path, 54)}</em> : null}
-        </span>
       </summary>
       {text ? (
         <pre ref={bodyRef} className="thinking-log-body">
@@ -4105,14 +4148,9 @@ function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationTh
         </div>
       ) : (
         <div className="thinking-log-detail">
-          <span>{path || "Thinking log is available after the turn finishes."}</span>
+          <span>Thinking log is available after the turn finishes.</span>
         </div>
       )}
-      {path ? (
-        <div className="thinking-log-detail">
-          <span>{path}</span>
-        </div>
-      ) : null}
     </details>
   );
 }
@@ -5878,17 +5916,6 @@ function formatTokenCount(tokenCount: number | null | undefined): string {
     return `${(value / 1_000).toFixed(1)}k`;
   }
   return String(Math.round(value));
-}
-
-function formatCharacterCount(characterCount: number | null | undefined): string {
-  const value = Math.max(0, Number(characterCount) || 0);
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(2)}M chars`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}k chars`;
-  }
-  return `${Math.round(value)} chars`;
 }
 
 function truncateTopic(value: string, maxLength = 15): string {

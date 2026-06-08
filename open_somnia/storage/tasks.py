@@ -95,12 +95,88 @@ class TaskStore:
             write_json(self.meta_path, meta)
             return task_id
 
+    def _next_ids(self, count: int) -> list[int]:
+        if count <= 0:
+            return []
+        with get_lock(self.meta_path):
+            meta = read_json(self.meta_path, {"next_id": 1})
+            first_id = int(meta.get("next_id", 1))
+            meta["next_id"] = first_id + count
+            write_json(self.meta_path, meta)
+            return list(range(first_id, first_id + count))
+
+    def _auto_assign_key(self, session_id: str | None) -> str:
+        return self._normalize_session_id(session_id) or "__global__"
+
+    def set_auto_assign_paused(self, session_id: str | None, paused: bool) -> None:
+        with get_lock(self.meta_path):
+            meta = read_json(self.meta_path, {"next_id": 1})
+            paused_sessions = dict(meta.get("auto_assign_paused", {}) or {})
+            key = self._auto_assign_key(session_id)
+            if paused:
+                paused_sessions[key] = True
+            else:
+                paused_sessions.pop(key, None)
+            meta["auto_assign_paused"] = paused_sessions
+            write_json(self.meta_path, meta)
+
+    def is_auto_assign_paused(self, session_id: str | None = None) -> bool:
+        meta = read_json(self.meta_path, {"next_id": 1})
+        paused_sessions = dict(meta.get("auto_assign_paused", {}) or {})
+        return bool(paused_sessions.get(self._auto_assign_key(session_id)))
+
+    def _normalize_task_ids(self, values: list[int] | None) -> list[int]:
+        ids: list[int] = []
+        for value in values or []:
+            try:
+                task_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if task_id > 0:
+                ids.append(task_id)
+        return sorted(set(ids))
+
+    def _incomplete_blockers(self, task: dict[str, Any], session_id: str | None = None) -> list[int]:
+        incomplete: list[int] = []
+        for blocker_id in self._normalize_task_ids(task.get("blockedBy", [])):
+            try:
+                blocker = self.get(blocker_id, session_id=session_id)
+            except ValueError:
+                incomplete.append(blocker_id)
+                continue
+            if blocker.get("status") != "completed":
+                incomplete.append(blocker_id)
+        return incomplete
+
+    def incomplete_blockers(self, task_id: int, session_id: str | None = None) -> list[int]:
+        return self._incomplete_blockers(self.get(task_id, session_id=session_id), session_id=session_id)
+
+    def _assert_no_cycle(self, task_id: int, blocked_by: list[int], session_id: str | None = None) -> None:
+        target = int(task_id)
+
+        def visit(current_id: int, seen: set[int]) -> bool:
+            if current_id == target:
+                return True
+            if current_id in seen:
+                return False
+            seen.add(current_id)
+            try:
+                current = self.get(current_id, session_id=session_id)
+            except ValueError:
+                return False
+            return any(visit(next_id, seen) for next_id in self._normalize_task_ids(current.get("blockedBy", [])))
+
+        for blocker_id in blocked_by:
+            if blocker_id == target or visit(blocker_id, set()):
+                raise ValueError(f"Adding dependency would create a cycle involving task {task_id}")
+
     def create(
         self,
         subject: str,
         description: str = "",
         *,
         preferred_owner: str | None = None,
+        blocked_by: list[int] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """创建新任务.
@@ -113,6 +189,9 @@ class TaskStore:
             创建的任务字典。
         """
         task_id = self._next_id()
+        blocker_ids = self._normalize_task_ids(blocked_by)
+        for blocker_id in blocker_ids:
+            self.get(blocker_id, session_id=session_id)
         task = {
             "id": task_id,
             "subject": subject,
@@ -121,13 +200,84 @@ class TaskStore:
             "owner": None,
             "preferred_owner": preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None,
             "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
-            "blockedBy": [],
+            "blockedBy": blocker_ids,
             "blocks": [],
             "created_at": now_ts(),
             "updated_at": now_ts(),
         }
         self.save(task)
         return task
+
+    def create_many(self, items: list[dict[str, Any]], *, session_id: str | None = None) -> list[dict[str, Any]]:
+        if not items:
+            return []
+        task_ids = self._next_ids(len(items))
+        key_to_id: dict[str, int] = {}
+        for task_id, item in zip(task_ids, items, strict=False):
+            key = str(item.get("key") or item.get("id") or "").strip()
+            if key:
+                if key in key_to_id:
+                    raise ValueError(f"Duplicate task key: {key}")
+                key_to_id[key] = task_id
+
+        def resolve_ids(values: list[Any] | None) -> list[int]:
+            resolved: list[int] = []
+            for value in values or []:
+                if isinstance(value, str) and value.strip() in key_to_id:
+                    resolved.append(key_to_id[value.strip()])
+                    continue
+                try:
+                    resolved.append(int(value))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"Invalid task dependency reference: {value}") from exc
+            return self._normalize_task_ids(resolved)
+
+        now = now_ts()
+        tasks: list[dict[str, Any]] = []
+        for task_id, item in zip(task_ids, items, strict=False):
+            subject = str(item.get("subject", "")).strip()
+            if not subject:
+                raise ValueError("Task subject is required")
+            blocked_by = resolve_ids(item.get("blocked_by") or item.get("blockedBy") or item.get("depends_on"))
+            task = {
+                "id": task_id,
+                "subject": subject,
+                "description": str(item.get("description", "") or ""),
+                "status": "pending",
+                "owner": None,
+                "preferred_owner": (
+                    item.get("preferred_owner").strip()
+                    if isinstance(item.get("preferred_owner"), str) and item.get("preferred_owner").strip()
+                    else None
+                ),
+                "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
+                "blockedBy": blocked_by,
+                "blocks": [],
+                "created_at": now,
+                "updated_at": now,
+            }
+            tasks.append(task)
+
+        task_by_id = {int(task["id"]): task for task in tasks}
+
+        def visit(task_id: int, stack: set[int]) -> None:
+            if task_id in stack:
+                raise ValueError(f"Task dependency graph contains a cycle at task {task_id}")
+            task = task_by_id.get(task_id)
+            if task is None:
+                return
+            stack.add(task_id)
+            for blocker_id in self._normalize_task_ids(task.get("blockedBy", [])):
+                if blocker_id not in task_by_id:
+                    self.get(blocker_id, session_id=session_id)
+                visit(blocker_id, stack)
+            stack.remove(task_id)
+
+        for task in tasks:
+            visit(int(task["id"]), set())
+        for task in tasks:
+            self.save(task)
+        return tasks
 
     def save(self, task: dict[str, Any]) -> None:
         task = dict(task)
@@ -197,12 +347,19 @@ class TaskStore:
             if path is not None and path.exists():
                 path.unlink()
             return None
+        if add_blocked_by:
+            if task.get("status") in {"in_progress", "completed"}:
+                raise ValueError(f"Task {task_id} is already {task.get('status')}; dependencies cannot be changed")
+            blocker_ids = self._normalize_task_ids(add_blocked_by)
+            for blocker_id in blocker_ids:
+                self.get(blocker_id, session_id=session_id)
+            self._assert_no_cycle(task_id, blocker_ids, session_id=session_id)
+            task["blockedBy"] = sorted(set(self._normalize_task_ids(task.get("blockedBy", [])) + blocker_ids))
         if status:
             task["status"] = status
-        if add_blocked_by:
-            task["blockedBy"] = sorted(set(task.get("blockedBy", []) + add_blocked_by))
-        if task.get("status") in {"in_progress", "completed"} and task.get("blockedBy"):
-            blockers = ", ".join(str(item) for item in task.get("blockedBy", []))
+        incomplete_blockers = self._incomplete_blockers(task, session_id=session_id)
+        if task.get("status") in {"in_progress", "completed"} and incomplete_blockers:
+            blockers = ", ".join(str(item) for item in incomplete_blockers)
             raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
         if add_blocks:
             task["blocks"] = sorted(set(task.get("blocks", []) + add_blocks))
@@ -211,17 +368,13 @@ class TaskStore:
                 preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None
             )
         self.save(task)
-        if status == "completed":
-            for other in self.list_all(session_id=session_id):
-                if task_id in other.get("blockedBy", []):
-                    other["blockedBy"] = [item for item in other.get("blockedBy", []) if item != task_id]
-                    self.save(other)
         return task
 
     def claim(self, task_id: int, owner: str, session_id: str | None = None) -> dict[str, Any]:
         task = self.get(task_id, session_id=session_id)
-        if task.get("blockedBy"):
-            blockers = ", ".join(str(item) for item in task.get("blockedBy", []))
+        incomplete_blockers = self._incomplete_blockers(task, session_id=session_id)
+        if incomplete_blockers:
+            blockers = ", ".join(str(item) for item in incomplete_blockers)
             raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
         task["owner"] = owner
         task["status"] = "in_progress"
@@ -245,7 +398,7 @@ class TaskStore:
         return [
             task
             for task in self.list_all(session_id=session_id)
-            if task.get("status") == "pending" and not task.get("owner") and not task.get("blockedBy")
+            if task.get("status") == "pending" and not task.get("owner") and not self._incomplete_blockers(task, session_id=session_id)
         ]
 
     def list_claimable_for(self, owner: str, session_id: str | None = None) -> list[dict[str, Any]]:

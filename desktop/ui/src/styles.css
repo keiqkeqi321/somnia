@@ -2892,11 +2892,13 @@ button {
   overflow: hidden;
 }
 
+.bubble.assistant > * + .thinking-log-card {
+  margin-top: 12px;
+}
+
 .thinking-log-card summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
   padding: 10px 12px;
   cursor: pointer;
   color: #f5f3ff;
@@ -2907,8 +2909,7 @@ button {
   color: var(--muted);
 }
 
-.thinking-log-summary-main,
-.thinking-log-summary-meta {
+.thinking-log-summary-main {
   min-width: 0;
   display: inline-flex;
   align-items: center;
@@ -2917,21 +2918,6 @@ button {
 
 .thinking-log-summary-main {
   flex: 1 1 auto;
-}
-
-.thinking-log-summary-meta {
-  flex: 0 1 auto;
-  justify-content: flex-end;
-}
-
-.thinking-log-summary-meta em {
-  min-width: 0;
-  color: var(--muted);
-  font-style: normal;
-  font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .thinking-log-body {
@@ -3819,10 +3805,31 @@ button {
   border: 1px solid rgba(95, 182, 255, 0.2);
   border-radius: 8px;
   background: rgba(11, 16, 23, 0.78);
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.task-graph-panel.interactive {
+  cursor: pointer;
+}
+
+.task-graph-panel.interactive:hover {
+  border-color: rgba(95, 182, 255, 0.34);
+  background: rgba(14, 20, 28, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(95, 182, 255, 0.1);
+}
+
+.task-graph-panel.interactive:focus-visible {
+  outline: 2px solid rgba(95, 182, 255, 0.72);
+  outline-offset: 2px;
+}
+
+.task-graph-panel.disabled {
+  cursor: default;
 }
 
 .task-graph-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
@@ -3838,6 +3845,41 @@ button {
   color: var(--text-subtle);
   font-size: 0.78rem;
   line-height: 1.42;
+}
+
+.task-graph-expand-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #cfd8e6;
+}
+
+.task-graph-expand-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: #f3f7ff;
+}
+
+.task-graph-expand-button:focus-visible {
+  outline: 2px solid rgba(95, 182, 255, 0.72);
+  outline-offset: 2px;
+}
+
+.task-graph-expand-button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.task-graph-expand-button svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
 }
 
 .task-graph-canvas {
