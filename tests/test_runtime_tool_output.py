@@ -1633,6 +1633,21 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(updated)
         self.assertIsNone(claimed)
 
+    def test_authorize_tool_call_always_allows_submit_plan(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+
+        for mode in ("shortcuts", "plan", "accept_edits"):
+            runtime.execution_mode = mode
+            with self.subTest(mode=mode):
+                result = OpenAgentRuntime.authorize_tool_call(
+                    runtime,
+                    "submit_plan",
+                    {"plan": "Request approval for the next implementation step."},
+                )
+                self.assertIsNone(result)
+
     def test_authorize_tool_call_allows_team_collaboration_tools_in_accept_edits_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "accept_edits"

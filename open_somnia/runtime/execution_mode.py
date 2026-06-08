@@ -25,6 +25,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "task_list",
         "list_teammates",
         "check_background",
+        "submit_plan",
     }
 )
 FILE_EDIT_TOOL_NAMES = frozenset({"write_file", "edit_file"})
