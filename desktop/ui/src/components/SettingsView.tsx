@@ -852,8 +852,14 @@ function ProviderProfilesEditor({
         <div>
           <strong>{t("settings.providerProfiles.title")}</strong>
         </div>
-        <button className="settings-action-button" type="button" onClick={addProfile}>
-          {t("settings.providerProfiles.add")}
+        <button
+          className="settings-inline-button provider-model-icon-button"
+          type="button"
+          onClick={addProfile}
+          title={t("settings.providerProfiles.add")}
+          aria-label={t("settings.providerProfiles.add")}
+        >
+          +
         </button>
       </div>
       {effectiveConfig.profiles.length === 0 ? (
@@ -865,6 +871,7 @@ function ProviderProfilesEditor({
           <div className="provider-profile-list">
             {effectiveConfig.profiles.map((profile) => {
               const profileSource = providerSource(profile.name, config, inheritedConfig, isProjectScope);
+              const isDefaultProvider = effectiveConfig.defaultProvider === profile.name;
               return (
               <button
                 key={profile.name}
@@ -873,7 +880,10 @@ function ProviderProfilesEditor({
                 onClick={() => setSelectedProvider(profile.name)}
               >
                 <span className="provider-profile-item-head">
-                  <strong>{profile.name}</strong>
+                  <span className="provider-profile-name-wrap">
+                    <strong>{profile.name}</strong>
+                    {isDefaultProvider ? <span className="provider-default-pill">{t("settings.providerProfiles.defaultBadge")}</span> : null}
+                  </span>
                   <small>{t("settings.providerProfiles.modelCount", { count: modelsFromText(profile.modelsText).length })}</small>
                 </span>
                 <span>{profile.providerType || "openai"} · {profile.defaultModel || t("settings.providerProfiles.noDefault")}</span>

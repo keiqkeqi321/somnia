@@ -580,6 +580,27 @@ button {
   flex: none;
 }
 
+.provider-profile-item .provider-profile-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.provider-profile-item .provider-default-pill {
+  flex: none;
+  max-width: none;
+  padding: 1px 5px;
+  border: 1px solid rgba(95, 182, 255, 0.28);
+  border-radius: 999px;
+  background: rgba(95, 182, 255, 0.08);
+  color: #9dccf5;
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
 .provider-profile-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
