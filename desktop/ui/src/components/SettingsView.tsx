@@ -257,6 +257,11 @@ function SettingsView({
                   </button>
                 ))}
               </div>
+              {activeSection === "skills" ? null : (
+                <button className="settings-inline-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
+                  {configSaving ? t("settings.config.saving") : t("settings.config.save")}
+                </button>
+              )}
               <button className="settings-inline-button" type="button" onClick={onReloadConfig} disabled={configLoading || configSaving}>
                 {t("settings.config.reload")}
               </button>
@@ -370,11 +375,6 @@ function SettingsView({
                           : t(activeConfigOption?.titleKey ?? "settings.config.providerTitle")}
                       </strong>
                       {activeConfigSection === "provider" ? null : <p>{t("settings.config.editorHint")}</p>}
-                    </div>
-                    <div className="config-editor-actions">
-                      <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
-                        {configSaving ? t("settings.config.saving") : t("settings.config.save")}
-                      </button>
                     </div>
                   </div>
                   <textarea
