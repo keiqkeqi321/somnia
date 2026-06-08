@@ -59,6 +59,7 @@ from open_somnia.path_completion import (
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 from open_somnia.runtime.messages import guess_image_media_type, parse_image_data_url
+from open_somnia.runtime.project_init import build_project_init_prompt
 from open_somnia.skills.loader import SkillLoader
 
 CLIPBOARD_TEMP_DIRNAME = "temp"
@@ -310,6 +311,32 @@ def _list_skills_for_scope(workspace_root: Path, scope: str) -> list[dict[str, s
     skills_dir = _skills_dir_for_scope(workspace_root, scope)
     loader = SkillLoader(skills_dir)
     return [entry for entry in loader.list_entries() if entry.get("scope") in {scope, "global", "workspace"}]
+
+
+def _parse_init_command(command: str) -> tuple[bool, str] | None:
+    stripped = str(command or "").strip()
+    if stripped != "/init" and not stripped.startswith("/init "):
+        return None
+
+    payload = stripped[len("/init") :].strip()
+    force = False
+    while payload:
+        if payload == "--force" or payload.startswith("--force "):
+            force = True
+            payload = payload[len("--force") :].strip()
+            continue
+        if payload == "-f" or payload.startswith("-f "):
+            force = True
+            payload = payload[len("-f") :].strip()
+            continue
+        if payload.startswith("--"):
+            option = payload.split(maxsplit=1)[0]
+            raise SidecarAPIError(
+                HTTPStatus.BAD_REQUEST,
+                f"Unknown /init option: {option}. Usage: /init [--force] [extra instructions]",
+            )
+        break
+    return force, payload
 
 
 @dataclass(slots=True)
@@ -794,7 +821,7 @@ class SidecarServer:
         except FileNotFoundError as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         try:
-            handle = self.service.run_turn(session, user_input)
+            handle = self.service.run_turn(session, self._prepare_turn_user_input(user_input))
         except RuntimeError as exc:
             raise SidecarAPIError(HTTPStatus.CONFLICT, str(exc)) from exc
         drainer = Thread(
@@ -808,6 +835,25 @@ class SidecarServer:
             self._turn_threads[handle.turn_id] = drainer
         drainer.start()
         return {"turn_id": handle.turn_id, "session_id": session.id}
+
+    def _prepare_turn_user_input(self, user_input: str | dict[str, Any]) -> str | dict[str, Any]:
+        if not isinstance(user_input, str):
+            return user_input
+        init_command = _parse_init_command(user_input)
+        if init_command is None:
+            return user_input
+        force, extra_prompt = init_command
+        target = self.settings.workspace_root / "AGENTS.md"
+        if target.exists() and not force:
+            raise SidecarAPIError(
+                HTTPStatus.CONFLICT,
+                "AGENTS.md already exists. Use /init --force to regenerate it.",
+            )
+        return build_project_init_prompt(
+            self.settings.workspace_root,
+            force=force,
+            extra_prompt=extra_prompt,
+        ).prompt
 
     def compact_session(self, session_id: str) -> dict[str, Any]:
         try:

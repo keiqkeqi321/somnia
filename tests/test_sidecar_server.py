@@ -249,6 +249,45 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_expands_init_command_before_starting_turn(self) -> None:
+        root = self._stable_test_dir("sidecar-init-command")
+        (root / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        session = server.service.create_session()
+        seen_inputs: list[str] = []
+
+        class _DoneHandle:
+            turn_id = "turn-init"
+            result = None
+
+            def __init__(self, target_session) -> None:
+                self.session = target_session
+
+            def is_done(self) -> bool:
+                return True
+
+            def drain_events(self, *, block: bool = False, timeout: float | None = None) -> list:
+                return []
+
+        def fake_run_turn(target_session, user_input):
+            seen_inputs.append(user_input)
+            return _DoneHandle(target_session)
+
+        server.service.run_turn = fake_run_turn
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            response = server.start_turn(session.id, "/init --force focus on tests")
+
+            self.assertEqual(response["turn_id"], "turn-init")
+            self.assertEqual(len(seen_inputs), 1)
+            self.assertIn("Initialize project instructions for this workspace.", seen_inputs[0])
+            self.assertIn("Target file: AGENTS.md", seen_inputs[0])
+            self.assertIn("Overwrite existing file: yes", seen_inputs[0])
+            self.assertIn("focus on tests", seen_inputs[0])
+        finally:
+            server.close()
+
     def test_mcp_servers_endpoint_includes_tool_previews(self) -> None:
         root = self._stable_test_dir("sidecar-mcp")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

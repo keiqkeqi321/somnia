@@ -96,6 +96,7 @@ mermaid.initialize({
 });
 
 const COMMAND_SPECS = [
+  { command: "/init", descriptionKey: "cmd.init" as const },
   { command: "/scan", descriptionKey: "cmd.scan" as const },
   { command: "/symbols", descriptionKey: "cmd.symbols" as const },
   { command: "/image", descriptionKey: "cmd.image" as const },

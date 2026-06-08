@@ -252,6 +252,7 @@ const translations = {
     "common.connectFirst": "Connect to a sidecar first.",
 
     /* ── Command specs ── */
+    "cmd.init": "Generate AGENTS.md project instructions",
     "cmd.scan": "Scan the repo or a subdirectory",
     "cmd.symbols": "Find symbols and inspect matching source locations",
     "cmd.image": "Send a local image to the active multimodal model",
@@ -540,6 +541,7 @@ const translations = {
     "common.connectFirst": "请先连接 sidecar。",
 
     /* ── Command specs ── */
+    "cmd.init": "生成 AGENTS.md 项目说明",
     "cmd.scan": "扫描仓库或子目录",
     "cmd.symbols": "查找符号并检查匹配的源码位置",
     "cmd.image": "发送本地图片给多模态模型",
