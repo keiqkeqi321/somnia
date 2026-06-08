@@ -989,11 +989,17 @@ button {
   align-items: center;
   padding: 10px 12px;
   color: #cbd5e1;
+  cursor: pointer;
   text-align: left;
 }
 
 .mcp-server-row:hover .mcp-server-summary {
   background: rgba(255, 255, 255, 0.04);
+}
+
+.mcp-server-summary:focus-visible {
+  outline: 2px solid rgba(95, 182, 255, 0.7);
+  outline-offset: -2px;
 }
 
 .mcp-server-summary strong {
@@ -1004,25 +1010,139 @@ button {
   color: #ffffff;
 }
 
+.mcp-server-status {
+  min-width: 58px;
+}
+
+.mcp-status-loading {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(203, 213, 225, 0.28);
+  border-top-color: #d7dadf;
+  border-radius: 999px;
+  vertical-align: -2px;
+  animation: mcp-refresh-spin 780ms linear infinite;
+}
+
 .mcp-server-actions {
   display: flex;
   align-items: center;
+  cursor: default;
   gap: 8px;
+}
+
+.mcp-icon-button {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #d7dadf;
+}
+
+.mcp-icon-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.mcp-icon-button:focus-visible {
+  outline: 2px solid rgba(95, 182, 255, 0.78);
+  outline-offset: 2px;
+}
+
+.mcp-icon-button:disabled {
+  color: rgba(215, 218, 223, 0.42);
+  cursor: not-allowed;
+}
+
+.mcp-icon-button.spinning:disabled {
+  color: #d7dadf;
+  cursor: progress;
+}
+
+.mcp-icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mcp-icon-button.spinning svg {
+  animation: mcp-refresh-spin 780ms linear infinite;
+}
+
+@keyframes mcp-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .mcp-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: #cbd5e1;
-  font-size: 0.78rem;
-  white-space: nowrap;
+  cursor: pointer;
 }
 
 .mcp-toggle input {
-  width: 15px;
-  height: 15px;
-  accent-color: #5fb6ff;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mcp-toggle-track {
+  position: relative;
+  display: inline-flex;
+  width: 31px;
+  height: 18px;
+  border-radius: 999px;
+  background: #5f6368;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease;
+}
+
+.mcp-toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #15181c;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.32);
+  transition: transform 120ms ease;
+}
+
+.mcp-toggle input:checked + .mcp-toggle-track {
+  background: #16c75a;
+}
+
+.mcp-toggle input:checked + .mcp-toggle-track .mcp-toggle-thumb {
+  transform: translateX(13px);
+}
+
+.mcp-toggle input:focus-visible + .mcp-toggle-track {
+  outline: 2px solid rgba(95, 182, 255, 0.78);
+  outline-offset: 2px;
+}
+
+.mcp-toggle input:disabled + .mcp-toggle-track {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .mcp-status-dot {

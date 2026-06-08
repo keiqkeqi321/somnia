@@ -203,6 +203,10 @@ function SettingsView({
     }
   }
 
+  function toggleMcpServer(serverName: string) {
+    setExpandedMcpServer((current) => (current === serverName ? null : serverName));
+  }
+
   function toggleArchivedProjectSelection(entries: ArchivedSessionEntry[]) {
     const projectKeys = entries.map((entry) => entry.key);
     const projectKeySet = new Set(projectKeys);
@@ -417,36 +421,54 @@ function SettingsView({
                           const isExpanded = expandedMcpServer === server.name;
                           return (
                             <div key={server.name} className={`mcp-server-row ${isExpanded ? "expanded" : ""}`}>
-                              <div className="mcp-server-summary">
+                              <div
+                                className="mcp-server-summary"
+                                role="button"
+                                tabIndex={0}
+                                aria-expanded={isExpanded}
+                                onClick={() => toggleMcpServer(server.name)}
+                                onKeyDown={(event) => {
+                                  if (event.currentTarget !== event.target) {
+                                    return;
+                                  }
+                                  if (event.key === "Enter" || event.key === " ") {
+                                    event.preventDefault();
+                                    toggleMcpServer(server.name);
+                                  }
+                                }}
+                              >
                                 <span className={`mcp-status-dot ${server.status}`} aria-hidden="true" />
                                 <strong>{server.name}</strong>
-                                <span>{server.status}</span>
+                                <span className="mcp-server-status">
+                                  {togglingMcpServer === server.name ? <span className="mcp-status-loading" aria-label={t("settings.config.fetching")} /> : server.status}
+                                </span>
                                 <span>{server.transport}</span>
                                 <span>{server.tool_count} {t("settings.config.tools")}</span>
-                                <div className="mcp-server-actions">
+                                <div className="mcp-server-actions" onClick={(event) => event.stopPropagation()}>
                                   <label className="mcp-toggle" title={t(server.enabled ? "settings.config.disableMcp" : "settings.config.enableMcp")}>
                                     <input
                                       type="checkbox"
+                                      aria-label={t(server.enabled ? "settings.config.disableMcp" : "settings.config.enableMcp")}
                                       checked={server.enabled}
                                       disabled={togglingMcpServer === server.name}
                                       onChange={(event) => void handleToggleServer(server.name, event.currentTarget.checked)}
                                     />
-                                    <span>{togglingMcpServer === server.name ? "..." : server.enabled ? t("settings.config.on") : t("settings.config.off")}</span>
+                                    <span className="mcp-toggle-track" aria-hidden="true">
+                                      <span className="mcp-toggle-thumb" />
+                                    </span>
                                   </label>
                                   <button
                                     type="button"
-                                    className="settings-inline-button"
+                                    className={`mcp-icon-button ${debuggingMcpServer === server.name ? "spinning" : ""}`}
                                     onClick={() => void handleDebugServer(server.name)}
                                     disabled={debuggingMcpServer === server.name || !server.enabled}
+                                    title={debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
+                                    aria-label={debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
                                   >
-                                    {debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="settings-inline-button"
-                                    onClick={() => setExpandedMcpServer(isExpanded ? null : server.name)}
-                                  >
-                                    {isExpanded ? t("settings.config.hide") : t("settings.config.toolsButton")}
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                      <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
+                                      <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
+                                    </svg>
                                   </button>
                                 </div>
                               </div>
