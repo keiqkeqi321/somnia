@@ -32,7 +32,7 @@ from open_somnia.config.settings import (
     persist_hook_enabled,
     persist_provider_reasoning_level,
     persist_provider_selection,
-    persist_provider_vision_model,
+    persist_vision_model,
 )
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
@@ -512,8 +512,8 @@ class OpenAgentRuntime:
         active_provider = getattr(self, "provider", None)
         if active_provider is None:
             return None
-        vision_provider = str(getattr(self.settings.provider, "vision_provider", "") or "").strip().lower()
-        vision_model = str(getattr(self.settings.provider, "vision_model", "") or "").strip()
+        vision_provider = str(getattr(self.settings, "vision_provider", "") or "").strip().lower()
+        vision_model = str(getattr(self.settings, "vision_model", "") or "").strip()
         if not vision_provider or not vision_model:
             return active_provider
         if not self._messages_include_image_input(messages):
@@ -603,48 +603,47 @@ class OpenAgentRuntime:
             f"'{normalized_level}' and saved it to .open_somnia/open_somnia.toml."
         )
 
-    def set_vision_model(self, provider_name: str, vision_provider: str | None, vision_model: str | None) -> str:
-        normalized_provider = provider_name.strip().lower()
+    def set_vision_model(self, vision_provider: str | None, vision_model: str | None, *, scope: str = "project") -> str:
         normalized_vision_provider = str(vision_provider or "").strip().lower()
         normalized_model = _normalize_model_id(vision_model)
-        if normalized_provider not in self.settings.provider_profiles:
-            raise ValueError(f"Provider '{normalized_provider}' is not configured.")
+        normalized_scope = str(scope or "").strip().lower()
+        if normalized_scope not in {"user", "project"}:
+            raise ValueError("scope must be 'user' or 'project'.")
         if bool(normalized_vision_provider) != bool(normalized_model):
             raise ValueError("vision_provider and vision_model must be set together.")
-        profile = self.settings.provider_profiles[normalized_provider]
         if normalized_vision_provider and normalized_vision_provider not in self.settings.provider_profiles:
             raise ValueError(f"Vision provider '{normalized_vision_provider}' is not configured.")
         if normalized_model and normalized_model not in self.settings.provider_profiles[normalized_vision_provider].models:
             raise ValueError(
                 f"Vision model '{normalized_model}' is not configured for provider '{normalized_vision_provider}'."
             )
-        profile.vision_provider = normalized_vision_provider or None
-        profile.vision_model = normalized_model or None
-        if self.settings.provider.name == normalized_provider:
-            self.settings.provider = _materialize_provider(profile, self.settings.provider.model)
-            self.provider = self._instantiate_provider(self.settings.provider)
-            self.compact_manager.provider = self.provider
-            self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
-            self._context_usage_cache = {}
-            self._payload_message_cache = {}
-            self._recent_context_usage = {}
-            self._janitor_state = {}
-        persist_provider_vision_model(
+        self.settings.vision_provider = normalized_vision_provider or None
+        self.settings.vision_model = normalized_model or None
+        self._context_usage_cache = {}
+        self._payload_message_cache = {}
+        self._recent_context_usage = {}
+        self._janitor_state = {}
+        persist_vision_model(
             self.settings,
-            normalized_provider,
-            normalized_model or None,
             normalized_vision_provider or None,
+            normalized_model or None,
+            scope=normalized_scope,
         )
+        reloaded = load_settings(
+            self.settings.workspace_root,
+            provider_override=self.settings.provider.name,
+            model_override=self.settings.provider.model,
+        )
+        self.settings.vision_provider = reloaded.vision_provider
+        self.settings.vision_model = reloaded.vision_model
+        self.settings.raw_config = reloaded.raw_config
         if normalized_model:
             return (
-                f"Set vision model for provider '{normalized_provider}' to "
+                f"Set {normalized_scope} shared vision model to "
                 f"'{normalized_vision_provider}/{normalized_model}' "
-                "and saved it to .open_somnia/open_somnia.toml."
+                f"and saved it to {normalized_scope} config."
             )
-        return (
-            f"Cleared vision model for provider '{normalized_provider}' "
-            "and saved it to .open_somnia/open_somnia.toml."
-        )
+        return f"Cleared {normalized_scope} shared vision model and saved it to {normalized_scope} config."
 
     def reload_provider_configuration(self, *, provider_name: str | None = None, model: str | None = None) -> None:
         provider_override = provider_name or self.settings.provider.name
@@ -656,6 +655,8 @@ class OpenAgentRuntime:
         )
         self.settings.provider_profiles = reloaded.provider_profiles
         self.settings.provider = reloaded.provider
+        self.settings.vision_provider = reloaded.vision_provider
+        self.settings.vision_model = reloaded.vision_model
         self.settings.raw_config = reloaded.raw_config
         self.provider = self._instantiate_provider(self.settings.provider)
         self.compact_manager.provider = self.provider

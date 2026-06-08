@@ -604,21 +604,39 @@ class SidecarServerTests(unittest.TestCase):
 
     def test_sidecar_sets_vision_model_over_http(self) -> None:
         root = self._stable_test_dir("sidecar-vision-model")
+        config_path = root / ".open_somnia" / "open_somnia.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[providers]",
+                    'default = "openai"',
+                    "",
+                    "[providers.openai]",
+                    'provider_type = "openai"',
+                    'models = ["fake-model", "fake-model-mini"]',
+                    'default_model = "fake-model"',
+                    'api_key = "fake"',
+                    'base_url = "http://localhost"',
+                ]
+            ),
+            encoding="utf-8",
+        )
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
         try:
             server.start_background()
             status, payload = self._request_json(
                 "POST",
                 f"{server.base_url}/vision-model",
-                {"provider_name": "openai", "vision_provider": "openai", "vision_model": "fake-model-mini"},
+                {"vision_provider": "openai", "vision_model": "fake-model-mini"},
             )
             self.assertEqual(status, 200)
             self.assertEqual(payload["provider"], "openai")
             self.assertEqual(payload["model"], "fake-model")
             self.assertEqual(payload["vision_provider"], "openai")
             self.assertEqual(payload["vision_model"], "fake-model-mini")
-            self.assertEqual(server.runtime.settings.provider.vision_provider, "openai")
-            self.assertEqual(server.runtime.settings.provider.vision_model, "fake-model-mini")
+            self.assertEqual(server.runtime.settings.vision_provider, "openai")
+            self.assertEqual(server.runtime.settings.vision_model, "fake-model-mini")
         finally:
             server.close()
 

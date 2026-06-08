@@ -17,8 +17,6 @@ class ProviderSettings:
     name: str = "anthropic"
     provider_type: str = "anthropic"
     model: str = ""
-    vision_provider: str | None = None
-    vision_model: str | None = None
     api_key: str = ""
     base_url: str | None = None
     organization: str | None = None
@@ -37,8 +35,6 @@ class ProviderProfileSettings:
     models: list[str] = field(default_factory=list)
     model_traits: dict[str, ModelTraits] = field(default_factory=dict)
     default_model: str = ""
-    vision_provider: str | None = None
-    vision_model: str | None = None
     api_key: str = ""
     base_url: str | None = None
     organization: str | None = None
@@ -127,6 +123,8 @@ class AppSettings:
     provider: ProviderSettings
     runtime: RuntimeSettings
     storage: StorageSettings
+    vision_provider: str | None = None
+    vision_model: str | None = None
     provider_profiles: dict[str, ProviderProfileSettings] = field(default_factory=dict)
     mcp_servers: list[MCPServerSettings] = field(default_factory=list)
     hooks: list[HookSettings] = field(default_factory=list)

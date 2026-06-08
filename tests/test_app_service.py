@@ -57,8 +57,6 @@ class AppServiceTests(unittest.TestCase):
                 name="openai",
                 provider_type="openai",
                 model="fake-model",
-                vision_provider="openai",
-                vision_model="fake-model-mini",
                 api_key="fake",
                 base_url="http://localhost",
             ),
@@ -92,12 +90,12 @@ class AppServiceTests(unittest.TestCase):
                         "fake-model-mini": ModelTraits(context_window_tokens=128_000, supports_reasoning=False),
                     },
                     default_model="fake-model",
-                    vision_provider="openai",
-                    vision_model="fake-model-mini",
                     api_key="fake",
                     base_url="http://localhost",
                 ),
             },
+            vision_provider="openai",
+            vision_model="fake-model-mini",
         )
 
     def _collect_events_until(self, handle, predicate, timeout: float = 2.0):
@@ -510,8 +508,6 @@ class AppServiceTests(unittest.TestCase):
             openai_models = service.list_models("openai")
 
             self.assertEqual([provider.name for provider in providers], ["anthropic", "openai"])
-            self.assertEqual(providers[1].vision_provider, "openai")
-            self.assertEqual(providers[1].vision_model, "fake-model-mini")
             self.assertEqual([model.name for model in openai_models], ["fake-model", "fake-model-mini"])
             self.assertTrue(openai_models[0].is_default)
             self.assertTrue(openai_models[0].is_active)

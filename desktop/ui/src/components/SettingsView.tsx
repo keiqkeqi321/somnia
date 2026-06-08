@@ -52,9 +52,7 @@ type SettingsViewProps = {
   onSetMcpServerEnabled: (serverName: string, enabled: boolean) => Promise<number>;
   onReloadConfig: () => void | Promise<void>;
   providers: ProviderDescriptor[];
-  models: ModelDescriptor[];
   visionModels: ModelDescriptor[];
-  selectedProvider: string;
   selectedVisionProvider: string;
   selectedVisionModel: string;
   visionModelSaving: boolean;
@@ -101,9 +99,7 @@ function SettingsView({
   onSetMcpServerEnabled,
   onReloadConfig,
   providers,
-  models,
   visionModels,
-  selectedProvider,
   selectedVisionProvider,
   selectedVisionModel,
   visionModelSaving,
@@ -226,6 +222,36 @@ function SettingsView({
                 {t("settings.config.reload")}
               </button>
             </div>
+            {activeConfigScope ? (
+              <section className="config-panel" data-settings-panel="skills">
+                <div className="config-path-row">
+                  <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
+                  <code>{activeConfigScope.skills_path}</code>
+                  <button
+                    className="settings-inline-button"
+                    type="button"
+                    onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
+                  >
+                    {t("settings.config.openFolder")}
+                  </button>
+                </div>
+                {activeConfigScope.skills.length === 0 ? (
+                  <div className="settings-empty-state">
+                    <p>{t("settings.config.noSkills")}</p>
+                  </div>
+                ) : (
+                  <div className="config-skill-list">
+                    {activeConfigScope.skills.map((skill) => (
+                      <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
+                        <strong>{skill.name}</strong>
+                        <span>{skill.description}</span>
+                        <code>{skill.path}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            ) : null}
             <div className="config-section-tabs" role="tablist" aria-label="Configuration type">
               {CONFIG_SECTION_OPTIONS.map((item) => (
                 <button
@@ -240,65 +266,6 @@ function SettingsView({
             </div>
             {activeConfigScope ? (
               <>
-                <section className="config-panel vision-model-panel">
-                  <div className="config-editor-head">
-                    <div>
-                      <strong>{t("settings.config.visionModel")}</strong>
-                      <p>{t("settings.config.visionModelHint")}</p>
-                    </div>
-                    <button
-                      className="settings-action-button"
-                      type="button"
-                      onClick={onSaveVisionModel}
-                      disabled={visionModelSaving || !selectedProvider}
-                    >
-                      {visionModelSaving ? t("settings.config.saving") : t("settings.config.saveVisionModel")}
-                    </button>
-                  </div>
-                  <div className="vision-model-controls">
-                    <label>
-                      <span>{t("settings.config.activeProvider")}</span>
-                      <select value={selectedProvider} disabled>
-                        {providers.map((provider) => (
-                          <option key={provider.name} value={provider.name}>
-                            {provider.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>{t("settings.config.visionProvider")}</span>
-                      <select
-                        value={selectedVisionProvider}
-                        onChange={(event) => onSetVisionProviderDraft(event.currentTarget.value)}
-                        disabled={visionModelSaving || !selectedProvider}
-                      >
-                        <option value="">{t("settings.config.noVisionModel")}</option>
-                        {providers.map((provider) => (
-                          <option key={provider.name} value={provider.name}>
-                            {provider.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>{t("settings.config.visionModel")}</span>
-                      <select
-                        value={selectedVisionModel}
-                        onChange={(event) => onSetVisionModelDraft(event.currentTarget.value)}
-                        disabled={visionModelSaving || !selectedVisionProvider}
-                      >
-                        <option value="">{t("settings.config.noVisionModel")}</option>
-                        {visionModels.map((model) => (
-                          <option key={model.name} value={model.name}>
-                            {model.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                </section>
-
                 <section className="config-panel">
                   <div className="config-path-row">
                     <span>{activeConfigScope.label} {t("settings.config.configLabel")}</span>
@@ -311,6 +278,56 @@ function SettingsView({
                       {activeConfigScope.config_exists ? t("settings.config.openFile") : t("settings.config.openFolder")}
                     </button>
                   </div>
+                  {selectedConfigSection === "provider" ? (
+                    <div className="vision-model-panel">
+                      <div className="config-editor-head">
+                        <div>
+                          <strong>{t("settings.config.visionModel")}</strong>
+                          <p>{t("settings.config.visionModelHint")}</p>
+                        </div>
+                        <button
+                          className="settings-action-button"
+                          type="button"
+                          onClick={onSaveVisionModel}
+                          disabled={visionModelSaving || providers.length === 0}
+                        >
+                          {visionModelSaving ? t("settings.config.saving") : t("settings.config.saveVisionModel")}
+                        </button>
+                      </div>
+                      <div className="vision-model-controls">
+                        <label>
+                          <span>{t("settings.config.visionProvider")}</span>
+                          <select
+                            value={selectedVisionProvider}
+                            onChange={(event) => onSetVisionProviderDraft(event.currentTarget.value)}
+                            disabled={visionModelSaving || providers.length === 0}
+                          >
+                            <option value="">{t("settings.config.noVisionModel")}</option>
+                            {providers.map((provider) => (
+                              <option key={provider.name} value={provider.name}>
+                                {provider.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>{t("settings.config.visionModel")}</span>
+                          <select
+                            value={selectedVisionModel}
+                            onChange={(event) => onSetVisionModelDraft(event.currentTarget.value)}
+                            disabled={visionModelSaving || !selectedVisionProvider}
+                          >
+                            <option value="">{t("settings.config.noVisionModel")}</option>
+                            {visionModels.map((model) => (
+                              <option key={model.name} value={model.name}>
+                                {model.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="config-editor-head">
                     <div>
                       <strong>{activeConfigOption ? t(activeConfigOption.titleKey) : t("settings.config.configuration")}</strong>
@@ -417,34 +434,6 @@ function SettingsView({
                   </section>
                 ) : null}
 
-                <section className="config-panel" data-settings-panel="skills">
-                  <div className="config-path-row">
-                    <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
-                    <code>{activeConfigScope.skills_path}</code>
-                    <button
-                      className="settings-inline-button"
-                      type="button"
-                      onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
-                    >
-                      {t("settings.config.openFolder")}
-                    </button>
-                  </div>
-                  {activeConfigScope.skills.length === 0 ? (
-                    <div className="settings-empty-state">
-                      <p>{t("settings.config.noSkills")}</p>
-                    </div>
-                  ) : (
-                    <div className="config-skill-list">
-                      {activeConfigScope.skills.map((skill) => (
-                        <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
-                          <strong>{skill.name}</strong>
-                          <span>{skill.description}</span>
-                          <code>{skill.path}</code>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
                 {configMessage ? <p className="config-message">{configMessage}</p> : null}
               </>
             ) : (
@@ -580,7 +569,7 @@ function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
 
 function configPlaceholder(section: SettingsConfigSectionKey): string {
   if (section === "provider") {
-    return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1", "gpt-4.1-mini"]\ndefault_model = "gpt-4.1"\nvision_provider = "openai"\nvision_model = "gpt-4.1-mini"\napi_key = "..."';
+    return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1", "gpt-4.1-mini"]\ndefault_model = "gpt-4.1"\napi_key = "..."\n\n[routing]\nvision_provider = "openai"\nvision_model = "gpt-4.1-mini"';
   }
   if (section === "mcp") {
     return '[mcp_servers.example]\ntransport = "stdio"\ncommand = "npx"\nargs = ["-y", "@modelcontextprotocol/server-filesystem"]';

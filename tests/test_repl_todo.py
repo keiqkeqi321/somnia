@@ -747,16 +747,16 @@ class ReplTodoTests(unittest.TestCase):
         runtime = SimpleNamespace(
             settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="text-model")),
             configured_provider_profiles=lambda: {
-                "openai": SimpleNamespace(vision_model=None, models=["text-model"]),
-                "vision": SimpleNamespace(vision_model=None, models=["vision-model"]),
+                "openai": SimpleNamespace(models=["text-model"]),
+                "vision": SimpleNamespace(models=["vision-model"]),
             },
-            set_vision_model=lambda provider, vision_provider, model: f"set vision:{provider}:{vision_provider}:{model}",
+            set_vision_model=lambda vision_provider, model: f"set vision:{vision_provider}:{model}",
         )
 
         with patch("builtins.print") as mock_print:
             _handle_vision_command(runtime, "/vision vision vision-model")
 
-        mock_print.assert_called_once_with("set vision:openai:vision:vision-model")
+        mock_print.assert_called_once_with("set vision:vision:vision-model")
 
     def test_reasoning_command_sets_reasoning_level_directly(self) -> None:
         runtime = SimpleNamespace(set_reasoning_level=lambda level: f"set reasoning:{level}")

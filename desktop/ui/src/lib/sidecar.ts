@@ -252,15 +252,15 @@ export class SidecarClient {
   }
 
   async setVisionModel(
-    providerName: string,
     visionProvider: string | null,
     visionModel: string | null,
+    scope: "user" | "project" = "project",
   ): Promise<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }> {
     return parseResponse<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }>(
       await fetch(`${this.baseUrl}/vision-model`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider_name: providerName, vision_provider: visionProvider ?? "", vision_model: visionModel ?? "" }),
+        body: JSON.stringify({ scope, vision_provider: visionProvider ?? "", vision_model: visionModel ?? "" }),
       }),
     );
   }

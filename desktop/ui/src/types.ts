@@ -69,8 +69,6 @@ export interface ProviderDescriptor {
   default_model: string;
   models: string[];
   active_model?: string | null;
-  vision_provider?: string | null;
-  vision_model?: string | null;
   reasoning_level?: string | null;
   is_active: boolean;
 }

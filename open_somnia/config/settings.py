@@ -343,56 +343,44 @@ def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, 
         provider_raw["reasoning_level"] = normalized_level
 
 
-def persist_provider_vision_model(
+def persist_vision_model(
     settings: AppSettings,
-    provider_name: str,
-    vision_model: str | None,
     vision_provider: str | None = None,
+    vision_model: str | None = None,
+    *,
+    scope: str = "project",
 ) -> None:
-    normalized_provider = str(provider_name).strip().lower()
     normalized_vision_provider = str(vision_provider or "").strip().lower()
     normalized_model = _normalize_model_id(vision_model or "")
-    if not normalized_provider:
-        raise ValueError("A provider name is required to persist vision model.")
+    normalized_scope = str(scope or "").strip().lower()
     if bool(normalized_vision_provider) != bool(normalized_model):
         raise ValueError("vision_provider and vision_model must be set together.")
+    if normalized_scope not in {"user", "project"}:
+        raise ValueError("scope must be 'user' or 'project'.")
 
-    config_path = workspace_config_path(settings.workspace_root)
+    config_path = global_config_path() if normalized_scope == "user" else workspace_config_path(settings.workspace_root)
     ensure_app_dir_ignored(config_path.parent)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
     if normalized_model:
-        _upsert_section_value(lines, f"providers.{normalized_provider}", "vision_model", _toml_string(normalized_model))
-        if normalized_vision_provider:
-            _upsert_section_value(
-                lines,
-                f"providers.{normalized_provider}",
-                "vision_provider",
-                _toml_string(normalized_vision_provider),
-            )
-        else:
-            lines = _remove_section_value(lines, f"providers.{normalized_provider}", "vision_provider")
+        _upsert_section_value(lines, "routing", "vision_provider", _toml_string(normalized_vision_provider))
+        _upsert_section_value(lines, "routing", "vision_model", _toml_string(normalized_model))
     else:
-        lines = _remove_section_value(lines, f"providers.{normalized_provider}", "vision_model")
-        lines = _remove_section_value(lines, f"providers.{normalized_provider}", "vision_provider")
+        _upsert_section_value(lines, "routing", "vision_provider", _toml_string(""))
+        _upsert_section_value(lines, "routing", "vision_model", _toml_string(""))
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    providers_raw = settings.raw_config.setdefault("providers", {})
-    if not isinstance(providers_raw, dict):
-        providers_raw = {}
-        settings.raw_config["providers"] = providers_raw
-    provider_raw = providers_raw.setdefault(normalized_provider, {})
-    if not isinstance(provider_raw, dict):
-        provider_raw = {}
-        providers_raw[normalized_provider] = provider_raw
+    routing_raw = settings.raw_config.setdefault("routing", {})
+    if not isinstance(routing_raw, dict):
+        routing_raw = {}
+        settings.raw_config["routing"] = routing_raw
     if normalized_model:
-        provider_raw["vision_model"] = normalized_model
-        if normalized_vision_provider:
-            provider_raw["vision_provider"] = normalized_vision_provider
-        else:
-            provider_raw.pop("vision_provider", None)
+        routing_raw["vision_provider"] = normalized_vision_provider
+        routing_raw["vision_model"] = normalized_model
     else:
-        provider_raw.pop("vision_model", None)
-        provider_raw.pop("vision_provider", None)
+        routing_raw["vision_provider"] = ""
+        routing_raw["vision_model"] = ""
+    settings.vision_provider = normalized_vision_provider or None
+    settings.vision_model = normalized_model or None
 
 
 def persist_initial_provider_setup(
@@ -965,13 +953,9 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
     default_model = _normalize_model_id(item.get("default_model", "")) or defaults.default_model
     if default_model and default_model not in models:
         models = [*models, default_model]
-    vision_provider = str(item.get("vision_provider", "")).strip().lower()
-    vision_model = _normalize_model_id(item.get("vision_model", ""))
     if not models:
         models = list(defaults.models)
         default_model = defaults.default_model
-    if vision_model and not vision_provider:
-        raise ValueError(f"Provider '{provider_name}' configures vision_model but does not configure vision_provider.")
     model_traits = dict(_load_global_model_traits(raw))
     model_traits.update(_load_provider_model_traits(raw, provider_name))
     return ProviderProfileSettings(
@@ -980,8 +964,6 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
         models=models,
         model_traits=model_traits,
         default_model=default_model or models[0],
-        vision_provider=vision_provider or defaults.vision_provider,
-        vision_model=vision_model or defaults.vision_model,
         api_key=str(item.get("api_key", defaults.api_key)),
         base_url=str(item["base_url"]) if item.get("base_url") else defaults.base_url,
         organization=str(item["organization"]) if item.get("organization") else defaults.organization,
@@ -1011,26 +993,25 @@ def _load_provider_profiles(raw: dict) -> tuple[dict[str, ProviderProfileSetting
     if configured_default:
         if configured_default not in profiles:
             raise ValueError(f"Configured default provider '{configured_default}' is not defined in [providers].")
-        _validate_vision_provider_models(profiles)
         return profiles, configured_default
-    _validate_vision_provider_models(profiles)
     return profiles, next(iter(profiles))
 
 
-def _validate_vision_provider_models(profiles: dict[str, ProviderProfileSettings]) -> None:
-    for provider_name, profile in profiles.items():
-        vision_provider = str(profile.vision_provider or "").strip().lower()
-        vision_model = _normalize_model_id(profile.vision_model or "")
-        if not vision_provider and not vision_model:
-            continue
-        if not vision_provider or not vision_model:
-            raise ValueError(
-                f"Provider '{provider_name}' must configure both vision_provider and vision_model, or neither."
-            )
-        if vision_provider not in profiles:
-            raise ValueError(f"Vision provider '{vision_provider}' is not configured for provider '{provider_name}'.")
-        if vision_model not in profiles[vision_provider].models:
-            raise ValueError(f"Vision model '{vision_model}' is not configured for provider '{vision_provider}'.")
+def _load_vision_route(raw: dict, profiles: dict[str, ProviderProfileSettings]) -> tuple[str | None, str | None]:
+    routing_raw = raw.get("routing", {})
+    if not isinstance(routing_raw, dict):
+        return None, None
+    vision_provider = str(routing_raw.get("vision_provider", "")).strip().lower()
+    vision_model = _normalize_model_id(routing_raw.get("vision_model", ""))
+    if not vision_provider and not vision_model:
+        return None, None
+    if not vision_provider or not vision_model:
+        raise ValueError("[routing] must configure both vision_provider and vision_model, or neither.")
+    if vision_provider not in profiles:
+        raise ValueError(f"Vision provider '{vision_provider}' is not configured.")
+    if vision_model not in profiles[vision_provider].models:
+        raise ValueError(f"Vision model '{vision_model}' is not configured for provider '{vision_provider}'.")
+    return vision_provider, vision_model
 
 
 def _has_configured_api_key(profiles: dict[str, ProviderProfileSettings]) -> bool:
@@ -1041,15 +1022,11 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
     selected_model = _normalize_model_id(model or profile.default_model)
     if selected_model not in profile.models:
         raise ValueError(f"Model '{selected_model}' is not configured for provider '{profile.name}'.")
-    vision_model = _normalize_model_id(profile.vision_model or "") or None
-    vision_provider = str(profile.vision_provider or "").strip().lower() or None
     model_traits = profile.model_traits.get(selected_model)
     return ProviderSettings(
         name=profile.name,
         provider_type=profile.provider_type,
         model=selected_model,
-        vision_provider=vision_provider,
-        vision_model=vision_model,
         api_key=profile.api_key,
         base_url=profile.base_url,
         organization=profile.organization,
@@ -1093,6 +1070,7 @@ def load_settings(
     if provider_name not in provider_profiles:
         raise ValueError(f"Provider '{provider_name}' is not configured in [providers].")
     provider = _materialize_provider(provider_profiles[provider_name], model_override)
+    vision_provider, vision_model = _load_vision_route(raw, provider_profiles)
 
     runtime_raw = raw.get("runtime", {})
     runtime = RuntimeSettings(
@@ -1119,6 +1097,8 @@ def load_settings(
         provider=provider,
         runtime=runtime,
         storage=_storage_settings(root),
+        vision_provider=vision_provider,
+        vision_model=vision_model,
         provider_profiles=provider_profiles,
         mcp_servers=mcp_servers,
         hooks=hooks,

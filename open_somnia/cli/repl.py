@@ -2021,15 +2021,11 @@ def _handle_model_command(runtime) -> None:
 
 def _handle_vision_command(runtime, command: str) -> None:
     profiles = runtime.configured_provider_profiles()
-    target_provider = str(getattr(runtime.settings.provider, "name", "")).strip().lower()
-    if not target_provider or target_provider not in profiles:
-        print("[active provider is not configured]")
-        return
     parts = command.strip().split(maxsplit=1)
     if len(parts) > 1:
         values = parts[1].split()
         if len(values) == 1 and values[0].strip().lower() in {"auto", "none", "clear"}:
-            print(runtime.set_vision_model(target_provider, None, None))
+            print(runtime.set_vision_model(None, None))
             return
         if len(values) != 2:
             print("[usage: /vision <provider> <model>]")
@@ -2042,11 +2038,11 @@ def _handle_vision_command(runtime, command: str) -> None:
         if raw_model not in vision_profile.models:
             print(f"[vision model '{raw_model}' is not configured for provider '{vision_provider}']")
             return
-        print(runtime.set_vision_model(target_provider, vision_provider, raw_model))
+        print(runtime.set_vision_model(vision_provider, raw_model))
         return
 
-    current_vision_provider = str(getattr(runtime.settings.provider, "vision_provider", "") or "").strip().lower()
-    current_vision_model = str(getattr(runtime.settings.provider, "vision_model", "") or "").strip()
+    current_vision_provider = str(getattr(runtime.settings, "vision_provider", "") or "").strip().lower()
+    current_vision_model = str(getattr(runtime.settings, "vision_model", "") or "").strip()
     provider_items = [
         (
             name,
@@ -2065,7 +2061,7 @@ def _handle_vision_command(runtime, command: str) -> None:
         print("[vision model selection cancelled]")
         return
     if selected_provider == "__clear__":
-        print(runtime.set_vision_model(target_provider, None, None))
+        print(runtime.set_vision_model(None, None))
         return
     vision_profile = profiles[selected_provider]
     model_items = [
@@ -2083,7 +2079,7 @@ def _handle_vision_command(runtime, command: str) -> None:
     if not selected_model:
         print("[vision model selection cancelled]")
         return
-    print(runtime.set_vision_model(target_provider, selected_provider, selected_model))
+    print(runtime.set_vision_model(selected_provider, selected_model))
 
 
 def _handle_reasoning_command(runtime, command: str) -> None:

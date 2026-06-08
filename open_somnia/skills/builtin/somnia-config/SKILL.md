@@ -42,6 +42,8 @@ Supported top-level areas:
 [model_traits.<model>]
 [model_traits.<provider>.<model>]
 
+[routing]
+
 [runtime]
 
 [mcp_servers.<name>]
@@ -91,8 +93,6 @@ default = "openai"
 provider_type = "openai"
 models = ["gpt-4.1", "gpt-4.1-mini"]
 default_model = "gpt-4.1"
-vision_provider = "openai"
-vision_model = "gpt-4.1-mini"
 api_key = "${OPENAI_API_KEY}"
 base_url = "https://api.openai.com/v1"
 organization = "org_optional"
@@ -100,6 +100,10 @@ context_window_tokens = 1047576
 max_tokens = 8000
 timeout_seconds = 120
 reasoning_level = "medium"
+
+[routing]
+vision_provider = "openai"
+vision_model = "gpt-4.1-mini"
 ```
 
 Fields:
@@ -108,7 +112,6 @@ Fields:
 - `provider_type`: `"openai"` or `"anthropic"`.
 - `models`: list of model ids available for this provider.
 - `default_model`: active/default model for this provider. If absent, Somnia uses the profile default.
-- `vision_provider` + `vision_model`: optional provider/model pair to use only for turns that include image inputs. The provider must be configured and the model must be listed under that provider.
 - `api_key`: API key. Prefer env placeholders such as `"${OPENAI_API_KEY}"` unless the user explicitly wants a literal key.
 - `base_url`: API base URL. OpenAI-compatible providers should usually set this.
 - `organization`: optional provider organization id.
@@ -118,6 +121,14 @@ Fields:
 - `reasoning_level`: optional reasoning preference. Supported normalized values: `auto`, `low`, `medium`, `high`, `deep`; unset/`auto` means automatic/default behavior.
 
 Provider names are normalized lowercase by the loader.
+
+## `[routing]`
+
+Defines shared routing fallbacks that are independent of the active text provider profile.
+
+Fields:
+
+- `vision_provider` + `vision_model`: optional shared provider/model pair to use for turns that include image inputs. The provider must be configured and the model must be listed under that provider. Project config overrides user config; set both values to empty strings in project config to disable a user-level fallback.
 
 ## `[model_traits]`
 

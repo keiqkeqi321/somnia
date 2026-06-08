@@ -2139,14 +2139,9 @@ function App() {
 
   async function handleProviderChange(nextProvider: string) {
     setSelectedProvider(nextProvider);
-    const nextVisionProvider = providers.find((provider) => provider.name === nextProvider)?.vision_provider ?? "";
-    const nextVisionModel = providers.find((provider) => provider.name === nextProvider)?.vision_model ?? "";
-    setSelectedVisionProvider(nextVisionProvider);
-    setSelectedVisionModel(nextVisionModel);
     setSelectedReasoningLevel(normalizeReasoningLevel(providers.find((provider) => provider.name === nextProvider)?.reasoning_level));
     try {
       await refreshModels(nextProvider);
-      await refreshVisionModels(nextVisionProvider, undefined, nextVisionModel);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
     }
@@ -2169,7 +2164,6 @@ function App() {
     setBusyAction("switch-provider");
     try {
       await client.switchProviderModel(selectedProvider, selectedModel);
-      await client.setVisionModel(selectedProvider, selectedVisionProvider || null, selectedVisionModel || null);
       await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
       await refreshStatusAndProviders();
       setModelPickerOpen(false);
@@ -2616,13 +2610,13 @@ function App() {
 
   async function handleSaveVisionModel() {
     const client = clientRef.current;
-    if (!client || !selectedProvider) {
+    if (!client || providers.length === 0) {
       setSettingsConfigMessage("Connect to a sidecar before saving vision model.");
       return;
     }
     setVisionModelSaving(true);
     try {
-      const result = await client.setVisionModel(selectedProvider, selectedVisionProvider || null, selectedVisionModel || null);
+      const result = await client.setVisionModel(selectedVisionProvider || null, selectedVisionModel || null, settingsConfigScope);
       await refreshStatusAndProviders();
       await refreshSettingsConfig();
       setSettingsConfigMessage(result.message);
@@ -3012,9 +3006,7 @@ function App() {
           onSetMcpServerEnabled={handleSetMcpServerEnabled}
           onReloadConfig={refreshSettingsConfig}
           providers={providers}
-          models={models}
           visionModels={visionModels}
-          selectedProvider={selectedProvider}
           selectedVisionProvider={selectedVisionProvider}
           selectedVisionModel={selectedVisionModel}
           visionModelSaving={visionModelSaving}
@@ -3459,47 +3451,6 @@ function App() {
                               ))}
                             </div>
                           </div>
-                          <div className="picker-column">
-                            <span className="picker-label">{t("composer.visionModel")}</span>
-                            <div className="picker-options">
-                              <button
-                                className={`picker-option ${selectedVisionProvider === "" ? "selected" : ""}`}
-                                onClick={() => {
-                                  setSelectedVisionProvider("");
-                                  setSelectedVisionModel("");
-                                  setVisionModels([]);
-                                }}
-                                disabled={busyAction !== null}
-                              >
-                                {t("composer.visionModelNone")}
-                              </button>
-                              {providers.map((provider) => (
-                                <button
-                                  key={provider.name}
-                                  className={`picker-option ${selectedVisionProvider === provider.name ? "selected" : ""}`}
-                                  onClick={() => void handleVisionProviderChange(provider.name)}
-                                  disabled={busyAction !== null}
-                                >
-                                  {provider.name}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="picker-column">
-                            <span className="picker-label">{t("composer.visionModelId")}</span>
-                            <div className="picker-options">
-                              {visionModels.map((model) => (
-                                <button
-                                  key={model.name}
-                                  className={`picker-option ${selectedVisionModel === model.name ? "selected" : ""}`}
-                                  onClick={() => setSelectedVisionModel(model.name)}
-                                  disabled={busyAction !== null}
-                                >
-                                  {model.name}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
                         </div>
                         <div className="model-picker-footer">
                           <div className="reasoning-levels" role="group" aria-label={t("composer.reasoningLevel")}>
@@ -3520,7 +3471,6 @@ function App() {
                             disabled={
                               !selectedProvider ||
                               !selectedModel ||
-                              Boolean(selectedVisionProvider) !== Boolean(selectedVisionModel) ||
                               busyAction !== null
                             }
                           >
