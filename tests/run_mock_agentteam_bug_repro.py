@@ -189,12 +189,11 @@ def task_dependency_scenario() -> dict[str, Any]:
         root = Path(tmpdir)
         tasks = TaskStore(root / "tasks")
         one = tasks.create("Summarize alpha")
-        two = tasks.create("Merge report")
-        tasks.update(two["id"], add_blocked_by=[one["id"]])
+        two = tasks.create("Merge report", blocked_by=[one["id"]])
         before = tasks.get(two["id"]).get("blockedBy", [])
         tasks.update(one["id"], status="completed")
         after = tasks.get(two["id"]).get("blockedBy", [])
-        ok = before == [one["id"]] and after == []
+        ok = before == [one["id"]] and after == [one["id"]] and tasks.incomplete_blockers(two["id"]) == []
         return {
             "id": "task_dependency_unblocks_on_completion",
             "ok": ok,

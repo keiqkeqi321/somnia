@@ -348,13 +348,7 @@ class TaskStore:
                 path.unlink()
             return None
         if add_blocked_by:
-            if task.get("status") in {"in_progress", "completed"}:
-                raise ValueError(f"Task {task_id} is already {task.get('status')}; dependencies cannot be changed")
-            blocker_ids = self._normalize_task_ids(add_blocked_by)
-            for blocker_id in blocker_ids:
-                self.get(blocker_id, session_id=session_id)
-            self._assert_no_cycle(task_id, blocker_ids, session_id=session_id)
-            task["blockedBy"] = sorted(set(self._normalize_task_ids(task.get("blockedBy", [])) + blocker_ids))
+            raise ValueError("Task dependencies must be declared at creation time; dependency updates are not allowed")
         if status:
             task["status"] = status
         incomplete_blockers = self._incomplete_blockers(task, session_id=session_id)

@@ -1544,7 +1544,7 @@ function App() {
         void refreshToolLogs();
       }
       const toolName = readEventString(event.payload.tool_name, "");
-      if (toolName === "task_create" || toolName === "task_update" || toolName === "task_list" || toolName === "claim_task") {
+      if (toolName === "task_create_batch" || toolName === "task_update" || toolName === "task_list" || toolName === "claim_task") {
         void refreshTaskGraph(projectPath, event.session_id ?? null);
       }
       return;

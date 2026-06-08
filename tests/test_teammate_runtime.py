@@ -1124,10 +1124,21 @@ class TeammateRuntimeTests(unittest.TestCase):
             root = Path(tmpdir)
             task_store = TaskStore(root / "tasks")
             first = task_store.create("Initial dependency", session_id="session-1")
-            second = task_store.create("Follow-up two", preferred_owner="Planner", session_id="session-1")
-            third = task_store.create("Follow-up three", preferred_owner="Writer", session_id="session-1")
-            task_store.update(second["id"], add_blocked_by=[first["id"]], session_id="session-1")
-            task_store.update(third["id"], add_blocked_by=[first["id"]], session_id="session-1")
+            second, third = task_store.create_many(
+                [
+                    {
+                        "subject": "Follow-up two",
+                        "preferred_owner": "Planner",
+                        "depends_on": [first["id"]],
+                    },
+                    {
+                        "subject": "Follow-up three",
+                        "preferred_owner": "Writer",
+                        "depends_on": [first["id"]],
+                    },
+                ],
+                session_id="session-1",
+            )
 
             team_store = TeamStore(root / "team")
             base_member = {
@@ -1201,35 +1212,40 @@ class TeammateRuntimeTests(unittest.TestCase):
             claimed = task_store.claim(blocked["id"], "Worker", session_id="session-1")
             self.assertEqual(claimed["status"], "in_progress")
 
-    def test_adding_completed_dependency_does_not_create_stale_block(self) -> None:
+    def test_creating_task_with_completed_dependency_does_not_create_stale_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
             blocker = task_store.create("Already done", session_id="session-1")
-            task = task_store.create("Ready task", session_id="session-1")
             task_store.update(blocker["id"], status="completed", session_id="session-1")
 
-            updated = task_store.update(task["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+            [created] = task_store.create_many(
+                [{"subject": "Ready task", "depends_on": [blocker["id"]]}],
+                session_id="session-1",
+            )
 
-            self.assertEqual(updated["blockedBy"], [blocker["id"]])
-            self.assertEqual(task_store.incomplete_blockers(task["id"], session_id="session-1"), [])
-            self.assertEqual([item["id"] for item in task_store.list_claimable(session_id="session-1")], [task["id"]])
+            self.assertEqual(created["blockedBy"], [blocker["id"]])
+            self.assertEqual(task_store.incomplete_blockers(created["id"], session_id="session-1"), [])
+            self.assertEqual([item["id"] for item in task_store.list_claimable(session_id="session-1")], [created["id"]])
 
-    def test_dependency_changes_are_rejected_after_task_started_or_completed(self) -> None:
+    def test_dependency_updates_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
             blocker = task_store.create("Dependency", session_id="session-1")
+            pending = task_store.create("Pending", session_id="session-1")
             started = task_store.create("Started", session_id="session-1")
             done = task_store.create("Done", session_id="session-1")
 
             task_store.claim(started["id"], "Worker", session_id="session-1")
             task_store.update(done["id"], status="completed", session_id="session-1")
 
-            with self.assertRaisesRegex(ValueError, "dependencies cannot be changed"):
+            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
+                task_store.update(pending["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
                 task_store.update(started["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
-            with self.assertRaisesRegex(ValueError, "dependencies cannot be changed"):
+            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
                 task_store.update(done["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
 
-    def test_task_create_accepts_dependencies_atomically(self) -> None:
+    def test_task_create_batch_accepts_existing_dependency_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             task_store = TaskStore(root / "tasks")
@@ -1245,16 +1261,52 @@ class TeammateRuntimeTests(unittest.TestCase):
 
             output = registry.execute(
                 ctx,
-                "task_create",
-                {"subject": "Dependent work", "blocked_by": [blocker["id"]]},
+                "task_create_batch",
+                {"tasks": [{"subject": "Dependent work", "depends_on": [blocker["id"]]}]},
             )
-            created = json.loads(output)
+            created = json.loads(output)["tasks"][0]
 
             self.assertEqual(created["blockedBy"], [blocker["id"]])
             self.assertEqual(task_store.get(created["id"], session_id="session-1")["blockedBy"], [blocker["id"]])
             self.assertEqual([task["id"] for task in task_store.list_claimable(session_id="session-1")], [blocker["id"]])
             with self.assertRaisesRegex(ValueError, "blocked by"):
                 task_store.claim(created["id"], "Worker", session_id="session-1")
+
+    def test_task_tools_only_expose_batch_graph_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            registry = ToolRegistry()
+            register_task_tools(registry, task_store)
+
+            names = set(registry.names())
+
+            self.assertIn("task_create_batch", names)
+            self.assertNotIn("task_create", names)
+            self.assertNotIn("task_pause_auto_assign", names)
+            self.assertNotIn("task_release_auto_assign", names)
+
+    def test_task_update_tool_rejects_dependency_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            blocker = task_store.create("Dependency", session_id="session-1")
+            task = task_store.create("Task", session_id="session-1")
+            registry = ToolRegistry()
+            register_task_tools(registry, task_store)
+
+            output = registry.execute(
+                ToolExecutionContext(
+                    runtime=SimpleNamespace(),
+                    session=SimpleNamespace(id="session-1"),
+                    actor="lead",
+                    trace_id="test",
+                ),
+                "task_update",
+                {"task_id": task["id"], "add_blocked_by": [blocker["id"]]},
+            )
+
+            self.assertEqual(output["status"], "error")
+            self.assertIn("dependency updates are not allowed", output["message"])
+            self.assertEqual(task_store.get(task["id"], session_id="session-1")["blockedBy"], [])
 
     def test_task_create_batch_creates_graph_and_assigns_after_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1339,62 +1391,6 @@ class TeammateRuntimeTests(unittest.TestCase):
 
             self.assertEqual(task_store.list_all(session_id="session-1"), [])
 
-    def test_task_auto_assign_pause_and_release_gate_assignment(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            task_store = TaskStore(root / "tasks")
-            ready = task_store.create("Ready", preferred_owner="Planner", session_id="session-1")
-            team_store = TeamStore(root / "team")
-            team_store.save(
-                {
-                    "team_name": "default",
-                    "members": [
-                        {
-                            "name": "Planner",
-                            "role": "planner",
-                            "status": "idle",
-                            "activity": "idle_polling",
-                            "session_id": "session-1",
-                            "last_transition_at": time.time(),
-                            "last_activity_at": time.time(),
-                            "shutdown_reason": None,
-                            "current_task_id": None,
-                            "last_error": None,
-                            "current_tool_name": None,
-                            "current_tool_log_id": None,
-                        }
-                    ],
-                },
-                session_id="session-1",
-            )
-            bus = MessageBus(InboxStore(root / "inbox"))
-            manager = TeammateRuntimeManager(
-                runtime=SimpleNamespace(),
-                team_store=team_store,
-                bus=bus,
-                task_store=task_store,
-                request_tracker=RequestTracker(root / "requests"),
-            )
-            runtime = SimpleNamespace(team_manager=manager)
-            registry = ToolRegistry()
-            register_task_tools(registry, task_store)
-            ctx = ToolExecutionContext(
-                runtime=runtime,
-                session=SimpleNamespace(id="session-1"),
-                actor="lead",
-                trace_id="test",
-            )
-
-            registry.execute(ctx, "task_pause_auto_assign", {})
-
-            self.assertEqual(manager.assign_claimable_tasks(session_id="session-1"), 0)
-            self.assertIsNone(task_store.get(ready["id"], session_id="session-1")["owner"])
-
-            registry.execute(ctx, "task_release_auto_assign", {})
-
-            self.assertFalse(task_store.is_auto_assign_paused("session-1"))
-            self.assertEqual(task_store.get(ready["id"], session_id="session-1")["owner"], "Planner")
-
     def test_task_store_session_scope_prevents_cross_session_claim_and_listing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
@@ -1421,8 +1417,7 @@ class TeammateRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
             blocker = task_store.create("Dependency", session_id="session-1")
-            blocked = task_store.create("Blocked task", session_id="session-1")
-            task_store.update(blocked["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+            blocked = task_store.create("Blocked task", blocked_by=[blocker["id"]], session_id="session-1")
 
             with self.assertRaisesRegex(ValueError, "blocked by"):
                 task_store.claim(blocked["id"], "Worker", session_id="session-1")
@@ -1432,7 +1427,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 task_store.update(blocked["id"], status="completed", session_id="session-1")
             started = task_store.create("Already started", session_id="session-1")
             task_store.claim(started["id"], "Worker", session_id="session-1")
-            with self.assertRaisesRegex(ValueError, "dependencies cannot be changed"):
+            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
                 task_store.update(started["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
 
             task_store.update(blocker["id"], status="completed", session_id="session-1")

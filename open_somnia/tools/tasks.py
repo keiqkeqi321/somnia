@@ -34,19 +34,6 @@ def register_task_tools(registry, task_store) -> None:
             return getter(getattr(ctx, "actor", ""))
         return None
 
-    def create_task(ctx: Any, payload: dict[str, Any]) -> str:
-        return json.dumps(
-            task_store.create(
-                payload["subject"],
-                payload.get("description", ""),
-                preferred_owner=payload.get("preferred_owner"),
-                blocked_by=payload.get("blocked_by") or payload.get("blockedBy") or payload.get("depends_on"),
-                session_id=_context_session_id(ctx),
-            ),
-            indent=2,
-            ensure_ascii=False,
-        )
-
     def _assign_claimable(ctx: Any, session_id: str | None) -> int:
         manager = getattr(getattr(ctx, "runtime", None), "team_manager", None)
         assign_claimable = getattr(manager, "assign_claimable_tasks", None)
@@ -65,16 +52,12 @@ def register_task_tools(registry, task_store) -> None:
             if callable(setter):
                 setter(session_id, False)
             raise
-        auto_assign = bool(payload.get("auto_assign", True))
-        assigned = 0
-        if auto_assign:
-            if callable(setter):
-                setter(session_id, False)
-            assigned = _assign_claimable(ctx, session_id)
+        if callable(setter):
+            setter(session_id, False)
+        assigned = _assign_claimable(ctx, session_id)
         return json.dumps(
             {
                 "tasks": created,
-                "auto_assign_paused": not auto_assign,
                 "assigned": assigned,
             },
             indent=2,
@@ -89,11 +72,13 @@ def register_task_tools(registry, task_store) -> None:
         )
 
     def update_task(ctx: Any, payload: dict[str, Any]) -> str:
+        if payload.get("add_blocked_by") or payload.get("blocked_by") or payload.get("depends_on"):
+            raise ValueError("Task dependencies must be declared with task_create_batch; dependency updates are not allowed")
         session_id = _context_session_id(ctx)
         task = task_store.update(
             int(payload["task_id"]),
             payload.get("status"),
-            payload.get("add_blocked_by"),
+            None,
             payload.get("add_blocks"),
             payload.get("preferred_owner"),
             session_id=session_id,
@@ -112,38 +97,6 @@ def register_task_tools(registry, task_store) -> None:
         task = task_store.claim(int(payload["task_id"]), owner, session_id=_context_session_id(ctx))
         return f"Claimed task #{task['id']} for {owner}"
 
-    def pause_auto_assign(ctx: Any, payload: dict[str, Any]) -> str:
-        setter = getattr(task_store, "set_auto_assign_paused", None)
-        if callable(setter):
-            setter(_context_session_id(ctx), True)
-        return "Task auto-assignment paused for this session."
-
-    def release_auto_assign(ctx: Any, payload: dict[str, Any]) -> str:
-        session_id = _context_session_id(ctx)
-        setter = getattr(task_store, "set_auto_assign_paused", None)
-        if callable(setter):
-            setter(session_id, False)
-        assigned = _assign_claimable(ctx, session_id)
-        return f"Task auto-assignment released for this session. Assigned {assigned} task(s)."
-
-    registry.register(
-        ToolDefinition(
-            name="task_create",
-            description="Create a persistent task.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "subject": {"type": "string"},
-                    "description": {"type": "string"},
-                    "preferred_owner": {"type": "string"},
-                    "blocked_by": {"type": "array", "items": {"type": "integer"}},
-                    "depends_on": {"type": "array", "items": {"type": "integer"}},
-                },
-                "required": ["subject"],
-            },
-            handler=create_task,
-        )
-    )
     registry.register(
         ToolDefinition(
             name="task_create_batch",
@@ -166,7 +119,6 @@ def register_task_tools(registry, task_store) -> None:
                             "required": ["subject"],
                         },
                     },
-                    "auto_assign": {"type": "boolean"},
                 },
                 "required": ["tasks"],
             },
@@ -188,7 +140,7 @@ def register_task_tools(registry, task_store) -> None:
     registry.register(
         ToolDefinition(
             name="task_update",
-            description="Update task status or dependencies.",
+            description="Update task status, blocks metadata, or preferred owner. Dependency edges cannot be changed after creation.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -197,7 +149,6 @@ def register_task_tools(registry, task_store) -> None:
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "deleted"],
                     },
-                    "add_blocked_by": {"type": "array", "items": {"type": "integer"}},
                     "add_blocks": {"type": "array", "items": {"type": "integer"}},
                     "preferred_owner": {"type": "string"},
                 },
@@ -224,21 +175,5 @@ def register_task_tools(registry, task_store) -> None:
                 "required": ["task_id"],
             },
             handler=claim_task,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="task_pause_auto_assign",
-            description="Pause automatic teammate task assignment for the current session while building a task graph.",
-            input_schema={"type": "object", "properties": {}},
-            handler=pause_auto_assign,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name="task_release_auto_assign",
-            description="Release automatic teammate task assignment for the current session after the task graph is ready.",
-            input_schema={"type": "object", "properties": {}},
-            handler=release_auto_assign,
         )
     )

@@ -1621,7 +1621,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
-        created = OpenAgentRuntime.authorize_tool_call(runtime, "task_create", {"subject": "Analyze folding system"})
+        created = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "task_create_batch",
+            {"tasks": [{"subject": "Analyze folding system"}]},
+        )
         updated = OpenAgentRuntime.authorize_tool_call(runtime, "task_update", {"task_id": 1, "status": "in_progress"})
         claimed = OpenAgentRuntime.authorize_tool_call(runtime, "claim_task", {"task_id": 1})
 
@@ -1667,7 +1671,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
-        blocked = OpenAgentRuntime.authorize_tool_call(runtime, "task_create", {"subject": "Analyze folding system"})
+        blocked = OpenAgentRuntime.authorize_tool_call(
+            runtime,
+            "task_create_batch",
+            {"tasks": [{"subject": "Analyze folding system"}]},
+        )
 
         self.assertIn("persistent task mutations are not allowed", blocked)
         self.assertIn("request_mode_switch", blocked)

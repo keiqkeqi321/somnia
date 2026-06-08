@@ -30,12 +30,9 @@ READ_ONLY_TOOL_NAMES = frozenset(
 FILE_EDIT_TOOL_NAMES = frozenset({"write_file", "edit_file"})
 TASK_MUTATION_TOOL_NAMES = frozenset(
     {
-        "task_create",
         "task_create_batch",
         "task_update",
         "claim_task",
-        "task_pause_auto_assign",
-        "task_release_auto_assign",
     }
 )
 TEAM_COLLAB_TOOL_NAMES = frozenset(
