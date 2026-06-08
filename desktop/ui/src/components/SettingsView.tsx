@@ -90,12 +90,12 @@ const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: T
 ];
 
 const SETTINGS_SECTIONS = [
-  { key: "provider", icon: "P", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
-  { key: "mcp", icon: "M", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
-  { key: "hooks", icon: "H", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
-  { key: "system_prompt", icon: "S", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
-  { key: "skills", icon: "K", labelKey: "settings.config.skills", titleKey: "settings.config.skills" },
-  { key: "archived", icon: "A", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
+  { key: "provider", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
+  { key: "mcp", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
+  { key: "hooks", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
+  { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
+  { key: "skills", labelKey: "settings.config.skills", titleKey: "settings.config.skills" },
+  { key: "archived", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]["key"];
@@ -248,7 +248,6 @@ function SettingsView({
               className={`settings-nav-item ${activeSection === item.key ? "selected" : ""}`}
               onClick={() => onSelectSection(item.key)}
             >
-              <span aria-hidden="true">{item.icon}</span>
               <span>{t(item.labelKey)}</span>
             </button>
           ))}
