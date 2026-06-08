@@ -1413,6 +1413,43 @@ class TeammateRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(task_store.list_owned_open("Worker", session_id="session-2"), [])
 
+    def test_spawn_teammate_allows_same_name_in_different_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            class _NoThreadManager(TeammateRuntimeManager):
+                def _start_thread(
+                    self,
+                    name: str,
+                    role: str,
+                    prompt: str,
+                    *,
+                    session_id: str | None = None,
+                    initial_messages: list[dict] | None = None,
+                    resumed: bool = False,
+                ) -> None:
+                    self.threads[self._member_key(name, session_id)] = SimpleNamespace(is_alive=lambda: True)
+
+            manager = _NoThreadManager(
+                runtime=SimpleNamespace(),
+                team_store=TeamStore(root / "team"),
+                bus=MessageBus(InboxStore(root / "inbox")),
+                task_store=TaskStore(root / "tasks"),
+                request_tracker=RequestTracker(root / "requests"),
+            )
+
+            first = manager.spawn("Alpha", "worker", "Work in session one.", session_id="session-1")
+            second = manager.spawn("Alpha", "worker", "Work in session two.", session_id="session-2")
+
+            self.assertIn("Spawned 'Alpha'", first)
+            self.assertIn("Spawned 'Alpha'", second)
+            self.assertEqual(manager._find("Alpha", session_id="session-1")["session_id"], "session-1")
+            self.assertEqual(manager._find("Alpha", session_id="session-2")["session_id"], "session-2")
+            self.assertIn(manager._member_key("Alpha", "session-1"), manager.threads)
+            self.assertIn(manager._member_key("Alpha", "session-2"), manager.threads)
+            self.assertTrue((root / "team" / "sessions" / "session-1" / "logs" / "Alpha.jsonl").exists())
+            self.assertTrue((root / "team" / "sessions" / "session-2" / "logs" / "Alpha.jsonl").exists())
+
     def test_blocked_task_cannot_be_claimed_started_or_completed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
