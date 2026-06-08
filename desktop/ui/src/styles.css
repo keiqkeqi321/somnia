@@ -772,6 +772,14 @@ button {
   gap: 8px;
 }
 
+.provider-profile-actions .settings-inline-button {
+  height: 38px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
 .provider-model-test-button {
   width: 26px;
   height: 26px;
