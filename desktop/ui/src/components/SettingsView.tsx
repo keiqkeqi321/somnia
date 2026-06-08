@@ -879,7 +879,7 @@ function ProviderProfilesEditor({
           {activeProvider ? (
             <div className="provider-profile-form">
               <label>
-                {fieldLabel("settings.providerProfiles.name", "name")}
+                <span>{t("settings.providerProfiles.name")}</span>
                 <input
                   value={activeProvider.name}
                   onChange={(event) => renameProfile(activeProvider.name, event.currentTarget.value)}
