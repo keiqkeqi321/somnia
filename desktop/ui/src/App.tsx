@@ -277,7 +277,6 @@ function App() {
   const [settingsConfigSection, setSettingsConfigSection] = useState<SettingsConfigSectionKey>("provider");
   const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
   const [settingsConfigSaving, setSettingsConfigSaving] = useState(false);
-  const [visionModelSaving, setVisionModelSaving] = useState(false);
   const [settingsConfigMessage, setSettingsConfigMessage] = useState("");
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
@@ -2529,12 +2528,23 @@ function App() {
         settingsConfigSection,
         settingsConfigDrafts[draftKey] ?? "",
       );
+      const visionResult =
+        settingsConfigSection === "provider"
+          ? await client.setVisionModel(
+              selectedVisionProvider || null,
+              selectedVisionProvider ? selectedVisionModel || null : null,
+              settingsConfigScope,
+            )
+          : null;
+      if (settingsConfigSection === "provider") {
+        await refreshStatusAndProviders();
+      }
       await refreshSettingsConfig();
-      setSettingsConfigMessage(
+      const configMessage =
         result.runtime_reloaded
           ? `Saved ${result.section} to ${result.config_path}. Runtime MCP tools are active now.`
-          : `Saved ${result.section} to ${result.config_path}. Restart the sidecar to apply runtime changes.`,
-      );
+          : `Saved ${result.section} to ${result.config_path}. Restart the sidecar to apply runtime changes.`;
+      setSettingsConfigMessage(visionResult ? `${configMessage} ${visionResult.message}` : configMessage);
     } catch (error) {
       setSettingsConfigMessage(formatErrorMessage(error));
     } finally {
@@ -2615,25 +2625,6 @@ function App() {
       setWindowMaximized(await isMainWindowMaximized());
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
-    }
-  }
-
-  async function handleSaveVisionModel() {
-    const client = clientRef.current;
-    if (!client || providers.length === 0) {
-      setSettingsConfigMessage("Connect to a sidecar before saving vision model.");
-      return;
-    }
-    setVisionModelSaving(true);
-    try {
-      const result = await client.setVisionModel(selectedVisionProvider || null, selectedVisionModel || null, settingsConfigScope);
-      await refreshStatusAndProviders();
-      await refreshSettingsConfig();
-      setSettingsConfigMessage(result.message);
-    } catch (error) {
-      setSettingsConfigMessage(formatErrorMessage(error));
-    } finally {
-      setVisionModelSaving(false);
     }
   }
 
@@ -3018,10 +3009,8 @@ function App() {
           visionModels={visionModels}
           selectedVisionProvider={selectedVisionProvider}
           selectedVisionModel={selectedVisionModel}
-          visionModelSaving={visionModelSaving}
           onSetVisionProviderDraft={(providerName) => void handleVisionProviderChange(providerName)}
           onSetVisionModelDraft={setSelectedVisionModel}
-          onSaveVisionModel={handleSaveVisionModel}
         />
       ) : null}
       <main

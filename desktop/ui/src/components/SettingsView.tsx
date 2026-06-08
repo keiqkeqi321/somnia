@@ -1,7 +1,7 @@
 import { formatRelativeTime } from "../lib/messages";
 import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "../lib/i18n";
 import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export type ArchivedSessionEntry = {
   key: string;
@@ -46,10 +46,8 @@ type SettingsViewProps = {
   visionModels: ModelDescriptor[];
   selectedVisionProvider: string;
   selectedVisionModel: string;
-  visionModelSaving: boolean;
   onSetVisionProviderDraft: (provider: string) => void;
   onSetVisionModelDraft: (model: string) => void;
-  onSaveVisionModel: () => void | Promise<void>;
   onDebugProviderModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
 };
 
@@ -138,10 +136,8 @@ function SettingsView({
   visionModels,
   selectedVisionProvider,
   selectedVisionModel,
-  visionModelSaving,
   onSetVisionProviderDraft,
   onSetVisionModelDraft,
-  onSaveVisionModel,
   onDebugProviderModel,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
@@ -156,6 +152,24 @@ function SettingsView({
   const [togglingMcpServer, setTogglingMcpServer] = useState<string | null>(null);
   const [mcpDebugMessage, setMcpDebugMessage] = useState("");
   const archivedProjectGroups = groupArchivedEntriesByProject(archivedEntries);
+
+  useEffect(() => {
+    if (!isConfigSectionKey(activeSection)) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (!configLoading && !configSaving) {
+          void onSaveConfigSection();
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeSection, configLoading, configSaving, onSaveConfigSection]);
 
   async function handleDebugServer(serverName: string) {
     setExpandedMcpServer(serverName);
@@ -327,14 +341,6 @@ function SettingsView({
                         <div>
                           <strong>{t("settings.config.visionModel")}</strong>
                         </div>
-                        <button
-                          className="settings-action-button"
-                          type="button"
-                          onClick={onSaveVisionModel}
-                          disabled={visionModelSaving || providers.length === 0}
-                        >
-                          {visionModelSaving ? t("settings.config.saving") : t("settings.config.saveVisionModel")}
-                        </button>
                       </div>
                       <div className="vision-model-controls">
                         <label>
@@ -342,7 +348,7 @@ function SettingsView({
                           <select
                             value={selectedVisionProvider}
                             onChange={(event) => onSetVisionProviderDraft(event.currentTarget.value)}
-                            disabled={visionModelSaving || providers.length === 0}
+                            disabled={configLoading || configSaving || providers.length === 0}
                           >
                             <option value="">{t("settings.config.noVisionModel")}</option>
                             {providers.map((provider) => (
@@ -357,7 +363,7 @@ function SettingsView({
                           <select
                             value={selectedVisionModel}
                             onChange={(event) => onSetVisionModelDraft(event.currentTarget.value)}
-                            disabled={visionModelSaving || !selectedVisionProvider}
+                            disabled={configLoading || configSaving || !selectedVisionProvider}
                           >
                             <option value="">{t("settings.config.noVisionModel")}</option>
                             {visionModels.map((model) => (
