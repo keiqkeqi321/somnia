@@ -82,7 +82,7 @@ def collect_provider_profile_interactively(
     base_url = current_profile.base_url or default_base_url(provider_type) if current_profile is not None else default_base_url(provider_type)
     models = ", ".join(current_profile.models) if current_profile is not None else ""
     existing_api_key = current_profile.api_key if current_profile is not None else ""
-    api_key_hint = "Leave blank to keep the existing API key." if existing_api_key else ""
+    api_key_hint = "Existing API key is prefilled and hidden." if existing_api_key else ""
 
     while True:
         details = prompt_provider_details_interactively(
@@ -90,6 +90,7 @@ def collect_provider_profile_interactively(
             default_provider_name=provider_name,
             default_base_url=base_url,
             default_models=models,
+            default_api_key=existing_api_key,
             api_key_hint=api_key_hint,
         )
         if details is None:

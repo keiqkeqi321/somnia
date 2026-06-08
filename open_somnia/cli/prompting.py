@@ -760,6 +760,7 @@ def prompt_provider_details_interactively(
     default_provider_name: str,
     default_base_url: str,
     default_models: str = "",
+    default_api_key: str = "",
     api_key_hint: str = "",
 ) -> dict[str, str] | None:
     title = "Provider Details"
@@ -775,7 +776,7 @@ def prompt_provider_details_interactively(
     try:
         provider_name_field = TextArea(text=default_provider_name, multiline=False, style=field_style)
         base_url_field = TextArea(text=default_base_url, multiline=False, style=field_style)
-        api_key_field = TextArea(text="", multiline=False, password=True, style=field_style)
+        api_key_field = TextArea(text=default_api_key, multiline=False, password=True, style=field_style)
         models_field = TextArea(text=default_models, multiline=False, style=field_style)
 
         def ok_handler() -> None:

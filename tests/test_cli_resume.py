@@ -9,6 +9,7 @@ from unittest.mock import patch
 from open_somnia import __version__
 from open_somnia.cli.commands import _build_session_choices, cmd_chat, cmd_run, print_user_message
 from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
+from open_somnia.cli.provider_management import collect_provider_profile_interactively
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.config.settings import NoConfiguredProvidersError, NoUsableProvidersError
 from open_somnia.cli.repl import _print_resumed_history
@@ -202,6 +203,41 @@ class CliResumeTests(unittest.TestCase):
             previous_provider_name="openrouter",
         )
         mock_print.assert_called_once()
+
+    def test_collect_provider_profile_prefills_existing_api_key(self) -> None:
+        profile = SimpleNamespace(
+            name="openrouter",
+            provider_type="openai",
+            default_model="gpt-5",
+            models=["gpt-5"],
+            api_key="sk-old",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        with patch(
+            "open_somnia.cli.provider_management.choose_provider_type_interactively",
+            return_value="openai",
+        ), patch(
+            "open_somnia.cli.provider_management.prompt_provider_details_interactively",
+            return_value={
+                "provider_name": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "",
+                "models": "gpt-5",
+            },
+        ) as mock_prompt, patch(
+            "open_somnia.cli.provider_management.choose_item_interactively",
+            return_value="save",
+        ):
+            submission = collect_provider_profile_interactively(
+                {"openrouter": profile},
+                previous_provider_name="openrouter",
+            )
+
+        self.assertIsNotNone(submission)
+        assert submission is not None
+        self.assertEqual(submission.api_key, "sk-old")
+        self.assertEqual(mock_prompt.call_args.kwargs["default_api_key"], "sk-old")
 
     def test_cmd_chat_starts_new_session_by_default(self) -> None:
         runtime = SimpleNamespace(
