@@ -13,6 +13,7 @@ import uuid
 from open_somnia.app_service.events import (
     ASSISTANT_COMPLETED,
     ASSISTANT_DELTA,
+    CONTEXT_USAGE_UPDATED,
     ERROR,
     INTERRUPT_COMPLETED,
     INTERRUPT_REQUESTED,
@@ -78,10 +79,28 @@ def _clone_value(value: Any) -> Any:
             return value
 
 
-def _session_snapshot(session: AgentSession) -> dict[str, Any]:
+def _context_usage_payload(usage: Any) -> dict[str, Any] | None:
+    if usage is None:
+        return None
+    used_tokens = int(getattr(usage, "used_tokens", 0) or 0)
+    max_tokens = getattr(usage, "max_tokens", None)
+    usage_percent = getattr(usage, "usage_percent", None)
+    return {
+        "used_tokens": used_tokens,
+        "max_tokens": int(max_tokens) if max_tokens else None,
+        "usage_percent": float(usage_percent) if usage_percent is not None else None,
+        "counter_name": str(getattr(usage, "counter_name", "") or "estimate"),
+    }
+
+
+def _session_snapshot(session: AgentSession, *, context_window_usage: dict[str, Any] | None = None) -> dict[str, Any]:
     if callable(getattr(session, "to_payload", None)):
-        return _clone_value(session.to_payload())
-    return {"id": getattr(session, "id", None)}
+        payload = _clone_value(session.to_payload())
+    else:
+        payload = {"id": getattr(session, "id", None)}
+    if context_window_usage is not None:
+        payload["context_window_usage"] = _clone_value(context_window_usage)
+    return payload
 
 
 def _open_todo_count(session: AgentSession) -> int:
@@ -119,6 +138,7 @@ class _ActiveTurn:
     loop_injection_lock: Lock = field(default_factory=Lock)
     pending_loop_injections: list[dict[str, Any]] = field(default_factory=list)
     ready_loop_injections: list[dict[str, Any]] = field(default_factory=list)
+    last_context_usage: dict[str, Any] | None = None
 
 
 class RuntimeHost:
@@ -301,6 +321,46 @@ class RuntimeHost:
         active_turn.last_todo_items = current_items
         self._emit_for_turn(active_turn, TODO_UPDATED, items=current_items)
 
+    def _emit_context_usage_if_changed(self, active_turn: _ActiveTurn, usage: Any) -> None:
+        payload = _context_usage_payload(usage)
+        if payload is None or payload == active_turn.last_context_usage:
+            return
+        active_turn.last_context_usage = _clone_value(payload)
+        self._emit_for_turn(active_turn, CONTEXT_USAGE_UPDATED, context_window_usage=payload)
+
+    def _latest_context_usage_payload(self, active_turn: _ActiveTurn) -> dict[str, Any] | None:
+        if active_turn.last_context_usage is not None:
+            return _clone_value(active_turn.last_context_usage)
+        getter = getattr(active_turn.runtime, "recent_context_window_usage", None)
+        if not callable(getter):
+            return None
+        try:
+            payload = _context_usage_payload(getter(active_turn.session))
+        except Exception:
+            return None
+        if payload is not None:
+            active_turn.last_context_usage = _clone_value(payload)
+        return payload
+
+    @contextmanager
+    def _patched_context_usage_events(self, active_turn: _ActiveTurn) -> Iterator[None]:
+        original_context_window_usage = getattr(active_turn.runtime, "context_window_usage", None)
+        if not callable(original_context_window_usage):
+            yield
+            return
+
+        def wrapped_context_window_usage(session: AgentSession, *args: Any, **kwargs: Any) -> Any:
+            usage = original_context_window_usage(session, *args, **kwargs)
+            if getattr(session, "id", None) == active_turn.session.id:
+                self._emit_context_usage_if_changed(active_turn, usage)
+            return usage
+
+        active_turn.runtime.context_window_usage = wrapped_context_window_usage
+        try:
+            yield
+        finally:
+            active_turn.runtime.context_window_usage = original_context_window_usage
+
     @contextmanager
     def _patched_registry_execute(self, active_turn: _ActiveTurn) -> Iterator[None]:
         registry = active_turn.runtime.registry
@@ -397,6 +457,7 @@ class RuntimeHost:
         try:
             with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=active_turn.runtime):
                 with (
+                    self._patched_context_usage_events(active_turn),
                     self._patched_registry_execute(active_turn),
                     self._patched_tool_logging(active_turn),
                     self._patched_subagent_activity(active_turn),
@@ -472,7 +533,10 @@ class RuntimeHost:
             self._emit_for_turn(
                 active_turn,
                 SESSION_UPDATED,
-                session=_session_snapshot(active_turn.session),
+                session=_session_snapshot(
+                    active_turn.session,
+                    context_window_usage=self._latest_context_usage_payload(active_turn),
+                ),
             )
             if turn_result is None:
                 turn_result = TurnRunResult(

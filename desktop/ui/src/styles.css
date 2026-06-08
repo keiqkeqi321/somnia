@@ -984,7 +984,7 @@ button {
 .mcp-server-summary {
   width: 100%;
   display: grid;
-  grid-template-columns: auto minmax(120px, 1fr) auto auto auto auto;
+  grid-template-columns: auto minmax(120px, 1fr) auto auto auto;
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -1008,21 +1008,6 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: #ffffff;
-}
-
-.mcp-server-status {
-  min-width: 58px;
-}
-
-.mcp-status-loading {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(203, 213, 225, 0.28);
-  border-top-color: #d7dadf;
-  border-radius: 999px;
-  vertical-align: -2px;
-  animation: mcp-refresh-spin 780ms linear infinite;
 }
 
 .mcp-server-actions {

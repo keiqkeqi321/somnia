@@ -1040,24 +1040,37 @@ class SidecarServer:
                 continue
 
     def _drain_turn_events(self, handle) -> None:
+        latest_context_usage = None
         try:
             while True:
                 batch = handle.drain_events(block=not handle.is_done(), timeout=0.05)
                 if batch:
                     for event in batch:
-                        self.broadcast_event(serialize_app_event(event))
+                        payload = serialize_app_event(event)
+                        if payload.get("type") == "context_usage_updated":
+                            context_usage = (payload.get("payload") or {}).get("context_window_usage")
+                            if isinstance(context_usage, dict):
+                                latest_context_usage = deepcopy(context_usage)
+                        self.broadcast_event(payload)
                     continue
                 if handle.is_done():
                     trailing = handle.drain_events()
                     if trailing:
                         for event in trailing:
-                            self.broadcast_event(serialize_app_event(event))
+                            payload = serialize_app_event(event)
+                            if payload.get("type") == "context_usage_updated":
+                                context_usage = (payload.get("payload") or {}).get("context_window_usage")
+                                if isinstance(context_usage, dict):
+                                    latest_context_usage = deepcopy(context_usage)
+                            self.broadcast_event(payload)
                         continue
                     break
             if handle.result is not None:
                 payload = serialize_turn_result(handle.result)
                 if payload.get("session") is not None:
                     payload["session"] = self._serialize_session(handle.result.session)
+                    if latest_context_usage is not None:
+                        payload["session"]["context_window_usage"] = deepcopy(latest_context_usage)
                 self.broadcast_event(
                     make_sidecar_event(
                         "turn_result",

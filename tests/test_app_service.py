@@ -17,6 +17,7 @@ from open_somnia.config.models import (
     StorageSettings,
 )
 from open_somnia.runtime.agent import AgentLoopResult, OpenAgentRuntime
+from open_somnia.runtime.compact import ContextWindowUsage
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.tools.registry import ToolDefinition
@@ -164,6 +165,44 @@ class AppServiceTests(unittest.TestCase):
 
             completed = next(event for event in events if event.type == "assistant_completed")
             self.assertEqual(completed.payload["text"], "Hello")
+        finally:
+            service.close()
+
+    def test_run_turn_emits_context_usage_updates_before_session_updated(self) -> None:
+        root = self._stable_test_dir("app-service-context-usage-events")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            runtime.context_window_usage = lambda target_session: ContextWindowUsage(
+                used_tokens=12_345,
+                max_tokens=64_000,
+                counter_name="test",
+            )
+
+            def fake_run_turn(target_session, user_input, **kwargs):
+                runtime.context_window_usage(target_session)
+                return AgentLoopResult("Done.", status="completed")
+
+            runtime.run_turn = fake_run_turn
+
+            handle = service.run_turn(session, "hello")
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+
+            events = handle.drain_events()
+            event_types = [event.type for event in events]
+            context_index = event_types.index("context_usage_updated")
+            session_index = event_types.index("session_updated")
+            self.assertLess(context_index, session_index)
+
+            context_event = events[context_index]
+            self.assertEqual(context_event.payload["context_window_usage"]["used_tokens"], 12_345)
+            self.assertEqual(context_event.payload["context_window_usage"]["max_tokens"], 64_000)
+            self.assertEqual(context_event.payload["context_window_usage"]["counter_name"], "test")
+
+            session_event = events[session_index]
+            self.assertEqual(session_event.payload["session"]["context_window_usage"]["used_tokens"], 12_345)
         finally:
             service.close()
 

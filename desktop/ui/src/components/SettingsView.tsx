@@ -439,9 +439,6 @@ function SettingsView({
                               >
                                 <span className={`mcp-status-dot ${server.status}`} aria-hidden="true" />
                                 <strong>{server.name}</strong>
-                                <span className="mcp-server-status">
-                                  {togglingMcpServer === server.name ? <span className="mcp-status-loading" aria-label={t("settings.config.fetching")} /> : server.status}
-                                </span>
                                 <span>{server.transport}</span>
                                 <span>{server.tool_count} {t("settings.config.tools")}</span>
                                 <div className="mcp-server-actions" onClick={(event) => event.stopPropagation()}>
@@ -459,11 +456,11 @@ function SettingsView({
                                   </label>
                                   <button
                                     type="button"
-                                    className={`mcp-icon-button ${debuggingMcpServer === server.name ? "spinning" : ""}`}
+                                    className={`mcp-icon-button ${debuggingMcpServer === server.name || togglingMcpServer === server.name ? "spinning" : ""}`}
                                     onClick={() => void handleDebugServer(server.name)}
-                                    disabled={debuggingMcpServer === server.name || !server.enabled}
-                                    title={debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
-                                    aria-label={debuggingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
+                                    disabled={debuggingMcpServer === server.name || togglingMcpServer === server.name || !server.enabled}
+                                    title={debuggingMcpServer === server.name || togglingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
+                                    aria-label={debuggingMcpServer === server.name || togglingMcpServer === server.name ? t("settings.config.fetching") : t("settings.config.debug")}
                                   >
                                     <svg viewBox="0 0 24 24" aria-hidden="true">
                                       <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />

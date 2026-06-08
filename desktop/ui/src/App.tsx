@@ -40,6 +40,7 @@ import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
   AgentSession,
+  ContextWindowUsage,
   ConversationContentBlock,
   ConversationPendingTurn,
   ConversationRuntimeItem,
@@ -1467,6 +1468,32 @@ function App() {
     }
     if (event.type === "thinking_finished") {
       upsertRuntimeThinkingLog(projectPath, event.session_id, event.turn_id, event.payload, "finished");
+      return;
+    }
+    if (event.type === "context_usage_updated") {
+      const sessionId = event.session_id ?? "";
+      const contextWindowUsage = readContextUsageFromPayload(event.payload.context_window_usage);
+      if (!sessionId || !contextWindowUsage) {
+        return;
+      }
+      setSessions((previous) =>
+        previous.map((session) => (session.id === sessionId ? { ...session, context_window_usage: contextWindowUsage } : session)),
+      );
+      setProjects((previous) =>
+        previous.map((project) =>
+          project.path === projectPath
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === sessionId ? { ...session, context_window_usage: contextWindowUsage } : session,
+                ),
+              }
+            : project,
+        ),
+      );
+      if (isActiveProject && sessionId === selectedSessionIdRef.current) {
+        setCurrentSession((session) => (session && session.id === sessionId ? { ...session, context_window_usage: contextWindowUsage } : session));
+      }
       return;
     }
     if (event.type === "session_updated") {
@@ -5773,6 +5800,25 @@ function readSessionFromPayload(value: unknown): AgentSession | null {
     return null;
   }
   return payload;
+}
+
+function readContextUsageFromPayload(value: unknown): ContextWindowUsage | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const payload = value as Partial<ContextWindowUsage>;
+  const usedTokens = Number(payload.used_tokens);
+  if (!Number.isFinite(usedTokens)) {
+    return null;
+  }
+  const maxTokens = payload.max_tokens === null || payload.max_tokens === undefined ? null : Number(payload.max_tokens);
+  const usagePercent = payload.usage_percent === null || payload.usage_percent === undefined ? null : Number(payload.usage_percent);
+  return {
+    used_tokens: Math.max(0, usedTokens),
+    max_tokens: maxTokens !== null && Number.isFinite(maxTokens) ? Math.max(0, maxTokens) : null,
+    usage_percent: usagePercent !== null && Number.isFinite(usagePercent) ? usagePercent : null,
+    counter_name: typeof payload.counter_name === "string" ? payload.counter_name : "estimate",
+  };
 }
 
 function formatErrorMessage(error: unknown): string {
