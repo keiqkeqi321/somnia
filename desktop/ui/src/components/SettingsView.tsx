@@ -72,6 +72,7 @@ type ModelTraitDraft = {
   model: string;
   contextWindowTokens: string;
   maxTokens: string;
+  reasoningLevel: string;
   supportsReasoning: string;
   supportsAdaptiveReasoning: string;
 };
@@ -625,6 +626,11 @@ function ProviderProfilesEditor({
     config.profiles.find((profile) => profile.name === config.defaultProvider) ??
     config.profiles[0] ??
     null;
+  const activeModels = activeProvider ? modelsFromText(activeProvider.modelsText) : [];
+  const defaultModelOptions =
+    activeProvider && activeProvider.defaultModel && !activeModels.includes(activeProvider.defaultModel)
+      ? [activeProvider.defaultModel, ...activeModels]
+      : activeModels;
 
   function updateConfig(nextConfig: ProviderConfigDraft) {
     onChange(renderProviderConfigDraft(nextConfig));
@@ -793,19 +799,16 @@ function ProviderProfilesEditor({
               </label>
               <label>
                 <span>{t("settings.providerProfiles.defaultModel")}</span>
-                <input value={activeProvider.defaultModel} onChange={(event) => updateProfile(activeProvider.name, { defaultModel: event.currentTarget.value })} />
-              </label>
-              <label>
-                <span>{t("settings.providerProfiles.reasoning")}</span>
                 <select
-                  value={activeProvider.reasoningLevel}
-                  onChange={(event) => updateProfile(activeProvider.name, { reasoningLevel: event.currentTarget.value })}
+                  value={activeProvider.defaultModel}
+                  onChange={(event) => updateProfile(activeProvider.name, { defaultModel: event.currentTarget.value })}
                 >
-                  <option value="">auto</option>
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="deep">deep</option>
+                  <option value="">{t("settings.providerProfiles.noDefault")}</option>
+                  {defaultModelOptions.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -817,11 +820,12 @@ function ProviderProfilesEditor({
                 <input value={activeProvider.timeoutSeconds} onChange={(event) => updateProfile(activeProvider.name, { timeoutSeconds: event.currentTarget.value })} />
               </label>
               <div className="provider-profile-wide provider-model-debug-list">
-                {modelsFromText(activeProvider.modelsText).map((model) => {
+                {activeModels.map((model) => {
                   const modelKey = modelTraitKey(activeProvider.name, model);
                   const probe = probeState[`${activeProvider.name}/${model}`];
                   const expanded = Boolean(expandedModels[modelKey]);
                   const trait = config.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
+                  const isAnthropic = activeProvider.providerType === "anthropic";
                   return (
                     <div key={model} className={`provider-model-debug ${probe?.status ?? ""} ${expanded ? "expanded" : ""}`}>
                       <button
@@ -872,6 +876,19 @@ function ProviderProfilesEditor({
                             />
                           </label>
                           <label>
+                            <span>{t("settings.providerProfiles.reasoning")}</span>
+                            <select
+                              value={trait.reasoningLevel}
+                              onChange={(event) => updateModelTrait(activeProvider.name, model, { reasoningLevel: event.currentTarget.value })}
+                            >
+                              <option value="">{t("settings.providerProfiles.auto")}</option>
+                              <option value="low">low</option>
+                              <option value="medium">medium</option>
+                              <option value="high">high</option>
+                              <option value="deep">deep</option>
+                            </select>
+                          </label>
+                          <label>
                             <span>{t("settings.providerProfiles.supportsReasoning")}</span>
                             <select
                               value={trait.supportsReasoning}
@@ -882,19 +899,21 @@ function ProviderProfilesEditor({
                               <option value="false">{t("settings.providerProfiles.no")}</option>
                             </select>
                           </label>
-                          <label>
-                            <span>{t("settings.providerProfiles.adaptiveReasoning")}</span>
-                            <select
-                              value={trait.supportsAdaptiveReasoning}
-                              onChange={(event) =>
-                                updateModelTrait(activeProvider.name, model, { supportsAdaptiveReasoning: event.currentTarget.value })
-                              }
-                            >
-                              <option value="">{t("settings.providerProfiles.auto")}</option>
-                              <option value="true">{t("settings.providerProfiles.yes")}</option>
-                              <option value="false">{t("settings.providerProfiles.no")}</option>
-                            </select>
-                          </label>
+                          {isAnthropic ? (
+                            <label>
+                              <span>{t("settings.providerProfiles.adaptiveReasoning")}</span>
+                              <select
+                                value={trait.supportsAdaptiveReasoning}
+                                onChange={(event) =>
+                                  updateModelTrait(activeProvider.name, model, { supportsAdaptiveReasoning: event.currentTarget.value })
+                                }
+                              >
+                                <option value="">{t("settings.providerProfiles.auto")}</option>
+                                <option value="true">{t("settings.providerProfiles.yes")}</option>
+                                <option value="false">{t("settings.providerProfiles.no")}</option>
+                              </select>
+                            </label>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -959,6 +978,7 @@ function parseProviderConfigDraft(text: string): ProviderConfigDraft {
       model: modelTraitPath.model,
       contextWindowTokens: readTomlBare(readTomlValue(section.lines, "context_window_tokens")) || readTomlBare(readTomlValue(section.lines, "cwt")),
       maxTokens: readTomlBare(readTomlValue(section.lines, "max_tokens")),
+      reasoningLevel: readTomlString(readTomlValue(section.lines, "reasoning_level")),
       supportsReasoning: readTomlBare(readTomlValue(section.lines, "supports_reasoning")),
       supportsAdaptiveReasoning:
         readTomlBare(readTomlValue(section.lines, "supports_adaptive_reasoning")) ||
@@ -1019,6 +1039,7 @@ function renderProviderConfigDraft(config: ProviderConfigDraft): string {
     lines.push("", `[model_traits.${normalizeProviderName(trait.provider)}.${tomlString(trait.model)}]`);
     appendTomlBare(lines, "context_window_tokens", trait.contextWindowTokens);
     appendTomlBare(lines, "max_tokens", trait.maxTokens);
+    appendTomlString(lines, "reasoning_level", trait.reasoningLevel);
     appendTomlBoolString(lines, "supports_reasoning", trait.supportsReasoning);
     appendTomlBoolString(lines, "supports_adaptive_reasoning", trait.supportsAdaptiveReasoning);
   }
@@ -1156,6 +1177,7 @@ function emptyModelTrait(provider: string, model: string): ModelTraitDraft {
     model: model.trim(),
     contextWindowTokens: "",
     maxTokens: "",
+    reasoningLevel: "",
     supportsReasoning: "",
     supportsAdaptiveReasoning: "",
   };
@@ -1165,6 +1187,7 @@ function isEmptyModelTrait(trait: ModelTraitDraft): boolean {
   return (
     !trait.contextWindowTokens.trim() &&
     !trait.maxTokens.trim() &&
+    !trait.reasoningLevel.trim() &&
     !trait.supportsReasoning.trim() &&
     !trait.supportsAdaptiveReasoning.trim()
   );

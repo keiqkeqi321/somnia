@@ -49,6 +49,7 @@ class ProviderService:
                     name=model_name,
                     context_window_tokens=traits.context_window_tokens,
                     max_tokens=traits.max_tokens,
+                    reasoning_level=normalize_reasoning_level(traits.reasoning_level),
                     supports_reasoning=traits.supports_reasoning,
                     supports_adaptive_reasoning=traits.supports_adaptive_reasoning,
                     is_default=model_name == profile.default_model,

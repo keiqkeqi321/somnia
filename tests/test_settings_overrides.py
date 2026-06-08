@@ -320,6 +320,38 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(small_settings.provider.max_tokens, 2048)
         self.assertEqual(small_settings.provider_profiles["openai"].model_traits["gpt-small"].max_tokens, 2048)
 
+    def test_load_settings_reads_provider_model_reasoning_level(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["claude-sonnet-4-6", "claude-haiku-4-5"]
+                default_model = "claude-sonnet-4-6"
+                api_key = "anthropic-test-key"
+                reasoning_level = "medium"
+
+                [model_traits.anthropic."claude-haiku-4-5"]
+                reasoning_level = "low"
+                """,
+            )
+
+            with self._patched_home(home):
+                sonnet_settings = load_settings(root, provider_override="anthropic", model_override="claude-sonnet-4-6")
+                haiku_settings = load_settings(root, provider_override="anthropic", model_override="claude-haiku-4-5")
+
+        self.assertEqual(sonnet_settings.provider.reasoning_level, "medium")
+        self.assertEqual(haiku_settings.provider.reasoning_level, "low")
+        self.assertEqual(
+            haiku_settings.provider_profiles["anthropic"].model_traits["claude-haiku-4-5"].reasoning_level,
+            "low",
+        )
+
     def test_infer_context_window_tokens_uses_official_model_mappings(self) -> None:
         self.assertEqual(_infer_context_window_tokens("openai", "minimax/MiniMax-M2.7"), 204800)
         self.assertEqual(_infer_context_window_tokens("openai", "kimi-k2.5"), 256000)

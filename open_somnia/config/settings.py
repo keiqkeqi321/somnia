@@ -890,6 +890,7 @@ def _build_model_traits(item: dict) -> ModelTraits:
     return ModelTraits(
         context_window_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
         max_tokens=int(max_tokens) if max_tokens is not None else None,
+        reasoning_level=normalize_reasoning_level(item.get("reasoning_level")),
         supports_reasoning=bool(item["supports_reasoning"]) if item.get("supports_reasoning") is not None else None,
         supports_adaptive_reasoning=(
             bool(item["supports_adaptive_reasoning"])
@@ -1039,7 +1040,7 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
         ),
         max_tokens=model_traits.max_tokens if model_traits and model_traits.max_tokens is not None else profile.max_tokens,
         timeout_seconds=profile.timeout_seconds,
-        reasoning_level=profile.reasoning_level,
+        reasoning_level=model_traits.reasoning_level if model_traits and model_traits.reasoning_level is not None else profile.reasoning_level,
         supports_reasoning=model_traits.supports_reasoning if model_traits is not None else None,
         supports_adaptive_reasoning=model_traits.supports_adaptive_reasoning if model_traits is not None else None,
     )

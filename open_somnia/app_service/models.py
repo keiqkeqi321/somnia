@@ -15,6 +15,7 @@ class ModelDescriptor:
     name: str
     context_window_tokens: int | None = None
     max_tokens: int | None = None
+    reasoning_level: str | None = None
     supports_reasoning: bool | None = None
     supports_adaptive_reasoning: bool | None = None
     is_default: bool = False
