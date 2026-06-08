@@ -2,15 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 
 from desktop.backend.server import SidecarServer
-from open_somnia.config.settings import (
-    NoConfiguredProvidersError,
-    NoUsableProvidersError,
-    global_config_path,
-    load_settings,
-)
+from open_somnia.config.settings import load_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,18 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    try:
-        settings = load_settings(
-            args.workspace,
-            provider_override=getattr(args, "provider", None),
-            model_override=getattr(args, "model", None),
-        )
-    except (NoConfiguredProvidersError, NoUsableProvidersError) as exc:
-        print(
-            f"{exc}\nConfigure a provider in {global_config_path()} before starting the sidecar.",
-            file=sys.stderr,
-        )
-        return 2
+    settings = load_settings(
+        args.workspace,
+        provider_override=getattr(args, "provider", None),
+        model_override=getattr(args, "model", None),
+        allow_missing_provider=True,
+    )
 
     server = SidecarServer.from_settings(settings, host=args.host, port=args.port)
     try:

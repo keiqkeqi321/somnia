@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from open_somnia.app_service.models import ModelDescriptor, ProviderDescriptor
 from open_somnia.config.models import ModelTraits
-from open_somnia.config.settings import _materialize_provider
+from open_somnia.config.settings import _materialize_provider, _normalize_model_id
 from open_somnia.providers.base import ProviderError
 from open_somnia.reasoning import normalize_reasoning_level
 from open_somnia.runtime.agent import OpenAgentRuntime
@@ -36,6 +36,8 @@ class ProviderService:
     def list_models(self, provider_name: str | None = None) -> list[ModelDescriptor]:
         normalized_provider = str(provider_name or self.runtime.settings.provider.name).strip().lower()
         profiles = self.runtime.configured_provider_profiles()
+        if not profiles and normalized_provider == "unconfigured":
+            return []
         if normalized_provider not in profiles:
             raise ValueError(f"Provider '{normalized_provider}' is not configured.")
         profile = profiles[normalized_provider]
@@ -74,7 +76,7 @@ class ProviderService:
 
     def debug_model_connection(self, provider_name: str, model: str) -> dict[str, str | bool]:
         normalized_provider = str(provider_name or "").strip().lower()
-        normalized_model = str(model or "").strip()
+        normalized_model = _normalize_model_id(model)
         profiles = self.runtime.configured_provider_profiles()
         if normalized_provider not in profiles:
             raise ValueError(f"Provider '{normalized_provider}' is not configured.")

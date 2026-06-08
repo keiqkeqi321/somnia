@@ -651,10 +651,14 @@ class OpenAgentRuntime:
     def reload_provider_configuration(self, *, provider_name: str | None = None, model: str | None = None) -> None:
         provider_override = provider_name or self.settings.provider.name
         model_override = model or self.settings.provider.model
+        if provider_override not in self.settings.provider_profiles:
+            provider_override = None
+            model_override = None
         reloaded = load_settings(
             self.settings.workspace_root,
             provider_override=provider_override,
             model_override=model_override,
+            allow_missing_provider=True,
         )
         self.settings.provider_profiles = reloaded.provider_profiles
         self.settings.provider = reloaded.provider

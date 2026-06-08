@@ -555,6 +555,33 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_provider_debug_model_normalizes_model_id(self) -> None:
+        root = self._stable_test_dir("app-service-provider-debug-normalizes")
+        settings = self._make_settings(root)
+        settings.provider_profiles["mimo"] = ProviderProfileSettings(
+            name="mimo",
+            provider_type="anthropic",
+            models=["mimo-v2.5-pro"],
+            default_model="mimo-v2.5-pro",
+            api_key="fake",
+            base_url="http://localhost",
+        )
+        runtime = OpenAgentRuntime(settings)
+        service = AppService(runtime)
+
+        class _FakeProvider:
+            def complete(self, *args, **kwargs):
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["OK"])
+
+        try:
+            with patch.object(runtime, "_instantiate_provider", return_value=_FakeProvider()):
+                result = service.debug_model_connection("mimo", "MiMo-V2.5-Pro")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["message"], "OK")
+        finally:
+            service.close()
+
     def test_run_turn_forwards_loop_injection_callbacks(self) -> None:
         root = self._stable_test_dir("app-service-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))

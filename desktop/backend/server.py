@@ -739,17 +739,23 @@ class SidecarServer:
             config_path.write_text(updated, encoding="utf-8")
         elif config_path.exists():
             config_path.unlink()
-        mcp_reloaded = False
+        runtime_reloaded = False
         if normalized_section == "mcp":
             self.reload_mcp_runtime()
-            mcp_reloaded = True
+            runtime_reloaded = True
+        elif normalized_section == "provider":
+            try:
+                self.runtime.reload_provider_configuration()
+            except ValueError as exc:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+            runtime_reloaded = True
         return {
             "scope": normalized_scope,
             "section": normalized_section,
             "config_path": str(config_path),
             "saved": True,
-            "restart_required": True,
-            "runtime_reloaded": mcp_reloaded,
+            "restart_required": not runtime_reloaded,
+            "runtime_reloaded": runtime_reloaded,
         }
 
     def reload_mcp_runtime(self) -> None:

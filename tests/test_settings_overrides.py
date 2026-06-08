@@ -423,6 +423,19 @@ class SettingsOverrideTests(unittest.TestCase):
                 with self.assertRaises(NoConfiguredProvidersError):
                     load_settings(root)
 
+    def test_load_settings_can_allow_missing_provider_for_desktop_bootstrap(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            with self._patched_home(home):
+                settings = load_settings(root, allow_missing_provider=True)
+
+        self.assertEqual(settings.provider.name, "unconfigured")
+        self.assertEqual(settings.provider.provider_type, "openai")
+        self.assertEqual(settings.provider.model, "")
+        self.assertEqual(settings.provider.api_key, "")
+        self.assertEqual(settings.provider_profiles, {})
+
     def test_load_settings_clears_stale_provider_config_when_no_api_keys_exist(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
@@ -451,6 +464,33 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertNotIn("[providers]", written)
             self.assertNotIn("[providers.glm-me]", written)
             self.assertIn("[runtime]", written)
+
+    def test_load_settings_allow_missing_provider_keeps_profiles_without_api_keys(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            workspace_config = root / ".open_somnia" / "open_somnia.toml"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "glm-me"
+
+                [providers.glm-me]
+                default_model = "glm-4.7"
+                models = ["glm-4.7"]
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root, allow_missing_provider=True)
+
+            self.assertEqual(settings.provider.name, "glm-me")
+            self.assertEqual(settings.provider.model, "glm-4.7")
+            self.assertIn("glm-me", settings.provider_profiles)
+            written = workspace_config.read_text(encoding="utf-8")
+            self.assertIn("[providers]", written)
+            self.assertIn("[providers.glm-me]", written)
 
     def test_load_settings_merges_global_and_workspace_configs_with_workspace_override(self) -> None:
         with self._tempdir() as tmpdir:

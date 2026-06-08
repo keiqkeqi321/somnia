@@ -448,6 +448,49 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_saving_provider_config_reloads_unconfigured_runtime_immediately(self) -> None:
+        root = self._stable_test_dir("sidecar-provider-save")
+        settings = self._make_settings(root)
+        settings.provider = ProviderSettings(
+            name="unconfigured",
+            provider_type="openai",
+            model="",
+            api_key="",
+            context_window_tokens=200_000,
+        )
+        settings.provider_profiles = {}
+        server = SidecarServer.from_settings(settings, host="127.0.0.1", port=0)
+        home = root / "home"
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            with patch("pathlib.Path.home", return_value=home):
+                result = server.save_config_section(
+                    scope="project",
+                    section="provider",
+                    content="\n".join(
+                        [
+                            "[providers]",
+                            'default = "mimo"',
+                            "",
+                            "[providers.mimo]",
+                            'provider_type = "anthropic"',
+                            'models = ["MiMo-V2.5-Pro"]',
+                            'default_model = "MiMo-V2.5-Pro"',
+                            'api_key = "fake"',
+                            "",
+                        ]
+                    ),
+                )
+
+            self.assertTrue(result["runtime_reloaded"])
+            self.assertFalse(result["restart_required"])
+            self.assertEqual(server.runtime.settings.provider.name, "mimo")
+            self.assertEqual(server.runtime.settings.provider.model, "mimo-v2.5-pro")
+            self.assertIn("mimo", [item["name"] for item in server.list_providers()])
+        finally:
+            server.close()
+
     def test_sidecar_session_list_returns_lightweight_summaries(self) -> None:
         root = self._stable_test_dir("sidecar-session-summaries")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

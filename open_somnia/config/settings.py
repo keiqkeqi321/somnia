@@ -1069,6 +1069,7 @@ def load_settings(
     *,
     provider_override: str | None = None,
     model_override: str | None = None,
+    allow_missing_provider: bool = False,
 ) -> AppSettings:
     root = Path(workspace_root or Path.cwd()).resolve()
     _ensure_global_builtin_notify_hooks()
@@ -1081,17 +1082,34 @@ def load_settings(
         system_prompt=str(agent_raw["system_prompt"]).strip() if agent_raw.get("system_prompt") else None,
     )
 
-    provider_profiles, configured_provider_name = _load_provider_profiles(raw)
-    if not _has_configured_api_key(provider_profiles):
+    try:
+        provider_profiles, configured_provider_name = _load_provider_profiles(raw)
+    except NoConfiguredProvidersError:
+        if not allow_missing_provider:
+            raise
+        provider_profiles = {}
+        configured_provider_name = ""
+    if provider_profiles and not _has_configured_api_key(provider_profiles) and not allow_missing_provider:
         clear_stale_provider_config(root)
         raise NoUsableProvidersError(
             "No providers with API keys are configured. Cleared stale provider configuration and need first-run setup."
         )
-    provider_name = (provider_override or configured_provider_name).strip().lower()
-    if provider_name not in provider_profiles:
-        raise ValueError(f"Provider '{provider_name}' is not configured in [providers].")
-    provider = _materialize_provider(provider_profiles[provider_name], model_override)
-    vision_provider, vision_model = _load_vision_route(raw, provider_profiles)
+    if provider_profiles:
+        provider_name = (provider_override or configured_provider_name).strip().lower()
+        if provider_name not in provider_profiles:
+            raise ValueError(f"Provider '{provider_name}' is not configured in [providers].")
+        provider = _materialize_provider(provider_profiles[provider_name], model_override)
+        vision_provider, vision_model = _load_vision_route(raw, provider_profiles)
+    else:
+        provider = ProviderSettings(
+            name="unconfigured",
+            provider_type="openai",
+            model="",
+            api_key="",
+            context_window_tokens=DEFAULT_FALLBACK_CONTEXT_WINDOW_TOKENS,
+        )
+        vision_provider = None
+        vision_model = None
 
     runtime_raw = raw.get("runtime", {})
     runtime = RuntimeSettings(

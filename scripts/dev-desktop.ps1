@@ -57,28 +57,11 @@ $env:PATH = (@(
 Write-Host "[Rust] $($env:RUSTUP_TOOLCHAIN)" -ForegroundColor Cyan
 & $cargoExe --version | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkCyan }
 
-# -- 2. Start sidecar backend (minimized window) --
-
-$sidecarProc = Start-Process python -ArgumentList @(
-    "-m", "desktop.backend.bootstrap", "--workspace", "../.."
-) -WindowStyle Minimized -PassThru
-
-Write-Host "[Sidecar] PID $($sidecarProc.Id) - waiting ${SidecarWaitSeconds}s ..." -ForegroundColor Cyan
-Start-Sleep -Seconds $SidecarWaitSeconds
-
-# -- 3. Start Tauri dev --
+# -- 2. Start Tauri dev. Tauri will launch the managed sidecar. --
 
 Set-Location (Join-Path $Root "desktop\ui")
 Write-Host "[Tauri] npm run tauri:dev" -ForegroundColor Cyan
 Write-Host ""
 
-try {
-    & npm run tauri:dev
-} finally {
-    if (-not $sidecarProc.HasExited) {
-        Write-Host ""
-        Write-Host "[Sidecar] Stopping PID $($sidecarProc.Id) ..." -ForegroundColor DarkYellow
-        Stop-Process -Id $sidecarProc.Id -ErrorAction SilentlyContinue
-    }
-    Write-Host "[Done] Exited" -ForegroundColor DarkCyan
-}
+& npm run tauri:dev
+Write-Host "[Done] Exited" -ForegroundColor DarkCyan
