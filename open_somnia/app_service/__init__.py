@@ -98,6 +98,9 @@ class AppService:
     def list_models(self, provider_name: str | None = None) -> list[ModelDescriptor]:
         return self.provider_service.list_models(provider_name)
 
+    def debug_model_connection(self, provider_name: str, model: str) -> dict[str, str | bool]:
+        return self.provider_service.debug_model_connection(provider_name, model)
+
     def pending_interactions(self) -> list[InteractionRequestState]:
         return self.interaction_service.pending_requests()
 

@@ -77,6 +77,7 @@ export interface ModelDescriptor {
   provider_name: string;
   name: string;
   context_window_tokens?: number | null;
+  max_tokens?: number | null;
   supports_reasoning?: boolean | null;
   supports_adaptive_reasoning?: boolean | null;
   is_default: boolean;

@@ -2575,6 +2575,14 @@ function App() {
     return result.tool_count;
   }
 
+  async function handleDebugProviderModel(providerName: string, model: string): Promise<{ ok: boolean; message: string }> {
+    const client = clientRef.current;
+    if (!client) {
+      throw new Error("Connect to a sidecar before testing provider models.");
+    }
+    return client.debugModelConnection(providerName, model);
+  }
+
   async function handleOpenSettingsPath(path: string) {
     const targetPath = path.trim();
     if (!targetPath) {
@@ -3004,6 +3012,7 @@ function App() {
           onSaveConfigSection={handleSaveSettingsConfigSection}
           onDebugMcpServer={handleDebugMcpServer}
           onSetMcpServerEnabled={handleSetMcpServerEnabled}
+          onDebugProviderModel={handleDebugProviderModel}
           onReloadConfig={refreshSettingsConfig}
           providers={providers}
           visionModels={visionModels}

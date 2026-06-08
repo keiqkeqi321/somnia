@@ -638,6 +638,13 @@ class SidecarServer:
         except ValueError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
+    def debug_model_connection(self, provider_name: str, model: str) -> dict[str, Any]:
+        try:
+            result = self.service.debug_model_connection(provider_name, model)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        return {"provider": provider_name, "model": model, **result}
+
     def config_payload(self) -> dict[str, Any]:
         scopes: list[dict[str, Any]] = []
         for scope in ("user", "project"):
@@ -1226,6 +1233,12 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if not provider_name or not model:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "provider_name and model are required.")
             return self.sidecar.switch_provider_model(provider_name, model), HTTPStatus.OK
+        if path_parts == ["providers", "debug-model"]:
+            provider_name = str(body.get("provider_name", "")).strip()
+            model = str(body.get("model", "")).strip()
+            if not provider_name or not model:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "provider_name and model are required.")
+            return self.sidecar.debug_model_connection(provider_name, model), HTTPStatus.OK
         if path_parts == ["vision-model"]:
             raw_scope = str(body.get("scope", "project")).strip().lower()
             raw_provider = body.get("vision_provider")

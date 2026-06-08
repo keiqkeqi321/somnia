@@ -275,6 +275,16 @@ export class SidecarClient {
     );
   }
 
+  async debugModelConnection(providerName: string, model: string): Promise<{ provider: string; model: string; ok: boolean; message: string }> {
+    return parseResponse<{ provider: string; model: string; ok: boolean; message: string }>(
+      await fetch(`${this.baseUrl}/providers/debug-model`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider_name: providerName, model }),
+      }),
+    );
+  }
+
   async setExecutionMode(mode: string): Promise<{ message: string; execution_mode: string; execution_mode_title: string }> {
     return parseResponse<{ message: string; execution_mode: string; execution_mode_title: string }>(
       await fetch(`${this.baseUrl}/execution-mode`, {

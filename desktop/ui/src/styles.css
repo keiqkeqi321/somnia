@@ -510,6 +510,217 @@ button {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.provider-profiles-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.provider-profile-layout {
+  display: grid;
+  grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+}
+
+.provider-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.provider-profile-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(16, 20, 27, 0.88);
+  color: #dce6f5;
+  text-align: left;
+}
+
+.provider-profile-item.selected {
+  border-color: rgba(95, 182, 255, 0.48);
+  background: rgba(40, 70, 96, 0.52);
+}
+
+.provider-profile-item-head {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.provider-profile-item span,
+.provider-profile-item small {
+  max-width: 100%;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-profile-item strong {
+  min-width: 0;
+  color: #eef4ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-profile-item-head small {
+  flex: none;
+}
+
+.provider-profile-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(10, 13, 18, 0.34);
+}
+
+.provider-profile-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.provider-profile-form input,
+.provider-profile-form select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #10141b;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.provider-profile-wide,
+.provider-model-debug-list,
+.provider-profile-actions {
+  grid-column: 1 / -1;
+}
+
+.provider-model-debug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.provider-model-debug {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.provider-model-debug.expanded {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.provider-model-debug-main {
+  min-width: 0;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.provider-model-debug span,
+.provider-model-debug small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-model-debug small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.provider-model-debug.ok small {
+  color: var(--success);
+}
+
+.provider-model-debug.error small {
+  color: var(--danger);
+}
+
+.provider-model-settings {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.provider-model-settings label {
+  gap: 5px;
+  font-size: 0.76rem;
+}
+
+.provider-model-settings input,
+.provider-model-settings select {
+  min-height: 32px;
+  padding: 6px 8px;
+}
+
+.provider-profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.provider-model-test-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-model-test-button .icon {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.provider-model-test-running {
+  font-size: 0.66rem;
+}
+
 .vision-model-controls {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

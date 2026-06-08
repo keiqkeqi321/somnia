@@ -50,6 +50,37 @@ type SettingsViewProps = {
   onSetVisionProviderDraft: (provider: string) => void;
   onSetVisionModelDraft: (model: string) => void;
   onSaveVisionModel: () => void | Promise<void>;
+  onDebugProviderModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
+};
+
+type ProviderProfileDraft = {
+  name: string;
+  providerType: string;
+  modelsText: string;
+  defaultModel: string;
+  apiKey: string;
+  baseUrl: string;
+  organization: string;
+  contextWindowTokens: string;
+  maxTokens: string;
+  timeoutSeconds: string;
+  reasoningLevel: string;
+};
+
+type ModelTraitDraft = {
+  provider: string;
+  model: string;
+  contextWindowTokens: string;
+  maxTokens: string;
+  supportsReasoning: string;
+  supportsAdaptiveReasoning: string;
+};
+
+type ProviderConfigDraft = {
+  defaultProvider: string;
+  profiles: ProviderProfileDraft[];
+  modelTraits: Record<string, ModelTraitDraft>;
+  extraSections: string[];
 };
 
 const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: TranslationKey; titleKey: TranslationKey }> = [
@@ -110,6 +141,7 @@ function SettingsView({
   onSetVisionProviderDraft,
   onSetVisionModelDraft,
   onSaveVisionModel,
+  onDebugProviderModel,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
@@ -274,11 +306,16 @@ function SettingsView({
                     </button>
                   </div>
                   {activeConfigSection === "provider" ? (
+                    <>
+                    <ProviderProfilesEditor
+                      text={configDrafts[activeDraftKey] ?? ""}
+                      onChange={(value) => onConfigDraftChange(activeDraftKey, value)}
+                      onDebugModel={onDebugProviderModel}
+                    />
                     <div className="vision-model-panel">
                       <div className="config-editor-head">
                         <div>
                           <strong>{t("settings.config.visionModel")}</strong>
-                          <p>{t("settings.config.visionModelHint")}</p>
                         </div>
                         <button
                           className="settings-action-button"
@@ -322,11 +359,16 @@ function SettingsView({
                         </label>
                       </div>
                     </div>
+                    </>
                   ) : null}
                   <div className="config-editor-head">
                     <div>
-                      <strong>{t(activeConfigOption?.titleKey ?? "settings.config.providerTitle")}</strong>
-                      <p>{t("settings.config.editorHint")}</p>
+                      <strong>
+                        {activeConfigSection === "provider"
+                          ? t("settings.providerProfiles.tomlPreview")
+                          : t(activeConfigOption?.titleKey ?? "settings.config.providerTitle")}
+                      </strong>
+                      {activeConfigSection === "provider" ? null : <p>{t("settings.config.editorHint")}</p>}
                     </div>
                     <div className="config-editor-actions">
                       <button className="settings-action-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
@@ -564,6 +606,317 @@ function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
   return groups;
 }
 
+function ProviderProfilesEditor({
+  text,
+  onChange,
+  onDebugModel,
+}: {
+  text: string;
+  onChange: (value: string) => void;
+  onDebugModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
+}) {
+  const { t } = useI18n();
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>({});
+  const [probeState, setProbeState] = useState<Record<string, { status: "running" | "ok" | "error"; message: string }>>({});
+  const config = parseProviderConfigDraft(text);
+  const activeProvider =
+    config.profiles.find((profile) => profile.name === selectedProvider) ??
+    config.profiles.find((profile) => profile.name === config.defaultProvider) ??
+    config.profiles[0] ??
+    null;
+
+  function updateConfig(nextConfig: ProviderConfigDraft) {
+    onChange(renderProviderConfigDraft(nextConfig));
+  }
+
+  function updateProfile(profileName: string, patch: Partial<ProviderProfileDraft>) {
+    const profiles = config.profiles.map((profile) => (profile.name === profileName ? { ...profile, ...patch } : profile));
+    updateConfig({ ...config, profiles });
+  }
+
+  function renameProfile(previousName: string, nextName: string) {
+    const normalized = normalizeProviderName(nextName);
+    const profiles = config.profiles.map((profile) => (profile.name === previousName ? { ...profile, name: normalized } : profile));
+    const modelTraits: Record<string, ModelTraitDraft> = {};
+    for (const trait of Object.values(config.modelTraits)) {
+      const nextTrait = trait.provider === previousName ? { ...trait, provider: normalized } : trait;
+      modelTraits[modelTraitKey(nextTrait.provider, nextTrait.model)] = nextTrait;
+    }
+    updateConfig({
+      ...config,
+      defaultProvider: config.defaultProvider === previousName ? normalized : config.defaultProvider,
+      profiles,
+      modelTraits,
+    });
+    setSelectedProvider(normalized);
+  }
+
+  function addProfile() {
+    const name = uniqueProviderName(config.profiles, "provider");
+    updateConfig({
+      ...config,
+      defaultProvider: config.defaultProvider || name,
+      modelTraits: config.modelTraits,
+      profiles: [
+        ...config.profiles,
+        {
+          name,
+          providerType: "openai",
+          modelsText: "",
+          defaultModel: "",
+          apiKey: "",
+          baseUrl: "",
+          organization: "",
+          contextWindowTokens: "",
+          maxTokens: "",
+          timeoutSeconds: "",
+          reasoningLevel: "",
+        },
+      ],
+    });
+    setSelectedProvider(name);
+  }
+
+  function removeProfile(profileName: string) {
+    const profiles = config.profiles.filter((profile) => profile.name !== profileName);
+    const modelTraits = Object.fromEntries(
+      Object.entries(config.modelTraits).filter(([, trait]) => trait.provider !== profileName)
+    );
+    updateConfig({
+      ...config,
+      defaultProvider: config.defaultProvider === profileName ? profiles[0]?.name ?? "" : config.defaultProvider,
+      profiles,
+      modelTraits,
+    });
+    setSelectedProvider(profiles[0]?.name ?? "");
+  }
+
+  function updateModelTrait(providerName: string, model: string, patch: Partial<ModelTraitDraft>) {
+    const key = modelTraitKey(providerName, model);
+    const current = config.modelTraits[key] ?? emptyModelTrait(providerName, model);
+    const nextTrait = { ...current, ...patch, provider: providerName, model };
+    const modelTraits = { ...config.modelTraits };
+    if (isEmptyModelTrait(nextTrait)) {
+      delete modelTraits[key];
+    } else {
+      modelTraits[key] = nextTrait;
+    }
+    updateConfig({ ...config, modelTraits });
+  }
+
+  async function debugModel(providerName: string, model: string) {
+    const key = `${providerName}/${model}`;
+    setProbeState((previous) => ({ ...previous, [key]: { status: "running", message: "" } }));
+    try {
+      const result = await onDebugModel(providerName, model);
+      setProbeState((previous) => ({
+        ...previous,
+        [key]: { status: result.ok ? "ok" : "error", message: result.message },
+      }));
+    } catch (error) {
+      setProbeState((previous) => ({
+        ...previous,
+        [key]: { status: "error", message: error instanceof Error ? error.message : String(error) },
+      }));
+    }
+  }
+
+  function toggleModelSettings(providerName: string, model: string) {
+    const key = modelTraitKey(providerName, model);
+    setExpandedModels((previous) => ({ ...previous, [key]: !previous[key] }));
+  }
+
+  return (
+    <div className="provider-profiles-editor">
+      <div className="config-editor-head">
+        <div>
+          <strong>{t("settings.providerProfiles.title")}</strong>
+        </div>
+        <button className="settings-action-button" type="button" onClick={addProfile}>
+          {t("settings.providerProfiles.add")}
+        </button>
+      </div>
+      {config.profiles.length === 0 ? (
+        <div className="settings-empty-state">
+          <p>{t("settings.providerProfiles.empty")}</p>
+        </div>
+      ) : (
+        <div className="provider-profile-layout">
+          <div className="provider-profile-list">
+            {config.profiles.map((profile) => (
+              <button
+                key={profile.name}
+                type="button"
+                className={`provider-profile-item ${activeProvider?.name === profile.name ? "selected" : ""}`}
+                onClick={() => setSelectedProvider(profile.name)}
+              >
+                <span className="provider-profile-item-head">
+                  <strong>{profile.name}</strong>
+                  <small>{t("settings.providerProfiles.modelCount", { count: modelsFromText(profile.modelsText).length })}</small>
+                </span>
+                <span>{profile.providerType || "openai"} · {profile.defaultModel || t("settings.providerProfiles.noDefault")}</span>
+              </button>
+            ))}
+          </div>
+          {activeProvider ? (
+            <div className="provider-profile-form">
+              <label>
+                <span>{t("settings.providerProfiles.name")}</span>
+                <input value={activeProvider.name} onChange={(event) => renameProfile(activeProvider.name, event.currentTarget.value)} />
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.type")}</span>
+                <select
+                  value={activeProvider.providerType}
+                  onChange={(event) => updateProfile(activeProvider.name, { providerType: event.currentTarget.value })}
+                >
+                  <option value="openai">openai</option>
+                  <option value="anthropic">anthropic</option>
+                </select>
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.baseUrl")}</span>
+                <input value={activeProvider.baseUrl} onChange={(event) => updateProfile(activeProvider.name, { baseUrl: event.currentTarget.value })} />
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.apiKey")}</span>
+                <input value={activeProvider.apiKey} onChange={(event) => updateProfile(activeProvider.name, { apiKey: event.currentTarget.value })} />
+              </label>
+              <label className="provider-profile-wide">
+                <span>{t("settings.providerProfiles.models")}</span>
+                <input
+                  value={activeProvider.modelsText}
+                  onChange={(event) => updateProfile(activeProvider.name, { modelsText: event.currentTarget.value })}
+                  placeholder="gpt-4.1, gpt-4.1-mini"
+                />
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.defaultModel")}</span>
+                <input value={activeProvider.defaultModel} onChange={(event) => updateProfile(activeProvider.name, { defaultModel: event.currentTarget.value })} />
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.reasoning")}</span>
+                <select
+                  value={activeProvider.reasoningLevel}
+                  onChange={(event) => updateProfile(activeProvider.name, { reasoningLevel: event.currentTarget.value })}
+                >
+                  <option value="">auto</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="deep">deep</option>
+                </select>
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.organization")}</span>
+                <input value={activeProvider.organization} onChange={(event) => updateProfile(activeProvider.name, { organization: event.currentTarget.value })} />
+              </label>
+              <label>
+                <span>{t("settings.providerProfiles.timeoutSeconds")}</span>
+                <input value={activeProvider.timeoutSeconds} onChange={(event) => updateProfile(activeProvider.name, { timeoutSeconds: event.currentTarget.value })} />
+              </label>
+              <div className="provider-profile-wide provider-model-debug-list">
+                {modelsFromText(activeProvider.modelsText).map((model) => {
+                  const modelKey = modelTraitKey(activeProvider.name, model);
+                  const probe = probeState[`${activeProvider.name}/${model}`];
+                  const expanded = Boolean(expandedModels[modelKey]);
+                  const trait = config.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
+                  return (
+                    <div key={model} className={`provider-model-debug ${probe?.status ?? ""} ${expanded ? "expanded" : ""}`}>
+                      <button
+                        className="provider-model-debug-main"
+                        type="button"
+                        onClick={() => toggleModelSettings(activeProvider.name, model)}
+                        aria-expanded={expanded}
+                      >
+                        <span>{model}</span>
+                      </button>
+                      <button
+                        className="settings-inline-button provider-model-test-button"
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void debugModel(activeProvider.name, model);
+                        }}
+                        disabled={probe?.status === "running"}
+                        title={t("settings.providerProfiles.test")}
+                        aria-label={t("settings.providerProfiles.test")}
+                      >
+                        {probe?.status === "running" ? (
+                          <span className="provider-model-test-running">{t("settings.providerProfiles.testing")}</span>
+                        ) : (
+                          <svg className="icon" viewBox="0 0 1028 1024" aria-hidden="true">
+                            <path d="M868.1 871.8c-8.4 0-16.9-3-23.6-9.1-14.3-13-15.3-35.2-2.3-49.4 74.6-81.9 115.7-188.1 115.7-299 0-244.8-199.2-444-444-444S70 269.5 70 514.3c0 101.7 33.4 197.6 96.7 276.6 12.1 15.1 9.6 37.1-5.5 49.2-15.1 12.1-37.1 9.6-49.2-5.5-35.6-44.6-63.2-94.3-82.3-147.7C10 631.6 0 573.5 0 514.3c0-69.4 13.6-136.7 40.4-200.1 25.9-61.2 63-116.2 110.1-163.4 47.2-47.2 102.2-84.3 163.4-110.1C377.3 13.9 444.6 0.3 514 0.3s136.7 13.6 200.1 40.4c61.2 25.9 116.2 62.9 163.4 110.1C924.6 198 961.7 253 987.6 314.2c26.8 63.4 40.4 130.7 40.4 200.1 0 128.4-47.6 251.3-134 346.1-6.9 7.6-16.4 11.4-25.9 11.4z" />
+                            <path d="M681.3 492.8c0.1-0.2 0.2-0.3 0.2-0.5 36.6-76.2 40.7-216.6-1.6-236.9-4.1-2-8.8-2.9-14-2.9-48.1 0-138.1 79.1-171.9 147.5-98.9 10-176 93.5-176 195 0 108.2 87.8 196 196 196s196-87.8 196-196c0-34.2-8.8-66.4-24.2-94.4-1.5-2.7-3-5.2-4.5-7.8z m-78.2 191.3C579.3 707.9 547.7 721 514 721s-65.3-13.1-89.1-36.9C401.1 660.3 388 628.7 388 595s13.1-65.3 36.9-89.1c23.8-23.8 55.4-36.9 89.1-36.9 22.7 0 44.9 6.1 64.2 17.6 4.5 2.7 8.9 5.7 13.1 8.9 13.7 10.6 24.8 23.7 33.2 38.8C634.8 553 640 573.4 640 595c0 33.7-13.1 65.3-36.9 89.1z" />
+                          </svg>
+                        )}
+                      </button>
+                      {probe ? <small>{probe.message}</small> : null}
+                      {expanded ? (
+                        <div className="provider-model-settings">
+                          <label>
+                            <span>{t("settings.providerProfiles.contextTokens")}</span>
+                            <input
+                              value={trait.contextWindowTokens}
+                              onChange={(event) =>
+                                updateModelTrait(activeProvider.name, model, { contextWindowTokens: event.currentTarget.value })
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>{t("settings.providerProfiles.maxTokens")}</span>
+                            <input
+                              value={trait.maxTokens}
+                              onChange={(event) => updateModelTrait(activeProvider.name, model, { maxTokens: event.currentTarget.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>{t("settings.providerProfiles.supportsReasoning")}</span>
+                            <select
+                              value={trait.supportsReasoning}
+                              onChange={(event) => updateModelTrait(activeProvider.name, model, { supportsReasoning: event.currentTarget.value })}
+                            >
+                              <option value="">{t("settings.providerProfiles.auto")}</option>
+                              <option value="true">{t("settings.providerProfiles.yes")}</option>
+                              <option value="false">{t("settings.providerProfiles.no")}</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>{t("settings.providerProfiles.adaptiveReasoning")}</span>
+                            <select
+                              value={trait.supportsAdaptiveReasoning}
+                              onChange={(event) =>
+                                updateModelTrait(activeProvider.name, model, { supportsAdaptiveReasoning: event.currentTarget.value })
+                              }
+                            >
+                              <option value="">{t("settings.providerProfiles.auto")}</option>
+                              <option value="true">{t("settings.providerProfiles.yes")}</option>
+                              <option value="false">{t("settings.providerProfiles.no")}</option>
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="provider-profile-actions">
+                <button className="settings-inline-button" type="button" onClick={() => updateConfig({ ...config, defaultProvider: activeProvider.name })}>
+                  {config.defaultProvider === activeProvider.name ? t("settings.providerProfiles.defaultProvider") : t("settings.providerProfiles.setDefault")}
+                </button>
+                <button className="settings-inline-button danger" type="button" onClick={() => removeProfile(activeProvider.name)}>
+                  {t("settings.providerProfiles.remove")}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function configPlaceholder(section: SettingsConfigSectionKey): string {
   if (section === "provider") {
     return '[providers]\ndefault = "openai"\n\n[providers.openai]\nprovider_type = "openai"\nmodels = ["gpt-4.1", "gpt-4.1-mini"]\ndefault_model = "gpt-4.1"\napi_key = "..."\n\n[routing]\nvision_provider = "openai"\nvision_model = "gpt-4.1-mini"';
@@ -584,6 +937,284 @@ function parentPath(path: string): string {
     return path;
   }
   return normalized.slice(0, index);
+}
+
+type TomlSectionDraft = {
+  name: string;
+  lines: string[];
+};
+
+function parseProviderConfigDraft(text: string): ProviderConfigDraft {
+  const sections = splitTomlSections(text);
+  const providerSection = sections.find((section) => section.name === "providers");
+  const defaultProvider = readTomlString(readTomlValue(providerSection?.lines ?? [], "default"));
+  const modelTraits: Record<string, ModelTraitDraft> = {};
+  for (const section of sections) {
+    const modelTraitPath = providerModelTraitPath(section.name);
+    if (!modelTraitPath) {
+      continue;
+    }
+    const trait: ModelTraitDraft = {
+      provider: modelTraitPath.provider,
+      model: modelTraitPath.model,
+      contextWindowTokens: readTomlBare(readTomlValue(section.lines, "context_window_tokens")) || readTomlBare(readTomlValue(section.lines, "cwt")),
+      maxTokens: readTomlBare(readTomlValue(section.lines, "max_tokens")),
+      supportsReasoning: readTomlBare(readTomlValue(section.lines, "supports_reasoning")),
+      supportsAdaptiveReasoning:
+        readTomlBare(readTomlValue(section.lines, "supports_adaptive_reasoning")) ||
+        readTomlBare(readTomlValue(section.lines, "adaptive_reasoning")),
+    };
+    modelTraits[modelTraitKey(trait.provider, trait.model)] = trait;
+  }
+  const profiles = sections
+    .filter((section) => section.name.startsWith("providers."))
+    .map((section) => {
+      const name = section.name.slice("providers.".length).trim();
+      return {
+        name,
+        providerType: readTomlString(readTomlValue(section.lines, "provider_type")) || "openai",
+        modelsText: readTomlArray(readTomlValue(section.lines, "models")).join(", "),
+        defaultModel: readTomlString(readTomlValue(section.lines, "default_model")),
+        apiKey: readTomlString(readTomlValue(section.lines, "api_key")),
+        baseUrl: readTomlString(readTomlValue(section.lines, "base_url")),
+        organization: readTomlString(readTomlValue(section.lines, "organization")),
+        contextWindowTokens: readTomlBare(readTomlValue(section.lines, "context_window_tokens")),
+        maxTokens: readTomlBare(readTomlValue(section.lines, "max_tokens")),
+        timeoutSeconds: readTomlBare(readTomlValue(section.lines, "timeout_seconds")),
+        reasoningLevel: readTomlString(readTomlValue(section.lines, "reasoning_level")),
+      };
+    });
+  const extraSections = sections
+    .filter(
+      (section) =>
+        section.name !== "providers" && !section.name.startsWith("providers.") && !providerModelTraitPath(section.name)
+    )
+    .map((section) => section.lines.join("\n").trim())
+    .filter(Boolean);
+  return { defaultProvider, profiles, modelTraits, extraSections };
+}
+
+function renderProviderConfigDraft(config: ProviderConfigDraft): string {
+  const lines: string[] = ["[providers]"];
+  if (config.defaultProvider) {
+    lines.push(`default = ${tomlString(config.defaultProvider)}`);
+  }
+  for (const profile of config.profiles) {
+    const models = modelsFromText(profile.modelsText);
+    lines.push("", `[providers.${normalizeProviderName(profile.name)}]`);
+    appendTomlString(lines, "provider_type", profile.providerType || "openai");
+    if (models.length > 0) {
+      lines.push(`models = [${models.map(tomlString).join(", ")}]`);
+    }
+    appendTomlString(lines, "default_model", profile.defaultModel);
+    appendTomlString(lines, "api_key", profile.apiKey);
+    appendTomlString(lines, "base_url", profile.baseUrl);
+    appendTomlString(lines, "organization", profile.organization);
+    appendTomlBare(lines, "context_window_tokens", profile.contextWindowTokens);
+    appendTomlBare(lines, "max_tokens", profile.maxTokens);
+    appendTomlBare(lines, "timeout_seconds", profile.timeoutSeconds);
+    appendTomlString(lines, "reasoning_level", profile.reasoningLevel);
+  }
+  for (const trait of Object.values(config.modelTraits).filter((item) => !isEmptyModelTrait(item))) {
+    lines.push("", `[model_traits.${normalizeProviderName(trait.provider)}.${tomlString(trait.model)}]`);
+    appendTomlBare(lines, "context_window_tokens", trait.contextWindowTokens);
+    appendTomlBare(lines, "max_tokens", trait.maxTokens);
+    appendTomlBoolString(lines, "supports_reasoning", trait.supportsReasoning);
+    appendTomlBoolString(lines, "supports_adaptive_reasoning", trait.supportsAdaptiveReasoning);
+  }
+  for (const section of config.extraSections) {
+    lines.push("", section);
+  }
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function splitTomlSections(text: string): TomlSectionDraft[] {
+  const sections: TomlSectionDraft[] = [];
+  let current: TomlSectionDraft | null = null;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^\[([^\]]+)\]$/);
+    if (match) {
+      current = { name: match[1].trim(), lines: [line] };
+      sections.push(current);
+      continue;
+    }
+    if (!current) {
+      current = { name: "", lines: [] };
+      sections.push(current);
+    }
+    current.lines.push(line);
+  }
+  return sections;
+}
+
+function readTomlValue(lines: string[], key: string): string {
+  for (const line of lines) {
+    const match = line.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`));
+    if (match) {
+      return stripTomlComment(match[1].trim());
+    }
+  }
+  return "";
+}
+
+function stripTomlComment(value: string): string {
+  let inString = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (char === '"' && value[index - 1] !== "\\") {
+      inString = !inString;
+    }
+    if (char === "#" && !inString) {
+      return value.slice(0, index).trim();
+    }
+  }
+  return value;
+}
+
+function readTomlString(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return trimmed;
+}
+
+function readTomlBare(value: string): string {
+  return value.trim();
+}
+
+function readTomlArray(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+    return [];
+  }
+  return trimmed
+    .slice(1, -1)
+    .split(",")
+    .map((item) => readTomlString(item.trim()))
+    .filter(Boolean);
+}
+
+function tomlString(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function appendTomlString(lines: string[], key: string, value: string) {
+  const trimmed = value.trim();
+  if (trimmed) {
+    lines.push(`${key} = ${tomlString(trimmed)}`);
+  }
+}
+
+function appendTomlBare(lines: string[], key: string, value: string) {
+  const trimmed = value.trim();
+  if (trimmed) {
+    lines.push(`${key} = ${trimmed}`);
+  }
+}
+
+function appendTomlBoolString(lines: string[], key: string, value: string) {
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "true" || trimmed === "false") {
+    lines.push(`${key} = ${trimmed}`);
+  }
+}
+
+function modelsFromText(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeProviderName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function uniqueProviderName(profiles: ProviderProfileDraft[], baseName: string): string {
+  const existing = new Set(profiles.map((profile) => profile.name));
+  let candidate = normalizeProviderName(baseName);
+  let index = 2;
+  while (existing.has(candidate)) {
+    candidate = `${normalizeProviderName(baseName)}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function modelTraitKey(provider: string, model: string): string {
+  return `${normalizeProviderName(provider)}\u0000${model.trim()}`;
+}
+
+function emptyModelTrait(provider: string, model: string): ModelTraitDraft {
+  return {
+    provider: normalizeProviderName(provider),
+    model: model.trim(),
+    contextWindowTokens: "",
+    maxTokens: "",
+    supportsReasoning: "",
+    supportsAdaptiveReasoning: "",
+  };
+}
+
+function isEmptyModelTrait(trait: ModelTraitDraft): boolean {
+  return (
+    !trait.contextWindowTokens.trim() &&
+    !trait.maxTokens.trim() &&
+    !trait.supportsReasoning.trim() &&
+    !trait.supportsAdaptiveReasoning.trim()
+  );
+}
+
+function providerModelTraitPath(sectionName: string): { provider: string; model: string } | null {
+  const parts = splitTomlPath(sectionName);
+  if (parts.length < 3 || parts[0] !== "model_traits") {
+    return null;
+  }
+  const provider = normalizeProviderName(parts[1]);
+  const model = parts.slice(2).join(".").trim();
+  if (!provider || !model) {
+    return null;
+  }
+  return { provider, model };
+}
+
+function splitTomlPath(value: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | "" = "";
+  let escaping = false;
+  for (const char of value.trim()) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && quote === '"') {
+      escaping = true;
+      continue;
+    }
+    if ((char === '"' || char === "'") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (char === quote) {
+      quote = "";
+      continue;
+    }
+    if (char === "." && !quote) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current.trim());
+  return parts.filter(Boolean);
 }
 
 export default SettingsView;

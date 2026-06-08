@@ -290,6 +290,36 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(openrouter_settings.provider.context_window_tokens, 131072)
         self.assertEqual(glm_settings.provider.context_window_tokens, 262144)
 
+    def test_load_settings_reads_provider_model_max_tokens(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                provider_type = "openai"
+                models = ["gpt-large", "gpt-small"]
+                default_model = "gpt-large"
+                api_key = "openai-test-key"
+                max_tokens = 8000
+
+                [model_traits.openai."gpt-small"]
+                max_tokens = 2048
+                """,
+            )
+
+            with self._patched_home(home):
+                large_settings = load_settings(root, provider_override="openai", model_override="gpt-large")
+                small_settings = load_settings(root, provider_override="openai", model_override="gpt-small")
+
+        self.assertEqual(large_settings.provider.max_tokens, 8000)
+        self.assertEqual(small_settings.provider.max_tokens, 2048)
+        self.assertEqual(small_settings.provider_profiles["openai"].model_traits["gpt-small"].max_tokens, 2048)
+
     def test_infer_context_window_tokens_uses_official_model_mappings(self) -> None:
         self.assertEqual(_infer_context_window_tokens("openai", "minimax/MiniMax-M2.7"), 204800)
         self.assertEqual(_infer_context_window_tokens("openai", "kimi-k2.5"), 256000)

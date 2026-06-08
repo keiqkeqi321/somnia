@@ -8,6 +8,7 @@ from typing import Any
 @dataclass(slots=True)
 class ModelTraits:
     context_window_tokens: int | None = None
+    max_tokens: int | None = None
     supports_reasoning: bool | None = None
     supports_adaptive_reasoning: bool | None = None
 

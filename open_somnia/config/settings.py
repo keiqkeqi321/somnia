@@ -886,8 +886,10 @@ def _default_provider_profile(name: str) -> ProviderProfileSettings:
 
 def _build_model_traits(item: dict) -> ModelTraits:
     context_window_tokens = item.get("cwt", item.get("context_window_tokens"))
+    max_tokens = item.get("max_tokens")
     return ModelTraits(
         context_window_tokens=int(context_window_tokens) if context_window_tokens is not None else None,
+        max_tokens=int(max_tokens) if max_tokens is not None else None,
         supports_reasoning=bool(item["supports_reasoning"]) if item.get("supports_reasoning") is not None else None,
         supports_adaptive_reasoning=(
             bool(item["supports_adaptive_reasoning"])
@@ -1035,7 +1037,7 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
             if model_traits and model_traits.context_window_tokens is not None
             else profile.context_window_tokens or _infer_context_window_tokens(profile.provider_type, selected_model)
         ),
-        max_tokens=profile.max_tokens,
+        max_tokens=model_traits.max_tokens if model_traits and model_traits.max_tokens is not None else profile.max_tokens,
         timeout_seconds=profile.timeout_seconds,
         reasoning_level=profile.reasoning_level,
         supports_reasoning=model_traits.supports_reasoning if model_traits is not None else None,
