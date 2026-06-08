@@ -618,6 +618,8 @@ function ProviderProfilesEditor({
 }) {
   const { t } = useI18n();
   const [selectedProvider, setSelectedProvider] = useState("");
+  const [addingModelProvider, setAddingModelProvider] = useState("");
+  const [newModelName, setNewModelName] = useState("");
   const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>({});
   const [probeState, setProbeState] = useState<Record<string, { status: "running" | "ok" | "error"; message: string }>>({});
   const config = parseProviderConfigDraft(text);
@@ -711,6 +713,58 @@ function ProviderProfilesEditor({
     updateConfig({ ...config, modelTraits });
   }
 
+  function addModelsToProfile(profileName: string) {
+    const profile = config.profiles.find((item) => item.name === profileName);
+    if (!profile) {
+      return;
+    }
+    const nextModels = modelsFromText(profile.modelsText);
+    for (const model of modelsFromText(newModelName)) {
+      if (!nextModels.includes(model)) {
+        nextModels.push(model);
+      }
+    }
+    if (nextModels.length === modelsFromText(profile.modelsText).length) {
+      return;
+    }
+    updateProfile(profileName, {
+      modelsText: nextModels.join(", "),
+      defaultModel: profile.defaultModel || nextModels[0] || "",
+    });
+    setNewModelName("");
+    setAddingModelProvider("");
+  }
+
+  function removeModelFromProfile(providerName: string, model: string) {
+    const profile = config.profiles.find((item) => item.name === providerName);
+    if (!profile) {
+      return;
+    }
+    const nextModels = modelsFromText(profile.modelsText).filter((item) => item !== model);
+    const modelTraits = { ...config.modelTraits };
+    delete modelTraits[modelTraitKey(providerName, model)];
+    const profiles = config.profiles.map((item) =>
+      item.name === providerName
+        ? {
+            ...item,
+            modelsText: nextModels.join(", "),
+            defaultModel: item.defaultModel === model ? nextModels[0] ?? "" : item.defaultModel,
+          }
+        : item
+    );
+    updateConfig({ ...config, profiles, modelTraits });
+    setExpandedModels((previous) => {
+      const next = { ...previous };
+      delete next[modelTraitKey(providerName, model)];
+      return next;
+    });
+    setProbeState((previous) => {
+      const next = { ...previous };
+      delete next[`${providerName}/${model}`];
+      return next;
+    });
+  }
+
   async function debugModel(providerName: string, model: string) {
     const key = `${providerName}/${model}`;
     setProbeState((previous) => ({ ...previous, [key]: { status: "running", message: "" } }));
@@ -789,14 +843,6 @@ function ProviderProfilesEditor({
                 <span>{t("settings.providerProfiles.apiKey")}</span>
                 <input value={activeProvider.apiKey} onChange={(event) => updateProfile(activeProvider.name, { apiKey: event.currentTarget.value })} />
               </label>
-              <label className="provider-profile-wide">
-                <span>{t("settings.providerProfiles.models")}</span>
-                <input
-                  value={activeProvider.modelsText}
-                  onChange={(event) => updateProfile(activeProvider.name, { modelsText: normalizeModelsText(event.currentTarget.value) })}
-                  placeholder="gpt-4.1, gpt-4.1-mini"
-                />
-              </label>
               <label>
                 <span>{t("settings.providerProfiles.defaultModel")}</span>
                 <select
@@ -819,46 +865,112 @@ function ProviderProfilesEditor({
                 <span>{t("settings.providerProfiles.timeoutSeconds")}</span>
                 <input value={activeProvider.timeoutSeconds} onChange={(event) => updateProfile(activeProvider.name, { timeoutSeconds: event.currentTarget.value })} />
               </label>
-              <div className="provider-profile-wide provider-model-debug-list">
-                {activeModels.map((model) => {
-                  const modelKey = modelTraitKey(activeProvider.name, model);
-                  const probe = probeState[`${activeProvider.name}/${model}`];
-                  const expanded = Boolean(expandedModels[modelKey]);
-                  const trait = config.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
-                  const isAnthropic = activeProvider.providerType === "anthropic";
-                  return (
-                    <div key={model} className={`provider-model-debug ${probe?.status ?? ""} ${expanded ? "expanded" : ""}`}>
-                      <button
-                        className="provider-model-debug-main"
-                        type="button"
-                        onClick={() => toggleModelSettings(activeProvider.name, model)}
-                        aria-expanded={expanded}
-                      >
-                        <span>{model}</span>
-                      </button>
-                      <button
-                        className="settings-inline-button provider-model-test-button"
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void debugModel(activeProvider.name, model);
+              <div className="provider-profile-wide provider-model-section">
+                <div className="provider-model-section-head">
+                  <span>{t("settings.providerProfiles.models")}</span>
+                  <button
+                    className="settings-inline-button provider-model-icon-button"
+                    type="button"
+                    onClick={() => {
+                      setAddingModelProvider(activeProvider.name);
+                      setNewModelName("");
+                    }}
+                    title={t("settings.providerProfiles.addModel")}
+                    aria-label={t("settings.providerProfiles.addModel")}
+                  >
+                    +
+                  </button>
+                </div>
+                {addingModelProvider === activeProvider.name ? (
+                  <div className="provider-model-add-panel">
+                    <label>
+                      <span>{t("settings.providerProfiles.modelName")}</span>
+                      <input
+                        value={newModelName}
+                        onChange={(event) => setNewModelName(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            addModelsToProfile(activeProvider.name);
+                          }
+                          if (event.key === "Escape") {
+                            setAddingModelProvider("");
+                            setNewModelName("");
+                          }
                         }}
-                        disabled={probe?.status === "running"}
-                        title={t("settings.providerProfiles.test")}
-                        aria-label={t("settings.providerProfiles.test")}
-                      >
-                        {probe?.status === "running" ? (
-                          <span className="provider-model-test-running">{t("settings.providerProfiles.testing")}</span>
-                        ) : (
-                          <svg className="icon" viewBox="0 0 1028 1024" aria-hidden="true">
-                            <path d="M868.1 871.8c-8.4 0-16.9-3-23.6-9.1-14.3-13-15.3-35.2-2.3-49.4 74.6-81.9 115.7-188.1 115.7-299 0-244.8-199.2-444-444-444S70 269.5 70 514.3c0 101.7 33.4 197.6 96.7 276.6 12.1 15.1 9.6 37.1-5.5 49.2-15.1 12.1-37.1 9.6-49.2-5.5-35.6-44.6-63.2-94.3-82.3-147.7C10 631.6 0 573.5 0 514.3c0-69.4 13.6-136.7 40.4-200.1 25.9-61.2 63-116.2 110.1-163.4 47.2-47.2 102.2-84.3 163.4-110.1C377.3 13.9 444.6 0.3 514 0.3s136.7 13.6 200.1 40.4c61.2 25.9 116.2 62.9 163.4 110.1C924.6 198 961.7 253 987.6 314.2c26.8 63.4 40.4 130.7 40.4 200.1 0 128.4-47.6 251.3-134 346.1-6.9 7.6-16.4 11.4-25.9 11.4z" />
-                            <path d="M681.3 492.8c0.1-0.2 0.2-0.3 0.2-0.5 36.6-76.2 40.7-216.6-1.6-236.9-4.1-2-8.8-2.9-14-2.9-48.1 0-138.1 79.1-171.9 147.5-98.9 10-176 93.5-176 195 0 108.2 87.8 196 196 196s196-87.8 196-196c0-34.2-8.8-66.4-24.2-94.4-1.5-2.7-3-5.2-4.5-7.8z m-78.2 191.3C579.3 707.9 547.7 721 514 721s-65.3-13.1-89.1-36.9C401.1 660.3 388 628.7 388 595s13.1-65.3 36.9-89.1c23.8-23.8 55.4-36.9 89.1-36.9 22.7 0 44.9 6.1 64.2 17.6 4.5 2.7 8.9 5.7 13.1 8.9 13.7 10.6 24.8 23.7 33.2 38.8C634.8 553 640 573.4 640 595c0 33.7-13.1 65.3-36.9 89.1z" />
-                          </svg>
-                        )}
+                        placeholder="gpt-4.1"
+                        autoFocus
+                      />
+                    </label>
+                    <div className="provider-model-add-actions">
+                      <button className="settings-inline-button" type="button" onClick={() => addModelsToProfile(activeProvider.name)}>
+                        {t("settings.providerProfiles.addModelConfirm")}
                       </button>
-                      {probe ? <small>{probe.message}</small> : null}
-                      {expanded ? (
-                        <div className="provider-model-settings">
+                      <button
+                        className="settings-inline-button"
+                        type="button"
+                        onClick={() => {
+                          setAddingModelProvider("");
+                          setNewModelName("");
+                        }}
+                      >
+                        {t("settings.providerProfiles.cancel")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="provider-model-debug-list">
+                  {activeModels.map((model) => {
+                    const modelKey = modelTraitKey(activeProvider.name, model);
+                    const probe = probeState[`${activeProvider.name}/${model}`];
+                    const expanded = Boolean(expandedModels[modelKey]);
+                    const trait = config.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
+                    const isAnthropic = activeProvider.providerType === "anthropic";
+                    return (
+                      <div key={model} className={`provider-model-debug ${probe?.status ?? ""} ${expanded ? "expanded" : ""}`}>
+                        <button
+                          className="provider-model-debug-main"
+                          type="button"
+                          onClick={() => toggleModelSettings(activeProvider.name, model)}
+                          aria-expanded={expanded}
+                        >
+                          <span>{model}</span>
+                        </button>
+                        <button
+                          className="settings-inline-button provider-model-test-button"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void debugModel(activeProvider.name, model);
+                          }}
+                          disabled={probe?.status === "running"}
+                          title={t("settings.providerProfiles.test")}
+                          aria-label={t("settings.providerProfiles.test")}
+                        >
+                          {probe?.status === "running" ? (
+                            <span className="provider-model-test-running">{t("settings.providerProfiles.testing")}</span>
+                          ) : (
+                            <svg className="icon" viewBox="0 0 1028 1024" aria-hidden="true">
+                              <path d="M868.1 871.8c-8.4 0-16.9-3-23.6-9.1-14.3-13-15.3-35.2-2.3-49.4 74.6-81.9 115.7-188.1 115.7-299 0-244.8-199.2-444-444-444S70 269.5 70 514.3c0 101.7 33.4 197.6 96.7 276.6 12.1 15.1 9.6 37.1-5.5 49.2-15.1 12.1-37.1 9.6-49.2-5.5-35.6-44.6-63.2-94.3-82.3-147.7C10 631.6 0 573.5 0 514.3c0-69.4 13.6-136.7 40.4-200.1 25.9-61.2 63-116.2 110.1-163.4 47.2-47.2 102.2-84.3 163.4-110.1C377.3 13.9 444.6 0.3 514 0.3s136.7 13.6 200.1 40.4c61.2 25.9 116.2 62.9 163.4 110.1C924.6 198 961.7 253 987.6 314.2c26.8 63.4 40.4 130.7 40.4 200.1 0 128.4-47.6 251.3-134 346.1-6.9 7.6-16.4 11.4-25.9 11.4z" />
+                              <path d="M681.3 492.8c0.1-0.2 0.2-0.3 0.2-0.5 36.6-76.2 40.7-216.6-1.6-236.9-4.1-2-8.8-2.9-14-2.9-48.1 0-138.1 79.1-171.9 147.5-98.9 10-176 93.5-176 195 0 108.2 87.8 196 196 196s196-87.8 196-196c0-34.2-8.8-66.4-24.2-94.4-1.5-2.7-3-5.2-4.5-7.8z m-78.2 191.3C579.3 707.9 547.7 721 514 721s-65.3-13.1-89.1-36.9C401.1 660.3 388 628.7 388 595s13.1-65.3 36.9-89.1c23.8-23.8 55.4-36.9 89.1-36.9 22.7 0 44.9 6.1 64.2 17.6 4.5 2.7 8.9 5.7 13.1 8.9 13.7 10.6 24.8 23.7 33.2 38.8C634.8 553 640 573.4 640 595c0 33.7-13.1 65.3-36.9 89.1z" />
+                            </svg>
+                          )}
+                        </button>
+                        <button
+                          className="settings-inline-button provider-model-icon-button danger"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeModelFromProfile(activeProvider.name, model);
+                          }}
+                          title={t("settings.providerProfiles.removeModel")}
+                          aria-label={t("settings.providerProfiles.removeModel")}
+                        >
+                          x
+                        </button>
+                        {probe ? <small>{probe.message}</small> : null}
+                        {expanded ? (
+                          <div className="provider-model-settings">
                           <label>
                             <span>{t("settings.providerProfiles.contextTokens")}</span>
                             <input
@@ -919,6 +1031,7 @@ function ProviderProfilesEditor({
                     </div>
                   );
                 })}
+              </div>
               </div>
               <div className="provider-profile-actions">
                 <button className="settings-inline-button" type="button" onClick={() => updateConfig({ ...config, defaultProvider: activeProvider.name })}>
@@ -1150,10 +1263,6 @@ function modelsFromText(value: string): string[] {
     .split(/[,，、]/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function normalizeModelsText(value: string): string {
-  return modelsFromText(value).join(", ");
 }
 
 function normalizeProviderName(value: string): string {

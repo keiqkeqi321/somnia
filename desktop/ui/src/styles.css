@@ -622,10 +622,41 @@ button {
   gap: 5px;
 }
 
+.provider-model-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-model-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.provider-model-add-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.provider-model-add-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .provider-model-debug {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 6px;
   align-items: center;
   min-height: 30px;
@@ -702,6 +733,16 @@ button {
 }
 
 .provider-model-test-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-model-icon-button {
   width: 26px;
   height: 26px;
   min-height: 26px;
