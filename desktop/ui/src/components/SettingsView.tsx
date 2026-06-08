@@ -317,6 +317,8 @@ function SettingsView({
                     <>
                     <ProviderProfilesEditor
                       text={configDrafts[activeDraftKey] ?? ""}
+                      inheritedText={selectedConfigScope === "project" ? configDrafts[`user:${activeConfigSection}`] ?? "" : ""}
+                      scope={selectedConfigScope}
                       onChange={(value) => onConfigDraftChange(activeDraftKey, value)}
                       onDebugModel={onDebugProviderModel}
                     />
@@ -373,7 +375,9 @@ function SettingsView({
                     <div>
                       <strong>
                         {activeConfigSection === "provider"
-                          ? t("settings.providerProfiles.tomlPreview")
+                          ? selectedConfigScope === "project"
+                            ? t("settings.providerProfiles.projectTomlPreview")
+                            : t("settings.providerProfiles.tomlPreview")
                           : t(activeConfigOption?.titleKey ?? "settings.config.providerTitle")}
                       </strong>
                       {activeConfigSection === "provider" ? null : <p>{t("settings.config.editorHint")}</p>}
@@ -611,10 +615,14 @@ function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
 
 function ProviderProfilesEditor({
   text,
+  inheritedText,
+  scope,
   onChange,
   onDebugModel,
 }: {
   text: string;
+  inheritedText: string;
+  scope: SettingsConfigScopeKey;
   onChange: (value: string) => void;
   onDebugModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
 }) {
@@ -625,11 +633,16 @@ function ProviderProfilesEditor({
   const [expandedModels, setExpandedModels] = useState<Record<string, boolean>>({});
   const [probeState, setProbeState] = useState<Record<string, { status: "running" | "ok" | "error"; message: string }>>({});
   const config = parseProviderConfigDraft(text);
+  const inheritedConfig = scope === "project" ? parseProviderConfigDraft(inheritedText) : emptyProviderConfigDraft();
+  const effectiveConfig = scope === "project" ? mergeProviderConfigDrafts(inheritedConfig, config) : config;
+  const isProjectScope = scope === "project";
   const activeProvider =
-    config.profiles.find((profile) => profile.name === selectedProvider) ??
-    config.profiles.find((profile) => profile.name === config.defaultProvider) ??
-    config.profiles[0] ??
+    effectiveConfig.profiles.find((profile) => profile.name === selectedProvider) ??
+    effectiveConfig.profiles.find((profile) => profile.name === effectiveConfig.defaultProvider) ??
+    effectiveConfig.profiles[0] ??
     null;
+  const activeLocalProvider = activeProvider ? config.profiles.find((profile) => profile.name === activeProvider.name) ?? null : null;
+  const activeInheritedProvider = activeProvider ? inheritedConfig.profiles.find((profile) => profile.name === activeProvider.name) ?? null : null;
   const activeModels = activeProvider ? modelsFromText(activeProvider.modelsText) : [];
   const defaultModelOptions =
     activeProvider && activeProvider.defaultModel && !activeModels.includes(activeProvider.defaultModel)
@@ -641,7 +654,17 @@ function ProviderProfilesEditor({
   }
 
   function updateProfile(profileName: string, patch: Partial<ProviderProfileDraft>) {
-    const profiles = config.profiles.map((profile) => (profile.name === profileName ? { ...profile, ...patch } : profile));
+    const existingProfile = config.profiles.find((profile) => profile.name === profileName);
+    const profiles = existingProfile
+      ? config.profiles.map((profile) => (profile.name === profileName ? { ...profile, ...patch } : profile))
+      : [...config.profiles, { ...emptyProviderProfile(profileName), ...patch }];
+    updateConfig({ ...config, profiles });
+  }
+
+  function revertProfileField(profileName: string, field: keyof ProviderProfileDraft) {
+    const profiles = config.profiles
+      .map((profile) => (profile.name === profileName ? { ...profile, [field]: field === "name" ? profile.name : "" } : profile))
+      .filter((profile) => !isEmptyProviderProfile(profile));
     updateConfig({ ...config, profiles });
   }
 
@@ -699,7 +722,7 @@ function ProviderProfilesEditor({
       profiles,
       modelTraits,
     });
-    setSelectedProvider(profiles[0]?.name ?? "");
+    setSelectedProvider(isProjectScope && inheritedConfig.profiles.some((profile) => profile.name === profileName) ? profileName : profiles[0]?.name ?? "");
   }
 
   function updateModelTrait(providerName: string, model: string, patch: Partial<ModelTraitDraft>) {
@@ -716,7 +739,7 @@ function ProviderProfilesEditor({
   }
 
   function addModelsToProfile(profileName: string) {
-    const profile = config.profiles.find((item) => item.name === profileName);
+    const profile = effectiveConfig.profiles.find((item) => item.name === profileName);
     if (!profile) {
       return;
     }
@@ -738,22 +761,22 @@ function ProviderProfilesEditor({
   }
 
   function removeModelFromProfile(providerName: string, model: string) {
-    const profile = config.profiles.find((item) => item.name === providerName);
+    const profile = effectiveConfig.profiles.find((item) => item.name === providerName);
     if (!profile) {
       return;
     }
     const nextModels = modelsFromText(profile.modelsText).filter((item) => item !== model);
     const modelTraits = { ...config.modelTraits };
     delete modelTraits[modelTraitKey(providerName, model)];
-    const profiles = config.profiles.map((item) =>
-      item.name === providerName
-        ? {
-            ...item,
-            modelsText: nextModels.join(", "),
-            defaultModel: item.defaultModel === model ? nextModels[0] ?? "" : item.defaultModel,
-          }
-        : item
-    );
+    const localProfile = config.profiles.find((item) => item.name === providerName) ?? emptyProviderProfile(providerName);
+    const nextProfile = {
+      ...localProfile,
+      modelsText: nextModels.join(", "),
+      defaultModel: profile.defaultModel === model ? nextModels[0] ?? "" : profile.defaultModel,
+    };
+    const profiles = config.profiles.some((item) => item.name === providerName)
+      ? config.profiles.map((item) => (item.name === providerName ? nextProfile : item))
+      : [...config.profiles, nextProfile];
     updateConfig({ ...config, profiles, modelTraits });
     setExpandedModels((previous) => {
       const next = { ...previous };
@@ -789,6 +812,34 @@ function ProviderProfilesEditor({
     setExpandedModels((previous) => ({ ...previous, [key]: !previous[key] }));
   }
 
+  function profileFieldSource(field: keyof ProviderProfileDraft): "project" | "inherited" {
+    if (!isProjectScope || !activeInheritedProvider) {
+      return "project";
+    }
+    if (!activeLocalProvider) {
+      return "inherited";
+    }
+    return providerProfileFieldValue(activeLocalProvider, field) ? "project" : "inherited";
+  }
+
+  function fieldLabel(labelKey: TranslationKey, field: keyof ProviderProfileDraft) {
+    if (!isProjectScope) {
+      return <span>{t(labelKey)}</span>;
+    }
+    const source = profileFieldSource(field);
+    return (
+      <span className="provider-field-label">
+        <span>{t(labelKey)}</span>
+        <span className={`provider-source-pill ${source}`}>{sourceLabel(source, t)}</span>
+        {field !== "name" && source === "project" && activeInheritedProvider ? (
+          <button className="provider-field-revert" type="button" onClick={() => revertProfileField(activeProvider?.name ?? "", field)}>
+            {t("settings.providerProfiles.revert")}
+          </button>
+        ) : null}
+      </span>
+    );
+  }
+
   return (
     <div className="provider-profiles-editor">
       <div className="config-editor-head">
@@ -799,14 +850,16 @@ function ProviderProfilesEditor({
           {t("settings.providerProfiles.add")}
         </button>
       </div>
-      {config.profiles.length === 0 ? (
+      {effectiveConfig.profiles.length === 0 ? (
         <div className="settings-empty-state">
           <p>{t("settings.providerProfiles.empty")}</p>
         </div>
       ) : (
         <div className="provider-profile-layout">
           <div className="provider-profile-list">
-            {config.profiles.map((profile) => (
+            {effectiveConfig.profiles.map((profile) => {
+              const profileSource = providerSource(profile.name, config, inheritedConfig, isProjectScope);
+              return (
               <button
                 key={profile.name}
                 type="button"
@@ -818,19 +871,25 @@ function ProviderProfilesEditor({
                   <small>{t("settings.providerProfiles.modelCount", { count: modelsFromText(profile.modelsText).length })}</small>
                 </span>
                 <span>{profile.providerType || "openai"} · {profile.defaultModel || t("settings.providerProfiles.noDefault")}</span>
+                {isProjectScope ? <span className={`provider-source-pill ${profileSource}`}>{sourceLabel(profileSource, t)}</span> : null}
               </button>
-            ))}
+              );
+            })}
           </div>
           {activeProvider ? (
             <div className="provider-profile-form">
               <label>
-                <span>{t("settings.providerProfiles.name")}</span>
-                <input value={activeProvider.name} onChange={(event) => renameProfile(activeProvider.name, event.currentTarget.value)} />
+                {fieldLabel("settings.providerProfiles.name", "name")}
+                <input
+                  value={activeProvider.name}
+                  onChange={(event) => renameProfile(activeProvider.name, event.currentTarget.value)}
+                  disabled={isProjectScope && Boolean(activeInheritedProvider)}
+                />
               </label>
               <label>
-                <span>{t("settings.providerProfiles.type")}</span>
+                {fieldLabel("settings.providerProfiles.type", "providerType")}
                 <select
-                  value={activeProvider.providerType}
+                  value={activeProvider.providerType || "openai"}
                   onChange={(event) => updateProfile(activeProvider.name, { providerType: event.currentTarget.value })}
                 >
                   <option value="openai">openai</option>
@@ -838,15 +897,15 @@ function ProviderProfilesEditor({
                 </select>
               </label>
               <label>
-                <span>{t("settings.providerProfiles.baseUrl")}</span>
+                {fieldLabel("settings.providerProfiles.baseUrl", "baseUrl")}
                 <input value={activeProvider.baseUrl} onChange={(event) => updateProfile(activeProvider.name, { baseUrl: event.currentTarget.value })} />
               </label>
               <label>
-                <span>{t("settings.providerProfiles.apiKey")}</span>
+                {fieldLabel("settings.providerProfiles.apiKey", "apiKey")}
                 <input value={activeProvider.apiKey} onChange={(event) => updateProfile(activeProvider.name, { apiKey: event.currentTarget.value })} />
               </label>
               <label>
-                <span>{t("settings.providerProfiles.defaultModel")}</span>
+                {fieldLabel("settings.providerProfiles.defaultModel", "defaultModel")}
                 <select
                   value={activeProvider.defaultModel}
                   onChange={(event) => updateProfile(activeProvider.name, { defaultModel: event.currentTarget.value })}
@@ -860,16 +919,16 @@ function ProviderProfilesEditor({
                 </select>
               </label>
               <label>
-                <span>{t("settings.providerProfiles.organization")}</span>
+                {fieldLabel("settings.providerProfiles.organization", "organization")}
                 <input value={activeProvider.organization} onChange={(event) => updateProfile(activeProvider.name, { organization: event.currentTarget.value })} />
               </label>
               <label>
-                <span>{t("settings.providerProfiles.timeoutSeconds")}</span>
+                {fieldLabel("settings.providerProfiles.timeoutSeconds", "timeoutSeconds")}
                 <input value={activeProvider.timeoutSeconds} onChange={(event) => updateProfile(activeProvider.name, { timeoutSeconds: event.currentTarget.value })} />
               </label>
               <div className="provider-profile-wide provider-model-section">
                 <div className="provider-model-section-head">
-                  <span>{t("settings.providerProfiles.models")}</span>
+                  {fieldLabel("settings.providerProfiles.models", "modelsText")}
                   <button
                     className="settings-inline-button provider-model-icon-button"
                     type="button"
@@ -926,7 +985,7 @@ function ProviderProfilesEditor({
                     const modelKey = modelTraitKey(activeProvider.name, model);
                     const probe = probeState[`${activeProvider.name}/${model}`];
                     const expanded = Boolean(expandedModels[modelKey]);
-                    const trait = config.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
+                    const trait = effectiveConfig.modelTraits[modelKey] ?? emptyModelTrait(activeProvider.name, model);
                     const isAnthropic = activeProvider.providerType === "anthropic";
                     return (
                       <div key={model} className={`provider-model-debug ${probe?.status ?? ""} ${expanded ? "expanded" : ""}`}>
@@ -1037,11 +1096,13 @@ function ProviderProfilesEditor({
               </div>
               <div className="provider-profile-actions">
                 <button className="settings-inline-button" type="button" onClick={() => updateConfig({ ...config, defaultProvider: activeProvider.name })}>
-                  {config.defaultProvider === activeProvider.name ? t("settings.providerProfiles.defaultProvider") : t("settings.providerProfiles.setDefault")}
+                  {effectiveConfig.defaultProvider === activeProvider.name ? t("settings.providerProfiles.defaultProvider") : t("settings.providerProfiles.setDefault")}
                 </button>
-                <button className="settings-inline-button danger" type="button" onClick={() => removeProfile(activeProvider.name)}>
-                  {t("settings.providerProfiles.remove")}
-                </button>
+                {isProjectScope && activeInheritedProvider && !activeLocalProvider ? null : (
+                  <button className="settings-inline-button danger" type="button" onClick={() => removeProfile(activeProvider.name)}>
+                    {isProjectScope && activeInheritedProvider ? t("settings.providerProfiles.revertProvider") : t("settings.providerProfiles.remove")}
+                  </button>
+                )}
               </div>
             </div>
           ) : null}
@@ -1071,6 +1132,128 @@ function parentPath(path: string): string {
     return path;
   }
   return normalized.slice(0, index);
+}
+
+function emptyProviderConfigDraft(): ProviderConfigDraft {
+  return {
+    defaultProvider: "",
+    profiles: [],
+    modelTraits: {},
+    extraSections: [],
+  };
+}
+
+function emptyProviderProfile(name: string): ProviderProfileDraft {
+  return {
+    name,
+    providerType: "",
+    modelsText: "",
+    defaultModel: "",
+    apiKey: "",
+    baseUrl: "",
+    organization: "",
+    contextWindowTokens: "",
+    maxTokens: "",
+    timeoutSeconds: "",
+    reasoningLevel: "",
+  };
+}
+
+function mergeProviderConfigDrafts(inheritedConfig: ProviderConfigDraft, projectConfig: ProviderConfigDraft): ProviderConfigDraft {
+  const profilesByName = new Map<string, { inherited?: ProviderProfileDraft; project?: ProviderProfileDraft }>();
+  for (const profile of inheritedConfig.profiles) {
+    profilesByName.set(profile.name, { inherited: profile });
+  }
+  for (const profile of projectConfig.profiles) {
+    profilesByName.set(profile.name, { ...profilesByName.get(profile.name), project: profile });
+  }
+  const profiles = Array.from(profilesByName.entries()).map(([name, item]) =>
+    mergeProviderProfileDrafts(name, item.inherited, item.project)
+  );
+  return {
+    defaultProvider: projectConfig.defaultProvider || inheritedConfig.defaultProvider,
+    profiles,
+    modelTraits: mergeModelTraits(inheritedConfig.modelTraits, projectConfig.modelTraits),
+    extraSections: projectConfig.extraSections,
+  };
+}
+
+function mergeProviderProfileDrafts(
+  name: string,
+  inheritedProfile: ProviderProfileDraft | undefined,
+  projectProfile: ProviderProfileDraft | undefined
+): ProviderProfileDraft {
+  return {
+    name,
+    providerType: projectProfile?.providerType || inheritedProfile?.providerType || "openai",
+    modelsText: projectProfile?.modelsText || inheritedProfile?.modelsText || "",
+    defaultModel: projectProfile?.defaultModel || inheritedProfile?.defaultModel || "",
+    apiKey: projectProfile?.apiKey || inheritedProfile?.apiKey || "",
+    baseUrl: projectProfile?.baseUrl || inheritedProfile?.baseUrl || "",
+    organization: projectProfile?.organization || inheritedProfile?.organization || "",
+    contextWindowTokens: projectProfile?.contextWindowTokens || inheritedProfile?.contextWindowTokens || "",
+    maxTokens: projectProfile?.maxTokens || inheritedProfile?.maxTokens || "",
+    timeoutSeconds: projectProfile?.timeoutSeconds || inheritedProfile?.timeoutSeconds || "",
+    reasoningLevel: projectProfile?.reasoningLevel || inheritedProfile?.reasoningLevel || "",
+  };
+}
+
+function mergeModelTraits(
+  inheritedTraits: Record<string, ModelTraitDraft>,
+  projectTraits: Record<string, ModelTraitDraft>
+): Record<string, ModelTraitDraft> {
+  const merged = { ...inheritedTraits };
+  for (const [key, trait] of Object.entries(projectTraits)) {
+    const inherited = merged[key] ?? emptyModelTrait(trait.provider, trait.model);
+    merged[key] = {
+      provider: trait.provider || inherited.provider,
+      model: trait.model || inherited.model,
+      contextWindowTokens: trait.contextWindowTokens || inherited.contextWindowTokens,
+      maxTokens: trait.maxTokens || inherited.maxTokens,
+      reasoningLevel: trait.reasoningLevel || inherited.reasoningLevel,
+      supportsReasoning: trait.supportsReasoning || inherited.supportsReasoning,
+      supportsAdaptiveReasoning: trait.supportsAdaptiveReasoning || inherited.supportsAdaptiveReasoning,
+    };
+  }
+  return merged;
+}
+
+function providerProfileFieldValue(profile: ProviderProfileDraft, field: keyof ProviderProfileDraft): string {
+  return String(profile[field] ?? "").trim();
+}
+
+function isEmptyProviderProfile(profile: ProviderProfileDraft): boolean {
+  return (
+    !profile.providerType.trim() &&
+    !profile.modelsText.trim() &&
+    !profile.defaultModel.trim() &&
+    !profile.apiKey.trim() &&
+    !profile.baseUrl.trim() &&
+    !profile.organization.trim() &&
+    !profile.contextWindowTokens.trim() &&
+    !profile.maxTokens.trim() &&
+    !profile.timeoutSeconds.trim() &&
+    !profile.reasoningLevel.trim()
+  );
+}
+
+function providerSource(
+  profileName: string,
+  projectConfig: ProviderConfigDraft,
+  inheritedConfig: ProviderConfigDraft,
+  isProjectScope: boolean
+): "project" | "inherited" {
+  if (!isProjectScope) {
+    return "project";
+  }
+  return projectConfig.profiles.some((profile) => profile.name === profileName) ||
+    !inheritedConfig.profiles.some((profile) => profile.name === profileName)
+    ? "project"
+    : "inherited";
+}
+
+function sourceLabel(source: "project" | "inherited", t: (key: TranslationKey, values?: Record<string, string | number>) => string): string {
+  return source === "project" ? t("settings.providerProfiles.projectOverride") : t("settings.providerProfiles.inherited");
 }
 
 type TomlSectionDraft = {
@@ -1107,7 +1290,7 @@ function parseProviderConfigDraft(text: string): ProviderConfigDraft {
       const name = section.name.slice("providers.".length).trim();
       return {
         name,
-        providerType: readTomlString(readTomlValue(section.lines, "provider_type")) || "openai",
+        providerType: readTomlString(readTomlValue(section.lines, "provider_type")),
         modelsText: readTomlArray(readTomlValue(section.lines, "models")).join(", "),
         defaultModel: readTomlString(readTomlValue(section.lines, "default_model")),
         apiKey: readTomlString(readTomlValue(section.lines, "api_key")),
@@ -1130,6 +1313,14 @@ function parseProviderConfigDraft(text: string): ProviderConfigDraft {
 }
 
 function renderProviderConfigDraft(config: ProviderConfigDraft): string {
+  if (
+    !config.defaultProvider &&
+    config.profiles.length === 0 &&
+    Object.values(config.modelTraits).every((item) => isEmptyModelTrait(item)) &&
+    config.extraSections.length === 0
+  ) {
+    return "";
+  }
   const lines: string[] = ["[providers]"];
   if (config.defaultProvider) {
     lines.push(`default = ${tomlString(config.defaultProvider)}`);
@@ -1137,7 +1328,7 @@ function renderProviderConfigDraft(config: ProviderConfigDraft): string {
   for (const profile of config.profiles) {
     const models = modelsFromText(profile.modelsText);
     lines.push("", `[providers.${normalizeProviderName(profile.name)}]`);
-    appendTomlString(lines, "provider_type", profile.providerType || "openai");
+    appendTomlString(lines, "provider_type", profile.providerType);
     if (models.length > 0) {
       lines.push(`models = [${models.map(tomlString).join(", ")}]`);
     }
