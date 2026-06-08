@@ -20,7 +20,6 @@ const translations = {
     /* ── Settings ── */
     "settings.title": "Settings",
     "settings.back": "Back to app",
-    "settings.section.configuration": "Configuration",
     "settings.section.archived": "Archived threads",
     "settings.language.label": "Language",
     "settings.language.en-US": "English",
@@ -41,7 +40,6 @@ const translations = {
     "settings.config.configLabel": "config",
     "settings.config.openFile": "Open file",
     "settings.config.openFolder": "Open folder",
-    "settings.config.configuration": "Configuration",
     "settings.config.editorHint": "Edit the TOML snippet for the current category. Saving writes to the selected scope's config file.",
     "settings.config.saving": "Saving",
     "settings.config.save": "Save",
@@ -309,7 +307,6 @@ const translations = {
     /* ── Settings ── */
     "settings.title": "设置",
     "settings.back": "返回应用",
-    "settings.section.configuration": "配置",
     "settings.section.archived": "已归档线程",
     "settings.language.label": "语言",
     "settings.language.en-US": "English",
@@ -330,7 +327,6 @@ const translations = {
     "settings.config.configLabel": "配置",
     "settings.config.openFile": "打开文件",
     "settings.config.openFolder": "打开文件夹",
-    "settings.config.configuration": "配置",
     "settings.config.editorHint": "编辑当前类别的 TOML 片段。保存会写入所选 scope 的配置文件。",
     "settings.config.saving": "保存中",
     "settings.config.save": "保存",

@@ -558,16 +558,14 @@ button {
   gap: 12px;
 }
 
-.config-scope-toggle,
-.config-section-tabs {
+.config-scope-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
 }
 
-.config-scope-toggle button,
-.config-section-tabs button {
+.config-scope-toggle button {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   background: rgba(32, 34, 39, 0.9);
@@ -576,8 +574,7 @@ button {
   font-size: 0.8rem;
 }
 
-.config-scope-toggle button.selected,
-.config-section-tabs button.selected {
+.config-scope-toggle button.selected {
   border-color: rgba(95, 182, 255, 0.48);
   background: rgba(40, 70, 96, 0.72);
   color: #ffffff;

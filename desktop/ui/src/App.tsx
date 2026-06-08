@@ -269,7 +269,7 @@ function App() {
   const [projectMenuOpenKey, setProjectMenuOpenKey] = useState<string | null>(null);
   const [sessionMenuOpenKey, setSessionMenuOpenKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("configuration");
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionKey>("provider");
   const [settingsConfigScopes, setSettingsConfigScopes] = useState<SettingsConfigScope[]>([]);
   const [settingsConfigDrafts, setSettingsConfigDrafts] = useState<Record<string, string>>({});
   const [settingsMcpServers, setSettingsMcpServers] = useState<McpServerSummary[]>([]);
@@ -2459,7 +2459,7 @@ function App() {
 
   function openConfigurationTarget(target: ConfigCommandTarget) {
     setSettingsOpen(true);
-    setSettingsSection("configuration");
+    setSettingsSection(target);
     setSelectedArchivedSessionKeys([]);
     if (target !== "skills") {
       setSettingsConfigSection(target);
@@ -2471,10 +2471,12 @@ function App() {
     setModelPickerOpen(false);
     setModePickerOpen(false);
     void refreshSettingsConfig();
-    if (target === "skills") {
-      requestAnimationFrame(() => {
-        scrollSettingsPanelIntoView("skills");
-      });
+  }
+
+  function handleSelectSettingsSection(section: SettingsSectionKey) {
+    setSettingsSection(section);
+    if (section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt") {
+      setSettingsConfigSection(section);
     }
   }
 
@@ -2971,7 +2973,7 @@ function App() {
       {settingsOpen ? (
         <SettingsView
           activeSection={settingsSection}
-          onSelectSection={setSettingsSection}
+          onSelectSection={handleSelectSettingsSection}
           onClose={handleCloseSettings}
           archivedEntries={archivedSessionEntries}
           archivedSelection={archivedSessionSelection}
@@ -2994,12 +2996,10 @@ function App() {
           configDrafts={settingsConfigDrafts}
           mcpServers={settingsMcpServers}
           selectedConfigScope={settingsConfigScope}
-          selectedConfigSection={settingsConfigSection}
           configLoading={settingsConfigLoading}
           configSaving={settingsConfigSaving}
           configMessage={settingsConfigMessage}
           onSelectConfigScope={setSettingsConfigScope}
-          onSelectConfigSection={setSettingsConfigSection}
           onConfigDraftChange={(key, value) => setSettingsConfigDrafts((previous) => ({ ...previous, [key]: value }))}
           onSaveConfigSection={handleSaveSettingsConfigSection}
           onDebugMcpServer={handleDebugMcpServer}
@@ -5460,18 +5460,6 @@ function pendingUiCommandTarget(value: string, images: PendingImage[]): UiComman
     return null;
   }
   return uiCommandTarget(trimmed);
-}
-
-function scrollSettingsPanelIntoView(panelName: string) {
-  const panel = document.querySelector<HTMLElement>(`[data-settings-panel="${panelName}"]`);
-  const scroller = panel?.closest<HTMLElement>(".settings-group");
-  if (!panel || !scroller) {
-    return;
-  }
-  scroller.scrollTo({
-    top: Math.max(panel.offsetTop - scroller.offsetTop - 12, 0),
-    behavior: "smooth",
-  });
 }
 
 function currentPathMention(value: string, cursor: number): { query: string; queryStart: number; end: number } | null {

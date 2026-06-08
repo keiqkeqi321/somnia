@@ -3,13 +3,6 @@ import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "..
 import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useState } from "react";
 
-const SETTINGS_SECTIONS = [
-  { key: "configuration", icon: "⚙", labelKey: "settings.section.configuration", titleKey: "settings.section.configuration" },
-  { key: "archived", icon: "📋", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
-] as const;
-
-export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]["key"];
-
 export type ArchivedSessionEntry = {
   key: string;
   projectPath: string;
@@ -40,12 +33,10 @@ type SettingsViewProps = {
   configDrafts: Record<string, string>;
   mcpServers: McpServerSummary[];
   selectedConfigScope: SettingsConfigScopeKey;
-  selectedConfigSection: SettingsConfigSectionKey;
   configLoading: boolean;
   configSaving: boolean;
   configMessage: string;
   onSelectConfigScope: (scope: SettingsConfigScopeKey) => void;
-  onSelectConfigSection: (section: SettingsConfigSectionKey) => void;
   onConfigDraftChange: (key: string, value: string) => void;
   onSaveConfigSection: () => void | Promise<void>;
   onDebugMcpServer: (serverName: string) => Promise<number>;
@@ -68,6 +59,21 @@ const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: T
   { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
 ];
 
+const SETTINGS_SECTIONS = [
+  { key: "provider", icon: "P", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
+  { key: "mcp", icon: "M", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
+  { key: "hooks", icon: "H", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
+  { key: "system_prompt", icon: "S", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
+  { key: "skills", icon: "K", labelKey: "settings.config.skills", titleKey: "settings.config.skills" },
+  { key: "archived", icon: "A", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
+] as const;
+
+export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]["key"];
+
+function isConfigSectionKey(section: SettingsSectionKey): section is SettingsConfigSectionKey {
+  return section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt";
+}
+
 function SettingsView({
   activeSection,
   onSelectSection,
@@ -87,12 +93,10 @@ function SettingsView({
   configDrafts,
   mcpServers,
   selectedConfigScope,
-  selectedConfigSection,
   configLoading,
   configSaving,
   configMessage,
   onSelectConfigScope,
-  onSelectConfigSection,
   onConfigDraftChange,
   onSaveConfigSection,
   onDebugMcpServer,
@@ -110,8 +114,10 @@ function SettingsView({
   const { locale, setLocale, t } = useI18n();
   const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
   const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
-  const activeDraftKey = `${selectedConfigScope}:${selectedConfigSection}`;
-  const activeConfigOption = CONFIG_SECTION_OPTIONS.find((item) => item.key === selectedConfigSection);
+  const activeConfigSection = isConfigSectionKey(activeSection) ? activeSection : "provider";
+  const activeDraftKey = `${selectedConfigScope}:${activeConfigSection}`;
+  const activeConfigOption = CONFIG_SECTION_OPTIONS.find((item) => item.key === activeConfigSection);
+  const settingsEditorActive = isConfigSectionKey(activeSection) || activeSection === "skills";
   const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(null);
   const [debuggingMcpServer, setDebuggingMcpServer] = useState<string | null>(null);
   const [togglingMcpServer, setTogglingMcpServer] = useState<string | null>(null);
@@ -203,7 +209,7 @@ function SettingsView({
           <h1>{t(section.titleKey)}</h1>
         </header>
 
-        {activeSection === "configuration" ? (
+        {settingsEditorActive ? (
           <div className="settings-group config-settings-group">
             <div className="config-toolbar">
               <div className="config-scope-toggle" role="tablist" aria-label="Configuration scope">
@@ -223,50 +229,39 @@ function SettingsView({
               </button>
             </div>
             {activeConfigScope ? (
-              <section className="config-panel" data-settings-panel="skills">
-                <div className="config-path-row">
-                  <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
-                  <code>{activeConfigScope.skills_path}</code>
-                  <button
-                    className="settings-inline-button"
-                    type="button"
-                    onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
-                  >
-                    {t("settings.config.openFolder")}
-                  </button>
-                </div>
-                {activeConfigScope.skills.length === 0 ? (
-                  <div className="settings-empty-state">
-                    <p>{t("settings.config.noSkills")}</p>
-                  </div>
-                ) : (
-                  <div className="config-skill-list">
-                    {activeConfigScope.skills.map((skill) => (
-                      <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
-                        <strong>{skill.name}</strong>
-                        <span>{skill.description}</span>
-                        <code>{skill.path}</code>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            ) : null}
-            <div className="config-section-tabs" role="tablist" aria-label="Configuration type">
-              {CONFIG_SECTION_OPTIONS.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  className={selectedConfigSection === item.key ? "selected" : ""}
-                  onClick={() => onSelectConfigSection(item.key)}
-                >
-                  {t(item.labelKey)}
-                </button>
-              ))}
-            </div>
-            {activeConfigScope ? (
               <>
-                <section className="config-panel">
+                {activeSection === "skills" ? (
+                  <section className="config-panel" data-settings-panel="skills">
+                    <div className="config-path-row">
+                      <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
+                      <code>{activeConfigScope.skills_path}</code>
+                      <button
+                        className="settings-inline-button"
+                        type="button"
+                        onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
+                      >
+                        {t("settings.config.openFolder")}
+                      </button>
+                    </div>
+                    {activeConfigScope.skills.length === 0 ? (
+                      <div className="settings-empty-state">
+                        <p>{t("settings.config.noSkills")}</p>
+                      </div>
+                    ) : (
+                      <div className="config-skill-list">
+                        {activeConfigScope.skills.map((skill) => (
+                          <div key={`${skill.scope}:${skill.path}`} className="config-skill-row">
+                            <strong>{skill.name}</strong>
+                            <span>{skill.description}</span>
+                            <code>{skill.path}</code>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                ) : (
+                  <>
+                    <section className="config-panel">
                   <div className="config-path-row">
                     <span>{activeConfigScope.label} {t("settings.config.configLabel")}</span>
                     <code>{activeConfigScope.config_path}</code>
@@ -278,7 +273,7 @@ function SettingsView({
                       {activeConfigScope.config_exists ? t("settings.config.openFile") : t("settings.config.openFolder")}
                     </button>
                   </div>
-                  {selectedConfigSection === "provider" ? (
+                  {activeConfigSection === "provider" ? (
                     <div className="vision-model-panel">
                       <div className="config-editor-head">
                         <div>
@@ -330,7 +325,7 @@ function SettingsView({
                   ) : null}
                   <div className="config-editor-head">
                     <div>
-                      <strong>{activeConfigOption ? t(activeConfigOption.titleKey) : t("settings.config.configuration")}</strong>
+                      <strong>{t(activeConfigOption?.titleKey ?? "settings.config.providerTitle")}</strong>
                       <p>{t("settings.config.editorHint")}</p>
                     </div>
                     <div className="config-editor-actions">
@@ -344,11 +339,11 @@ function SettingsView({
                     spellCheck={false}
                     value={configDrafts[activeDraftKey] ?? ""}
                     onChange={(event) => onConfigDraftChange(activeDraftKey, event.currentTarget.value)}
-                    placeholder={configPlaceholder(selectedConfigSection)}
+                    placeholder={configPlaceholder(activeConfigSection)}
                     disabled={configLoading}
                   />
-                </section>
-                {selectedConfigSection === "mcp" ? (
+                    </section>
+                    {activeConfigSection === "mcp" ? (
                   <section className="config-panel mcp-runtime-panel">
                     <div className="config-editor-head">
                       <div>
@@ -432,7 +427,9 @@ function SettingsView({
                       </div>
                     )}
                   </section>
-                ) : null}
+                    ) : null}
+                  </>
+                )}
 
                 {configMessage ? <p className="config-message">{configMessage}</p> : null}
               </>
