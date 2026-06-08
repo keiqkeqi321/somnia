@@ -180,6 +180,7 @@ type LastOpenedSessionState = {
 type ActiveProjectTurn = {
   sessionId: string;
   turnId: string | null;
+  baseMessageCount: number;
 };
 type SubagentActivity = {
   id: string;
@@ -302,6 +303,7 @@ function App() {
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
   const queuedPromptsRef = useRef<Record<string, QueuedPrompt[]>>({});
+  const activeProjectTurnsRef = useRef<Record<string, ActiveProjectTurn[]>>({});
   const workspaceRef = useRef<HTMLElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const modePickerRef = useRef<HTMLDivElement | null>(null);
@@ -318,6 +320,7 @@ function App() {
   selectedProjectPathRef.current = selectedProjectPath;
   currentSessionRef.current = currentSession;
   queuedPromptsRef.current = queuedPrompts;
+  activeProjectTurnsRef.current = activeProjectTurns;
 
   function scrollConversationBodyToBottom() {
     if (conversationScrollFrameRef.current !== null) {
@@ -1439,15 +1442,24 @@ function App() {
     }
     if (event.type === "turn_started") {
       if (event.session_id) {
-        setActiveProjectTurns((previous) => ({
+        updateActiveProjectTurns((previous) => ({
           ...previous,
-          [projectPath]: [
-            ...(previous[projectPath] ?? []).filter((turn) => turn.turnId !== event.turn_id && turn.sessionId !== event.session_id),
-            {
-              sessionId: event.session_id ?? "",
-              turnId: event.turn_id ?? null,
-            },
-          ].slice(-2),
+          [projectPath]: (() => {
+            const current = previous[projectPath] ?? [];
+            const existing = current.find((turn) => turn.turnId === event.turn_id || turn.sessionId === event.session_id);
+            const selectedSession = currentSessionRef.current;
+            const baseMessageCount =
+              existing?.baseMessageCount ??
+              (selectedSession && event.session_id === selectedSession.id ? selectedSession.messages.length : 0);
+            return [
+              ...current.filter((turn) => turn.turnId !== event.turn_id && turn.sessionId !== event.session_id),
+              {
+                sessionId: event.session_id ?? "",
+                turnId: event.turn_id ?? null,
+                baseMessageCount,
+              },
+            ].slice(-2);
+          })(),
         }));
       }
       if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
@@ -1499,11 +1511,14 @@ function App() {
     if (event.type === "session_updated") {
       const payloadSession = readSessionFromPayload(event.payload.session);
       if (payloadSession) {
+        const sessionHasActiveTurn = (activeProjectTurnsRef.current[projectPath] ?? []).some((turn) => turn.sessionId === payloadSession.id);
         upsertProjectSession(projectPath, payloadSession);
-        if (isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
+        if (!sessionHasActiveTurn && isActiveProject && payloadSession.id === selectedSessionIdRef.current) {
           setCurrentSession(payloadSession);
         }
-        clearConversationRuntimeState(projectPath, payloadSession.id);
+        if (!sessionHasActiveTurn) {
+          clearConversationRuntimeState(projectPath, payloadSession.id);
+        }
       }
       return;
     }
@@ -1808,8 +1823,16 @@ function App() {
     setProjects((previous) => previous.map((project) => (project.path === projectPath ? { ...project, ...patch } : project)));
   }
 
-  function clearActiveProjectTurn(projectPath: string, turnId: string | null) {
+  function updateActiveProjectTurns(updater: (previous: Record<string, ActiveProjectTurn[]>) => Record<string, ActiveProjectTurn[]>) {
     setActiveProjectTurns((previous) => {
+      const next = updater(previous);
+      activeProjectTurnsRef.current = next;
+      return next;
+    });
+  }
+
+  function clearActiveProjectTurn(projectPath: string, turnId: string | null) {
+    updateActiveProjectTurns((previous) => {
       const current = previous[projectPath] ?? [];
       const remaining = turnId ? current.filter((turn) => turn.turnId !== turnId) : [];
       if (remaining.length === current.length) {
@@ -1965,7 +1988,7 @@ function App() {
       await stopManagedSidecar(projectPath);
       removeStoredProjectPath(projectPath);
       clearLastOpenedSession(projectPath);
-      setActiveProjectTurns((previous) => {
+      updateActiveProjectTurns((previous) => {
         const next = { ...previous };
         delete next[projectPath];
         return next;
@@ -2018,6 +2041,7 @@ function App() {
     const optimisticTurnId = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const key = conversationStateKey(projectPath, session.id);
     const optimisticUserText = buildOptimisticUserText(prompt, images);
+    const baseMessageCount = session.messages.length;
     if (key) {
       setPendingTurns((previous) => ({
         ...previous,
@@ -2030,6 +2054,15 @@ function App() {
       }));
       resetConversationRuntimeItems(projectPath, session.id);
     }
+    if (projectPath) {
+      updateActiveProjectTurns((previous) => ({
+        ...previous,
+        [projectPath]: [
+          ...(previous[projectPath] ?? []).filter((turn) => turn.sessionId !== session.id),
+          { sessionId: session.id, turnId: optimisticTurnId, baseMessageCount },
+        ].slice(-2),
+      }));
+    }
     const userInput = await buildPromptPayload(client, prompt, images);
     const response = await client.startTurn(session.id, userInput);
     if (key) {
@@ -2040,6 +2073,14 @@ function App() {
         }
         return { ...previous, [key]: { ...current, id: response.turn_id, sessionId: session.id } };
       });
+    }
+    if (projectPath) {
+      updateActiveProjectTurns((previous) => ({
+        ...previous,
+        [projectPath]: (previous[projectPath] ?? []).map((turn) =>
+          turn.turnId === optimisticTurnId ? { ...turn, turnId: response.turn_id } : turn,
+        ),
+      }));
     }
     if (projectPath === selectedProjectPathRef.current && session.id === selectedSessionIdRef.current) {
       setActiveTurnId(response.turn_id);
@@ -2422,11 +2463,11 @@ function App() {
       resetConversationRuntimeItems(projectPath, session.id);
     }
     if (projectPath) {
-      setActiveProjectTurns((previous) => ({
+      updateActiveProjectTurns((previous) => ({
         ...previous,
         [projectPath]: [
           ...(previous[projectPath] ?? []).filter((turn) => turn.sessionId !== session.id),
-          { sessionId: session.id, turnId: operationId },
+          { sessionId: session.id, turnId: operationId, baseMessageCount: session.messages.length },
         ],
       }));
     }
@@ -2878,13 +2919,18 @@ function App() {
   const activeTeamItems = activeConversationKey ? teamActivity[activeConversationKey] ?? [] : [];
   const activeTaskItems = activeConversationKey ? taskGraph[activeConversationKey] ?? [] : [];
   const activeQueuedPrompts = activeConversationKey ? queuedPrompts[activeConversationKey] ?? [] : [];
-  const conversationRows = buildConversationRows(currentSession, activeRuntimeConversationItems, activePendingTurn);
+  const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
+  const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
+  const conversationRows = buildConversationRows(
+    currentSession,
+    activeRuntimeConversationItems,
+    activePendingTurn,
+    currentSessionTurn ? currentSessionTurn.baseMessageCount : null,
+  );
   const latestStreamingAssistantRowId =
     [...conversationRows].reverse().find((row) => row.role === "assistant" && row.isStreaming)?.id ?? null;
   const currentSessionInteraction = currentSession ? findSessionInteraction(pendingInteractions, currentSession.id) : null;
   const latestConversationRowId = conversationRows.length > 0 ? conversationRows[conversationRows.length - 1].id : "";
-  const activeProjectTurnList = selectedProjectPath ? (activeProjectTurns[selectedProjectPath] ?? []) : [];
-  const currentSessionTurn = currentSession ? activeProjectTurnList.find((turn) => turn.sessionId === currentSession.id) ?? null : null;
   const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
   const projectTurnLimitReached = activeProjectTurnList.length >= 2;
   const activeProviderLabel = status?.provider ?? selectedProvider ?? t("composer.provider");

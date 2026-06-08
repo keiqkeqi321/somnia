@@ -117,6 +117,7 @@ export function buildConversationRows(
   session: AgentSession | null,
   runtimeItems: ConversationRuntimeItem[],
   pendingTurn: ConversationPendingTurn | null = null,
+  baseMessageCount: number | null = null,
 ): ConversationRow[] {
   const hasRuntimeItems = runtimeItems.some((item) =>
     item.type === "assistant_text" ? item.text.trim().length > 0 : true,
@@ -127,10 +128,14 @@ export function buildConversationRows(
     appendRuntimeItems(rows, runtimeItems);
     return rows;
   }
+  const visibleMessages =
+    typeof baseMessageCount === "number" && Number.isFinite(baseMessageCount) && baseMessageCount >= 0
+      ? session.messages.slice(0, Math.min(session.messages.length, Math.floor(baseMessageCount)))
+      : session.messages;
   const rows: ConversationRow[] = [];
   let index = 0;
-  while (index < session.messages.length) {
-    const message = session.messages[index];
+  while (index < visibleMessages.length) {
+    const message = visibleMessages[index];
     if (message.role !== "assistant" && !isVisibleUserMessage(message)) {
       index += 1;
       continue;
@@ -138,9 +143,9 @@ export function buildConversationRows(
     const text = extractTextContent(message.content).trim();
     if (message.role === "assistant") {
       const rowId = `${session.id}-assistant-${index}`;
-      const parts = buildAssistantParts(rowId, message.content, session.messages[index + 1]?.content);
+      const parts = buildAssistantParts(rowId, message.content, visibleMessages[index + 1]?.content);
       const toolCalls = parts.flatMap((part) => (part.type === "tool_call" ? [part.toolCall] : []));
-      if (toolCalls.length > 0 && session.messages[index + 1]?.role === "user" && hasToolResults(session.messages[index + 1]?.content)) {
+      if (toolCalls.length > 0 && visibleMessages[index + 1]?.role === "user" && hasToolResults(visibleMessages[index + 1]?.content)) {
         index += 1;
       }
       if (parts.length > 0) {
