@@ -1043,7 +1043,7 @@ function ProviderProfilesEditor({
                           title={t("settings.providerProfiles.removeModel")}
                           aria-label={t("settings.providerProfiles.removeModel")}
                         >
-                          x
+                          ×
                         </button>
                         {probe ? <small>{probe.message}</small> : null}
                         {expanded ? (
