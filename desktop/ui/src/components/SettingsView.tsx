@@ -257,14 +257,16 @@ function SettingsView({
                   </button>
                 ))}
               </div>
-              {activeSection === "skills" ? null : (
-                <button className="settings-inline-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
-                  {configSaving ? t("settings.config.saving") : t("settings.config.save")}
+              <div className="config-toolbar-actions">
+                {activeSection === "skills" ? null : (
+                  <button className="settings-inline-button" type="button" onClick={onSaveConfigSection} disabled={configLoading || configSaving}>
+                    {configSaving ? t("settings.config.saving") : t("settings.config.save")}
+                  </button>
+                )}
+                <button className="settings-inline-button" type="button" onClick={onReloadConfig} disabled={configLoading || configSaving}>
+                  {t("settings.config.reload")}
                 </button>
-              )}
-              <button className="settings-inline-button" type="button" onClick={onReloadConfig} disabled={configLoading || configSaving}>
-                {t("settings.config.reload")}
-              </button>
+              </div>
             </div>
             {activeConfigScope ? (
               <>
