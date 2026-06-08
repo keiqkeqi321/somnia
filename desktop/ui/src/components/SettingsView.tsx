@@ -793,7 +793,7 @@ function ProviderProfilesEditor({
                 <span>{t("settings.providerProfiles.models")}</span>
                 <input
                   value={activeProvider.modelsText}
-                  onChange={(event) => updateProfile(activeProvider.name, { modelsText: event.currentTarget.value })}
+                  onChange={(event) => updateProfile(activeProvider.name, { modelsText: normalizeModelsText(event.currentTarget.value) })}
                   placeholder="gpt-4.1, gpt-4.1-mini"
                 />
               </label>
@@ -1147,9 +1147,13 @@ function appendTomlBoolString(lines: string[], key: string, value: string) {
 
 function modelsFromText(value: string): string[] {
   return value
-    .split(",")
+    .split(/[,，、]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeModelsText(value: string): string {
+  return modelsFromText(value).join(", ");
 }
 
 function normalizeProviderName(value: string): string {
