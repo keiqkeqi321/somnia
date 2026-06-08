@@ -366,6 +366,8 @@ class TaskStore:
 
     def claim(self, task_id: int, owner: str, session_id: str | None = None) -> dict[str, Any]:
         task = self.get(task_id, session_id=session_id)
+        if task.get("status") == "completed":
+            raise ValueError(f"Task {task_id} is already completed")
         incomplete_blockers = self._incomplete_blockers(task, session_id=session_id)
         if incomplete_blockers:
             blockers = ", ".join(str(item) for item in incomplete_blockers)

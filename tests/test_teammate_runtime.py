@@ -1212,6 +1212,20 @@ class TeammateRuntimeTests(unittest.TestCase):
             claimed = task_store.claim(blocked["id"], "Worker", session_id="session-1")
             self.assertEqual(claimed["status"], "in_progress")
 
+    def test_completed_task_cannot_be_claimed_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            task = task_store.create("Already done", session_id="session-1")
+            task_store.claim(task["id"], "WorkerA", session_id="session-1")
+            task_store.update(task["id"], status="completed", session_id="session-1")
+
+            with self.assertRaisesRegex(ValueError, "already completed"):
+                task_store.claim(task["id"], "WorkerB", session_id="session-1")
+
+            stored = task_store.get(task["id"], session_id="session-1")
+            self.assertEqual(stored["status"], "completed")
+            self.assertEqual(stored["owner"], "WorkerA")
+
     def test_creating_task_with_completed_dependency_does_not_create_stale_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
