@@ -108,6 +108,12 @@ const translations = {
     "settings.providerProfiles.defaultProvider": "Default provider",
     "settings.providerProfiles.setDefault": "Set default",
     "settings.providerProfiles.remove": "Remove",
+    "providerSetup.title": "Configure a provider",
+    "providerSetup.subtitle": "A provider profile is required before Somnia can run chats in this workspace.",
+    "providerSetup.save": "Save provider",
+    "providerSetup.validation": "Add a provider profile with a default model and API key before saving.",
+    "providerSetup.stillMissing": "Provider configuration was saved, but the sidecar still has no active provider.",
+    "providerSetup.saveBeforeTest": "Save the provider before testing the model.",
 
     /* ── Settings / Archived ── */
     "settings.archived.selectAll": "Select all",
@@ -432,6 +438,12 @@ const translations = {
     "settings.providerProfiles.defaultProvider": "默认 provider",
     "settings.providerProfiles.setDefault": "设为默认",
     "settings.providerProfiles.remove": "删除",
+    "providerSetup.title": "配置 Provider",
+    "providerSetup.subtitle": "Somnia 开始聊天前需要一个可用的 provider profile。",
+    "providerSetup.save": "保存 Provider",
+    "providerSetup.validation": "请先添加 provider profile，并填写默认模型和 API Key。",
+    "providerSetup.stillMissing": "Provider 配置已保存，但 sidecar 仍没有可用 provider。",
+    "providerSetup.saveBeforeTest": "请先保存 provider，再测试模型。",
 
     /* ── Settings / Archived ── */
     "settings.archived.selectAll": "全选",

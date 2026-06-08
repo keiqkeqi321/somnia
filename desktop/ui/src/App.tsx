@@ -35,7 +35,7 @@ import {
   sortSessions,
   stringifyToolValue,
 } from "./lib/messages";
-import SettingsView, { type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
+import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import type {
@@ -280,6 +280,12 @@ function App() {
   const [settingsConfigLoading, setSettingsConfigLoading] = useState(false);
   const [settingsConfigSaving, setSettingsConfigSaving] = useState(false);
   const [settingsConfigMessage, setSettingsConfigMessage] = useState("");
+  const [providerSetupOpen, setProviderSetupOpen] = useState(false);
+  const [providerSetupScope, setProviderSetupScope] = useState<SettingsConfigScopeKey>("user");
+  const [providerSetupDraft, setProviderSetupDraft] = useState("");
+  const [providerSetupLoading, setProviderSetupLoading] = useState(false);
+  const [providerSetupSaving, setProviderSetupSaving] = useState(false);
+  const [providerSetupMessage, setProviderSetupMessage] = useState("");
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(true);
   const [todoExpanded, setTodoExpanded] = useState(false);
@@ -345,6 +351,16 @@ function App() {
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const providerMissing = connectionState === "connected" && Boolean(status) && (status?.provider === "unconfigured" || providers.length === 0);
+    if (providerMissing) {
+      void openProviderSetupModal();
+    } else if (providerSetupOpen && !providerSetupSaving) {
+      setProviderSetupOpen(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionState, status?.provider, providers.length]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1627,10 +1643,10 @@ function App() {
     }
   }
 
-  async function refreshStatusAndProviders() {
+  async function refreshStatusAndProviders(): Promise<{ runtimeStatus: SidecarStatus; providerList: ProviderDescriptor[] } | null> {
     const client = clientRef.current;
     if (!client) {
-      return;
+      return null;
     }
     const [runtimeStatus, providerList, interactionList] = await Promise.all([
       client.runtimeStatus(),
@@ -1647,6 +1663,7 @@ function App() {
     updateActiveProject({ status: runtimeStatus, pendingInteractions: interactionList });
     await refreshModels(runtimeStatus.provider, client, runtimeStatus.model);
     await refreshVisionModels(runtimeStatus.vision_provider ?? "", client, runtimeStatus.vision_model ?? "");
+    return { runtimeStatus, providerList };
   }
 
   async function refreshModels(providerName: string, client = clientRef.current, preferredModel?: string) {
@@ -2582,6 +2599,97 @@ function App() {
     }
   }
 
+  function defaultProviderSetupDraft() {
+    return [
+      "[providers]",
+      'default = "provider"',
+      "",
+      "[providers.provider]",
+      'provider_type = "openai"',
+      'models = ["gpt-4.1"]',
+      'default_model = "gpt-4.1"',
+      'api_key = ""',
+      'base_url = "https://api.openai.com/v1"',
+      "",
+    ].join("\n");
+  }
+
+  function providerSetupDraftIsComplete(value: string) {
+    const text = value.trim();
+    const hasProviderTable = /\[providers\.[^\]\s]+\]/i.test(text);
+    const apiKeyMatch = text.match(/^\s*api_key\s*=\s*"([^"]+)"\s*$/im);
+    const defaultModelMatch = text.match(/^\s*default_model\s*=\s*"([^"]+)"\s*$/im);
+    return Boolean(
+      hasProviderTable &&
+        apiKeyMatch?.[1]?.trim() &&
+        apiKeyMatch[1].trim() !== "..." &&
+        defaultModelMatch?.[1]?.trim(),
+    );
+  }
+
+  async function openProviderSetupModal() {
+    const client = clientRef.current;
+    if (!client || providerSetupOpen || providerSetupLoading) {
+      return;
+    }
+    setProviderSetupOpen(true);
+    setProviderSetupLoading(true);
+    setProviderSetupMessage("");
+    setProviderSetupScope("user");
+    try {
+      const payload = await client.getSettingsConfig();
+      const userScope = payload.scopes.find((item) => item.scope === "user");
+      const projectScope = payload.scopes.find((item) => item.scope === "project");
+      const userProviderConfig = userScope?.sections.provider?.trim() ?? "";
+      const projectProviderConfig = projectScope?.sections.provider?.trim() ?? "";
+      if (userProviderConfig) {
+        setProviderSetupDraft(userProviderConfig);
+        setProviderSetupScope("user");
+      } else if (projectProviderConfig) {
+        setProviderSetupDraft(projectProviderConfig);
+        setProviderSetupScope("project");
+      } else {
+        setProviderSetupDraft(defaultProviderSetupDraft());
+        setProviderSetupScope("user");
+      }
+    } catch (error) {
+      setProviderSetupDraft(defaultProviderSetupDraft());
+      setProviderSetupScope("user");
+      setProviderSetupMessage(formatErrorMessage(error));
+    } finally {
+      setProviderSetupLoading(false);
+    }
+  }
+
+  async function handleSaveProviderSetup() {
+    const client = clientRef.current;
+    if (!client) {
+      setProviderSetupMessage(t("common.connectFirst"));
+      return;
+    }
+    if (!providerSetupDraftIsComplete(providerSetupDraft)) {
+      setProviderSetupMessage(t("providerSetup.validation"));
+      return;
+    }
+    setProviderSetupSaving(true);
+    setProviderSetupMessage("");
+    try {
+      await client.saveSettingsConfigSection(providerSetupScope, "provider", providerSetupDraft);
+      const refreshed = await refreshStatusAndProviders();
+      await refreshSettingsConfig();
+      if (!refreshed || refreshed.runtimeStatus.provider === "unconfigured" || refreshed.providerList.length === 0) {
+        setProviderSetupMessage(t("providerSetup.stillMissing"));
+        return;
+      }
+      setProviderSetupOpen(false);
+      setProviderSetupMessage("");
+    } catch (error) {
+      setProviderSetupMessage(formatErrorMessage(error));
+    } finally {
+      setProviderSetupSaving(false);
+    }
+  }
+
   async function handleSaveSettingsConfigSection() {
     const client = clientRef.current;
     if (!client) {
@@ -3097,6 +3205,44 @@ function App() {
           onSetVisionProviderDraft={(providerName) => void handleVisionProviderChange(providerName)}
           onSetVisionModelDraft={setSelectedVisionModel}
         />
+      ) : null}
+      {providerSetupOpen ? (
+        <div className="provider-setup-backdrop" role="presentation">
+          <section className="provider-setup-modal" role="dialog" aria-modal="true" aria-labelledby="provider-setup-title">
+            <header className="provider-setup-header">
+              <div>
+                <h1 id="provider-setup-title">{t("providerSetup.title")}</h1>
+                <p>{t("providerSetup.subtitle")}</p>
+              </div>
+            </header>
+            <div className="provider-setup-body">
+              {providerSetupLoading ? (
+                <div className="settings-empty-state">
+                  <p>{t("settings.config.loading")}</p>
+                </div>
+              ) : (
+                <ProviderProfilesEditor
+                  text={providerSetupDraft}
+                  inheritedText=""
+                  scope={providerSetupScope}
+                  onChange={setProviderSetupDraft}
+                  onDebugModel={async () => ({ ok: false, message: t("providerSetup.saveBeforeTest") })}
+                />
+              )}
+            </div>
+            <footer className="provider-setup-footer">
+              {providerSetupMessage ? <span className="provider-setup-message">{providerSetupMessage}</span> : <span />}
+              <button
+                className="settings-inline-button"
+                type="button"
+                onClick={() => void handleSaveProviderSetup()}
+                disabled={providerSetupLoading || providerSetupSaving || !providerSetupDraftIsComplete(providerSetupDraft)}
+              >
+                {providerSetupSaving ? t("settings.config.saving") : t("providerSetup.save")}
+              </button>
+            </footer>
+          </section>
+        </div>
       ) : null}
       <main
         ref={workspaceRef}

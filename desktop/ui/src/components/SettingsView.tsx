@@ -637,7 +637,7 @@ function groupArchivedEntriesByProject(entries: ArchivedSessionEntry[]): Array<{
   return groups;
 }
 
-function ProviderProfilesEditor({
+export function ProviderProfilesEditor({
   text,
   inheritedText,
   scope,

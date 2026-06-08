@@ -858,6 +858,69 @@ button {
   padding: 8px 10px;
 }
 
+.provider-setup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(5, 7, 10, 0.76);
+}
+
+.provider-setup-modal {
+  width: min(980px, 100%);
+  max-height: min(820px, calc(100vh - 56px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(17, 19, 23, 0.98);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.provider-setup-header {
+  padding: 22px 24px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.provider-setup-header h1 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 1.25rem;
+}
+
+.provider-setup-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.provider-setup-body {
+  min-height: 0;
+  padding: 18px 20px;
+  overflow: auto;
+}
+
+.provider-setup-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 20px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.provider-setup-message {
+  min-width: 0;
+  color: #f1c66d;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .config-settings-group {
   display: flex;
   flex-direction: column;
