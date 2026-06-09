@@ -249,6 +249,8 @@ class OpenAgentRuntime:
         self.system_prompt_builder = SystemPromptBuilder(self)
         self._workspace_authorized_tools = self._load_workspace_authorizations()
         self._once_authorized_tools: dict[str, int] = {}
+        self._worker_authorized_tools: set[str] = set()
+        self._worker_once_authorized_tools: dict[str, int] = {}
         self.provider = self._make_provider()
         self.transcript_store = TranscriptStore(settings.storage.transcripts_dir)
         self.session_manager = SessionManager(SessionStore(settings.storage.sessions_dir), self.transcript_store)
@@ -2309,6 +2311,15 @@ class OpenAgentRuntime:
                 return getter(actor)
             return None
 
+        def worker_request_authorization(ctx, payload: dict[str, Any]) -> str:
+            return self._request_worker_authorization(
+                ctx.actor,
+                payload["tool_name"],
+                payload["reason"],
+                payload.get("argument_summary", ""),
+                should_interrupt=getattr(ctx, "should_interrupt", None),
+            )
+
         registry.register(
             ToolDefinition(
                 name="send_message",
@@ -2349,6 +2360,25 @@ class OpenAgentRuntime:
                 handler=lambda ctx, payload: self._submit_plan(ctx.actor, payload["plan"]),
             )
         )
+        registry.register(
+            ToolDefinition(
+                name=AUTHORIZATION_TOOL_NAME,
+                description=(
+                    "Ask lead to authorize a blocked tool for this teammate. "
+                    "This waits until lead explicitly approves or rejects the request."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "argument_summary": {"type": "string"},
+                    },
+                    "required": ["tool_name", "reason"],
+                },
+                handler=worker_request_authorization,
+            )
+        )
 
     def _submit_plan(self, actor: str, plan: str) -> str:
         request = self.request_tracker.create_plan_request(actor, plan)
@@ -2356,6 +2386,78 @@ class OpenAgentRuntime:
         session_id = getter(actor) if callable(getter) else None
         self.bus.send(actor, "lead", plan, "plan_request", {"request_id": request["request_id"]}, session_id=session_id)
         return f"Submitted plan request {request['request_id']}"
+
+    def _request_worker_authorization(
+        self,
+        actor: str,
+        tool_name: str,
+        reason: str,
+        argument_summary: str = "",
+        should_interrupt=None,
+    ) -> str:
+        normalized_tool = str(tool_name or "").strip()
+        normalized_actor = str(actor or "teammate").strip() or "teammate"
+        if not normalized_tool:
+            return "Authorization request failed: tool_name is required."
+        if normalized_tool == AUTHORIZATION_TOOL_NAME:
+            return "Authorization not required for request_authorization."
+
+        session_id = None
+        getter = getattr(getattr(self, "team_manager", None), "_member_session_id", None)
+        if callable(getter):
+            session_id = getter(normalized_actor)
+        summary = str(argument_summary or "").strip()
+        request = self.request_tracker.create_authorization_request(
+            normalized_actor,
+            normalized_tool,
+            str(reason or "").strip(),
+            summary,
+        )
+        message = (
+            f"{normalized_actor} requests authorization for tool '{normalized_tool}'.\n"
+            f"Request: {request['request_id']}\n"
+            f"Reason: {str(reason or '').strip() or '(no reason provided)'}"
+        )
+        if summary:
+            message += f"\nArguments: {summary}"
+        self.bus.send(
+            normalized_actor,
+            "lead",
+            message,
+            "authorization_request",
+            {
+                "tool_name": normalized_tool,
+                "reason": str(reason or "").strip(),
+                "argument_summary": summary,
+                "request_id": request["request_id"],
+            },
+            session_id=session_id,
+        )
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            if callable(should_interrupt) and should_interrupt():
+                raise TurnInterrupted("Interrupted while waiting for lead authorization.")
+            current = self.request_tracker.get_authorization_request(request["request_id"])
+            status = str((current or {}).get("status") or "pending").strip().lower()
+            if status != "pending":
+                payload = {
+                    "status": "approved" if status == "approved" else "rejected",
+                    "request_id": request["request_id"],
+                    "tool_name": normalized_tool,
+                    "scope": str((current or {}).get("scope") or ("once" if status == "approved" else "deny")),
+                    "feedback": str((current or {}).get("feedback") or ""),
+                }
+                return json.dumps(payload, ensure_ascii=False)
+            time.sleep(0.2)
+        return json.dumps(
+            {
+                "status": "denied",
+                "request_id": request["request_id"],
+                "tool_name": normalized_tool,
+                "reason": "Timed out waiting for lead authorization.",
+            },
+            ensure_ascii=False,
+        )
 
     def _environment_guidance(self) -> str:
         return self._system_prompt_builder().environment_guidance()

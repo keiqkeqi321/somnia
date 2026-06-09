@@ -71,6 +71,19 @@ class PermissionManager:
             return None
         if should_allow_gitnexus_tool_without_authorization(tool_name):
             return None
+        actor = str(getattr(ctx, "actor", "") or "").strip()
+        if actor and actor not in {"lead", "subagent"}:
+            worker_key = f"{actor}\0{tool_name}"
+            if worker_key in getattr(self.runtime, "_worker_authorized_tools", set()):
+                return None
+            worker_once = getattr(self.runtime, "_worker_once_authorized_tools", {})
+            remaining_worker = int(worker_once.get(worker_key, 0) or 0)
+            if remaining_worker > 0:
+                if remaining_worker == 1:
+                    worker_once.pop(worker_key, None)
+                else:
+                    worker_once[worker_key] = remaining_worker - 1
+                return None
         if tool_name in self.runtime._workspace_authorized_tools:
             return None
         remaining = self.runtime._once_authorized_tools.get(tool_name, 0)

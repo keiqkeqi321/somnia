@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from open_somnia.config.models import ModelTraits, ProviderProfileSettings, ProviderSettings
 from open_somnia.config.settings import _build_provider_profile, _load_provider_profiles, _materialize_provider, load_settings
+from open_somnia.collaboration.bus import MessageBus
 from open_somnia.mcp.registry import _render_mcp_result
 from open_somnia.providers.base import ProviderError
 from open_somnia.providers.anthropic_provider import AnthropicProvider
@@ -38,9 +39,14 @@ from open_somnia.runtime.messages import (
     make_user_multimodal_message,
     prepare_image_bytes_for_model,
 )
+from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.session import AgentSession
 from open_somnia.runtime.thinking import THINKING_LOG_MAX_CHARS, ThinkingLogWriter
+from open_somnia.collaboration.protocols import RequestTracker
+from open_somnia.storage.inbox import InboxStore
+from open_somnia.tools.registry import ToolRegistry
 from open_somnia.tools.filesystem import read_image
+from open_somnia.tools.team import register_team_tools
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
@@ -1791,6 +1797,164 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertIn('"scope": "workspace"', result)
         self.assertIsNone(OpenAgentRuntime.authorize_tool_call(runtime, "edit_file", {"path": "demo.txt"}))
+
+    def test_worker_request_authorization_waits_for_lead_approval_and_grants_once(self) -> None:
+        root = self._stable_test_dir("worker-auth-lead-approval")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "accept_edits"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {"bash": 1}
+        runtime._worker_authorized_tools = set()
+        runtime._worker_once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: self.fail("lead already has workspace permission")
+        runtime.bus = MessageBus(InboxStore(root / "inbox"))
+        runtime.request_tracker = RequestTracker(root / "requests")
+        runtime.team_manager = SimpleNamespace(_member_session_id=lambda actor: "session-1")
+
+        worker_registry = ToolRegistry()
+        OpenAgentRuntime._register_worker_local_tools(runtime, worker_registry)
+        result: dict[str, str] = {}
+        done = Event()
+
+        def run_worker_request() -> None:
+            result["output"] = worker_registry.execute(
+                ToolExecutionContext(runtime=runtime, session=None, actor="Worker", trace_id="worker"),
+                "request_authorization",
+                {"tool_name": "bash", "reason": "Need to simulate work"},
+            )
+            done.set()
+
+        thread = Thread(target=run_worker_request)
+        thread.start()
+        deadline = time.monotonic() + 2
+        lead_messages: list[dict] = []
+        while time.monotonic() < deadline:
+            lead_messages = runtime.bus.read_inbox("lead", session_id="session-1")
+            if lead_messages:
+                break
+            time.sleep(0.02)
+        self.assertTrue(lead_messages)
+        self.assertFalse(done.is_set())
+
+        lead_registry = ToolRegistry()
+        register_team_tools(
+            lead_registry,
+            SimpleNamespace(member_names=lambda session_id=None: ["Worker"]),
+            runtime.bus,
+            runtime.request_tracker,
+        )
+        request_id = lead_messages[0]["request_id"]
+        approval_output = lead_registry.execute(
+            ToolExecutionContext(runtime=runtime, session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "authorization_approval",
+            {"request_id": request_id, "approve": True, "scope": "once"},
+        )
+        thread.join(timeout=2)
+
+        self.assertIn("Authorization approved", approval_output)
+        self.assertTrue(done.is_set())
+        payload = json.loads(result["output"])
+        self.assertEqual(payload["status"], "approved")
+        self.assertEqual(payload["scope"], "once")
+        self.assertEqual(lead_messages[0]["type"], "authorization_request")
+        self.assertEqual(runtime.bus.read_inbox("Worker", session_id="session-1")[0]["type"], "authorization_response")
+        self.assertIsNone(
+            OpenAgentRuntime.authorize_tool_call(
+                runtime,
+                "bash",
+                {"command": "git status"},
+                ctx=SimpleNamespace(actor="Worker"),
+            )
+        )
+        self.assertIn(
+            "requires explicit user approval",
+            OpenAgentRuntime.authorize_tool_call(
+                runtime,
+                "bash",
+                {"command": "git status"},
+                ctx=SimpleNamespace(actor="Worker"),
+            ),
+        )
+
+    def test_authorization_approval_waits_for_lead_to_get_user_permission_first(self) -> None:
+        root = self._stable_test_dir("worker-auth-lead-needs-user")
+        requests: list[dict] = []
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=root / ".open_somnia"))
+        runtime.execution_mode = "accept_edits"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime._worker_authorized_tools = set()
+        runtime._worker_once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: requests.append(dict(kwargs)) or {
+            "status": "approved",
+            "scope": "once",
+            "reason": "Allowed once.",
+        }
+        runtime.bus = MessageBus(InboxStore(root / "inbox"))
+        runtime.request_tracker = RequestTracker(root / "requests")
+        runtime.team_manager = SimpleNamespace(_member_session_id=lambda actor: "session-1")
+
+        worker_registry = ToolRegistry()
+        OpenAgentRuntime._register_worker_local_tools(runtime, worker_registry)
+        result: dict[str, str] = {}
+        done = Event()
+        thread = Thread(
+            target=lambda: (
+                result.setdefault(
+                    "output",
+                    worker_registry.execute(
+                        ToolExecutionContext(runtime=runtime, session=None, actor="Worker", trace_id="worker"),
+                        "request_authorization",
+                        {"tool_name": "bash", "reason": "Need to simulate work"},
+                    ),
+                ),
+                done.set(),
+            )
+        )
+        thread.start()
+        deadline = time.monotonic() + 2
+        lead_messages: list[dict] = []
+        while time.monotonic() < deadline:
+            lead_messages = runtime.bus.read_inbox("lead", session_id="session-1")
+            if lead_messages:
+                break
+            time.sleep(0.02)
+        self.assertTrue(lead_messages)
+        request_id = lead_messages[0]["request_id"]
+
+        lead_registry = ToolRegistry()
+        register_team_tools(
+            lead_registry,
+            SimpleNamespace(member_names=lambda session_id=None: ["Worker"]),
+            runtime.bus,
+            runtime.request_tracker,
+        )
+        blocked_output = lead_registry.execute(
+            ToolExecutionContext(runtime=runtime, session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "authorization_approval",
+            {"request_id": request_id, "approve": True, "scope": "once"},
+        )
+
+        self.assertIn("lead is not authorized", blocked_output)
+        self.assertFalse(done.is_set())
+        self.assertEqual(runtime.request_tracker.get_authorization_request(request_id)["status"], "pending")
+
+        OpenAgentRuntime.request_authorization(runtime, "bash", "Lead approves Worker request")
+        approved_output = lead_registry.execute(
+            ToolExecutionContext(runtime=runtime, session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "authorization_approval",
+            {"request_id": request_id, "approve": True, "scope": "once"},
+        )
+        thread.join(timeout=2)
+
+        self.assertIn("Authorization approved", approved_output)
+        self.assertTrue(done.is_set())
+        payload = json.loads(result["output"])
+        self.assertEqual(payload["status"], "approved")
+        self.assertEqual(payload["scope"], "once")
+        self.assertEqual(requests[0]["tool_name"], "bash")
+        self.assertIn("Lead approves Worker request", requests[0]["reason"])
 
     def test_workspace_authorization_is_persisted_under_openagent_directory(self) -> None:
         root = self._stable_test_dir("workspace-auth")

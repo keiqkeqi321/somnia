@@ -45,6 +45,7 @@ TEAM_COLLAB_TOOL_NAMES = frozenset(
         "broadcast",
         "shutdown_request",
         "plan_approval",
+        "authorization_approval",
     }
 )
 

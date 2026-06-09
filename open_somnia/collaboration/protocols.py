@@ -12,6 +12,7 @@ class RequestTracker:
         self.root.mkdir(parents=True, exist_ok=True)
         self.shutdown_path = self.root / "shutdown_requests.json"
         self.plan_path = self.root / "plan_requests.json"
+        self.authorization_path = self.root / "authorization_requests.json"
 
     def _load(self, path: Path) -> dict:
         return read_json(path, {})
@@ -64,4 +65,48 @@ class RequestTracker:
         item["feedback"] = feedback
         item["updated_at"] = now_ts()
         self._save(self.plan_path, payload)
+        return item
+
+    def create_authorization_request(
+        self,
+        sender: str,
+        tool_name: str,
+        reason: str,
+        argument_summary: str = "",
+    ) -> dict:
+        request_id = uuid.uuid4().hex[:8]
+        payload = self._load(self.authorization_path)
+        payload[request_id] = {
+            "request_id": request_id,
+            "from": sender,
+            "tool_name": tool_name,
+            "reason": reason,
+            "argument_summary": argument_summary,
+            "status": "pending",
+            "created_at": now_ts(),
+        }
+        self._save(self.authorization_path, payload)
+        return payload[request_id]
+
+    def get_authorization_request(self, request_id: str) -> dict | None:
+        return self._load(self.authorization_path).get(request_id)
+
+    def resolve_authorization_request(
+        self,
+        request_id: str,
+        approve: bool,
+        *,
+        scope: str = "once",
+        feedback: str = "",
+    ) -> dict | None:
+        payload = self._load(self.authorization_path)
+        item = payload.get(request_id)
+        if not item:
+            return None
+        item["status"] = "approved" if approve else "rejected"
+        item["approve"] = approve
+        item["scope"] = scope
+        item["feedback"] = feedback
+        item["updated_at"] = now_ts()
+        self._save(self.authorization_path, payload)
         return item

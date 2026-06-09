@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, tool_block_message
 from open_somnia.tools.registry import ToolDefinition
 
 VALID_MSG_TYPES = [
@@ -12,6 +13,8 @@ VALID_MSG_TYPES = [
     "shutdown_response",
     "plan_request",
     "plan_approval_response",
+    "authorization_request",
+    "authorization_response",
 ]
 
 
@@ -88,6 +91,73 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             session_id=getattr(getattr(ctx, "session", None), "id", None),
         )
         return f"Plan {'approved' if payload['approve'] else 'rejected'} for '{result['from']}'"
+
+    def authorization_approval(ctx: Any, payload: dict[str, Any]) -> str:
+        request = tracker.get_authorization_request(payload["request_id"])
+        if request is None:
+            return f"Error: Unknown authorization request_id '{payload['request_id']}'"
+        approve = bool(payload["approve"])
+        scope = str(payload.get("scope") or "once").strip().lower()
+        if scope not in {"once", "session"}:
+            return "Error: scope must be 'once' or 'session'"
+        runtime = getattr(ctx, "runtime", None)
+        tool_name = str(request.get("tool_name") or "").strip()
+        target = str(request.get("from") or "").strip()
+        if approve:
+            if runtime is None:
+                return "Error: Runtime is unavailable; cannot grant teammate authorization."
+            lead_once = getattr(runtime, "_once_authorized_tools", {})
+            lead_workspace = getattr(runtime, "_workspace_authorized_tools", set())
+            lead_can_grant = False
+            if tool_name in lead_workspace:
+                lead_can_grant = True
+            elif int(lead_once.get(tool_name, 0) or 0) > 0:
+                remaining = int(lead_once.get(tool_name, 0) or 0)
+                if remaining == 1:
+                    lead_once.pop(tool_name, None)
+                else:
+                    lead_once[tool_name] = remaining - 1
+                lead_can_grant = True
+            elif tool_block_message(getattr(runtime, "execution_mode", DEFAULT_EXECUTION_MODE), tool_name) is None:
+                lead_can_grant = True
+            if not lead_can_grant:
+                return (
+                    f"Authorization approval blocked: lead is not authorized for '{tool_name}'. "
+                    "Call request_authorization for this tool first, then retry authorization_approval."
+                )
+
+        result = tracker.resolve_authorization_request(
+            payload["request_id"],
+            approve,
+            scope=scope,
+            feedback=payload.get("feedback", ""),
+        )
+        if result is None:
+            return f"Error: Unknown authorization request_id '{payload['request_id']}'"
+        response = {
+            "request_id": payload["request_id"],
+            "approve": approve,
+            "status": "approved" if approve else "rejected",
+            "scope": scope if approve else "deny",
+            "tool_name": tool_name,
+            "feedback": payload.get("feedback", ""),
+        }
+        if approve and runtime is not None:
+            worker_key = f"{target}\0{tool_name}"
+            if scope == "session":
+                getattr(runtime, "_worker_authorized_tools").add(worker_key)
+            else:
+                worker_once = getattr(runtime, "_worker_once_authorized_tools")
+                worker_once[worker_key] = int(worker_once.get(worker_key, 0) or 0) + 1
+        bus.send(
+            ctx.actor,
+            target,
+            json.dumps(response, ensure_ascii=False),
+            "authorization_response",
+            response,
+            session_id=getattr(getattr(ctx, "session", None), "id", None),
+        )
+        return f"Authorization {'approved' if approve else 'rejected'} for '{target}' to use '{tool_name}'"
 
     def idle(ctx: Any, payload: dict[str, Any]) -> str:
         return "Lead does not idle."
@@ -197,6 +267,27 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 "required": ["request_id", "approve"],
             },
             handler=plan_approval,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="authorization_approval",
+            description=(
+                "Approve or reject a teammate authorization request. "
+                "This grants the teammate permission only if lead is already allowed to use the tool; "
+                "otherwise call request_authorization first."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "approve": {"type": "boolean"},
+                    "scope": {"type": "string", "enum": ["once", "session"]},
+                    "feedback": {"type": "string"},
+                },
+                "required": ["request_id", "approve"],
+            },
+            handler=authorization_approval,
         )
     )
     registry.register(
