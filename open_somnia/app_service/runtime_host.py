@@ -38,6 +38,10 @@ from open_somnia.runtime.session import AgentSession
 _MISSING = object()
 
 
+def _is_lead_actor(actor: Any) -> bool:
+    return str(actor or "").strip() in {"", "lead"}
+
+
 def _combine_user_inputs(inputs: list[str | dict[str, Any]]) -> str | dict[str, Any] | None:
     if not inputs:
         return None
@@ -367,14 +371,16 @@ class RuntimeHost:
         original_execute = registry.execute
 
         def wrapped_execute(ctx: Any, name: str, payload: dict[str, Any]) -> Any:
-            self._emit_for_turn(
-                active_turn,
-                TOOL_STARTED,
-                actor=getattr(ctx, "actor", "lead"),
-                tool_name=name,
-                tool_input=_clone_value(payload),
-                trace_id=getattr(ctx, "trace_id", None),
-            )
+            actor = getattr(ctx, "actor", "lead")
+            if _is_lead_actor(actor):
+                self._emit_for_turn(
+                    active_turn,
+                    TOOL_STARTED,
+                    actor=actor,
+                    tool_name=name,
+                    tool_input=_clone_value(payload),
+                    trace_id=getattr(ctx, "trace_id", None),
+                )
             return original_execute(ctx, name, payload)
 
         registry.execute = wrapped_execute
@@ -398,23 +404,24 @@ class RuntimeHost:
                 output=output,
                 category=category,
             )
-            self._emit_for_turn(
-                active_turn,
-                TOOL_FINISHED,
-                actor=actor,
-                tool_name=tool_name,
-                tool_input=_clone_value(tool_input),
-                output=_clone_value(output),
-                content_blocks=_clone_value(content_blocks),
-                log_id=log_entry["id"],
-                category=category,
-                rendered_lines=renderer.render_tool_event_lines(
-                    tool_name,
-                    tool_input,
-                    output,
+            if _is_lead_actor(actor):
+                self._emit_for_turn(
+                    active_turn,
+                    TOOL_FINISHED,
+                    actor=actor,
+                    tool_name=tool_name,
+                    tool_input=_clone_value(tool_input),
+                    output=_clone_value(output),
+                    content_blocks=_clone_value(content_blocks),
                     log_id=log_entry["id"],
-                ),
-            )
+                    category=category,
+                    rendered_lines=renderer.render_tool_event_lines(
+                        tool_name,
+                        tool_input,
+                        output,
+                        log_id=log_entry["id"],
+                    ),
+                )
             if tool_name == "TodoWrite":
                 self._emit_todo_if_changed(active_turn)
             return log_entry["id"]

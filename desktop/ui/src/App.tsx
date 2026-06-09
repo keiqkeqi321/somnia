@@ -319,6 +319,8 @@ function App() {
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const conversationBodyRef = useRef<HTMLDivElement | null>(null);
+  const conversationContentRef = useRef<HTMLDivElement | null>(null);
+  const conversationEndRef = useRef<HTMLDivElement | null>(null);
   const conversationPinnedToBottomRef = useRef(true);
   const conversationScrollFrameRef = useRef<number | null>(null);
 
@@ -339,6 +341,7 @@ function App() {
         return;
       }
       el.scrollTop = el.scrollHeight;
+      conversationEndRef.current?.scrollIntoView({ block: "end" });
     });
   }
 
@@ -617,7 +620,7 @@ function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
-    const el = conversationBodyRef.current;
+    const el = conversationContentRef.current;
     if (!el || typeof ResizeObserver === "undefined") {
       return;
     }
@@ -3469,91 +3472,94 @@ function App() {
           <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
 
           <div ref={conversationBodyRef} className="conversation-body">
-            {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
-              <div className="empty-conversation">
-                <h3>{t("conversation.startSession")}</h3>
-                <p>{t("conversation.startSessionHint")}</p>
-              </div>
-            ) : (
-              conversationRows.map((row) => (
-                <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
-                  {row.parts?.length ? (
-                    row.parts.map((part) =>
-                      part.type === "text" ? (
-                        <MarkdownMessage key={part.id} text={part.text} />
-                      ) : part.type === "thinking_log" ? (
-                        <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
-                      ) : (
-                        <div key={part.id} className="tool-call-stack">
-                          <ToolCallWithImages
-                            toolCall={part.toolCall}
+            <div ref={conversationContentRef} className="conversation-content">
+              {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
+                <div className="empty-conversation">
+                  <h3>{t("conversation.startSession")}</h3>
+                  <p>{t("conversation.startSessionHint")}</p>
+                </div>
+              ) : (
+                conversationRows.map((row) => (
+                  <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
+                    {row.parts?.length ? (
+                      row.parts.map((part) =>
+                        part.type === "text" ? (
+                          <MarkdownMessage key={part.id} text={part.text} />
+                        ) : part.type === "thinking_log" ? (
+                          <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
+                        ) : (
+                          <div key={part.id} className="tool-call-stack">
+                            <ToolCallWithImages
+                              toolCall={part.toolCall}
+                              baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                              onPreviewImage={setToolImagePreview}
+                            />
+                          </div>
+                        ),
+                      )
+                    ) : row.text ? (
+                      <MarkdownMessage text={row.text} />
+                    ) : null}
+                    {row.images?.length ? (
+                      <div className="user-image-list">
+                        {row.images.map((image, index) => (
+                          <UserImagePreview
+                            key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
+                            image={image}
+                            index={index}
                             baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
                             onPreviewImage={setToolImagePreview}
                           />
-                        </div>
-                      ),
-                    )
-                  ) : row.text ? (
-                    <MarkdownMessage text={row.text} />
-                  ) : null}
-                  {row.images?.length ? (
-                    <div className="user-image-list">
-                      {row.images.map((image, index) => (
-                        <UserImagePreview
-                          key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
-                          image={image}
-                          index={index}
-                          baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
-                          onPreviewImage={setToolImagePreview}
-                        />
-                      ))}
-                    </div>
-                  ) : null}
-                  {row.isLoading ? (
-                    <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
-                      <span />
-                      <span />
-                      <span />
-                    </span>
-                  ) : null}
-                  {!row.parts?.length && row.toolCalls?.length ? (
-                    <div className="tool-call-stack">
-                      {row.toolCalls.map((toolCall) => (
-                        <ToolCallWithImages
-                          key={toolCall.id}
-                          toolCall={toolCall}
-                          baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
-                          onPreviewImage={setToolImagePreview}
-                        />
-                      ))}
-                    </div>
-                  ) : null}
-                  {row.id === latestStreamingAssistantRowId ? (
-                    <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
-                      <span aria-hidden="true" />
-                      <span aria-hidden="true" />
-                      <span aria-hidden="true" />
-                    </span>
-                  ) : null}
-                </article>
-              ))
-            )}
-            {activeQueuedPrompts.length > 0 ? (
-              <PromptQueueCard
-                prompts={activeQueuedPrompts}
-                canInject={currentSessionRunning}
-                busy={busyAction !== null}
-                onInject={handleQueuePromptInjection}
-              />
-            ) : null}
-            {currentSessionInteraction ? (
-              <InteractionDecisionCard
-                interaction={currentSessionInteraction}
-                busy={busyAction !== null}
-                onResolveAuthorization={handleResolveAuthorization}
-                onResolveModeSwitch={handleResolveModeSwitch}
-              />
-            ) : null}
+                        ))}
+                      </div>
+                    ) : null}
+                    {row.isLoading ? (
+                      <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                    ) : null}
+                    {!row.parts?.length && row.toolCalls?.length ? (
+                      <div className="tool-call-stack">
+                        {row.toolCalls.map((toolCall) => (
+                          <ToolCallWithImages
+                            key={toolCall.id}
+                            toolCall={toolCall}
+                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                            onPreviewImage={setToolImagePreview}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {row.id === latestStreamingAssistantRowId ? (
+                      <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
+                        <span aria-hidden="true" />
+                        <span aria-hidden="true" />
+                        <span aria-hidden="true" />
+                      </span>
+                    ) : null}
+                  </article>
+                ))
+              )}
+              {activeQueuedPrompts.length > 0 ? (
+                <PromptQueueCard
+                  prompts={activeQueuedPrompts}
+                  canInject={currentSessionRunning}
+                  busy={busyAction !== null}
+                  onInject={handleQueuePromptInjection}
+                />
+              ) : null}
+              {currentSessionInteraction ? (
+                <InteractionDecisionCard
+                  interaction={currentSessionInteraction}
+                  busy={busyAction !== null}
+                  onResolveAuthorization={handleResolveAuthorization}
+                  onResolveModeSwitch={handleResolveModeSwitch}
+                />
+              ) : null}
+              <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
+            </div>
           </div>
 
           <div className="composer">

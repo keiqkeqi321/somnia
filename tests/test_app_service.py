@@ -18,6 +18,7 @@ from open_somnia.config.models import (
 )
 from open_somnia.runtime.agent import AgentLoopResult, OpenAgentRuntime
 from open_somnia.runtime.compact import ContextWindowUsage
+from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.tools.registry import ToolDefinition
@@ -293,6 +294,54 @@ class AppServiceTests(unittest.TestCase):
             tool_finished = next(event for event in events if event.type == "tool_finished")
             self.assertEqual(tool_finished.payload["content_blocks"][1]["type"], "image_reference")
             self.assertEqual(tool_finished.payload["content_blocks"][1]["path"], "qr.png")
+        finally:
+            service.close()
+
+    def test_worker_tool_events_are_not_emitted_to_main_turn_stream(self) -> None:
+        root = self._stable_test_dir("app-service-worker-tool-events")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        runtime.execution_mode = "yolo"
+        runtime.registry.register(
+            ToolDefinition(
+                name="worker_probe",
+                description="Return worker output.",
+                input_schema={"type": "object", "properties": {}},
+                handler=lambda ctx, payload: "worker output",
+            )
+        )
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+
+            def fake_run_turn(session, user_input, **kwargs):
+                ctx = ToolExecutionContext(
+                    runtime=runtime,
+                    session=session,
+                    actor="Bob",
+                    trace_id="bob-worker-probe",
+                )
+                output = runtime.registry.execute(ctx, "worker_probe", {})
+                runtime.print_tool_event("Bob", "worker_probe", {}, output)
+                return AgentLoopResult("Done.")
+
+            runtime.run_turn = fake_run_turn
+
+            handle = service.run_turn(session, "delegate worker probe")
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+
+            events = handle.drain_events()
+            worker_tool_events = [
+                event
+                for event in events
+                if event.type in {"tool_started", "tool_finished"} and event.payload.get("actor") == "Bob"
+            ]
+            self.assertEqual(worker_tool_events, [])
+
+            recent_logs = runtime.tool_log_store.list_recent(limit=5)
+            self.assertTrue(
+                any(entry.get("actor") == "Bob" and entry.get("tool_name") == "worker_probe" for entry in recent_logs)
+            )
         finally:
             service.close()
 
