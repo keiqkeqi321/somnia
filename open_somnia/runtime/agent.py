@@ -178,17 +178,13 @@ class OpenAgentRuntime:
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
     )
-    NO_VISIBLE_PROGRESS_LIMIT = 5
-    VISIBLE_PROGRESS_REMINDER_TEXT = (
+    CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT = 10
+    CONVERGENCE_REMINDER_TEXT = (
         "<reminder>\n"
-        "Stop exploratory looping. First produce a concise visible working summary from the recent tool results and conversation. "
-        "Do not reveal hidden reasoning.\n\n"
-        "Your summary must state:\n"
-        "1. What is already known\n"
-        "2. What has been ruled out\n"
-        "3. The current best hypothesis\n"
-        "4. What exact evidence is still missing, or the final answer if enough evidence exists\n\n"
-        "After this summary, use at most one targeted tool call unless the user asks for broader investigation.\n"
+        "Converge now. Do not produce a user-visible progress summary solely because of this reminder. "
+        "Choose exactly one next step: make one targeted tool call for the specific missing signal, "
+        "finish with the final answer if enough evidence exists, or state the concrete blocker if progress is impossible. "
+        "Avoid broad exploration and unrelated status prose.\n"
         "</reminder>"
     )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
@@ -1019,7 +1015,7 @@ class OpenAgentRuntime:
             return False
         return any(isinstance(item, dict) and str(item.get("type", "")).strip() == "tool_result" for item in content)
 
-    def _initial_no_visible_progress_count(self, session: AgentSession) -> int:
+    def _initial_silent_round_count(self, session: AgentSession) -> int:
         count = 0
         for message in reversed(getattr(session, "messages", []) or []):
             role = message.get("role") if isinstance(message, dict) else None
@@ -3055,7 +3051,7 @@ class OpenAgentRuntime:
         exploration_streak = 0
         exploration_total = 0
         pending_exploration_summary_reminder = False
-        no_visible_progress_count = self._initial_no_visible_progress_count(session)
+        silent_round_count = self._initial_silent_round_count(session)
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -3112,12 +3108,12 @@ class OpenAgentRuntime:
                         )
                     )
                     pending_exploration_summary_reminder = False
-                no_visible_progress_count = max(
-                    no_visible_progress_count,
-                    self._initial_no_visible_progress_count(session),
+                silent_round_count = max(
+                    silent_round_count,
+                    self._initial_silent_round_count(session),
                 )
-                if no_visible_progress_count >= self.NO_VISIBLE_PROGRESS_LIMIT:
-                    transient_payload_messages.append(make_user_text_message(self.VISIBLE_PROGRESS_REMINDER_TEXT))
+                if silent_round_count >= self.CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT:
+                    transient_payload_messages.append(make_user_text_message(self.CONVERGENCE_REMINDER_TEXT))
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -3284,9 +3280,9 @@ class OpenAgentRuntime:
                     self._append_transcript_entry(session.id, assistant_message)
                     final_text = "\n\n".join(turn.text_blocks).strip()
                     if final_text:
-                        no_visible_progress_count = 0
+                        silent_round_count = 0
                     else:
-                        no_visible_progress_count += 1
+                        silent_round_count += 1
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
                     self._hook_manager().on_assistant_response(
@@ -3450,9 +3446,9 @@ class OpenAgentRuntime:
                 self._append_transcript_entry(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
                 if used_todo or self._assistant_message_has_visible_text(assistant_message):
-                    no_visible_progress_count = 0
+                    silent_round_count = 0
                 elif self._assistant_message_has_thinking_log(assistant_message):
-                    no_visible_progress_count += 1
+                    silent_round_count += 1
                 tool_result_message = make_tool_result_message(tool_results)
                 session.messages.append(tool_result_message)
                 if used_read_file:

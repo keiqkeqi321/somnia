@@ -5360,10 +5360,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("You have been exploring", json.dumps(payloads[0], ensure_ascii=False))
         self.assertNotIn("You have been exploring", json.dumps(runtime.registry.__dict__, ensure_ascii=False))
 
-    def test_agent_loop_injects_transient_visible_progress_reminder_after_five_silent_rounds(self) -> None:
+    def test_agent_loop_injects_transient_convergence_reminder_after_ten_silent_rounds(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=7, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=12, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5371,7 +5371,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
+        transcript_root = self._stable_test_dir("convergence-reminder-thinking") / "transcripts"
         runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
@@ -5386,50 +5386,20 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 return "tool output"
 
         payloads: list[list[dict]] = []
+        silent_limit = OpenAgentRuntime.CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT
         turns = iter(
             [
                 AssistantTurn(
                     stop_reason="tool_use",
-                    tool_calls=[ToolCall("call-1", "bash", {"command": "pwd"})],
+                    tool_calls=[ToolCall(f"call-{index}", "bash", {"command": f"check-{index}"})],
                     content_blocks=[
-                        {"type": "thinking", "thinking": "checking workspace"},
-                        {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+                        {"type": "thinking", "thinking": f"checking {index}"},
+                        {"type": "tool_call", "id": f"call-{index}", "name": "bash", "input": {"command": f"check-{index}"}},
                     ],
-                ),
-                AssistantTurn(
-                    stop_reason="tool_use",
-                    tool_calls=[ToolCall("call-2", "bash", {"command": "git status"})],
-                    content_blocks=[
-                        {"type": "thinking", "thinking": "checking status"},
-                        {"type": "tool_call", "id": "call-2", "name": "bash", "input": {"command": "git status"}},
-                    ],
-                ),
-                AssistantTurn(
-                    stop_reason="tool_use",
-                    tool_calls=[ToolCall("call-3", "bash", {"command": "ls"})],
-                    content_blocks=[
-                        {"type": "thinking", "thinking": "listing files"},
-                        {"type": "tool_call", "id": "call-3", "name": "bash", "input": {"command": "ls"}},
-                    ],
-                ),
-                AssistantTurn(
-                    stop_reason="tool_use",
-                    tool_calls=[ToolCall("call-4", "bash", {"command": "git log"})],
-                    content_blocks=[
-                        {"type": "thinking", "thinking": "checking history"},
-                        {"type": "tool_call", "id": "call-4", "name": "bash", "input": {"command": "git log"}},
-                    ],
-                ),
-                AssistantTurn(
-                    stop_reason="tool_use",
-                    tool_calls=[ToolCall("call-5", "bash", {"command": "tree"})],
-                    content_blocks=[
-                        {"type": "thinking", "thinking": "checking layout"},
-                        {"type": "tool_call", "id": "call-5", "name": "bash", "input": {"command": "tree"}},
-                    ],
-                ),
-                AssistantTurn(stop_reason="end_turn", text_blocks=["Known: checked workspace. Hypothesis: continue narrowly."]),
+                )
+                for index in range(silent_limit)
             ]
+            + [AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])]
         )
 
         def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
@@ -5441,16 +5411,17 @@ class RuntimeToolOutputTests(unittest.TestCase):
         session = AgentSession(id="session-1")
 
         result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
-        reminder = "Stop exploratory looping"
+        reminder = "Converge now"
 
-        self.assertIn("Known: checked workspace", result)
+        self.assertEqual(result, "Done.")
         self.assertEqual(
             [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads],
-            [0, 0, 0, 0, 0, 1],
+            [0] * silent_limit + [1],
         )
+        self.assertNotIn("What is already known", json.dumps(payloads[-1], ensure_ascii=False))
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
-    def test_agent_loop_visible_progress_reminder_counts_prior_continue_history(self) -> None:
+    def test_agent_loop_convergence_reminder_counts_prior_continue_history(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
@@ -5461,7 +5432,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
         runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
         runtime.session_manager = SimpleNamespace(save=lambda session: None)
-        transcript_root = self._stable_test_dir("visible-progress-history") / "transcripts"
+        transcript_root = self._stable_test_dir("convergence-reminder-history") / "transcripts"
         runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
@@ -5473,26 +5444,21 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
             payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
-            return AssistantTurn(stop_reason="end_turn", text_blocks=["Working summary."])
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
 
         runtime.complete = fake_complete
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "user", "content": "inspect"},
-                {"role": "assistant", "content": [{"type": "thinking_log", "path": "a.jsonl"}]},
-                {"role": "user", "content": "\u7ee7\u7eed"},
-                {"role": "assistant", "content": [{"type": "thinking_log", "path": "b.jsonl"}]},
-                {"role": "assistant", "content": [{"type": "thinking_log", "path": "c.jsonl"}]},
-                {"role": "assistant", "content": [{"type": "thinking_log", "path": "d.jsonl"}]},
-                {"role": "assistant", "content": [{"type": "thinking_log", "path": "e.jsonl"}]},
-            ],
-        )
+        silent_limit = OpenAgentRuntime.CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT
+        messages: list[dict[str, Any]] = [{"role": "user", "content": "inspect"}]
+        for index in range(silent_limit):
+            if index == 1:
+                messages.append({"role": "user", "content": "\u7ee7\u7eed"})
+            messages.append({"role": "assistant", "content": [{"type": "thinking_log", "path": f"{index}.jsonl"}]})
+        session = AgentSession(id="session-1", messages=messages)
 
         result = OpenAgentRuntime.run_turn(runtime, session, "\u7ee7\u7eed")
-        reminder = "Stop exploratory looping"
+        reminder = "Converge now"
 
-        self.assertEqual(result, "Working summary.")
+        self.assertEqual(result, "Done.")
         self.assertEqual(json.dumps(payloads[0], ensure_ascii=False).count(reminder), 1)
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
 
