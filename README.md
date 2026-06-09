@@ -162,6 +162,37 @@ somnia compact
 - `somnia tasks`：查看任务相关信息
 - `somnia compact`：执行上下文压缩
 
+### 调试 Provider Payload
+
+设置 `SOMNIA_DEBUG_PROVIDER_PAYLOADS=1` 后启动交互式 TUI，Somnia 会把每次发送给模型供应商的 payload 写入当前 workspace：
+
+```text
+.open_somnia/logs/provider_payloads/
+```
+
+PowerShell 示例：
+
+```powershell
+$env:SOMNIA_DEBUG_PROVIDER_PAYLOADS = "1"
+somnia chat --workspace "D:\Project\Git\somnia"
+```
+
+继续最近会话或打开会话选择器：
+
+```powershell
+$env:SOMNIA_DEBUG_PROVIDER_PAYLOADS = "1"
+somnia -c
+
+$env:SOMNIA_DEBUG_PROVIDER_PAYLOADS = "1"
+somnia -r
+```
+
+关闭调试：
+
+```powershell
+Remove-Item Env:SOMNIA_DEBUG_PROVIDER_PAYLOADS
+```
+
 ### REPL 内常用斜杠命令
 
 进入交互式模式后，可使用：

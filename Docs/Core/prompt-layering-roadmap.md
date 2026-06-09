@@ -155,6 +155,7 @@ Scope:
   - loaded skills
   - MCP servers and exposed tool counts
 - Add a small helper command or UI endpoint to inspect the latest provider payload summary.
+- Current hidden debug switch: set `SOMNIA_DEBUG_PROVIDER_PAYLOADS=1` before starting `somnia` / `somnia chat` / `somnia -c` / `somnia -r` to write provider payload dumps under `.open_somnia/logs/provider_payloads/`.
 
 Validation:
 
