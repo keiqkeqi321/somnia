@@ -980,6 +980,21 @@ class SidecarServer:
                 text_parts.append(str(value))
         return {"thinking_log": {"path": str(candidate), "text": "".join(text_parts)}}
 
+    def get_team_log(self, name: str, session_id: str | None = None) -> dict[str, Any]:
+        member_name = str(name or "").strip()
+        if not member_name:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "name is required.")
+        manager = getattr(self.runtime, "team_manager", None)
+        renderer = getattr(manager, "render_log", None)
+        if callable(renderer):
+            rendered = renderer(member_name, session_id=session_id)
+        else:
+            runtime_renderer = getattr(self.runtime, "render_team_log", None)
+            if not callable(runtime_renderer):
+                raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Teammate '{member_name}' was not found.")
+            rendered = runtime_renderer(member_name)
+        return {"team_log": {"name": member_name, "session_id": session_id, "rendered": rendered}}
+
     def resolve_authorization(
         self,
         request_id: str,
@@ -1182,6 +1197,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"tool_log": self.sidecar.get_tool_log(path_parts[1])}
         if path_parts == ["thinking-log"]:
             return self.sidecar.get_thinking_log((query.get("path") or [""])[0])
+        if path_parts == ["team", "log"]:
+            return self.sidecar.get_team_log((query.get("name") or [""])[0], (query.get("session_id") or [None])[0])
         if path_parts == ["team", "active"]:
             session_id = (query.get("session_id") or [None])[0]
             return {"members": self.sidecar.active_team_members(session_id)}

@@ -12,6 +12,7 @@ import type {
   SidecarStatus,
   TaskGraphItem,
   TeamMemberActivity,
+  TeamLogDetail,
   ThinkingLogDetail,
   ToolLogDetail,
   ToolLogIndexEntry,
@@ -353,6 +354,15 @@ export class SidecarClient {
       await fetch(`${this.baseUrl}/thinking-log?path=${encodeURIComponent(path)}`),
     );
     return payload.thinking_log;
+  }
+
+  async getTeamLog(name: string, sessionId?: string | null): Promise<TeamLogDetail> {
+    const params = new URLSearchParams({ name });
+    if (sessionId) {
+      params.set("session_id", sessionId);
+    }
+    const payload = await parseResponse<{ team_log: TeamLogDetail }>(await fetch(`${this.baseUrl}/team/log?${params}`));
+    return payload.team_log;
   }
 
   async listActiveTeamMembers(sessionId?: string | null): Promise<TeamMemberActivity[]> {

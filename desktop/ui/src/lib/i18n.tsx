@@ -213,6 +213,9 @@ const translations = {
     "activity.executionActivity": "Execution Activity",
     "activity.subagents": "Subagents",
     "activity.agentTeam": "Agent Team",
+    "worker.backToLead": "Lead",
+    "worker.label": "Worker",
+    "worker.noOutput": "No worker output yet.",
 
     /* ── Interaction decision card ── */
     "decision.authorizationRequest": "Authorization request",
@@ -542,6 +545,9 @@ const translations = {
     "activity.executionActivity": "执行活动",
     "activity.subagents": "子代理",
     "activity.agentTeam": "Agent 团队",
+    "worker.backToLead": "Lead",
+    "worker.label": "Worker",
+    "worker.noOutput": "暂无 worker 输出。",
 
     /* ── Interaction decision card ── */
     "decision.authorizationRequest": "授权请求",

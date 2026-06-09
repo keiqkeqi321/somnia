@@ -1052,8 +1052,9 @@ class TeammateRuntimeManager:
                 members.append(summary)
         return members
 
-    def render_log(self, name: str) -> str:
-        member = self._find(name)
+    def render_log(self, name: str, session_id: str | None = None) -> str:
+        normalized_session_id = str(session_id or "").strip() or None
+        member = self._find(name, session_id=normalized_session_id) if normalized_session_id else self._find(name)
         entries = self._read_log(name, session_id=member.get("session_id") if member else None)
         if member is None and not entries:
             return f"Teammate '{name}' not found."

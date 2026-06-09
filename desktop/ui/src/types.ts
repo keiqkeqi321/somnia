@@ -132,6 +132,12 @@ export interface ThinkingLogDetail {
   text: string;
 }
 
+export interface TeamLogDetail {
+  name: string;
+  session_id?: string | null;
+  rendered: string;
+}
+
 export interface TeamMemberActivity {
   name: string;
   role?: string;

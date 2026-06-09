@@ -58,6 +58,7 @@ import type {
   SidecarStatus,
   TaskGraphItem,
   TeamMemberActivity,
+  TeamLogDetail,
   TodoItem,
   ToolLogDetail,
   ToolLogIndexEntry,
@@ -218,6 +219,16 @@ type ToolImagePreviewState = {
   src: string;
   label: string;
 };
+type SelectedWorkerView = {
+  conversationKey: string;
+  name: string;
+  sessionId: string | null;
+};
+type WorkerLogState = {
+  loading: boolean;
+  error: string | null;
+  log: TeamLogDetail | null;
+};
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
@@ -296,6 +307,8 @@ function App() {
   const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
   const [taskGraphPanelOpen, setTaskGraphPanelOpen] = useState(false);
   const [toolImagePreview, setToolImagePreview] = useState<ToolImagePreviewState | null>(null);
+  const [selectedWorkerView, setSelectedWorkerView] = useState<SelectedWorkerView | null>(null);
+  const [workerLogState, setWorkerLogState] = useState<WorkerLogState>({ loading: false, error: null, log: null });
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -3099,6 +3112,16 @@ function App() {
     "--context-width": `${layout.contextWidth}px`,
   } as CSSProperties;
   const maximizeTitle = windowMaximized ? t("titlebar.restore") : t("titlebar.maximize");
+  const selectedWorkerActive =
+    selectedWorkerView !== null && activeConversationKey !== null && selectedWorkerView.conversationKey === activeConversationKey;
+  const selectedWorkerMember = selectedWorkerActive
+    ? activeTeamItems.find((member) => String(member.name) === selectedWorkerView.name) ?? null
+    : null;
+  const workerRefreshKey = selectedWorkerActive
+    ? activeTeamItems
+        .map((member) => `${String(member.name)}:${String(member.status ?? "")}:${String(member.activity ?? "")}:${String(member.current_tool_name ?? "")}:${String(member.current_task_id ?? "")}:${(member.recent_interactions ?? []).join("\u0001")}`)
+        .join("\u0002")
+    : "";
 
   useLayoutEffect(() => {
     if (conversationPinnedToBottomRef.current) {
@@ -3117,6 +3140,49 @@ function App() {
     todoExpanded,
     todoLayoutKey,
   ]);
+
+  useEffect(() => {
+    if (!selectedWorkerView) {
+      return;
+    }
+    if (!activeConversationKey || selectedWorkerView.conversationKey !== activeConversationKey) {
+      setSelectedWorkerView(null);
+      setWorkerLogState({ loading: false, error: null, log: null });
+      return;
+    }
+    const stillActive = activeTeamItems.some((member) => String(member.name) === selectedWorkerView.name);
+    if (!stillActive) {
+      setSelectedWorkerView(null);
+      setWorkerLogState({ loading: false, error: null, log: null });
+    }
+  }, [activeConversationKey, activeTeamItems, selectedWorkerView]);
+
+  useEffect(() => {
+    if (!selectedWorkerActive || !selectedWorkerView) {
+      return;
+    }
+    const client = clientRef.current;
+    if (!client) {
+      return;
+    }
+    let cancelled = false;
+    setWorkerLogState((previous) => ({ ...previous, loading: true, error: null }));
+    client
+      .getTeamLog(selectedWorkerView.name, selectedWorkerView.sessionId)
+      .then((log) => {
+        if (!cancelled) {
+          setWorkerLogState({ loading: false, error: null, log });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setWorkerLogState({ loading: false, error: error instanceof Error ? error.message : String(error), log: null });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkerActive, selectedWorkerView?.name, selectedWorkerView?.sessionId, workerRefreshKey]);
 
   return (
     <div className="shell">
@@ -3458,6 +3524,20 @@ function App() {
               </button>
             </div>
             <div className="status-cluster">
+              {selectedWorkerActive ? (
+                <button
+                  className="action ghost"
+                  type="button"
+                  onClick={() => {
+                    setSelectedWorkerView(null);
+                    setWorkerLogState({ loading: false, error: null, log: null });
+                  }}
+                  title={t("worker.backToLead")}
+                  aria-label={t("worker.backToLead")}
+                >
+                  {t("worker.backToLead")}
+                </button>
+              ) : null}
               <button
                 className="action ghost detail-toggle"
                 onClick={() => setContextPanelOpen((current) => !current)}
@@ -3469,11 +3549,15 @@ function App() {
             </div>
           </div>
 
-          <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
+          {!selectedWorkerActive ? (
+            <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
+          ) : null}
 
           <div ref={conversationBodyRef} className="conversation-body">
             <div ref={conversationContentRef} className="conversation-content">
-              {conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
+              {selectedWorkerActive ? (
+                <WorkerOutputView member={selectedWorkerMember} workerName={selectedWorkerView?.name ?? ""} state={workerLogState} />
+              ) : conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
                 <div className="empty-conversation">
                   <h3>{t("conversation.startSession")}</h3>
                   <p>{t("conversation.startSessionHint")}</p>
@@ -3542,7 +3626,7 @@ function App() {
                   </article>
                 ))
               )}
-              {activeQueuedPrompts.length > 0 ? (
+              {!selectedWorkerActive && activeQueuedPrompts.length > 0 ? (
                 <PromptQueueCard
                   prompts={activeQueuedPrompts}
                   canInject={currentSessionRunning}
@@ -3550,7 +3634,7 @@ function App() {
                   onInject={handleQueuePromptInjection}
                 />
               ) : null}
-              {currentSessionInteraction ? (
+              {!selectedWorkerActive && currentSessionInteraction ? (
                 <InteractionDecisionCard
                   interaction={currentSessionInteraction}
                   busy={busyAction !== null}
@@ -3562,6 +3646,7 @@ function App() {
             </div>
           </div>
 
+          {!selectedWorkerActive ? (
           <div className="composer">
             <textarea
               ref={composerTextareaRef}
@@ -3836,6 +3921,7 @@ function App() {
               </div>
             </div>
           </div>
+          ) : null}
         </section>
 
         {taskGraphPanelOpen ? (
@@ -3884,7 +3970,21 @@ function App() {
                   </div>
                   <TaskGraphPanel tasks={activeTaskItems} onOpenPanel={() => setTaskGraphPanelOpen(true)} />
                   {activeSubagentItems.length > 0 || activeTeamItems.length > 0 ? (
-                    <ExecutionActivityPanel subagents={activeSubagentItems} teamMembers={activeTeamItems} />
+                    <ExecutionActivityPanel
+                      subagents={activeSubagentItems}
+                      teamMembers={activeTeamItems}
+                      selectedTeamMemberName={selectedWorkerActive ? selectedWorkerView?.name ?? null : null}
+                      onSelectTeamMember={(member) => {
+                        if (!activeConversationKey) {
+                          return;
+                        }
+                        setSelectedWorkerView({
+                          conversationKey: activeConversationKey,
+                          name: String(member.name),
+                          sessionId: typeof member.session_id === "string" ? member.session_id : currentSession?.id ?? null,
+                        });
+                      }}
+                    />
                   ) : null}
                   <div className="context-block">
                     <h3>Preview</h3>
@@ -4104,9 +4204,13 @@ function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () =
 function ExecutionActivityPanel({
   subagents,
   teamMembers,
+  selectedTeamMemberName,
+  onSelectTeamMember,
 }: {
   subagents: SubagentActivity[];
   teamMembers: TeamMemberActivity[];
+  selectedTeamMemberName?: string | null;
+  onSelectTeamMember?: (member: TeamMemberActivity) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -4135,19 +4239,60 @@ function ExecutionActivityPanel({
           <strong>{t("activity.agentTeam")}</strong>
           {teamMembers.map((member) => {
             const interactions = Array.isArray(member.recent_interactions) ? member.recent_interactions.filter(Boolean) : [];
+            const isSelected = selectedTeamMemberName === String(member.name);
             return (
-              <div key={String(member.name)} className="activity-item">
+              <button
+                key={String(member.name)}
+                className={`activity-item activity-item-button ${isSelected ? "selected" : ""}`}
+                type="button"
+                onClick={() => onSelectTeamMember?.(member)}
+                aria-pressed={isSelected}
+              >
                 <div className="activity-item-head">
                   <span>{member.name}</span>
                   <em>{member.status ?? t("common.active")}</em>
                 </div>
                 <p>{teamMemberSummary(member)}</p>
                 {interactions.length > 0 ? <small>{interactions[interactions.length - 1]}</small> : null}
-              </div>
+              </button>
             );
           })}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function WorkerOutputView({
+  member,
+  workerName,
+  state,
+}: {
+  member: TeamMemberActivity | null;
+  workerName: string;
+  state: WorkerLogState;
+}) {
+  const { t } = useI18n();
+  const rendered = state.log?.rendered?.trim() ?? "";
+  return (
+    <section className="worker-output">
+      <header className="worker-output-header">
+        <div>
+          <p className="panel-kicker">{t("worker.label")}</p>
+          <h3>{workerName}</h3>
+        </div>
+        <span>{member?.status ?? t("common.active")}</span>
+      </header>
+      {member ? <p className="worker-output-summary">{teamMemberSummary(member)}</p> : null}
+      {state.error ? <div className="empty-card">{state.error}</div> : null}
+      {state.loading && !rendered ? (
+        <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
+          <span />
+          <span />
+          <span />
+        </span>
+      ) : null}
+      {rendered ? <pre className="worker-output-log">{rendered}</pre> : !state.loading && !state.error ? <div className="empty-card">{t("worker.noOutput")}</div> : null}
     </section>
   );
 }
