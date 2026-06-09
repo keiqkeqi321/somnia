@@ -146,6 +146,67 @@ class FilesystemToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Path escapes workspace"):
             safe_path(root, str(outside))
 
+    def test_read_file_accepts_absolute_path_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(workspace_tmp)
+            outside_file = Path(outside_tmp) / "outside.txt"
+            outside_file.write_text("external context\n", encoding="utf-8")
+            active_files: list[dict[str, str]] = []
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    ),
+                    note_active_file=lambda **kwargs: active_files.append(kwargs),
+                ),
+                session=None,
+            )
+
+            result = read_file(ctx, {"path": str(outside_file)})
+
+        self.assertEqual(result, "external context")
+        self.assertEqual(active_files[0]["path"], str(outside_file))
+        self.assertEqual(active_files[0]["source"], "read_file")
+
+    def test_grep_search_accepts_absolute_path_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(workspace_tmp)
+            outside_file = Path(outside_tmp) / "outside.txt"
+            outside_file.write_text("alpha\nneedle\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"path": str(outside_file), "pattern": "needle"})
+
+        self.assertEqual(result, f"{outside_file}:2:needle")
+
+    def test_write_file_rejects_absolute_path_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(workspace_tmp)
+            outside_file = Path(outside_tmp) / "outside.txt"
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            with self.assertRaisesRegex(ValueError, "Path escapes workspace"):
+                write_file(ctx, {"path": str(outside_file), "content": "nope"})
+
+        self.assertFalse(outside_file.exists())
+
     def test_write_file_returns_diff_stats(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -152,7 +152,7 @@ SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
 MAX_SYMBOL_QUERY_TERMS = 10
 
 
-def safe_path(workspace_root: Path, relative_path: str) -> Path:
+def safe_path(workspace_root: Path, relative_path: str, *, allow_outside: bool = False) -> Path:
     """解析并验证路径安全性.
 
     Args:
@@ -171,6 +171,8 @@ def safe_path(workspace_root: Path, relative_path: str) -> Path:
         path = requested_path.resolve()
     else:
         path = (workspace_root / relative_path).resolve()
+    if allow_outside:
+        return path
     if not path.is_relative_to(workspace_root) and not _is_workspace_relative_text_path(
         workspace_root,
         path,
@@ -324,7 +326,7 @@ def _format_missing_file_message(
     normalized_request = requested_path.replace("\\", "/")
     if not candidates:
         return f"Error: File not found: {normalized_request}"
-    relative_candidates = [candidate.relative_to(workspace_root).as_posix() for candidate in candidates]
+    relative_candidates = [_relative_label(workspace_root, candidate) for candidate in candidates]
     if len(relative_candidates) == 1:
         return (
             f"[auto-resolved path] requested {normalized_request}, "
@@ -441,7 +443,7 @@ def _candidate_glob_labels(workspace_root: Path, base_path: Path, candidate: Pat
         seen.add(label)
         labels.append(label)
 
-    add(candidate.relative_to(workspace_root).as_posix())
+    add(_relative_label(workspace_root, candidate))
     try:
         add(candidate.relative_to(base_path).as_posix())
     except ValueError:
@@ -498,7 +500,7 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
     """
     workspace_root = ctx.runtime.settings.workspace_root
     requested_path = str(payload["path"])
-    path = safe_path(workspace_root, requested_path)
+    path = safe_path(workspace_root, requested_path, allow_outside=True)
     limit, error = _parse_optional_positive_int(payload, "limit")
     if error is not None:
         return error
@@ -571,7 +573,7 @@ def read_file(ctx: Any, payload: dict[str, Any]) -> str:
 def read_image(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
     workspace_root = ctx.runtime.settings.workspace_root
     requested_path = str(payload["path"])
-    path = safe_path(workspace_root, requested_path)
+    path = safe_path(workspace_root, requested_path, allow_outside=True)
     if not path.exists():
         return f"Error: Image not found: {requested_path}"
     if not path.is_file():
@@ -615,7 +617,7 @@ def read_image(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
 
 def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
     if not base_path.is_dir():
@@ -673,7 +675,7 @@ def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
 
 def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
 
@@ -715,7 +717,7 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
             lines = _read_text_with_fallback(candidate).splitlines()
         except Exception:
             continue
-        relative = candidate.relative_to(workspace_root).as_posix()
+        relative = _relative_label(workspace_root, candidate)
         for line_number, line in enumerate(lines, start=1):
             if line_number == 1 or line_number % 128 == 0:
                 _raise_if_tool_interrupted(ctx)
@@ -751,7 +753,7 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
 
 def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
     if not base_path.is_dir():
@@ -775,7 +777,7 @@ def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
         for file_name in file_names:
             _raise_if_tool_interrupted(ctx)
             file_count += 1
-            relative = (current_path / file_name).relative_to(workspace_root).as_posix()
+            relative = _relative_label(workspace_root, current_path / file_name)
             suffix = Path(file_name).suffix.lower()
             if suffix:
                 ext_counts[suffix] += 1
@@ -797,7 +799,7 @@ def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
         _raise_if_tool_interrupted(ctx)
         if _should_skip_name(entry.name, include_hidden=include_hidden):
             continue
-        relative = entry.relative_to(workspace_root).as_posix()
+        relative = _relative_label(workspace_root, entry)
         if entry.is_dir():
             top_level_dirs.append(relative + "/")
         else:
@@ -947,7 +949,7 @@ def _grep_candidate_matches_glob(
     glob_patterns: list[str],
 ) -> bool:
     base_relative = candidate.relative_to(base_path).as_posix()
-    workspace_relative = candidate.relative_to(workspace_root).as_posix()
+    workspace_relative = _relative_label(workspace_root, candidate)
     labels = [candidate.name, base_relative, workspace_relative]
     return _matches_glob_patterns(labels, glob_patterns)
 
@@ -992,7 +994,7 @@ def _iter_recursive_glob_candidates(
             labels = [
                 candidate.name,
                 candidate.relative_to(base_path).as_posix(),
-                candidate.relative_to(workspace_root).as_posix(),
+                _relative_label(workspace_root, candidate),
             ]
             if _matches_glob_patterns(labels, pattern_variants):
                 yield candidate
@@ -1002,7 +1004,7 @@ def _iter_recursive_glob_candidates(
             labels = [
                 candidate.name,
                 candidate.relative_to(base_path).as_posix(),
-                candidate.relative_to(workspace_root).as_posix(),
+                _relative_label(workspace_root, candidate),
             ]
             if _matches_glob_patterns(labels, pattern_variants):
                 yield candidate
@@ -1010,7 +1012,7 @@ def _iter_recursive_glob_candidates(
 
 def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
     if not base_path.is_dir():
@@ -1049,7 +1051,7 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
             if match_type == "dirs" and not is_dir:
                 type_filtered_matches += 1
                 continue
-            relative = candidate.relative_to(workspace_root).as_posix()
+            relative = _relative_label(workspace_root, candidate)
             results.append(relative + ("/" if is_dir else ""))
             if len(results) >= limit:
                 truncated = True
@@ -1072,7 +1074,7 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
 
 def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")))
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
     if not base_path.exists():
         return f"Error: Path not found: {payload.get('path', '.')}"
 
@@ -1115,7 +1117,7 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
             seen.add(candidate)
             if not candidate.is_file():
                 continue
-            relative = candidate.relative_to(workspace_root).as_posix()
+            relative = _relative_label(workspace_root, candidate)
             try:
                 _raise_if_tool_interrupted(ctx)
                 lines = _read_text_with_fallback(candidate).splitlines()
