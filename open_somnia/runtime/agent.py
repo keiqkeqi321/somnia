@@ -178,15 +178,6 @@ class OpenAgentRuntime:
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
     )
-    CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT = 10
-    CONVERGENCE_REMINDER_TEXT = (
-        "<reminder>\n"
-        "Converge now. Do not produce a user-visible progress summary solely because of this reminder. "
-        "Choose exactly one next step: make one targeted tool call for the specific missing signal, "
-        "finish with the final answer if enough evidence exists, or state the concrete blocker if progress is impossible. "
-        "Avoid broad exploration and unrelated status prose.\n"
-        "</reminder>"
-    )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -949,32 +940,6 @@ class OpenAgentRuntime:
     def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
         return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
 
-    def _assistant_message_has_visible_text(self, message: dict[str, Any]) -> bool:
-        content = message.get("content")
-        if isinstance(content, str):
-            return bool(content.strip())
-        if not isinstance(content, list):
-            return False
-        for item in content:
-            if isinstance(item, str) and item.strip():
-                return True
-            if isinstance(item, dict):
-                if str(item.get("type", "")).strip() == "text" and str(item.get("text", "")).strip():
-                    return True
-        return False
-
-    def _assistant_message_has_tool_call(self, message: dict[str, Any], tool_name: str) -> bool:
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        target = str(tool_name or "").strip()
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type", "")).strip() == "tool_call" and str(item.get("name", "")).strip() == target:
-                return True
-        return False
-
     def _assistant_message_has_thinking_log(self, message: dict[str, Any]) -> bool:
         content = message.get("content")
         if not isinstance(content, list):
@@ -983,55 +948,6 @@ class OpenAgentRuntime:
             if isinstance(item, dict) and str(item.get("type", "")).strip() == "thinking_log":
                 return True
         return False
-
-    def _is_continue_only_user_message(self, message: dict[str, Any]) -> bool:
-        if message.get("role") != "user":
-            return False
-        content = message.get("content")
-        if isinstance(content, str):
-            text = content.strip().lower()
-        elif isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    item_type = str(item.get("type", "")).strip()
-                    if item_type == "text":
-                        parts.append(str(item.get("text", "")))
-                    elif item_type != "tool_result":
-                        return False
-            text = " ".join(parts).strip().lower()
-        else:
-            return False
-        normalized = re.sub(r"\s+", " ", text)
-        return normalized in {"继续", "继续。", "go on", "continue", "continue.", "keep going", "resume"}
-
-    def _is_tool_result_user_message(self, message: dict[str, Any]) -> bool:
-        if message.get("role") != "user":
-            return False
-        content = message.get("content")
-        if not isinstance(content, list):
-            return False
-        return any(isinstance(item, dict) and str(item.get("type", "")).strip() == "tool_result" for item in content)
-
-    def _initial_silent_round_count(self, session: AgentSession) -> int:
-        count = 0
-        for message in reversed(getattr(session, "messages", []) or []):
-            role = message.get("role") if isinstance(message, dict) else None
-            if role == "assistant":
-                if self._assistant_message_has_visible_text(message) or self._assistant_message_has_tool_call(message, "TodoWrite"):
-                    break
-                if self._assistant_message_has_thinking_log(message):
-                    count += 1
-                continue
-            if role == "user" and self._is_tool_result_user_message(message):
-                continue
-            if role == "user" and self._is_continue_only_user_message(message):
-                continue
-            if role == "user":
-                break
-        return count
 
     def _dump_provider_payload_if_enabled(
         self,
@@ -3051,7 +2967,6 @@ class OpenAgentRuntime:
         exploration_streak = 0
         exploration_total = 0
         pending_exploration_summary_reminder = False
-        silent_round_count = self._initial_silent_round_count(session)
         try:
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
@@ -3108,12 +3023,6 @@ class OpenAgentRuntime:
                         )
                     )
                     pending_exploration_summary_reminder = False
-                silent_round_count = max(
-                    silent_round_count,
-                    self._initial_silent_round_count(session),
-                )
-                if silent_round_count >= self.CONVERGENCE_REMINDER_SILENT_ROUND_LIMIT:
-                    transient_payload_messages.append(make_user_text_message(self.CONVERGENCE_REMINDER_TEXT))
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -3279,10 +3188,6 @@ class OpenAgentRuntime:
                     session.messages.append(assistant_message)
                     self._append_transcript_entry(session.id, assistant_message)
                     final_text = "\n\n".join(turn.text_blocks).strip()
-                    if final_text:
-                        silent_round_count = 0
-                    else:
-                        silent_round_count += 1
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
                     self._hook_manager().on_assistant_response(
@@ -3445,10 +3350,6 @@ class OpenAgentRuntime:
                 session.messages.append(assistant_message)
                 self._append_transcript_entry(session.id, assistant_message)
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
-                if used_todo or self._assistant_message_has_visible_text(assistant_message):
-                    silent_round_count = 0
-                elif self._assistant_message_has_thinking_log(assistant_message):
-                    silent_round_count += 1
                 tool_result_message = make_tool_result_message(tool_results)
                 session.messages.append(tool_result_message)
                 if used_read_file:
