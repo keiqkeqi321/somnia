@@ -153,7 +153,6 @@ export interface TaskGraphItem {
   preferred_owner?: string | null;
   session_id?: string | null;
   blockedBy?: number[];
-  blocks?: number[];
   created_at?: number;
   updated_at?: number;
   [key: string]: unknown;

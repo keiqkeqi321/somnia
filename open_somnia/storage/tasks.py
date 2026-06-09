@@ -201,7 +201,6 @@ class TaskStore:
             "preferred_owner": preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None,
             "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
             "blockedBy": blocker_ids,
-            "blocks": [],
             "created_at": now_ts(),
             "updated_at": now_ts(),
         }
@@ -252,7 +251,6 @@ class TaskStore:
                 ),
                 "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
                 "blockedBy": blocked_by,
-                "blocks": [],
                 "created_at": now,
                 "updated_at": now,
             }
@@ -355,8 +353,6 @@ class TaskStore:
         if task.get("status") in {"in_progress", "completed"} and incomplete_blockers:
             blockers = ", ".join(str(item) for item in incomplete_blockers)
             raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
-        if add_blocks:
-            task["blocks"] = sorted(set(task.get("blocks", []) + add_blocks))
         if preferred_owner is not None:
             task["preferred_owner"] = (
                 preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None

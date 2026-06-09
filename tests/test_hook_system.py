@@ -839,10 +839,16 @@ class HookSystemTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "provider call failed"):
                 runtime.run_turn(session, "Say hi")
             payload = json.loads(output_path.read_text(encoding="utf-8"))
+            log_path = root / ".open_somnia" / "logs" / "hooks.jsonl"
+            log_entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
         self.assertEqual(payload["event"], "TurnFailed")
         self.assertEqual(payload["error_type"], "RuntimeError")
         self.assertEqual(payload["error_message"], "provider call failed")
+        self.assertTrue(log_entries)
+        self.assertEqual(log_entries[-1]["event"], "TurnFailed")
+        self.assertEqual(log_entries[-1]["error_type"], "RuntimeError")
+        self.assertEqual(log_entries[-1]["error_message"], "provider call failed")
 
     def _make_settings(self, root: Path, *, hooks: list[HookSettings] | None = None) -> AppSettings:
         data_dir = root / ".open_somnia"

@@ -270,65 +270,70 @@ class HookManager:
         if self.log_path is None:
             return
         with self._log_lock:
-            append_jsonl(
-                self.log_path,
-                {
-                    "ts": now_ts(),
-                    "status": execution.status,
-                    "event": context.event,
-                    "hook": self._hook_identity(execution.hook),
-                    "tool_name": context.tool_name,
-                    "actor": context.actor,
-                    "session_id": context.session_id,
-                    "trace_id": context.trace_id,
-                    "duration_ms": execution.duration_ms,
-                    "background": True,
-                    "pid": execution.pid,
-                },
-            )
+            entry = {
+                "ts": now_ts(),
+                "status": execution.status,
+                "event": context.event,
+                "hook": self._hook_identity(execution.hook),
+                "tool_name": context.tool_name,
+                "actor": context.actor,
+                "session_id": context.session_id,
+                "trace_id": context.trace_id,
+                "duration_ms": execution.duration_ms,
+                "background": True,
+                "pid": execution.pid,
+            }
+            entry.update(self._context_error_log_fields(context))
+            append_jsonl(self.log_path, entry)
 
     def _log_hook_success(self, execution: HookExecutionResult, context: HookContext) -> None:
         if self.log_path is None:
             return
         with self._log_lock:
-            append_jsonl(
-                self.log_path,
-                {
-                    "ts": now_ts(),
-                    "status": execution.status,
-                    "event": context.event,
-                    "hook": self._hook_identity(execution.hook),
-                    "tool_name": context.tool_name,
-                    "actor": context.actor,
-                    "session_id": context.session_id,
-                    "trace_id": context.trace_id,
-                    "duration_ms": execution.duration_ms,
-                    "action": execution.decision.action,
-                    "message": execution.decision.message,
-                    "background": execution.background,
-                    "pid": execution.pid,
-                },
-            )
+            entry = {
+                "ts": now_ts(),
+                "status": execution.status,
+                "event": context.event,
+                "hook": self._hook_identity(execution.hook),
+                "tool_name": context.tool_name,
+                "actor": context.actor,
+                "session_id": context.session_id,
+                "trace_id": context.trace_id,
+                "duration_ms": execution.duration_ms,
+                "action": execution.decision.action,
+                "message": execution.decision.message,
+                "background": execution.background,
+                "pid": execution.pid,
+            }
+            entry.update(self._context_error_log_fields(context))
+            append_jsonl(self.log_path, entry)
 
     def _log_hook_failure(self, hook: HookSettings, context: HookContext, error: str, *, background: bool = False) -> None:
         if self.log_path is None:
             return
         with self._log_lock:
-            append_jsonl(
-                self.log_path,
-                {
-                    "ts": now_ts(),
-                    "status": "error",
-                    "event": context.event,
-                    "hook": self._hook_identity(hook),
-                    "tool_name": context.tool_name,
-                    "actor": context.actor,
-                    "session_id": context.session_id,
-                    "trace_id": context.trace_id,
-                    "message": error,
-                    "background": background,
-                },
-            )
+            entry = {
+                "ts": now_ts(),
+                "status": "error",
+                "event": context.event,
+                "hook": self._hook_identity(hook),
+                "tool_name": context.tool_name,
+                "actor": context.actor,
+                "session_id": context.session_id,
+                "trace_id": context.trace_id,
+                "message": error,
+                "background": background,
+            }
+            entry.update(self._context_error_log_fields(context))
+            append_jsonl(self.log_path, entry)
+
+    def _context_error_log_fields(self, context: HookContext) -> dict[str, str]:
+        fields: dict[str, str] = {}
+        if context.error_type is not None:
+            fields["error_type"] = context.error_type
+        if context.error_message is not None:
+            fields["error_message"] = context.error_message
+        return fields
 
     def _hook_identity(self, hook: HookSettings) -> str:
         args = " ".join(str(arg) for arg in hook.args)

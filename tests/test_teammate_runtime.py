@@ -863,6 +863,72 @@ class TeammateRuntimeTests(unittest.TestCase):
             finally:
                 self._stop_manager(manager)
 
+    def test_task_update_completed_clears_teammate_current_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            task = task_store.create("Finish owned task")
+            task_store.claim(task["id"], "Worker")
+            completed_called = threading.Event()
+
+            def register_worker_tools(registry) -> None:
+                register_task_tools(registry, task_store)
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                if not completed_called.is_set():
+                    completed_called.set()
+                    return AssistantTurn(
+                        stop_reason="tool_use",
+                        tool_calls=[
+                            ToolCall("call-1", "task_update", {"task_id": task["id"], "status": "completed"})
+                        ],
+                    )
+                return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-2", "idle", {})])
+
+            runtime = SimpleNamespace(
+                settings=SimpleNamespace(
+                    runtime=SimpleNamespace(
+                        max_agent_rounds=2,
+                        teammate_idle_timeout_seconds=1,
+                        teammate_poll_interval_seconds=1,
+                    )
+                ),
+                build_system_prompt=lambda actor, role: "system",
+                print_tool_event=lambda *args, **kwargs: "log-1",
+                _compact_preview=lambda text, limit=120: text[:limit],
+                register_worker_tools=register_worker_tools,
+                complete=fake_complete,
+            )
+            manager = TeammateRuntimeManager(
+                runtime=runtime,
+                team_store=TeamStore(root / "team"),
+                bus=MessageBus(InboxStore(root / "inbox")),
+                task_store=task_store,
+                request_tracker=RequestTracker(root / "requests"),
+            )
+            runtime.team_manager = manager
+
+            manager.spawn("Worker", "worker", "Complete the owned task.")
+            try:
+                deadline = time.time() + 2
+                while time.time() < deadline:
+                    member = manager._find("Worker")
+                    if (
+                        completed_called.is_set()
+                        and task_store.get(task["id"])["status"] == "completed"
+                        and member is not None
+                        and member.get("current_task_id") is None
+                    ):
+                        break
+                    time.sleep(0.02)
+
+                member = manager._find("Worker")
+                self.assertIsNotNone(member)
+                self.assertEqual(task_store.get(task["id"])["status"], "completed")
+                self.assertIsNone(member["current_task_id"])
+            finally:
+                self._stop_manager(manager)
+
     def test_idle_teammate_with_owned_open_task_does_not_auto_claim_another_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -936,6 +1002,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             task = task_store.create("Wait for lead input", preferred_owner="Reporter")
             task_store.claim(task["id"], "Reporter")
             idle_called = threading.Event()
+            reminder_seen = threading.Event()
             resumed_from_inbox = threading.Event()
             release = threading.Event()
 
@@ -955,6 +1022,9 @@ class TeammateRuntimeTests(unittest.TestCase):
                     return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-1", "idle", {})])
                 if any("Here is the lead input" in str(message.get("content", "")) for message in messages):
                     resumed_from_inbox.set()
+                if any("owned-task-reminder" in str(message.get("content", "")) for message in messages):
+                    reminder_seen.set()
+                    return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-2", "idle", {})])
                 while not release.is_set():
                     if should_interrupt is not None and should_interrupt():
                         break
@@ -989,7 +1059,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 time.sleep(1.3)
                 member = manager._find("Reporter")
                 self.assertIsNotNone(member)
-                self.assertEqual(member["status"], "idle")
+                self.assertTrue(reminder_seen.is_set())
                 self.assertEqual(member["current_task_id"], task["id"])
                 self.assertEqual(task_store.get(task["id"])["owner"], "Reporter")
 
@@ -1204,6 +1274,8 @@ class TeammateRuntimeTests(unittest.TestCase):
             blocker = task_store.create("Dependency", session_id="session-1")
             blocked = task_store.create("Blocked", blocked_by=[blocker["id"]], session_id="session-1")
 
+            self.assertNotIn("blocks", blocker)
+            self.assertNotIn("blocks", blocked)
             self.assertEqual(task_store.incomplete_blockers(blocked["id"], session_id="session-1"), [blocker["id"]])
             task_store.update(blocker["id"], status="completed", session_id="session-1")
 
@@ -1226,6 +1298,21 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual(stored["status"], "completed")
             self.assertEqual(stored["owner"], "WorkerA")
 
+    def test_legacy_blocks_field_is_read_but_not_used_for_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            task = task_store.create("Legacy task", session_id="session-1")
+            legacy_task = dict(task)
+            legacy_task["blocks"] = [999]
+            task_store.save(legacy_task)
+
+            stored = task_store.get(task["id"], session_id="session-1")
+            self.assertEqual(stored["blocks"], [999])
+            updated = task_store.update(task["id"], status="completed", session_id="session-1")
+
+            self.assertEqual(updated["status"], "completed")
+            self.assertEqual(updated["blocks"], [999])
+
     def test_creating_task_with_completed_dependency_does_not_create_stale_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
@@ -1238,6 +1325,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             )
 
             self.assertEqual(created["blockedBy"], [blocker["id"]])
+            self.assertNotIn("blocks", created)
             self.assertEqual(task_store.incomplete_blockers(created["id"], session_id="session-1"), [])
             self.assertEqual([item["id"] for item in task_store.list_claimable(session_id="session-1")], [created["id"]])
 
@@ -1298,6 +1386,8 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertNotIn("task_create", names)
             self.assertNotIn("task_pause_auto_assign", names)
             self.assertNotIn("task_release_auto_assign", names)
+            task_update_schema = next(schema for schema in registry.schemas() if schema["name"] == "task_update")
+            self.assertNotIn("add_blocks", task_update_schema["input_schema"]["properties"])
 
     def test_task_update_tool_rejects_dependency_edges(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1321,6 +1411,28 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual(output["status"], "error")
             self.assertIn("dependency updates are not allowed", output["message"])
             self.assertEqual(task_store.get(task["id"], session_id="session-1")["blockedBy"], [])
+
+    def test_task_update_tool_ignores_legacy_add_blocks_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_store = TaskStore(Path(tmpdir) / "tasks")
+            task = task_store.create("Task", session_id="session-1")
+            registry = ToolRegistry()
+            register_task_tools(registry, task_store)
+
+            output = registry.execute(
+                ToolExecutionContext(
+                    runtime=SimpleNamespace(),
+                    session=SimpleNamespace(id="session-1"),
+                    actor="lead",
+                    trace_id="test",
+                ),
+                "task_update",
+                {"task_id": task["id"], "add_blocks": [999], "status": "in_progress"},
+            )
+
+            self.assertEqual(json.loads(output)["status"], "in_progress")
+            self.assertEqual(task_store.get(task["id"], session_id="session-1")["status"], "in_progress")
+            self.assertNotIn("blocks", task_store.get(task["id"], session_id="session-1"))
 
     def test_task_create_batch_creates_graph_and_assigns_after_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

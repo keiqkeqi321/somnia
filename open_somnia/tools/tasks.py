@@ -79,7 +79,7 @@ def register_task_tools(registry, task_store) -> None:
             int(payload["task_id"]),
             payload.get("status"),
             None,
-            payload.get("add_blocks"),
+            None,
             payload.get("preferred_owner"),
             session_id=session_id,
         )
@@ -140,7 +140,7 @@ def register_task_tools(registry, task_store) -> None:
     registry.register(
         ToolDefinition(
             name="task_update",
-            description="Update task status, blocks metadata, or preferred owner. Dependency edges cannot be changed after creation.",
+            description="Update task status or preferred owner. Dependency edges are declared with task_create_batch and cannot be changed after creation.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -149,7 +149,6 @@ def register_task_tools(registry, task_store) -> None:
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "deleted"],
                     },
-                    "add_blocks": {"type": "array", "items": {"type": "integer"}},
                     "preferred_owner": {"type": "string"},
                 },
                 "required": ["task_id"],

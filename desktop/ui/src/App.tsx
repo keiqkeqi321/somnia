@@ -4065,7 +4065,6 @@ function TaskGraphSvg({
 function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () => void }) {
   const { t } = useI18n();
   const blockedBy = task.blockedBy ?? [];
-  const blocks = task.blocks ?? [];
   return (
     <section className="task-graph-detail">
       <div className="task-graph-detail-head">
@@ -4090,10 +4089,6 @@ function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () =
         <div>
           <dt>{t("taskGraph.blockedBy")}</dt>
           <dd>{blockedBy.length ? blockedBy.map((id) => `#${id}`).join(", ") : t("taskGraph.none")}</dd>
-        </div>
-        <div>
-          <dt>{t("taskGraph.blocks")}</dt>
-          <dd>{blocks.length ? blocks.map((id) => `#${id}`).join(", ") : t("taskGraph.none")}</dd>
         </div>
       </dl>
     </section>
@@ -5964,9 +5959,6 @@ function buildTaskEdges(tasks: TaskGraphItem[], taskById: Map<number, TaskGraphI
     const taskId = Number(task.id);
     for (const blocker of task.blockedBy ?? []) {
       addEdge(Number(blocker), taskId);
-    }
-    for (const blocked of task.blocks ?? []) {
-      addEdge(taskId, Number(blocked));
     }
   }
   return edges;

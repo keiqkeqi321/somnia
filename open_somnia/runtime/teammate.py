@@ -584,6 +584,49 @@ class TeammateRuntimeManager:
         )
         return True
 
+    def _owned_task_reminder_message(self, task: dict) -> str:
+        task_id = task.get("id", "unknown")
+        subject = str(task.get("subject") or "").strip()
+        status = str(task.get("status") or "unknown").strip()
+        description = str(task.get("description") or "").strip()
+        lines = [
+            f"<owned-task-reminder>Task #{task_id} is still {status}.",
+            "If the work is complete, call task_update with status completed now.",
+            "If it is not complete, continue working on this task before going idle.",
+        ]
+        if subject:
+            lines.append(f"Subject: {subject}")
+        if description:
+            lines.append(f"Description: {description}")
+        lines.append("</owned-task-reminder>")
+        return "\n".join(lines)
+
+    def _sync_completed_task_state(self, name: str, tool_input: dict, tool_output, session_id: str | None) -> None:
+        if str(tool_input.get("status") or "").strip() != "completed":
+            return
+        if isinstance(tool_output, dict) and tool_output.get("status") == "error":
+            return
+        try:
+            task_id = int(tool_input["task_id"])
+        except (KeyError, TypeError, ValueError):
+            return
+        try:
+            task = self.task_store.get(task_id, session_id=session_id)
+        except Exception:
+            return
+        if task.get("status") != "completed" or task.get("owner") != name:
+            return
+        member = self._find(name, session_id=session_id)
+        if member is not None and member.get("current_task_id") not in {None, task_id}:
+            return
+        self._update_member(
+            name,
+            activity="task_completed",
+            current_task_id=None,
+            current_tool_name=None,
+            session_id=session_id,
+        )
+
     def interrupt_active(self, reason: str = "lead_interrupt") -> int:
         self._refresh_thread_health()
         count = 0
@@ -695,6 +738,13 @@ class TeammateRuntimeManager:
                                 if tool_call.name == "claim_task":
                                     task_id = int(tool_call.input["task_id"])
                                     self._update_member(name, current_task_id=task_id, session_id=normalized_session_id)
+                                elif tool_call.name == "task_update":
+                                    self._sync_completed_task_state(
+                                        name,
+                                        tool_call.input,
+                                        output,
+                                        normalized_session_id,
+                                    )
                             except TurnInterrupted:
                                 if self._shutdown_if_stop_requested(name, activity="interrupted_during_tool", session_id=normalized_session_id):
                                     return
@@ -824,6 +874,25 @@ class TeammateRuntimeManager:
                             resume = True
                             break
                     if resume or not self._has_owned_open_task(name, session_id=normalized_session_id):
+                        break
+                    owned_open = self._owned_open_tasks(name, session_id=normalized_session_id)
+                    if owned_open:
+                        reminder_message = self._owned_task_reminder_message(owned_open[0])
+                        messages.append({"role": "user", "content": reminder_message})
+                        self._append_log(
+                            name,
+                            "user_message",
+                            {"content": reminder_message, "source": "owned_task_reminder"},
+                            session_id=normalized_session_id,
+                        )
+                        self._update_member(
+                            name,
+                            status="working",
+                            activity="resuming_owned_task",
+                            current_task_id=int(owned_open[0]["id"]),
+                            session_id=normalized_session_id,
+                        )
+                        resume = True
                         break
                     self._update_member(name, status="idle", activity="idle_waiting_on_owned_task", session_id=normalized_session_id)
                 if not resume:
