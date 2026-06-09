@@ -1075,6 +1075,11 @@ class TeammateRuntimeManager:
             lines.extend(self._render_log_entry(entry))
         return "\n".join(lines)
 
+    def log_entries(self, name: str, session_id: str | None = None) -> list[dict]:
+        normalized_session_id = str(session_id or "").strip() or None
+        member = self._find(name, session_id=normalized_session_id) if normalized_session_id else self._find(name)
+        return [dict(entry) for entry in self._read_log(name, session_id=member.get("session_id") if member else normalized_session_id)]
+
     def _render_log_entry(self, entry: dict) -> list[str]:
         event_type = str(entry.get("type", "event"))
         if event_type == "session_started":

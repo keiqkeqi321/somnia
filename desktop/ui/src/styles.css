@@ -4306,6 +4306,55 @@ button {
   line-height: 1.55;
 }
 
+.worker-log-events {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.worker-log-bubble {
+  max-width: min(100%, 58rem);
+}
+
+.worker-log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.worker-log-meta em {
+  font-style: normal;
+}
+
+.worker-log-tool {
+  max-width: min(100%, 58rem);
+}
+
+.worker-log-event {
+  max-width: min(100%, 58rem);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 10, 14, 0.5);
+}
+
+.worker-log-event.error {
+  border-color: rgba(248, 113, 113, 0.36);
+}
+
+.worker-log-event pre {
+  margin: 0;
+  color: #dbeafe;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .compact-list {
   padding: 0;
 }

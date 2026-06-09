@@ -136,6 +136,24 @@ export interface TeamLogDetail {
   name: string;
   session_id?: string | null;
   rendered: string;
+  entries?: TeamLogEntry[];
+}
+
+export interface TeamLogEntry {
+  type?: string;
+  timestamp?: number | string | null;
+  content?: unknown;
+  source?: string;
+  role?: string;
+  reason?: string;
+  message_count?: number;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  output_preview?: string;
+  tool_log_id?: string;
+  error?: string;
+  session_id?: string | null;
+  [key: string]: unknown;
 }
 
 export interface TeamMemberActivity {

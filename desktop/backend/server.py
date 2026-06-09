@@ -986,6 +986,8 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "name is required.")
         manager = getattr(self.runtime, "team_manager", None)
         renderer = getattr(manager, "render_log", None)
+        entries_reader = getattr(manager, "log_entries", None)
+        entries = entries_reader(member_name, session_id=session_id) if callable(entries_reader) else []
         if callable(renderer):
             rendered = renderer(member_name, session_id=session_id)
         else:
@@ -993,7 +995,7 @@ class SidecarServer:
             if not callable(runtime_renderer):
                 raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Teammate '{member_name}' was not found.")
             rendered = runtime_renderer(member_name)
-        return {"team_log": {"name": member_name, "session_id": session_id, "rendered": rendered}}
+        return {"team_log": {"name": member_name, "session_id": session_id, "rendered": rendered, "entries": entries}}
 
     def resolve_authorization(
         self,

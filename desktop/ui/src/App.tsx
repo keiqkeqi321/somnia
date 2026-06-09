@@ -58,6 +58,7 @@ import type {
   SidecarStatus,
   TaskGraphItem,
   TeamMemberActivity,
+  TeamLogEntry,
   TeamLogDetail,
   TodoItem,
   ToolLogDetail,
@@ -4274,6 +4275,7 @@ function WorkerOutputView({
 }) {
   const { t } = useI18n();
   const rendered = state.log?.rendered?.trim() ?? "";
+  const entries = state.log?.entries ?? [];
   return (
     <section className="worker-output">
       <header className="worker-output-header">
@@ -4292,8 +4294,81 @@ function WorkerOutputView({
           <span />
         </span>
       ) : null}
-      {rendered ? <pre className="worker-output-log">{rendered}</pre> : !state.loading && !state.error ? <div className="empty-card">{t("worker.noOutput")}</div> : null}
+      {entries.length > 0 ? (
+        <div className="worker-log-events">
+          {entries.map((entry, index) => (
+            <WorkerLogEntryCard key={`${String(entry.type ?? "event")}-${index}`} entry={entry} index={index} />
+          ))}
+        </div>
+      ) : rendered ? (
+        <pre className="worker-output-log">{rendered}</pre>
+      ) : !state.loading && !state.error ? (
+        <div className="empty-card">{t("worker.noOutput")}</div>
+      ) : null}
     </section>
+  );
+}
+
+function WorkerLogEntryCard({ entry, index }: { entry: TeamLogEntry; index: number }) {
+  const eventType = String(entry.type ?? "event");
+  if (eventType === "user_message") {
+    return (
+      <article className="bubble user worker-log-bubble">
+        <div className="worker-log-meta">
+          <span>{entry.source ? `user / ${entry.source}` : "user"}</span>
+          <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+        </div>
+        <MarkdownMessage text={renderWorkerLogContent(entry.content)} />
+      </article>
+    );
+  }
+  if (eventType === "assistant_message") {
+    return (
+      <article className="bubble assistant worker-log-bubble">
+        <div className="worker-log-meta">
+          <span>assistant</span>
+          <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+        </div>
+        <MarkdownMessage text={renderWorkerLogContent(entry.content)} />
+      </article>
+    );
+  }
+  if (eventType === "tool_call") {
+    const toolCall: ConversationToolCall = {
+      id: entry.tool_log_id || `worker-tool-${index}`,
+      name: String(entry.tool_name ?? "tool"),
+      input: stringifyToolValue(entry.tool_input ?? {}),
+      output: String(entry.output_preview ?? "(no output)"),
+      rawInput: entry.tool_input ?? {},
+      rawOutput: entry.output_preview ?? "(no output)",
+      logId: typeof entry.tool_log_id === "string" ? entry.tool_log_id : null,
+      status: "finished",
+    };
+    return (
+      <div className="worker-log-tool">
+        <ToolCallCard toolCall={toolCall} />
+      </div>
+    );
+  }
+  if (eventType === "runtime_error") {
+    return (
+      <article className="worker-log-event error">
+        <div className="worker-log-meta">
+          <span>runtime_error</span>
+          <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+        </div>
+        <pre>{String(entry.error ?? "unknown error")}</pre>
+      </article>
+    );
+  }
+  return (
+    <article className="worker-log-event">
+      <div className="worker-log-meta">
+        <span>{workerLogEventLabel(entry)}</span>
+        <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+      </div>
+      <pre>{stringifyToolValue(entry)}</pre>
+    </article>
   );
 }
 
@@ -5974,6 +6049,67 @@ function compactInlineText(text: string, limit: number): string {
     return compact;
   }
   return limit <= 3 ? compact.slice(0, limit) : `${compact.slice(0, limit - 3)}...`;
+}
+
+function renderWorkerLogContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const parts = content
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        if (!isRecord(item)) {
+          return "";
+        }
+        if (typeof item.text === "string") {
+          return item.text;
+        }
+        if (typeof item.content === "string") {
+          return item.content;
+        }
+        if (item.type === "tool_use" || item.type === "tool_call") {
+          return "";
+        }
+        return "";
+      })
+      .filter((part) => part.trim());
+    if (parts.length > 0) {
+      return parts.join("\n\n");
+    }
+  }
+  return stringifyToolValue(content ?? "");
+}
+
+function formatWorkerLogTimestamp(timestamp: unknown): string {
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    return formatRelativeTime(timestamp);
+  }
+  if (typeof timestamp === "string" && timestamp.trim()) {
+    const parsed = Date.parse(timestamp);
+    if (Number.isFinite(parsed)) {
+      return formatRelativeTime(parsed / 1000);
+    }
+    return timestamp.trim();
+  }
+  return "";
+}
+
+function workerLogEventLabel(entry: TeamLogEntry): string {
+  const eventType = String(entry.type ?? "event");
+  if (eventType === "session_started") {
+    const role = typeof entry.role === "string" && entry.role.trim() ? entry.role.trim() : "teammate";
+    return `session started / ${role}`;
+  }
+  if (eventType === "session_resumed") {
+    return "session resumed";
+  }
+  if (eventType === "tool_result_message") {
+    return "tool results";
+  }
+  return eventType.replace(/_/g, " ");
 }
 
 function formatElapsedSeconds(startedAt: number): string {
