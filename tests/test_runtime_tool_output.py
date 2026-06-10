@@ -2009,6 +2009,57 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(loaded, {"edit_file"})
 
+    def test_builtin_authorization_file_allows_external_mcp_tools(self) -> None:
+        root = self._stable_test_dir("builtin-auth")
+        builtin_path = root / "permissions.json"
+        builtin_path.write_text(
+            json.dumps({"allow": ["mcp__external__read_resource", "  mcp__external__query  ", ""]}),
+            encoding="utf-8",
+        )
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
+        runtime.execution_mode = "plan"
+        runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: self.fail("builtin authorization should be cached")
+
+        self.assertEqual(runtime._builtin_authorized_tools, {"mcp__external__read_resource", "mcp__external__query"})
+        self.assertIsNone(
+            OpenAgentRuntime.authorize_tool_call(runtime, "mcp__external__read_resource", {"uri": "demo://resource"})
+        )
+        self.assertIn(
+            "requires broader tool access",
+            OpenAgentRuntime.authorize_tool_call(runtime, "mcp__external__write_resource", {"uri": "demo://resource"}),
+        )
+        cached = json.loads(OpenAgentRuntime.request_authorization(runtime, "mcp__external__query", "Read external MCP data"))
+        self.assertEqual(cached["status"], "approved")
+        self.assertEqual(cached["scope"], "builtin")
+        self.assertTrue(cached["cached"])
+
+    def test_workspace_authorization_persistence_excludes_builtin_authorizations(self) -> None:
+        root = self._stable_test_dir("workspace-auth-excludes-builtin")
+        data_dir = root / ".open_somnia"
+        builtin_path = root / "permissions.json"
+        builtin_path.write_text(json.dumps({"allow": ["mcp__external__read_resource"]}), encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
+        runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
+        runtime.execution_mode = "plan"
+        runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: {
+            "status": "approved",
+            "scope": "workspace",
+            "reason": "Allowed in this workspace.",
+        }
+
+        OpenAgentRuntime.request_authorization(runtime, "edit_file", "Need to patch a file")
+
+        saved = json.loads((data_dir / "permissions.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, {"authorized_tools": ["edit_file"]})
+
     def test_request_mode_switch_rejects_yolo_target(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "plan"

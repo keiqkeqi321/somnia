@@ -23,6 +23,20 @@ class PermissionManager:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
+    @staticmethod
+    def _authorized_tools_from_payload(payload: Any) -> set[str]:
+        if not isinstance(payload, dict):
+            return set()
+        authorized: set[str] = set()
+        for raw_tools in (payload.get("authorized_tools", []), payload.get("allow", [])):
+            if not isinstance(raw_tools, list):
+                continue
+            for item in raw_tools:
+                tool_name = str(item).strip()
+                if tool_name:
+                    authorized.add(tool_name)
+        return authorized
+
     def _hook_manager(self):
         getter = getattr(self.runtime, "_hook_manager", None)
         if callable(getter):
@@ -40,6 +54,20 @@ class PermissionManager:
             return None
         return data_dir / self.runtime.WORKSPACE_PERMISSIONS_FILE
 
+    def builtin_authorizations_path(self) -> Path:
+        configured = getattr(self.runtime, "BUILTIN_PERMISSIONS_FILE", "permissions.json")
+        path = configured if isinstance(configured, Path) else Path(str(configured))
+        if path.is_absolute():
+            return path
+        return Path(__file__).resolve().parents[1] / path
+
+    def load_builtin_authorizations(self) -> set[str]:
+        try:
+            payload = read_json(self.builtin_authorizations_path(), {"authorized_tools": []})
+        except Exception:
+            return set()
+        return self._authorized_tools_from_payload(payload)
+
     def load_workspace_authorizations(self) -> set[str]:
         path = self.workspace_authorizations_path()
         if path is None:
@@ -48,17 +76,7 @@ class PermissionManager:
             payload = read_json(path, {"authorized_tools": []})
         except Exception:
             return set()
-        if not isinstance(payload, dict):
-            return set()
-        raw_tools = payload.get("authorized_tools", [])
-        if not isinstance(raw_tools, list):
-            return set()
-        authorized: set[str] = set()
-        for item in raw_tools:
-            tool_name = str(item).strip()
-            if tool_name:
-                authorized.add(tool_name)
-        return authorized
+        return self._authorized_tools_from_payload(payload)
 
     def persist_workspace_authorizations(self) -> None:
         path = self.workspace_authorizations_path()
@@ -84,7 +102,8 @@ class PermissionManager:
                 else:
                     worker_once[worker_key] = remaining_worker - 1
                 return None
-        if tool_name in self.runtime._workspace_authorized_tools:
+        builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
+        if tool_name in builtin_authorized or tool_name in self.runtime._workspace_authorized_tools:
             return None
         remaining = self.runtime._once_authorized_tools.get(tool_name, 0)
         if remaining > 0:
@@ -123,6 +142,12 @@ class PermissionManager:
             return "Authorization request failed: tool_name is required."
         if normalized_tool == AUTHORIZATION_TOOL_NAME:
             return "Authorization not required for request_authorization."
+        builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
+        if normalized_tool in builtin_authorized:
+            return json.dumps(
+                {"status": "approved", "scope": "builtin", "tool_name": normalized_tool, "cached": True},
+                ensure_ascii=False,
+            )
         if normalized_tool in self.runtime._workspace_authorized_tools:
             return json.dumps(
                 {"status": "approved", "scope": "workspace", "tool_name": normalized_tool, "cached": True},

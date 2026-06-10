@@ -186,6 +186,7 @@ class OpenAgentRuntime:
     TURN_BOUNDARY_TOOL_NAMES = {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}
     DEFAULT_MAX_TOOL_CALLS_PER_TURN = 64
     WORKSPACE_PERMISSIONS_FILE = "permissions.json"
+    BUILTIN_PERMISSIONS_FILE = "builtin/permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
     PROVIDER_RETRY_DELAY_SECONDS = 2.0
     JANITOR_REARM_RATIO = 0.45
@@ -247,6 +248,7 @@ class OpenAgentRuntime:
         self.permission_manager = PermissionManager(self)
         self.subagent_runner = SubagentRunner(self)
         self.system_prompt_builder = SystemPromptBuilder(self)
+        self._builtin_authorized_tools = self._load_builtin_authorizations()
         self._workspace_authorized_tools = self._load_workspace_authorizations()
         self._once_authorized_tools: dict[str, int] = {}
         self._worker_authorized_tools: set[str] = set()
@@ -523,6 +525,9 @@ class OpenAgentRuntime:
 
     def _load_workspace_authorizations(self) -> set[str]:
         return self._permission_manager().load_workspace_authorizations()
+
+    def _load_builtin_authorizations(self) -> set[str]:
+        return self._permission_manager().load_builtin_authorizations()
 
     def _persist_workspace_authorizations(self) -> None:
         self._permission_manager().persist_workspace_authorizations()

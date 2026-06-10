@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS = 250
+BUILTIN_SKILLS_DIR = Path(__file__).resolve().parents[1] / "builtin" / "skills"
 DEFAULT_SKILL_PROMPT_DESCRIBED_ENTRY_LIMIT = 40
 
 
@@ -21,7 +22,7 @@ class SkillLoader:
     def for_workspace(cls, workspace_root: Path) -> "SkillLoader":
         return cls(
             [
-                Path(__file__).resolve().parent / "builtin",
+                BUILTIN_SKILLS_DIR,
                 Path.home() / ".claude" / "skills",
                 Path.home() / ".open_somnia" / "skills",
                 workspace_root / "skills",
@@ -54,8 +55,7 @@ class SkillLoader:
         )
 
     def _scope_name(self, source_dir: Path) -> str:
-        builtin_skills_dir = Path(__file__).resolve().parent / "builtin"
-        if source_dir == builtin_skills_dir:
+        if source_dir == BUILTIN_SKILLS_DIR:
             return "builtin"
         home_skills_dir = Path.home() / ".open_somnia" / "skills"
         if source_dir == home_skills_dir:

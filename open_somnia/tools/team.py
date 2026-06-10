@@ -108,8 +108,9 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 return "Error: Runtime is unavailable; cannot grant teammate authorization."
             lead_once = getattr(runtime, "_once_authorized_tools", {})
             lead_workspace = getattr(runtime, "_workspace_authorized_tools", set())
+            lead_builtin = getattr(runtime, "_builtin_authorized_tools", set())
             lead_can_grant = False
-            if tool_name in lead_workspace:
+            if tool_name in lead_builtin or tool_name in lead_workspace:
                 lead_can_grant = True
             elif int(lead_once.get(tool_name, 0) or 0) > 0:
                 remaining = int(lead_once.get(tool_name, 0) or 0)

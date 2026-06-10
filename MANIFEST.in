@@ -2,8 +2,9 @@ include README.md
 include LICENSE
 include VERSION
 include openagent.toml.example
+include open_somnia/builtin/permissions.json
 recursive-include Docs *.md
-recursive-include open_somnia/skills/builtin *.md
+recursive-include open_somnia/builtin/skills *.md
 recursive-include scripts *.sh *.ps1 *.json
 global-exclude __pycache__
 global-exclude *.py[cod]
