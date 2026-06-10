@@ -4486,6 +4486,58 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.content_blocks[0]["thinking"], "private reasoning")
         self.assertEqual(turn.text_blocks, ["Visible answer."])
 
+    def test_anthropic_provider_falls_back_to_nonstreaming_on_stream_json_decode_error(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="mimo-v2.5-pro",
+                api_key="test-key",
+                base_url="https://example.com/anthropic",
+                timeout_seconds=30,
+            )
+        )
+        calls: list[str] = []
+
+        class BrokenStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def __iter__(self):
+                calls.append("stream_iter")
+                raise json.JSONDecodeError("Unterminated string starting at", '{"type":"', 9)
+
+        def create(**kwargs):
+            calls.append("create")
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="Recovered answer.")],
+                stop_reason="end_turn",
+                usage=None,
+            )
+
+        provider.client = SimpleNamespace(
+            messages=SimpleNamespace(
+                stream=lambda **kwargs: BrokenStream(),
+                create=create,
+            )
+        )
+
+        text_chunks: list[str] = []
+        turn = provider.complete(
+            "system",
+            [{"role": "user", "content": "hello"}],
+            [],
+            max_tokens=1024,
+            text_callback=text_chunks.append,
+        )
+
+        self.assertEqual(calls, ["stream_iter", "create"])
+        self.assertEqual(text_chunks, [])
+        self.assertEqual(turn.text_blocks, ["Recovered answer."])
+
     def test_anthropic_provider_wraps_transient_exception_as_retryable_provider_error(self) -> None:
         provider = AnthropicProvider(
             ProviderSettings(

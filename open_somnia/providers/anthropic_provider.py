@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -208,6 +209,19 @@ def _wrap_anthropic_exception(exc: Exception) -> ProviderError:
     )
 
 
+def _is_stream_json_parse_error(exc: Exception) -> bool:
+    if isinstance(exc, json.JSONDecodeError):
+        return True
+    type_name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return (
+        "jsondecodeerror" in type_name
+        or "unterminated string" in message
+        or "expecting value" in message
+        or "invalid control character" in message
+    )
+
+
 class AnthropicProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         kwargs: dict[str, Any] = {}
@@ -298,6 +312,7 @@ class AnthropicProvider(LLMProvider):
         request_kwargs.pop("stream", None)
         streamed_thinking_delta = False
         streamed_redacted_thinking = False
+        streamed_text_delta = False
         try:
             if text_callback is None and stop_checker is None:
                 response = self.client.messages.create(**request_kwargs)
@@ -315,6 +330,7 @@ class AnthropicProvider(LLMProvider):
                         if delta_type == "text_delta":
                             text = str(getattr(delta, "text", "") or "")
                             if text and text_callback is not None:
+                                streamed_text_delta = True
                                 text_callback(text)
                         elif delta_type == "thinking_delta":
                             thinking = str(getattr(delta, "thinking", "") or "")
@@ -332,7 +348,20 @@ class AnthropicProvider(LLMProvider):
         except TurnInterrupted:
             raise
         except Exception as exc:
-            raise _wrap_anthropic_exception(exc) from exc
+            if (
+                text_callback is not None
+                and stop_checker is None
+                and not streamed_text_delta
+                and not streamed_thinking_delta
+                and not streamed_redacted_thinking
+                and _is_stream_json_parse_error(exc)
+            ):
+                try:
+                    response = self.client.messages.create(**request_kwargs)
+                except Exception as fallback_exc:
+                    raise _wrap_anthropic_exception(fallback_exc) from fallback_exc
+            else:
+                raise _wrap_anthropic_exception(exc) from exc
         text_blocks: list[str] = []
         tool_calls: list[ToolCall] = []
         content_blocks: list[dict[str, Any]] = []
