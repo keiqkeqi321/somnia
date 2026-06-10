@@ -2576,7 +2576,7 @@ function App() {
 
   function handleSelectSettingsSection(section: SettingsSectionKey) {
     setSettingsSection(section);
-    if (section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt") {
+    if (section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt" || section === "runtime") {
       setSettingsConfigSection(section);
     }
   }
@@ -2601,7 +2601,7 @@ function App() {
       const mcpServers = await client.listMcpServers();
       const nextDrafts: Record<string, string> = {};
       for (const scope of payload.scopes) {
-        for (const section of ["provider", "mcp", "hooks", "system_prompt"] as SettingsConfigSectionKey[]) {
+        for (const section of ["provider", "runtime", "mcp", "hooks", "system_prompt"] as SettingsConfigSectionKey[]) {
           nextDrafts[`${scope.scope}:${section}`] = scope.sections[section] ?? "";
         }
       }

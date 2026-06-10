@@ -677,6 +677,20 @@ class OpenAgentRuntime:
         self.settings.hooks = reloaded.hooks
         self.hook_manager = HookManager(self.settings)
 
+    def reload_runtime_configuration(self) -> None:
+        reloaded = load_settings(
+            self.settings.workspace_root,
+            provider_override=self.settings.provider.name,
+            model_override=self.settings.provider.model,
+            allow_missing_provider=True,
+        )
+        self.settings.raw_config = reloaded.raw_config
+        self.settings.runtime = reloaded.runtime
+        self.background_manager.default_timeout = reloaded.runtime.command_timeout_seconds
+        self.background_manager.max_output_chars = reloaded.runtime.max_tool_output_chars
+        self._context_usage_cache = {}
+        self._payload_message_cache = {}
+
     def set_hook_enabled(self, hook: HookSettings, enabled: bool) -> str:
         config_path = persist_hook_enabled(hook, enabled)
         self.reload_hook_configuration()
@@ -2965,6 +2979,49 @@ class OpenAgentRuntime:
             return self.DEFAULT_MAX_TOOL_CALLS_PER_TURN
         return max(1, limit)
 
+    def _runtime_non_negative_int(self, name: str, default: int) -> int:
+        runtime_settings = getattr(self.settings, "runtime", None)
+        raw_value = getattr(runtime_settings, name, default)
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return default
+        return max(0, value)
+
+    def _exploration_soft_limit(self) -> int:
+        return self._runtime_non_negative_int("exploration_soft_limit", self.EXPLORATION_SOFT_LIMIT)
+
+    def _exploration_hard_streak_limit(self) -> int:
+        return self._runtime_non_negative_int("exploration_hard_streak_limit", self.EXPLORATION_HARD_STREAK_LIMIT)
+
+    def _exploration_hard_total_limit(self) -> int:
+        return self._runtime_non_negative_int("exploration_hard_total_limit", self.EXPLORATION_HARD_TOTAL_LIMIT)
+
+    def _exploration_budget_error(
+        self,
+        tool_name: str,
+        *,
+        next_streak: int,
+        next_total: int,
+        hard_streak_limit: int,
+        hard_total_limit: int,
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        if hard_streak_limit > 0 and next_streak > hard_streak_limit:
+            reasons.append(f"{hard_streak_limit} consecutive read/search calls")
+        if hard_total_limit > 0 and next_total > hard_total_limit:
+            reasons.append(f"{hard_total_limit} total read/search calls this turn")
+        limit_text = " and ".join(reasons) or "the configured exploration budget"
+        return make_tool_error(
+            tool_name,
+            "exploration_budget_exceeded",
+            (
+                f"Exploration budget exceeded after {limit_text}. "
+                "Stop broad exploration now and provide a concise interim conclusion from the evidence already gathered. "
+                "If more inspection is genuinely necessary, ask the user to continue with the smallest specific next check."
+            ),
+        )
+
     def _known_tool_names(self) -> set[str]:
         names = getattr(self.registry, "names", None)
         if not callable(names):
@@ -3082,6 +3139,9 @@ class OpenAgentRuntime:
         exploration_total = 0
         pending_exploration_summary_reminder = False
         try:
+            exploration_soft_limit = self._exploration_soft_limit()
+            exploration_hard_streak_limit = self._exploration_hard_streak_limit()
+            exploration_hard_total_limit = self._exploration_hard_total_limit()
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
                 loop_user_message = None
@@ -3392,6 +3452,28 @@ class OpenAgentRuntime:
                                     f"Available tools: {', '.join(sorted(known_tool_names))}."
                                 ),
                             )
+                        elif is_exploration_tool:
+                            next_exploration_streak = exploration_streak + 1
+                            next_exploration_total = exploration_total + 1
+                            if (
+                                (
+                                    exploration_hard_streak_limit > 0
+                                    and next_exploration_streak > exploration_hard_streak_limit
+                                )
+                                or (
+                                    exploration_hard_total_limit > 0
+                                    and next_exploration_total > exploration_hard_total_limit
+                                )
+                            ):
+                                output = self._exploration_budget_error(
+                                    tool_name,
+                                    next_streak=next_exploration_streak,
+                                    next_total=next_exploration_total,
+                                    hard_streak_limit=exploration_hard_streak_limit,
+                                    hard_total_limit=exploration_hard_total_limit,
+                                )
+                                pending_exploration_summary_reminder = True
+                                end_turn_after_tool = True
                     if tool_name == "compress":
                         manual_compact = True
                     if output is None:
@@ -3434,9 +3516,15 @@ class OpenAgentRuntime:
                         exploration_streak += 1
                         exploration_total += 1
                         if (
-                            exploration_streak >= self.EXPLORATION_SOFT_LIMIT
-                            or exploration_streak >= self.EXPLORATION_HARD_STREAK_LIMIT
-                            or exploration_total >= self.EXPLORATION_HARD_TOTAL_LIMIT
+                            (exploration_soft_limit > 0 and exploration_streak >= exploration_soft_limit)
+                            or (
+                                exploration_hard_streak_limit > 0
+                                and exploration_streak >= exploration_hard_streak_limit
+                            )
+                            or (
+                                exploration_hard_total_limit > 0
+                                and exploration_total >= exploration_hard_total_limit
+                            )
                         ):
                             pending_exploration_summary_reminder = True
                     elif not is_exploration_tool:

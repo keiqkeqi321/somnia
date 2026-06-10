@@ -143,6 +143,9 @@ class SettingsOverrideTests(unittest.TestCase):
                 settings = load_settings(root)
 
             self.assertEqual(settings.runtime.max_agent_rounds, 100)
+            self.assertEqual(settings.runtime.exploration_soft_limit, 10)
+            self.assertEqual(settings.runtime.exploration_hard_streak_limit, 14)
+            self.assertEqual(settings.runtime.exploration_hard_total_limit, 25)
             self.assertEqual((root / ".open_somnia" / ".gitignore").read_text(encoding="utf-8"), APP_DIR_GITIGNORE)
 
     def test_ensure_app_dir_ignored_preserves_existing_gitignore(self) -> None:
@@ -514,6 +517,7 @@ class SettingsOverrideTests(unittest.TestCase):
                 max_agent_rounds = 20
                 janitor_trigger_ratio = 0.65
                 teammate_poll_interval_seconds = 9
+                exploration_soft_limit = 8
                 """,
             )
             self._write_workspace_config(
@@ -527,6 +531,8 @@ class SettingsOverrideTests(unittest.TestCase):
 
                 [runtime]
                 max_agent_rounds = 80
+                exploration_hard_streak_limit = 12
+                exploration_hard_total_limit = 30
                 """,
             )
 
@@ -540,6 +546,9 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.runtime.max_agent_rounds, 80)
         self.assertEqual(settings.runtime.janitor_trigger_ratio, 0.65)
         self.assertEqual(settings.runtime.teammate_poll_interval_seconds, 9)
+        self.assertEqual(settings.runtime.exploration_soft_limit, 8)
+        self.assertEqual(settings.runtime.exploration_hard_streak_limit, 12)
+        self.assertEqual(settings.runtime.exploration_hard_total_limit, 30)
         self.assertEqual(settings.provider_profiles["openai"].models, ["gpt-4.1", "gpt-4.1-mini"])
 
     def test_load_settings_workspace_stdio_mcp_override_ignores_stale_global_http_url(self) -> None:

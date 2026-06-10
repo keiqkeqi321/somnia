@@ -95,6 +95,9 @@ class RuntimeSettings:
     teammate_poll_interval_seconds: int = 5
     max_tool_output_chars: int = 50_000
     max_tool_calls_per_turn: int = 64
+    exploration_soft_limit: int = 10
+    exploration_hard_streak_limit: int = 14
+    exploration_hard_total_limit: int = 25
     max_subagent_rounds: int = 30
     max_agent_rounds: int = 100
 

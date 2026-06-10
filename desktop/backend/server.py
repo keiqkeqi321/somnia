@@ -69,7 +69,7 @@ IMAGE_MEDIA_TYPE_SUFFIXES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
-CONFIG_SECTION_KEYS = {"provider", "mcp", "hooks", "system_prompt"}
+CONFIG_SECTION_KEYS = {"provider", "runtime", "mcp", "hooks", "system_prompt"}
 CONFIG_SCOPES = {"user", "project"}
 
 
@@ -130,6 +130,8 @@ def _line_matches_config_section(line: str, section_key: str, *, in_builtin_hook
         )
     if section_key == "mcp":
         return name == "mcp_servers" or name.startswith("mcp_servers.")
+    if section_key == "runtime":
+        return name == "runtime"
     if section_key == "hooks":
         return name == "hooks" or name.startswith("hooks.")
     if section_key == "system_prompt":
@@ -661,6 +663,7 @@ class SidecarServer:
                     "skills_exists": skills_dir.exists(),
                     "sections": {
                         "provider": _extract_config_section(text, "provider"),
+                        "runtime": _extract_config_section(text, "runtime"),
                         "mcp": _extract_config_section(text, "mcp"),
                         "hooks": _extract_config_section(text, "hooks"),
                         "system_prompt": _extract_config_section(text, "system_prompt"),
@@ -726,7 +729,7 @@ class SidecarServer:
         if normalized_scope not in CONFIG_SCOPES:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "scope must be 'user' or 'project'.")
         if normalized_section not in CONFIG_SECTION_KEYS:
-            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "section must be provider, mcp, hooks, or system_prompt.")
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "section must be provider, runtime, mcp, hooks, or system_prompt.")
         config_path = _config_path_for_scope(self.settings.workspace_root, normalized_scope)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         original = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
@@ -748,6 +751,9 @@ class SidecarServer:
                 self.runtime.reload_provider_configuration()
             except ValueError as exc:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+            runtime_reloaded = True
+        elif normalized_section == "runtime":
+            self.runtime.reload_runtime_configuration()
             runtime_reloaded = True
         return {
             "scope": normalized_scope,

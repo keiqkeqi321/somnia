@@ -1120,6 +1120,9 @@ def load_settings(
         teammate_poll_interval_seconds=int(runtime_raw.get("teammate_poll_interval_seconds", 5)),
         max_tool_output_chars=int(runtime_raw.get("max_tool_output_chars", 50_000)),
         max_tool_calls_per_turn=int(runtime_raw.get("max_tool_calls_per_turn", 64)),
+        exploration_soft_limit=int(runtime_raw.get("exploration_soft_limit", 10)),
+        exploration_hard_streak_limit=int(runtime_raw.get("exploration_hard_streak_limit", 14)),
+        exploration_hard_total_limit=int(runtime_raw.get("exploration_hard_total_limit", 25)),
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
     )

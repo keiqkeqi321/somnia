@@ -182,7 +182,7 @@ export interface TaskGraphItem {
   [key: string]: unknown;
 }
 
-export type SettingsConfigSectionKey = "provider" | "mcp" | "hooks" | "system_prompt";
+export type SettingsConfigSectionKey = "provider" | "mcp" | "hooks" | "system_prompt" | "runtime";
 export type SettingsConfigScopeKey = "user" | "project";
 
 export interface SettingsSkillEntry {

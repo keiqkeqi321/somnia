@@ -297,6 +297,10 @@ Teammate Worker 与 Lead/Subagent 共享同一套工具错误协议：
 | 配置项 | 默认行为 |
 |--------|---------|
 | `max_agent_rounds` | 每轮最大 Agent Loop 次数 |
+| `max_tool_calls_per_turn` | 单轮工具调用洪泛保护 |
+| `exploration_soft_limit` | 探索工具软提醒阈值 |
+| `exploration_hard_streak_limit` | 连续探索工具硬停止阈值 |
+| `exploration_hard_total_limit` | 本轮探索工具总数硬停止阈值 |
 | `teammate_idle_timeout_seconds` | 空闲超时时间 |
 | `teammate_poll_interval_seconds` | 轮询间隔 |
 

@@ -84,6 +84,7 @@ type ProviderConfigDraft = {
 
 const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: TranslationKey; titleKey: TranslationKey }> = [
   { key: "provider", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
+  { key: "runtime", labelKey: "settings.config.runtime", titleKey: "settings.config.runtimeTitle" },
   { key: "mcp", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
   { key: "hooks", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
   { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
@@ -91,6 +92,7 @@ const CONFIG_SECTION_OPTIONS: Array<{ key: SettingsConfigSectionKey; labelKey: T
 
 const SETTINGS_SECTIONS = [
   { key: "provider", labelKey: "settings.config.provider", titleKey: "settings.config.providerTitle" },
+  { key: "runtime", labelKey: "settings.config.runtime", titleKey: "settings.config.runtimeTitle" },
   { key: "mcp", labelKey: "settings.config.mcp", titleKey: "settings.config.mcpTitle" },
   { key: "hooks", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
   { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
@@ -101,7 +103,7 @@ const SETTINGS_SECTIONS = [
 export type SettingsSectionKey = (typeof SETTINGS_SECTIONS)[number]["key"];
 
 function isConfigSectionKey(section: SettingsSectionKey): section is SettingsConfigSectionKey {
-  return section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt";
+  return section === "provider" || section === "mcp" || section === "hooks" || section === "system_prompt" || section === "runtime";
 }
 
 function SettingsView({
@@ -1155,6 +1157,9 @@ function configPlaceholder(section: SettingsConfigSectionKey): string {
   }
   if (section === "hooks") {
     return '[[hooks]]\nevent = "AssistantResponse"\ncommand = "python"\nargs = ["scripts/hook.py"]\nenabled = true';
+  }
+  if (section === "runtime") {
+    return "[runtime]\nexploration_soft_limit = 10\nexploration_hard_streak_limit = 14\nexploration_hard_total_limit = 25";
   }
   return '[agent]\nsystem_prompt = "You are Somnia."';
 }

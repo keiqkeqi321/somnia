@@ -491,6 +491,41 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_saving_runtime_config_reloads_limits_immediately(self) -> None:
+        root = self._stable_test_dir("sidecar-runtime-save")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        home = root / "home"
+        content = "\n".join(
+            [
+                "[runtime]",
+                "exploration_soft_limit = 7",
+                "exploration_hard_streak_limit = 9",
+                "exploration_hard_total_limit = 17",
+                "command_timeout_seconds = 45",
+                "max_tool_output_chars = 12345",
+                "",
+            ]
+        )
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            with patch("pathlib.Path.home", return_value=home):
+                result = server.save_config_section(scope="project", section="runtime", content=content)
+                payload = server.config_payload()
+
+            self.assertTrue(result["runtime_reloaded"])
+            self.assertFalse(result["restart_required"])
+            self.assertEqual(server.runtime.settings.runtime.exploration_soft_limit, 7)
+            self.assertEqual(server.runtime.settings.runtime.exploration_hard_streak_limit, 9)
+            self.assertEqual(server.runtime.settings.runtime.exploration_hard_total_limit, 17)
+            self.assertEqual(server.runtime.background_manager.default_timeout, 45)
+            self.assertEqual(server.runtime.background_manager.max_output_chars, 12345)
+            project_scope = next(item for item in payload["scopes"] if item["scope"] == "project")
+            self.assertIn("exploration_soft_limit = 7", project_scope["sections"]["runtime"])
+            self.assertIn("exploration_hard_total_limit = 17", project_scope["sections"]["runtime"])
+        finally:
+            server.close()
+
     def test_sidecar_session_list_returns_lightweight_summaries(self) -> None:
         root = self._stable_test_dir("sidecar-session-summaries")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

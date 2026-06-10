@@ -114,6 +114,15 @@ turn = self.provider.complete(
 - 这份状态会写入 `AgentSession`
 - 后续轮次即使只是插入临时 reminder 或执行了别的工具，payload 构建仍可沿用这份 overlap state 继续抑制旧的重叠 `read_file` 结果
 
+### 探索预算
+
+Agent Loop 会把 `project_scan`、`tree`、`glob`、`grep`、`read_file`、`find_symbol` 以及只读型 shell 查询识别为探索工具：
+
+- 达到 `runtime.exploration_soft_limit`（默认 10）后，下一轮 payload 会临时注入总结提醒，要求先给出阶段性结论
+- 超过 `runtime.exploration_hard_streak_limit`（默认 14）个连续探索调用，或超过 `runtime.exploration_hard_total_limit`（默认 25）个本轮总探索调用时，runtime 不再执行下一个探索工具
+- 硬停止以 `exploration_budget_exceeded` 工具错误返回给模型，并结束当前工具批次，让模型总结已有证据或向用户请求继续
+- 三个阈值都可在 `[runtime]` 中配置；硬阈值设为 `0` 可关闭对应硬限制
+
 ### 权限检查
 
 工具执行前通过 `PermissionManager.authorize_tool_call()` 检查：
