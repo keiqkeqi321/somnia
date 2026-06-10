@@ -707,8 +707,12 @@ def build_payload_messages(
     messages: list[dict[str, Any]],
     semantic_decisions: list[SemanticCompressionDecision] | None = None,
     read_file_overlap_state: dict[str, Any] | None = None,
+    preserve_thinking_blocks: bool = False,
 ) -> list[dict[str, Any]]:
-    payload_messages = strip_thinking_blocks_from_messages(_clone_messages_for_payload(messages))
+    payload_messages = strip_thinking_blocks_from_messages(
+        _clone_messages_for_payload(messages),
+        preserve_thinking_blocks=preserve_thinking_blocks,
+    )
     payload_messages = [
         message
         for message in payload_messages

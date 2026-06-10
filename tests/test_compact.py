@@ -119,6 +119,34 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"][0]["type"], "thinking")
         self.assertEqual(messages[0]["content"][1]["type"], "thinking_log")
 
+    def test_build_payload_messages_can_preserve_signed_thinking_blocks(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking_log", "path": ".open_somnia/transcripts/thinking/session.turn.jsonl", "characters": 17},
+                    {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+                    {"type": "text", "text": "Visible answer."},
+                ],
+            }
+        ]
+
+        payload_messages = build_payload_messages(messages, preserve_thinking_blocks=True)
+
+        self.assertEqual(
+            payload_messages,
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+                        {"type": "text", "text": "Visible answer."},
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(messages[0]["content"][0]["type"], "thinking_log")
+
     def test_build_payload_messages_drops_messages_left_empty_after_stripping_thinking(self) -> None:
         messages = [
             {"role": "user", "content": "inspect"},

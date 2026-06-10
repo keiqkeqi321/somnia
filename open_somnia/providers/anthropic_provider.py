@@ -85,7 +85,27 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                 image_block = _anthropic_image_block(item)
                 if image_block is not None:
                     blocks.append(image_block)
-            elif item["type"] in {"thinking", "redacted_thinking", "thinking_log"}:
+            elif item["type"] == "thinking":
+                if role != "assistant":
+                    continue
+                thinking_block = {
+                    "type": "thinking",
+                    "thinking": str(item.get("thinking", "")),
+                }
+                signature = str(item.get("signature", "") or "")
+                if signature:
+                    thinking_block["signature"] = signature
+                blocks.append(thinking_block)
+            elif item["type"] == "redacted_thinking":
+                if role != "assistant":
+                    continue
+                blocks.append(
+                    {
+                        "type": "redacted_thinking",
+                        "data": item.get("data"),
+                    }
+                )
+            elif item["type"] == "thinking_log":
                 continue
             elif item["type"] == "tool_call":
                 blocks.append(

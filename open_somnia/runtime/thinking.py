@@ -21,13 +21,27 @@ def is_thinking_context_block(value: Any) -> bool:
     return isinstance(value, dict) and str(value.get("type", "")).strip() in THINKING_CONTEXT_BLOCK_TYPES
 
 
-def strip_thinking_blocks_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def strip_thinking_blocks_from_messages(
+    messages: list[dict[str, Any]],
+    *,
+    preserve_thinking_blocks: bool = False,
+) -> list[dict[str, Any]]:
     stripped: list[dict[str, Any]] = []
     for message in messages:
         clone = deepcopy(message)
         content = clone.get("content")
         if isinstance(content, list):
-            clone["content"] = [item for item in content if not is_thinking_context_block(item)]
+            clone["content"] = [
+                item
+                for item in content
+                if not (
+                    isinstance(item, dict)
+                    and (
+                        str(item.get("type", "")).strip() == THINKING_LOG_BLOCK_TYPE
+                        or (not preserve_thinking_blocks and is_thinking_block(item))
+                    )
+                )
+            ]
         stripped.append(clone)
     return stripped
 
@@ -41,6 +55,10 @@ def extract_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def strip_thinking_blocks_from_message(message: dict[str, Any]) -> dict[str, Any]:
     return strip_thinking_blocks_from_messages([message])[0]
+
+
+def strip_thinking_log_blocks_from_message(message: dict[str, Any]) -> dict[str, Any]:
+    return strip_thinking_blocks_from_messages([message], preserve_thinking_blocks=True)[0]
 
 
 def make_thinking_log_block(

@@ -110,6 +110,30 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(len(capped_payload["thinking"]), THINKING_LOG_MAX_CHARS)
         self.assertEqual(capped_payload["truncated_characters"], 25)
 
+    def test_attach_thinking_log_marker_preserves_signed_thinking_blocks(self) -> None:
+        root = self._stable_test_dir("thinking-log-marker")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        writer = ThinkingLogWriter(root, "session", "turn")
+        assistant_message = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+                {"type": "text", "text": "I need a tool."},
+                {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+            ],
+        }
+
+        message = OpenAgentRuntime._attach_thinking_log_marker(runtime, assistant_message, thinking_log=writer)
+        content = message["content"]
+
+        self.assertEqual(content[0]["type"], "thinking_log")
+        self.assertEqual(
+            content[1],
+            {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+        )
+        self.assertEqual(content[2], {"type": "text", "text": "I need a tool."})
+        self.assertEqual(content[3]["type"], "tool_call")
+
     def test_provider_profile_ignores_legacy_vision_fields(self) -> None:
         profile = _build_provider_profile(
             "openai",
@@ -4352,7 +4376,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(len([item for item in message["content"] if item["type"] == "tool_call"]), 1)
         self.assertEqual(message["content"][2]["id"], "call-1")
 
-    def test_anthropic_provider_keeps_thinking_in_turn_but_strips_provider_payload_history(self) -> None:
+    def test_anthropic_provider_preserves_signed_thinking_in_payload_history(self) -> None:
         provider = AnthropicProvider(
             ProviderSettings(
                 name="anthropic",
@@ -4392,9 +4416,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(turn.content_blocks[0]["type"], "thinking")
         self.assertEqual(thinking_events[0]["thinking"], "private reasoning")
-        self.assertEqual(assistant_content[0], {"type": "text", "text": "I need a tool."})
-        self.assertEqual(assistant_content[1]["type"], "tool_use")
-        self.assertEqual(assistant_content[1]["name"], "bash")
+        self.assertEqual(
+            assistant_content[0],
+            {"type": "thinking", "thinking": "private reasoning", "signature": "sig-1"},
+        )
+        self.assertEqual(assistant_content[1], {"type": "text", "text": "I need a tool."})
+        self.assertEqual(assistant_content[2]["type"], "tool_use")
+        self.assertEqual(assistant_content[2]["name"], "bash")
 
     def test_anthropic_provider_streams_thinking_delta_without_replaying_final_block(self) -> None:
         provider = AnthropicProvider(

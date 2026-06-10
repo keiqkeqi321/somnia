@@ -74,7 +74,7 @@ from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
 from open_somnia.runtime.teammate import TeammateRuntimeManager
-from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, strip_thinking_blocks_from_message
+from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, strip_thinking_log_blocks_from_message
 from open_somnia.runtime.tool_events import ToolEventRenderer
 from open_somnia.skills.loader import SkillLoader
 from open_somnia.storage.inbox import InboxStore
@@ -825,7 +825,13 @@ class OpenAgentRuntime:
             messages,
             semantic_decisions=semantic_decisions,
             read_file_overlap_state=self._session_read_file_overlap_state(session),
+            preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
         )
+
+    def _preserve_provider_thinking_blocks(self) -> bool:
+        settings = getattr(self, "settings", None)
+        provider_type = str(getattr(getattr(settings, "provider", None), "provider_type", "") or "").strip().lower()
+        return provider_type == "anthropic"
 
     def _payload_message_cache_key(
         self,
@@ -1595,6 +1601,7 @@ class OpenAgentRuntime:
             return build_payload_messages(
                 messages,
                 read_file_overlap_state=read_file_overlap_state,
+                preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
             )
         if system_prompt is None:
             try:
@@ -3005,7 +3012,7 @@ class OpenAgentRuntime:
         if thinking_blocks and thinking_log is not None and not thinking_log.has_content:
             for block in thinking_blocks:
                 thinking_log.append_block(block)
-        message = strip_thinking_blocks_from_message(assistant_message)
+        message = strip_thinking_log_blocks_from_message(assistant_message)
         if thinking_log is None or not thinking_log.has_content:
             return message
         marker = thinking_log.marker()
@@ -3138,6 +3145,7 @@ class OpenAgentRuntime:
                     payload_messages = build_payload_messages(
                         payload_source_messages,
                         read_file_overlap_state=self._session_read_file_overlap_state(session),
+                        preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
                     )
                 else:
                     payload_messages = self._messages_for_model(
