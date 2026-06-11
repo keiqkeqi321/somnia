@@ -6007,6 +6007,58 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(getattr(result, "status", None), "stopped_after_max_rounds")
         self.assertEqual(getattr(result, "open_todo_count", None), 0)
 
+    def test_agent_loop_does_not_complete_or_notify_on_empty_assistant_response(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=2, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._session_read_file_overlap_state = lambda session: None
+        runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
+        runtime._record_provider_payload_result = lambda *args, **kwargs: None
+        runtime._record_session_token_usage = lambda *args, **kwargs: None
+        runtime._normalize_turn_usage = lambda *args, **kwargs: None
+        runtime._messages_for_model = (
+            lambda messages, session=None, read_file_overlap_state=None, system_prompt=None, tools=None: json.loads(
+                json.dumps(messages, ensure_ascii=False)
+            )
+        )
+        assistant_notifications: list[dict] = []
+        runtime._hook_manager = lambda: SimpleNamespace(
+            on_assistant_response=lambda *args, **kwargs: assistant_notifications.append(kwargs),
+            on_turn_failed=lambda *args, **kwargs: None,
+        )
+
+        payloads: list[list[dict]] = []
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return AssistantTurn(
+                stop_reason="end_turn",
+                content_blocks=[{"type": "thinking", "thinking": "still reasoning"}],
+            )
+
+        runtime.complete = fake_complete
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+
+        self.assertEqual(result, "Stopped after max rounds.")
+        self.assertEqual(getattr(result, "status", None), "stopped_after_max_rounds")
+        self.assertEqual(assistant_notifications, [])
+        self.assertIn(OpenAgentRuntime.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT, json.dumps(payloads[1], ensure_ascii=False))
+
     def test_agent_loop_injects_repair_hint_once_and_keeps_compact_error_afterward(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

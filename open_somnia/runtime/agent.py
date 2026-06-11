@@ -178,6 +178,10 @@ class OpenAgentRuntime:
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
     )
+    EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT = (
+        "<reminder>Your previous response ended without any visible assistant text or tool calls. "
+        "Continue the task now and either call the next needed tool or provide a visible final answer.</reminder>"
+    )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -3138,6 +3142,7 @@ class OpenAgentRuntime:
         exploration_streak = 0
         exploration_total = 0
         pending_exploration_summary_reminder = False
+        pending_empty_response_repair = False
         try:
             exploration_soft_limit = self._exploration_soft_limit()
             exploration_hard_streak_limit = self._exploration_hard_streak_limit()
@@ -3190,6 +3195,9 @@ class OpenAgentRuntime:
                     transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
                 if pending_todo_reconcile:
                     transient_payload_messages.append(make_user_text_message(self.TODO_RECONCILE_REMINDER_TEXT))
+                if pending_empty_response_repair:
+                    transient_payload_messages.append(make_user_text_message(self.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT))
+                    pending_empty_response_repair = False
                 if pending_exploration_summary_reminder:
                     transient_payload_messages.append(
                         make_user_text_message(
@@ -3365,6 +3373,9 @@ class OpenAgentRuntime:
                     final_text = "\n\n".join(turn.text_blocks).strip()
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
+                    if not final_text:
+                        pending_empty_response_repair = True
+                        continue
                     self._hook_manager().on_assistant_response(
                         session,
                         actor="lead",
