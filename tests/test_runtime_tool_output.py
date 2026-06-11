@@ -3938,6 +3938,48 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.content_blocks[0], {"type": "thinking", "thinking": "hidden"})
         self.assertEqual(turn.content_blocks[1], {"type": "text", "text": "visible"})
 
+    def test_openai_provider_streaming_treats_null_tool_calls_as_empty(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="mimo_openai",
+                provider_type="openai",
+                model="mimo-v2.5-pro",
+                api_key="test-key",
+                base_url="https://api.xiaomimimo.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b'data: {"choices":[{"delta":{"content":"hello","tool_calls":null},"finish_reason":null}]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+
+        chunks: list[str] = []
+        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=chunks.append,
+            )
+
+        self.assertEqual("".join(chunks), "hello world")
+        self.assertEqual(turn.text_blocks, ["hello world"])
+        self.assertEqual(turn.tool_calls, [])
+
     def test_openai_provider_debug_request_payload_includes_reasoning_effort(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(

@@ -642,7 +642,10 @@ class OpenAIProvider(LLMProvider):
                     text_blocks.append(text)
                     content_blocks.append({"type": "text", "text": text})
         tool_calls = []
-        for tool_call in message.get("tool_calls", []):
+        raw_tool_calls = message.get("tool_calls") or []
+        if not isinstance(raw_tool_calls, list):
+            raw_tool_calls = []
+        for tool_call in raw_tool_calls:
             arguments = json.loads(tool_call["function"].get("arguments") or "{}")
             if not isinstance(arguments, dict):
                 arguments = {}
@@ -819,7 +822,10 @@ class OpenAIProvider(LLMProvider):
                         if text:
                             emit_content_delta(text)
 
-            for tool_delta in delta.get("tool_calls", []):
+            raw_tool_deltas = delta.get("tool_calls") or []
+            if not isinstance(raw_tool_deltas, list):
+                raw_tool_deltas = []
+            for tool_delta in raw_tool_deltas:
                 index = int(tool_delta.get("index", 0))
                 current = tool_calls_by_index.setdefault(
                     index,
