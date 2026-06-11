@@ -198,6 +198,56 @@ def _openai_multimodal_content(blocks: list[dict[str, Any]]) -> str | list[dict[
     return "\n".join(part for part in text_parts if part)
 
 
+class _ThinkTagSplitter:
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._in_thinking = False
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        if not text:
+            return []
+        self._buffer += text
+        parts: list[tuple[str, str]] = []
+        while self._buffer:
+            if self._in_thinking:
+                close_index = self._buffer.find("</think>")
+                if close_index < 0:
+                    keep = min(len("</think>") - 1, len(self._buffer))
+                    emit_length = len(self._buffer) - keep
+                    if emit_length <= 0:
+                        break
+                    parts.append(("thinking", self._buffer[:emit_length]))
+                    self._buffer = self._buffer[emit_length:]
+                    break
+                if close_index:
+                    parts.append(("thinking", self._buffer[:close_index]))
+                self._buffer = self._buffer[close_index + len("</think>") :]
+                self._in_thinking = False
+                continue
+            open_index = self._buffer.find("<think>")
+            if open_index < 0:
+                keep = min(len("<think>") - 1, len(self._buffer))
+                emit_length = len(self._buffer) - keep
+                if emit_length <= 0:
+                    break
+                parts.append(("text", self._buffer[:emit_length]))
+                self._buffer = self._buffer[emit_length:]
+                break
+            if open_index:
+                parts.append(("text", self._buffer[:open_index]))
+            self._buffer = self._buffer[open_index + len("<think>") :]
+            self._in_thinking = True
+        return parts
+
+    def flush(self) -> list[tuple[str, str]]:
+        if not self._buffer:
+            return []
+        kind = "thinking" if self._in_thinking else "text"
+        text = self._buffer
+        self._buffer = ""
+        return [(kind, text)]
+
+
 def _responses_content_from_openai_content(content: Any, *, role: str) -> str | list[dict[str, Any]]:
     if isinstance(content, str):
         return content
@@ -547,7 +597,12 @@ class OpenAIProvider(LLMProvider):
                             stop_checker=stop_checker,
                         )
                     else:
-                        body = self._read_streaming_response(response, text_callback, stop_checker=stop_checker)
+                        body = self._read_streaming_response(
+                            response,
+                            text_callback,
+                            thinking_callback=thinking_callback,
+                            stop_checker=stop_checker,
+                        )
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace")
             retryable = exc.code >= 500 and not _is_overloaded_error(exc.code, details) and not _is_forbidden_like_error(exc.code, details)
@@ -569,13 +624,23 @@ class OpenAIProvider(LLMProvider):
         if not isinstance(message, dict):
             raise ProviderError("OpenAI response choice did not include a message.", retryable=False)
         text_blocks: list[str] = []
+        content_blocks: list[dict[str, Any]] = []
+        thinking_streamed = bool(body.get("_thinking_streamed"))
+        reasoning_content = message.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content:
+            content_blocks.append({"type": "thinking", "thinking": reasoning_content})
+            if callable(thinking_callback) and not thinking_streamed:
+                thinking_callback({"event": "delta", "type": "reasoning_content", "delta": reasoning_content})
         content = message.get("content")
         if isinstance(content, str) and content:
             text_blocks.append(content)
+            content_blocks.append({"type": "text", "text": content})
         elif isinstance(content, list):
             for item in content:
                 if item.get("type") == "text":
-                    text_blocks.append(item.get("text", ""))
+                    text = item.get("text", "")
+                    text_blocks.append(text)
+                    content_blocks.append({"type": "text", "text": text})
         tool_calls = []
         for tool_call in message.get("tool_calls", []):
             arguments = json.loads(tool_call["function"].get("arguments") or "{}")
@@ -590,6 +655,15 @@ class OpenAIProvider(LLMProvider):
                     importance=importance,
                 )
             )
+            tool_call_block = {
+                "type": "tool_call",
+                "id": tool_calls[-1].id,
+                "name": tool_calls[-1].name,
+                "input": tool_calls[-1].input,
+            }
+            if tool_calls[-1].importance:
+                tool_call_block["importance"] = tool_calls[-1].importance
+            content_blocks.append(tool_call_block)
         stop_reason = choice.get("finish_reason") or "stop"
         if stop_reason == "tool_calls":
             stop_reason = "tool_use"
@@ -599,6 +673,7 @@ class OpenAIProvider(LLMProvider):
             stop_reason=stop_reason,
             text_blocks=text_blocks,
             tool_calls=tool_calls,
+            content_blocks=content_blocks,
             usage=self._extract_usage(body),
             raw_response=body,
         )
@@ -683,11 +758,33 @@ class OpenAIProvider(LLMProvider):
         response,
         text_callback: TextCallback | None,
         *,
+        thinking_callback=None,
         stop_checker: StopChecker | None = None,
     ) -> dict[str, Any]:
         aggregated_message: dict[str, Any] = {"role": "assistant", "content": "", "tool_calls": []}
+        thinking_parts: list[str] = []
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
+        think_splitter = _ThinkTagSplitter()
         finish_reason = "stop"
+
+        def emit_text(text: str) -> None:
+            aggregated_message["content"] += text
+            if text_callback is not None:
+                text_callback(text)
+
+        def emit_thinking(thinking: str, thinking_type: str) -> None:
+            thinking_parts.append(thinking)
+            if callable(thinking_callback):
+                thinking_callback({"event": "delta", "type": thinking_type, "delta": thinking})
+
+        def emit_content_delta(text: str) -> None:
+            for kind, part in think_splitter.feed(text):
+                if not part:
+                    continue
+                if kind == "thinking":
+                    emit_thinking(part, "think_tag")
+                else:
+                    emit_text(part)
 
         for raw_line in response:
             if stop_checker is not None and stop_checker():
@@ -708,19 +805,19 @@ class OpenAIProvider(LLMProvider):
             delta = choice.get("delta", {})
             finish_reason = choice.get("finish_reason") or finish_reason
 
+            reasoning_content = delta.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                emit_thinking(reasoning_content, "reasoning_content")
+
             content = delta.get("content")
             if isinstance(content, str) and content:
-                aggregated_message["content"] += content
-                if text_callback is not None:
-                    text_callback(content)
+                emit_content_delta(content)
             elif isinstance(content, list):
                 for item in content:
                     if item.get("type") == "text":
                         text = item.get("text", "")
                         if text:
-                            aggregated_message["content"] += text
-                            if text_callback is not None:
-                                text_callback(text)
+                            emit_content_delta(text)
 
             for tool_delta in delta.get("tool_calls", []):
                 index = int(tool_delta.get("index", 0))
@@ -740,8 +837,18 @@ class OpenAIProvider(LLMProvider):
                 if function_delta.get("arguments"):
                     current["function"]["arguments"] += function_delta["arguments"]
 
+        for kind, part in think_splitter.flush():
+            if not part:
+                continue
+            if kind == "thinking":
+                emit_thinking(part, "think_tag")
+            else:
+                emit_text(part)
+        if thinking_parts:
+            aggregated_message["reasoning_content"] = "".join(thinking_parts)
         aggregated_message["tool_calls"] = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
         return {
+            "_thinking_streamed": bool(thinking_parts),
             "choices": [
                 {
                     "message": aggregated_message,

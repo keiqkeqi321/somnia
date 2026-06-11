@@ -3845,6 +3845,99 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.text_blocks, ["hello"])
         self.assertEqual(chunks, ["hello"])
 
+    def test_openai_provider_streams_compatible_reasoning_content(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="deepseek",
+                provider_type="openai",
+                model="deepseek-reasoner",
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b'data: {"choices":[{"delta":{"reasoning_content":"think "},"finish_reason":null}]}\n\n',
+                        b'data: {"choices":[{"delta":{"reasoning_content":"first"},"finish_reason":null}]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+
+        text_chunks: list[str] = []
+        thinking_events: list[dict] = []
+        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=text_chunks.append,
+                thinking_callback=thinking_events.append,
+            )
+
+        self.assertEqual(text_chunks, ["answer"])
+        self.assertEqual([event["delta"] for event in thinking_events], ["think ", "first"])
+        self.assertEqual(turn.text_blocks, ["answer"])
+        self.assertEqual(turn.content_blocks[0], {"type": "thinking", "thinking": "think first"})
+        self.assertEqual(turn.content_blocks[1], {"type": "text", "text": "answer"})
+
+    def test_openai_provider_streams_compatible_think_tags_outside_answer(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="mimo",
+                provider_type="openai",
+                model="mimo-vl",
+                api_key="test-key",
+                base_url="https://api.xiaomimimo.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b'data: {"choices":[{"delta":{"content":"<thi"},"finish_reason":null}]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":"nk>hidden</think>visible"},"finish_reason":"stop"}]}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+
+        text_chunks: list[str] = []
+        thinking_events: list[dict] = []
+        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=text_chunks.append,
+                thinking_callback=thinking_events.append,
+            )
+
+        self.assertEqual("".join(text_chunks), "visible")
+        self.assertEqual([event["delta"] for event in thinking_events], ["hidden"])
+        self.assertEqual(turn.text_blocks, ["visible"])
+        self.assertEqual(turn.content_blocks[0], {"type": "thinking", "thinking": "hidden"})
+        self.assertEqual(turn.content_blocks[1], {"type": "text", "text": "visible"})
+
     def test_openai_provider_debug_request_payload_includes_reasoning_effort(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(
