@@ -486,12 +486,18 @@ class OpenAIProvider(LLMProvider):
         input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
-        return {
+        result = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "source": "provider",
         }
+        prompt_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if isinstance(prompt_details, dict):
+            cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+            if cached_tokens:
+                result["cache_read_input_tokens"] = cached_tokens
+        return result
 
     def _responses_reasoning_payload(self) -> dict[str, Any]:
         reasoning_payload = openai_reasoning_payload(

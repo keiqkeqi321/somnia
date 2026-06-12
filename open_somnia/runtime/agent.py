@@ -73,6 +73,7 @@ from open_somnia.runtime.permissions import PermissionManager
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
+from open_somnia.runtime.prompt_sections import cache_optimized_system_prompt
 from open_somnia.runtime.teammate import TeammateRuntimeManager
 from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, strip_thinking_log_blocks_from_message
 from open_somnia.runtime.tool_events import ToolEventRenderer
@@ -726,7 +727,13 @@ class OpenAgentRuntime:
 
     def _tool_schemas_for_model(self, actor: str) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
-        return self._augment_tool_schemas_with_importance(registry.schemas())
+        return sorted(
+            self._augment_tool_schemas_with_importance(registry.schemas()),
+            key=lambda schema: (
+                str(schema.get("name", "")),
+                json.dumps(schema, ensure_ascii=False, sort_keys=True, default=str),
+            ),
+        )
 
     def invalidate_tool_schema_state(self) -> None:
         self._context_usage_cache = {}
@@ -2578,6 +2585,13 @@ class OpenAgentRuntime:
         )
         return self.registry.execute(ctx, name, payload)
 
+    def _prepare_system_prompt_for_provider(self, system_prompt: Any, provider: LLMProvider | None) -> Any:
+        provider_settings = getattr(provider, "settings", None)
+        provider_type = str(getattr(provider_settings, "provider_type", "") or "").strip().lower()
+        if provider_type == "anthropic":
+            return cache_optimized_system_prompt(system_prompt)
+        return system_prompt
+
     def complete(
         self,
         system_prompt: str,
@@ -2591,6 +2605,7 @@ class OpenAgentRuntime:
         attempts = 0
         provider = self._provider_for_messages(messages) or self.provider
         provider_settings = getattr(provider, "settings", self.settings.provider)
+        provider_system_prompt = self._prepare_system_prompt_for_provider(system_prompt, provider)
         provider_complete = getattr(provider, "complete")
         try:
             provider_parameters = inspect.signature(provider_complete).parameters
@@ -2607,7 +2622,7 @@ class OpenAgentRuntime:
             try:
                 if should_interrupt is None:
                     kwargs = {
-                        "system_prompt": system_prompt,
+                        "system_prompt": provider_system_prompt,
                         "messages": messages,
                         "tools": tools,
                         "max_tokens": provider_settings.max_tokens,
@@ -2618,7 +2633,7 @@ class OpenAgentRuntime:
                         kwargs["thinking_callback"] = thinking_callback
                     return provider_complete(**kwargs)
                 return self._complete_with_interrupt_polling(
-                    system_prompt=system_prompt,
+                    system_prompt=provider_system_prompt,
                     messages=messages,
                     tools=tools,
                     provider=provider,
@@ -2659,7 +2674,7 @@ class OpenAgentRuntime:
     def _complete_with_interrupt_polling(
         self,
         *,
-        system_prompt: str,
+        system_prompt: Any,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         provider: LLMProvider | None = None,

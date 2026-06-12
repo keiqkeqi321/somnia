@@ -44,7 +44,7 @@ from open_somnia.runtime.session import AgentSession
 from open_somnia.runtime.thinking import THINKING_LOG_MAX_CHARS, ThinkingLogWriter
 from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.storage.inbox import InboxStore
-from open_somnia.tools.registry import ToolRegistry
+from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 from open_somnia.tools.filesystem import read_image
 from open_somnia.tools.team import register_team_tools
 
@@ -607,6 +607,76 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("playwright", sections[3]["content"].lower())
         self.assertIn("Use repo guidance.", sections[4]["content"])
         self.assertIn("Use app guidance.", sections[4]["content"])
+
+    def test_tool_schemas_for_model_are_sorted_for_stable_provider_prefixes(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        registry = ToolRegistry()
+        registry.register(ToolDefinition("z_tool", "z", {"type": "object", "properties": {}}, lambda ctx, payload: "z"))
+        registry.register(ToolDefinition("a_tool", "a", {"type": "object", "properties": {}}, lambda ctx, payload: "a"))
+        runtime.registry = registry
+        runtime.worker_registry = ToolRegistry()
+
+        schemas = OpenAgentRuntime._tool_schemas_for_model(runtime, "lead")
+
+        self.assertEqual([schema["name"] for schema in schemas], ["a_tool", "z_tool"])
+        self.assertIn("importance", schemas[0]["input_schema"]["properties"])
+
+    def test_complete_prepares_anthropic_system_prompt_before_provider_call(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(provider_type="anthropic", max_tokens=1024),
+        )
+        seen: dict[str, object] = {}
+
+        class FakeProvider:
+            settings = SimpleNamespace(provider_type="anthropic", max_tokens=1024)
+
+            def complete(self, **kwargs):
+                seen["system_prompt"] = kwargs["system_prompt"]
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+
+        runtime.provider = FakeProvider()
+        runtime._provider_for_messages = lambda messages: None
+        runtime._raise_if_interrupted = lambda should_interrupt=None: None
+
+        turn = OpenAgentRuntime.complete(
+            runtime,
+            "## A. Core System Prompt\nStable.\n\n## B. Runtime Injection\nDynamic.",
+            [{"role": "user", "content": "hello"}],
+            [],
+        )
+
+        self.assertEqual(turn.text_blocks, ["done"])
+        self.assertIsInstance(seen["system_prompt"], list)
+        self.assertEqual(seen["system_prompt"][0]["dynamic"], False)
+        self.assertEqual(seen["system_prompt"][1]["dynamic"], True)
+
+    def test_complete_keeps_openai_system_prompt_as_string(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            provider=SimpleNamespace(provider_type="openai", max_tokens=1024),
+        )
+        seen: dict[str, object] = {}
+
+        class FakeProvider:
+            settings = SimpleNamespace(provider_type="openai", max_tokens=1024)
+
+            def complete(self, **kwargs):
+                seen["system_prompt"] = kwargs["system_prompt"]
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+
+        runtime.provider = FakeProvider()
+        runtime._provider_for_messages = lambda messages: None
+        runtime._raise_if_interrupted = lambda should_interrupt=None: None
+
+        OpenAgentRuntime.complete(
+            runtime,
+            "## A. Core System Prompt\nStable.\n\n## B. Runtime Injection\nDynamic.",
+            [{"role": "user", "content": "hello"}],
+            [],
+        )
+
+        self.assertIsInstance(seen["system_prompt"], str)
 
     def test_build_system_prompt_includes_gitnexus_guidance_only_when_available(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -4391,6 +4461,122 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(payload["thinking"], {"type": "adaptive"})
         self.assertEqual(payload["output_config"], {"effort": "max"})
+
+    def test_anthropic_provider_debug_request_payload_marks_prompt_cache_breakpoints(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+        system_prompt = (
+            "## A. Core System Prompt\n"
+            "Stable rules.\n\n"
+            "## B. Runtime Injection\n"
+            "Dynamic runtime details."
+        )
+
+        payload = provider.debug_request_payload(
+            system_prompt,
+            [{"role": "user", "content": "hello"}],
+            [{"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {}}}],
+            4096,
+            stream=False,
+        )
+
+        self.assertIsInstance(payload["system"], list)
+        self.assertEqual(payload["system"][0]["cache_control"], {"type": "ephemeral"})
+        self.assertNotIn("cache_control", payload["system"][1])
+        self.assertNotIn("cache_control", payload["tools"][0])
+        self.assertEqual(payload["messages"][-1]["content"][-1]["cache_control"], {"type": "ephemeral"})
+
+    def test_anthropic_provider_debug_request_payload_marks_tools_when_system_is_empty(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "",
+            [{"role": "user", "content": "hello"}],
+            [{"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {}}}],
+            4096,
+            stream=False,
+        )
+
+        self.assertEqual(payload["tools"][0]["cache_control"], {"type": "ephemeral"})
+
+    def test_anthropic_provider_usage_includes_prompt_cache_tokens(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+
+        usage = provider._extract_usage(
+            SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=100,
+                    output_tokens=20,
+                    cache_read_input_tokens=80,
+                    cache_creation_input_tokens=10,
+                )
+            )
+        )
+
+        self.assertEqual(usage["cache_read_input_tokens"], 80)
+        self.assertEqual(usage["cache_creation_input_tokens"], 10)
+
+    def test_openai_provider_usage_includes_prompt_cache_tokens(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        usage = provider._extract_usage(
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                }
+            }
+        )
+
+        self.assertEqual(usage["cache_read_input_tokens"], 64)
+
+        responses_usage = provider._extract_usage(
+            {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "input_tokens_details": {"cached_tokens": 32},
+                }
+            }
+        )
+        self.assertEqual(responses_usage["cache_read_input_tokens"], 32)
 
     def test_anthropic_provider_debug_request_payload_supports_local_input_image_blocks(self) -> None:
         image_root = self._stable_test_dir("vision-anthropic")

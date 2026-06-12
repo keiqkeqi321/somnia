@@ -21,6 +21,7 @@ from open_somnia.runtime.messages import (
     parse_image_data_url,
     prepare_image_bytes_for_model,
 )
+from open_somnia.runtime.prompt_sections import parse_rendered_prompt_sections
 
 
 def _anthropic_image_block(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -68,7 +69,77 @@ def _anthropic_image_block(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _cache_control() -> dict[str, str]:
+    return {"type": "ephemeral"}
+
+
+def _with_cache_control(value: dict[str, Any]) -> dict[str, Any]:
+    return {**value, "cache_control": _cache_control()}
+
+
+def _to_anthropic_system(system_prompt: Any) -> str | list[dict[str, Any]]:
+    if isinstance(system_prompt, list):
+        blocks: list[dict[str, Any]] = []
+        last_stable_index: int | None = None
+        for item in system_prompt:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content", "") or "").strip()
+            if not content:
+                continue
+            title = str(item.get("title", "") or "").strip()
+            text = f"## {title}\n{content}" if title else content
+            blocks.append({"type": "text", "text": text})
+            if not bool(item.get("dynamic", False)):
+                last_stable_index = len(blocks) - 1
+        if blocks and last_stable_index is not None:
+            blocks[last_stable_index] = _with_cache_control(blocks[last_stable_index])
+        return blocks or ""
+    text = str(system_prompt or "")
+    if not text.strip():
+        return ""
+    rendered_sections = parse_rendered_prompt_sections(text)
+    if rendered_sections:
+        return _to_anthropic_system(rendered_sections)
+    return [_with_cache_control({"type": "text", "text": text})]
+
+
+def _to_anthropic_tools(tools: list[dict[str, Any]], *, system_has_cache_control: bool) -> list[dict[str, Any]]:
+    converted = [dict(tool) for tool in tools]
+    if converted and not system_has_cache_control:
+        converted[-1] = _with_cache_control(converted[-1])
+    return converted
+
+
+def _has_cache_control(value: Any) -> bool:
+    if isinstance(value, dict) and isinstance(value.get("cache_control"), dict):
+        return True
+    if isinstance(value, list):
+        return any(_has_cache_control(item) for item in value)
+    return False
+
+
+def _add_message_cache_control(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not messages:
+        return messages
+    converted = [dict(message) for message in messages]
+    last = dict(converted[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            last["content"] = [_with_cache_control({"type": "text", "text": content})]
+    elif isinstance(content, list) and content:
+        content_blocks = [dict(block) if isinstance(block, dict) else block for block in content]
+        for index in range(len(content_blocks) - 1, -1, -1):
+            if isinstance(content_blocks[index], dict):
+                content_blocks[index] = _with_cache_control(content_blocks[index])
+                last["content"] = content_blocks
+                break
+    converted[-1] = last
+    return converted
+
+
+def _to_anthropic_messages(messages: list[dict[str, Any]], *, cache_last_message: bool = False) -> list[dict[str, Any]]:
     converted: list[dict[str, Any]] = []
     for message in messages:
         role = message["role"]
@@ -128,6 +199,8 @@ def _to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
                     }
                 )
         converted.append({"role": role, "content": blocks})
+    if cache_last_message:
+        return _add_message_cache_control(converted)
     return converted
 
 
@@ -234,15 +307,16 @@ class AnthropicProvider(LLMProvider):
 
     def count_tokens(
         self,
-        system_prompt: str,
+        system_prompt: Any,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
     ) -> int:
+        system = _to_anthropic_system(system_prompt)
         response = self.client.messages.count_tokens(
             model=self.settings.model,
-            system=system_prompt,
-            messages=_to_anthropic_messages(messages),
-            tools=tools,
+            system=system,
+            messages=_to_anthropic_messages(messages, cache_last_message=True),
+            tools=_to_anthropic_tools(tools, system_has_cache_control=_has_cache_control(system)),
             timeout=self.settings.timeout_seconds,
         )
         return int(response.input_tokens)
@@ -256,28 +330,35 @@ class AnthropicProvider(LLMProvider):
             return None
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cache_read_input_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+        cache_creation_input_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         total_tokens = input_tokens + output_tokens
-        return {
+        result = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "source": "provider",
         }
+        if cache_read_input_tokens or cache_creation_input_tokens:
+            result["cache_read_input_tokens"] = cache_read_input_tokens
+            result["cache_creation_input_tokens"] = cache_creation_input_tokens
+        return result
 
     def debug_request_payload(
         self,
-        system_prompt: str,
+        system_prompt: Any,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         max_tokens: int,
         *,
         stream: bool,
     ) -> dict[str, Any]:
+        system = _to_anthropic_system(system_prompt)
         payload = {
             "model": self.settings.model,
-            "system": system_prompt,
-            "messages": _to_anthropic_messages(messages),
-            "tools": tools,
+            "system": system,
+            "messages": _to_anthropic_messages(messages, cache_last_message=True),
+            "tools": _to_anthropic_tools(tools, system_has_cache_control=_has_cache_control(system)),
             "max_tokens": max_tokens,
             "stream": stream,
         }
@@ -294,7 +375,7 @@ class AnthropicProvider(LLMProvider):
 
     def complete(
         self,
-        system_prompt: str,
+        system_prompt: Any,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         max_tokens: int,
