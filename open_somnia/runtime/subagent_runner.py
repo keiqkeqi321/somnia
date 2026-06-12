@@ -32,6 +32,7 @@ from open_somnia.tools.tool_errors import (
     serialize_tool_output,
     tool_error_from_exception,
 )
+from open_somnia.tools.web_fetch import register_web_fetch_tool
 
 
 class SubagentRunner:
@@ -42,7 +43,7 @@ class SubagentRunner:
         activity_id = str(activity_id or f"subagent-{uuid.uuid4().hex[:8]}")
         registry = self._build_registry(agent_type)
         capability_guidance = (
-            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, and `load_skill`. "
+            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, `web_fetch`, and `load_skill`. "
             "Do not attempt workspace edits."
             if agent_type == "Explore"
             else "You are in general-purpose mode. In addition to read-only tools, you may use `write_file` and `edit_file` when needed."
@@ -283,6 +284,7 @@ class SubagentRunner:
                 handler=read_image,
             )
         )
+        register_web_fetch_tool(registry)
         if agent_type != "Explore":
             registry.register(
                 ToolDefinition(

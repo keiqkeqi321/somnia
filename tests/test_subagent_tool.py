@@ -35,7 +35,18 @@ class SubagentToolTests(unittest.TestCase):
 
             self.assertEqual(
                 seen["tool_names"],
-                ["bash", "project_scan", "tree", "find_symbol", "glob", "grep", "read_file", "read_image", "load_skill"],
+                [
+                    "bash",
+                    "project_scan",
+                    "tree",
+                    "find_symbol",
+                    "glob",
+                    "grep",
+                    "read_file",
+                    "read_image",
+                    "web_fetch",
+                    "load_skill",
+                ],
             )
 
     def test_general_purpose_subagent_exposes_edit_tools(self) -> None:
@@ -62,6 +73,7 @@ class SubagentToolTests(unittest.TestCase):
                     "grep",
                     "read_file",
                     "read_image",
+                    "web_fetch",
                     "write_file",
                     "edit_file",
                     "load_skill",

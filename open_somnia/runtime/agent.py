@@ -103,6 +103,7 @@ from open_somnia.tools.tool_errors import (
     tool_error_from_exception,
 )
 from open_somnia.tools.todo import TodoManager, register_todo_tool
+from open_somnia.tools.web_fetch import register_web_fetch_tool
 from open_somnia.reasoning import normalize_reasoning_level
 
 
@@ -2246,6 +2247,7 @@ class OpenAgentRuntime:
     def _register_core_tools(self, registry: ToolRegistry) -> None:
         register_shell_tool(registry)
         register_filesystem_tools(registry)
+        register_web_fetch_tool(registry)
         register_todo_tool(registry, self.todo_manager)
         register_task_tools(registry, self.task_store)
         register_subagent_tool(registry)
@@ -2257,6 +2259,7 @@ class OpenAgentRuntime:
     def register_worker_tools(self, registry: ToolRegistry) -> None:
         register_shell_tool(registry)
         register_filesystem_tools(registry)
+        register_web_fetch_tool(registry)
         register_task_tools(registry, self.task_store)
         self._register_worker_local_tools(registry)
 
