@@ -1,6 +1,6 @@
 # Provider 缓存命中优化
 
-本文记录 Somnia 对 Reasonix Prompt Cache 策略的吸收结果。目标是把通用缓存命中优化尽量前置到 runtime 层，同时把 provider 私有协议字段留在对应 adapter 内处理。
+本文记录 Somnia Prompt Cache 策略。目标是把通用缓存命中优化尽量前置到 runtime 层，同时把 provider 私有协议字段留在对应 adapter 内处理。
 
 ## 设计原则
 
