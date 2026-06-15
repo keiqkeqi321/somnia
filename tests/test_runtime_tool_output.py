@@ -4050,6 +4050,64 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.text_blocks, ["hello world"])
         self.assertEqual(turn.tool_calls, [])
 
+    def test_openai_provider_tolerates_invalid_chat_completion_tool_arguments(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-5",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "Need a tool.",
+                                    "tool_calls": [
+                                        {
+                                            "id": "call-1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "bash",
+                                                "arguments": '{"command":"pwd"',
+                                            },
+                                        }
+                                    ],
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=_Response()):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+            )
+
+        self.assertEqual(turn.stop_reason, "tool_use")
+        self.assertEqual(len(turn.tool_calls), 1)
+        self.assertEqual(turn.tool_calls[0].name, "bash")
+        self.assertEqual(turn.tool_calls[0].input, {})
+        self.assertIn("invalid JSON", "\n".join(turn.text_blocks))
+
     def test_openai_provider_debug_request_payload_includes_reasoning_effort(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(

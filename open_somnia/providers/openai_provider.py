@@ -451,6 +451,17 @@ def _wrap_openai_exception(exc: Exception) -> ProviderError:
     )
 
 
+def _parse_tool_call_arguments(raw_arguments: Any) -> tuple[dict[str, Any], str | None]:
+    arguments_text = str(raw_arguments or "{}")
+    try:
+        arguments = json.loads(arguments_text)
+    except Exception as exc:
+        return {}, f"Tool call arguments were invalid JSON and were ignored: {exc}"
+    if not isinstance(arguments, dict):
+        return {}, "Tool call arguments were not a JSON object and were ignored."
+    return arguments, None
+
+
 def _first_openai_choice(body: dict[str, Any]) -> dict[str, Any]:
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -651,10 +662,11 @@ class OpenAIProvider(LLMProvider):
         raw_tool_calls = message.get("tool_calls") or []
         if not isinstance(raw_tool_calls, list):
             raw_tool_calls = []
+        tool_call_warnings: list[str] = []
         for tool_call in raw_tool_calls:
-            arguments = json.loads(tool_call["function"].get("arguments") or "{}")
-            if not isinstance(arguments, dict):
-                arguments = {}
+            arguments, warning = _parse_tool_call_arguments(tool_call["function"].get("arguments"))
+            if warning:
+                tool_call_warnings.append(warning)
             importance = normalize_tool_importance(arguments.pop("importance", None))
             tool_calls.append(
                 ToolCall(
@@ -673,6 +685,10 @@ class OpenAIProvider(LLMProvider):
             if tool_calls[-1].importance:
                 tool_call_block["importance"] = tool_calls[-1].importance
             content_blocks.append(tool_call_block)
+        if tool_call_warnings:
+            warning_text = "\n".join(tool_call_warnings)
+            text_blocks.append(warning_text)
+            content_blocks.append({"type": "text", "text": warning_text})
         stop_reason = choice.get("finish_reason") or "stop"
         if stop_reason == "tool_calls":
             stop_reason = "tool_use"
