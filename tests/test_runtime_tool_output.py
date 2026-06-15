@@ -1876,6 +1876,33 @@ class RuntimeToolOutputTests(unittest.TestCase):
             OpenAgentRuntime.authorize_tool_call(runtime, "bash", {"command": "git status"}),
         )
 
+    def test_request_authorization_returns_cached_once_without_prompting_user(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "accept_edits"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {"bash": 1}
+        runtime.authorization_request_handler = lambda **kwargs: self.fail("cached authorization should not prompt")
+
+        result = json.loads(OpenAgentRuntime.request_authorization(runtime, "bash", "Need one shell command"))
+
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["scope"], "once")
+        self.assertTrue(result["cached"])
+        self.assertEqual(runtime._once_authorized_tools, {"bash": 1})
+
+    def test_request_authorization_returns_approved_in_yolo_without_prompting_user(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "yolo"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: self.fail("yolo authorization should not prompt")
+
+        result = json.loads(OpenAgentRuntime.request_authorization(runtime, "bash", "Need one shell command"))
+
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["scope"], "mode")
+        self.assertTrue(result["cached"])
+
     def test_request_authorization_grants_workspace_scope(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "plan"
@@ -1892,12 +1919,96 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn('"scope": "workspace"', result)
         self.assertIsNone(OpenAgentRuntime.authorize_tool_call(runtime, "edit_file", {"path": "demo.txt"}))
 
+    def test_worker_request_authorization_returns_cached_workspace_without_lead_request(self) -> None:
+        root = self._stable_test_dir("worker-auth-cached-workspace")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "accept_edits"
+        runtime._workspace_authorized_tools = {"bash"}
+        runtime._once_authorized_tools = {}
+        runtime._worker_authorized_tools = set()
+        runtime._worker_once_authorized_tools = {}
+        runtime.bus = MessageBus(InboxStore(root / "inbox"))
+        runtime.request_tracker = RequestTracker(root / "requests")
+        runtime.team_manager = SimpleNamespace(_member_session_id=lambda actor: "session-1")
+
+        worker_registry = ToolRegistry()
+        OpenAgentRuntime._register_worker_local_tools(runtime, worker_registry)
+        output = worker_registry.execute(
+            ToolExecutionContext(runtime=runtime, session=None, actor="Worker", trace_id="worker"),
+            "request_authorization",
+            {"tool_name": "bash", "reason": "Need to simulate work"},
+        )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "approved")
+        self.assertEqual(payload["scope"], "workspace")
+        self.assertTrue(payload["cached"])
+        self.assertEqual(runtime.bus.read_inbox("lead", session_id="session-1"), [])
+
+    def test_worker_request_authorization_in_yolo_still_waits_for_lead_approval(self) -> None:
+        root = self._stable_test_dir("worker-auth-yolo")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "yolo"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime._worker_authorized_tools = set()
+        runtime._worker_once_authorized_tools = {}
+        runtime.bus = MessageBus(InboxStore(root / "inbox"))
+        runtime.request_tracker = RequestTracker(root / "requests")
+        runtime.team_manager = SimpleNamespace(_member_session_id=lambda actor: "session-1")
+
+        worker_registry = ToolRegistry()
+        OpenAgentRuntime._register_worker_local_tools(runtime, worker_registry)
+        result: dict[str, str] = {}
+        done = Event()
+
+        def run_worker_request() -> None:
+            result["output"] = worker_registry.execute(
+                ToolExecutionContext(runtime=runtime, session=None, actor="Worker", trace_id="worker"),
+                "request_authorization",
+                {"tool_name": "bash", "reason": "Need to simulate work"},
+            )
+            done.set()
+
+        thread = Thread(target=run_worker_request)
+        thread.start()
+        deadline = time.monotonic() + 2
+        lead_messages: list[dict] = []
+        while time.monotonic() < deadline:
+            lead_messages = runtime.bus.read_inbox("lead", session_id="session-1")
+            if lead_messages:
+                break
+            time.sleep(0.02)
+
+        self.assertTrue(lead_messages)
+        self.assertFalse(done.is_set())
+
+        lead_registry = ToolRegistry()
+        register_team_tools(
+            lead_registry,
+            SimpleNamespace(member_names=lambda session_id=None: ["Worker"]),
+            runtime.bus,
+            runtime.request_tracker,
+        )
+        approval_output = lead_registry.execute(
+            ToolExecutionContext(runtime=runtime, session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "authorization_approval",
+            {"request_id": lead_messages[0]["request_id"], "approve": True, "scope": "once"},
+        )
+        thread.join(timeout=2)
+
+        self.assertIn("Authorization approved", approval_output)
+        self.assertTrue(done.is_set())
+        payload = json.loads(result["output"])
+        self.assertEqual(payload["status"], "approved")
+        self.assertEqual(payload["scope"], "once")
+
     def test_worker_request_authorization_waits_for_lead_approval_and_grants_once(self) -> None:
         root = self._stable_test_dir("worker-auth-lead-approval")
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "accept_edits"
         runtime._workspace_authorized_tools = set()
-        runtime._once_authorized_tools = {"bash": 1}
+        runtime._once_authorized_tools = {}
         runtime._worker_authorized_tools = set()
         runtime._worker_once_authorized_tools = {}
         runtime.authorization_request_handler = lambda **kwargs: self.fail("lead already has workspace permission")
@@ -1914,7 +2025,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             result["output"] = worker_registry.execute(
                 ToolExecutionContext(runtime=runtime, session=None, actor="Worker", trace_id="worker"),
                 "request_authorization",
-                {"tool_name": "bash", "reason": "Need to simulate work"},
+                {"tool_name": "edit_file", "reason": "Need to update a file"},
             )
             done.set()
 
@@ -1952,23 +2063,16 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(payload["scope"], "once")
         self.assertEqual(lead_messages[0]["type"], "authorization_request")
         self.assertEqual(runtime.bus.read_inbox("Worker", session_id="session-1")[0]["type"], "authorization_response")
+        self.assertEqual(runtime._worker_once_authorized_tools, {"Worker\0edit_file": 1})
         self.assertIsNone(
             OpenAgentRuntime.authorize_tool_call(
                 runtime,
-                "bash",
-                {"command": "git status"},
+                "edit_file",
+                {"path": "demo.txt", "content": "updated"},
                 ctx=SimpleNamespace(actor="Worker"),
             )
         )
-        self.assertIn(
-            "requires explicit user approval",
-            OpenAgentRuntime.authorize_tool_call(
-                runtime,
-                "bash",
-                {"command": "git status"},
-                ctx=SimpleNamespace(actor="Worker"),
-            ),
-        )
+        self.assertEqual(runtime._worker_once_authorized_tools, {})
 
     def test_authorization_approval_waits_for_lead_to_get_user_permission_first(self) -> None:
         root = self._stable_test_dir("worker-auth-lead-needs-user")

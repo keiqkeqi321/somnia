@@ -84,6 +84,19 @@ class PermissionManager:
             return
         write_json(path, {"authorized_tools": sorted(self.runtime._workspace_authorized_tools)})
 
+    def cached_authorization_payload(self, tool_name: str, *, include_mode: bool = True) -> dict[str, Any] | None:
+        if include_mode and normalize_execution_mode(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)) == "yolo":
+            return {"status": "approved", "scope": "mode", "tool_name": tool_name, "cached": True}
+        builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
+        if tool_name in builtin_authorized:
+            return {"status": "approved", "scope": "builtin", "tool_name": tool_name, "cached": True}
+        if tool_name in self.runtime._workspace_authorized_tools:
+            return {"status": "approved", "scope": "workspace", "tool_name": tool_name, "cached": True}
+        once_authorized = getattr(self.runtime, "_once_authorized_tools", {})
+        if int(once_authorized.get(tool_name, 0) or 0) > 0:
+            return {"status": "approved", "scope": "once", "tool_name": tool_name, "cached": True}
+        return None
+
     def authorize_tool_call(self, tool_name: str, payload: dict[str, Any], *, ctx=None) -> str | None:
         if tool_name in {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}:
             return None
@@ -142,17 +155,9 @@ class PermissionManager:
             return "Authorization request failed: tool_name is required."
         if normalized_tool == AUTHORIZATION_TOOL_NAME:
             return "Authorization not required for request_authorization."
-        builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
-        if normalized_tool in builtin_authorized:
-            return json.dumps(
-                {"status": "approved", "scope": "builtin", "tool_name": normalized_tool, "cached": True},
-                ensure_ascii=False,
-            )
-        if normalized_tool in self.runtime._workspace_authorized_tools:
-            return json.dumps(
-                {"status": "approved", "scope": "workspace", "tool_name": normalized_tool, "cached": True},
-                ensure_ascii=False,
-            )
+        cached_payload = self.cached_authorization_payload(normalized_tool)
+        if cached_payload is not None:
+            return json.dumps(cached_payload, ensure_ascii=False)
         handler = self.runtime.authorization_request_handler
         if not callable(handler):
             return "Authorization request failed: interactive approvals are unavailable in this session."

@@ -2441,6 +2441,9 @@ class OpenAgentRuntime:
             return "Authorization request failed: tool_name is required."
         if normalized_tool == AUTHORIZATION_TOOL_NAME:
             return "Authorization not required for request_authorization."
+        cached_payload = self._permission_manager().cached_authorization_payload(normalized_tool, include_mode=False)
+        if cached_payload is not None:
+            return json.dumps(cached_payload, ensure_ascii=False)
 
         session_id = None
         getter = getattr(getattr(self, "team_manager", None), "_member_session_id", None)
