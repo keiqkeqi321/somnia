@@ -6,9 +6,11 @@
 
 > 面向开发者的本地 AI Agent 运行时：终端、桌面端与可组合的 Agent 工作流，覆盖工具调用、持久会话、MCP 集成、任务管理、Hooks、Skills 与多 Agent 协作。
 
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Package](https://img.shields.io/badge/package-somnia-black)](https://pypi.org/project/somnia/)
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+  <a href="https://pypi.org/project/somnia/"><img src="https://img.shields.io/badge/package-somnia-black" alt="Package"></a>
+</p>
 
 Somnia 是一个本地运行的 AI Agent 运行时。它把模型调用、工具权限、MCP Server、持久化会话、后台任务、Hooks、Skills 和多 Agent 协作统一在同一个 runtime 之下，既能在终端里作为开发助手使用，也能通过桌面端以图形界面操作。所有状态默认保存在本地工作区，适合跨多轮持续推进复杂任务。
 

@@ -379,6 +379,41 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("+b", rendered)
         self.assertNotIn("TOOL lead", rendered)
 
+    def test_file_edit_tool_event_shows_full_diff_without_ellipsis(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "edit-log"})
+        runtime._supports_ansi_output = lambda: False
+
+        class _Stdout(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        old_text = "\n".join(f"old {index}" for index in range(12)) + "\n"
+        new_text = "\n".join(f"new {index}" for index in range(12)) + "\n"
+        fake_stdout = _Stdout()
+        with patch("sys.stdout", fake_stdout):
+            OpenAgentRuntime.print_tool_event(
+                runtime,
+                "lead",
+                "edit_file",
+                {
+                    "path": "demo.txt",
+                    "edits": [{"old_text": old_text, "new_text": new_text}],
+                },
+                {
+                    "status": "ok",
+                    "path": "demo.txt",
+                    "absolute_path": "D:/workspace/demo.txt",
+                    "added_lines": 12,
+                    "removed_lines": 12,
+                },
+            )
+
+        rendered = fake_stdout.getvalue()
+        self.assertIn("-old 11", rendered)
+        self.assertIn("+new 11", rendered)
+        self.assertNotIn("      ...", rendered)
+
     def test_failed_tool_event_uses_red_dot_style_without_box_frame(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "tool-log"})

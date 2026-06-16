@@ -233,7 +233,7 @@ class ToolEventRenderer:
             return f"Removed {removed} lines"
         return "Updated file"
 
-    def _render_file_change_diff(self, tool_name: str, tool_input: dict[str, Any], *, limit: int = 8) -> list[str]:
+    def _render_file_change_diff(self, tool_name: str, tool_input: dict[str, Any], *, limit: int | None = None) -> list[str]:
         if tool_name == "edit_file":
             return self._render_edit_file_diff(tool_input, limit=limit)
         else:
@@ -246,7 +246,7 @@ class ToolEventRenderer:
         if not visible:
             return []
         truncated = False
-        if len(visible) > limit:
+        if limit is not None and len(visible) > limit:
             visible = visible[:limit]
             truncated = True
         rendered: list[str] = []
@@ -286,7 +286,7 @@ class ToolEventRenderer:
                         return item_path
         return str(getattr(output, "get", lambda *_: "")("path", "")).strip()
 
-    def _render_edit_file_diff(self, tool_input: dict[str, Any], *, limit: int = 8) -> list[str]:
+    def _render_edit_file_diff(self, tool_input: dict[str, Any], *, limit: int | None = None) -> list[str]:
         edits = tool_input.get("edits")
         if not isinstance(edits, list) or not edits:
             return []
@@ -309,14 +309,15 @@ class ToolEventRenderer:
                 if path_label:
                     label = f"{label} {path_label}"
                 rendered_lines.insert(0, label)
-            remaining = limit - len(visible)
-            if remaining <= 0:
-                truncated = True
-                break
-            if len(rendered_lines) > remaining:
-                visible.extend(rendered_lines[:remaining])
-                truncated = True
-                break
+            if limit is not None:
+                remaining = limit - len(visible)
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if len(rendered_lines) > remaining:
+                    visible.extend(rendered_lines[:remaining])
+                    truncated = True
+                    break
             visible.extend(rendered_lines)
         rendered: list[str] = []
         for line in visible:
