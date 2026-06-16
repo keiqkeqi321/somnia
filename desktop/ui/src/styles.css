@@ -3977,12 +3977,15 @@ button {
 
 .task-graph-edges path {
   fill: none;
-  stroke: rgba(169, 200, 255, 0.42);
-  stroke-width: 2;
+  stroke: rgba(88, 202, 255, 0.76);
+  stroke-width: 2.4;
+  filter: drop-shadow(0 0 3px rgba(88, 202, 255, 0.32));
 }
 
 .task-graph-edges marker path {
-  fill: rgba(169, 200, 255, 0.72);
+  fill: #7dd3fc;
+  stroke: rgba(4, 8, 14, 0.78);
+  stroke-width: 0.8;
 }
 
 .task-graph-node {
@@ -4160,11 +4163,14 @@ button {
   background:
     radial-gradient(circle at 18px 18px, rgba(169, 200, 255, 0.08) 1px, transparent 1px) 0 0 / 28px 28px,
     rgba(8, 10, 14, 0.52);
-  overflow: auto;
+  overflow: hidden;
 }
 
 .task-graph-workspace-canvas .task-graph-svg {
-  min-width: 1000px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  object-fit: contain;
 }
 
 .activity-panel {
