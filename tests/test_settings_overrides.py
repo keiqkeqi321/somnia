@@ -8,8 +8,10 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+from open_somnia.config.backup import last_good_path
 from open_somnia.config.settings import (
     APP_DIR_GITIGNORE,
+    ConfigParseError,
     NoConfiguredProvidersError,
     NoUsableProvidersError,
     ensure_app_dir_ignored,
@@ -147,6 +149,124 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertEqual(settings.runtime.exploration_hard_streak_limit, 14)
             self.assertEqual(settings.runtime.exploration_hard_total_limit, 25)
             self.assertEqual((root / ".open_somnia" / ".gitignore").read_text(encoding="utf-8"), APP_DIR_GITIGNORE)
+
+    def test_load_settings_saves_last_good_config_snapshot(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["glm-5"]
+                default_model = "glm-5"
+                api_key = "anthropic-test-key"
+                """,
+            )
+            workspace_config = root / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                load_settings(root)
+
+            self.assertEqual(last_good_path(workspace_config).read_text(encoding="utf-8"), workspace_config.read_text(encoding="utf-8"))
+
+    def test_load_settings_recovers_invalid_workspace_toml_from_last_good(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["glm-5"]
+                default_model = "glm-5"
+                api_key = "anthropic-test-key"
+                """,
+            )
+            workspace_config = root / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                load_settings(root)
+                workspace_config.write_text("[providers\ninvalid = true\n", encoding="utf-8")
+                settings = load_settings(root)
+
+            self.assertEqual(settings.provider.name, "anthropic")
+            self.assertIn("[providers.anthropic]", workspace_config.read_text(encoding="utf-8"))
+            broken_backups = list((workspace_config.parent / "config_backups").glob("open_somnia.toml.*.broken"))
+            self.assertTrue(broken_backups)
+            self.assertIn("last known good", getattr(settings, "config_recovery_message", ""))
+
+    def test_load_settings_recovers_invalid_global_toml_from_last_good(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_global_config(
+                home,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                provider_type = "openai"
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "sk-test"
+                """,
+            )
+            global_config = home / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                load_settings(root)
+                global_config.write_text("[providers\ninvalid = true\n", encoding="utf-8")
+                settings = load_settings(root)
+
+            self.assertEqual(settings.provider.name, "openai")
+            self.assertIn("[providers.openai]", global_config.read_text(encoding="utf-8"))
+            broken_backups = list((global_config.parent / "config_backups").glob("open_somnia.toml.*.broken"))
+            self.assertTrue(broken_backups)
+
+    def test_load_settings_without_recovery_raises_config_parse_error(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(root, "[providers")
+
+            with self._patched_home(home):
+                with self.assertRaises(ConfigParseError):
+                    load_settings(root, allow_config_recovery=False)
+
+    def test_persist_provider_selection_creates_timestamp_backup_before_write(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "anthropic"
+
+                [providers.anthropic]
+                models = ["glm-5", "claude-sonnet-4-5"]
+                default_model = "glm-5"
+                api_key = "anthropic-test-key"
+                """,
+            )
+            workspace_config = root / ".open_somnia" / "open_somnia.toml"
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+                persist_provider_selection(settings, "anthropic", "claude-sonnet-4-5")
+
+            backups = list((workspace_config.parent / "config_backups").glob("open_somnia.toml.*.bak"))
+            self.assertTrue(backups)
+            self.assertIn('default_model = "glm-5"', backups[0].read_text(encoding="utf-8"))
+            self.assertIn('default_model = "claude-sonnet-4-5"', workspace_config.read_text(encoding="utf-8"))
 
     def test_ensure_app_dir_ignored_preserves_existing_gitignore(self) -> None:
         with self._tempdir() as tmpdir:

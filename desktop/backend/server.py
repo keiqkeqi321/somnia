@@ -39,6 +39,7 @@ from desktop.backend.ipc import (
 from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
+from open_somnia.config.backup import write_config_text, remove_config_file
 from open_somnia.config.settings import (
     APP_DIRNAME,
     _load_mcp_servers,
@@ -311,7 +312,7 @@ def _persist_mcp_server_enabled(workspace_root: Path, server_name: str, enabled:
         if lines and lines[-1].strip():
             lines.append("")
         lines.extend([f"[mcp_servers.{server_name}]", f"enabled = {_toml_bool(enabled)}"])
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
     return config_path
 
 
@@ -739,9 +740,9 @@ class SidecarServer:
         except tomllib.TOMLDecodeError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, f"Config TOML is invalid: {exc}") from exc
         if updated:
-            config_path.write_text(updated, encoding="utf-8")
-        elif config_path.exists():
-            config_path.unlink()
+            write_config_text(config_path, updated)
+        else:
+            remove_config_file(config_path)
         runtime_reloaded = False
         if normalized_section == "mcp":
             self.reload_mcp_runtime()

@@ -134,3 +134,4 @@ class AppSettings:
     mcp_servers: list[MCPServerSettings] = field(default_factory=list)
     hooks: list[HookSettings] = field(default_factory=list)
     raw_config: dict[str, Any] = field(default_factory=dict)
+    config_recovery_message: str | None = None

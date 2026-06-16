@@ -5,6 +5,13 @@ import sys
 import tomllib
 from pathlib import Path
 
+from open_somnia.config.backup import (
+    restore_last_good,
+    save_broken_backup,
+    save_last_good,
+    write_config_text,
+    remove_config_file,
+)
 from open_somnia.config.models import (
     AgentSettings,
     AppSettings,
@@ -91,10 +98,22 @@ class NoUsableProvidersError(NoConfiguredProvidersError):
     """Raised when providers exist but none has an API key configured."""
 
 
+class ConfigParseError(RuntimeError):
+    """Raised when a TOML config file cannot be parsed."""
+
+    def __init__(self, path: Path, original: tomllib.TOMLDecodeError) -> None:
+        self.path = path
+        self.original = original
+        super().__init__(f"Config TOML is invalid in {path}: {original}")
+
+
 def _read_toml(path: Path) -> dict:
     if not path.exists():
         return {}
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigParseError(path, exc) from exc
 
 
 def _merge_config(base: dict, override: dict) -> dict:
@@ -273,9 +292,9 @@ def _clear_provider_config(path: Path) -> bool:
     if cleaned_lines == original_lines:
         return False
     if cleaned_lines:
-        path.write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+        write_config_text(path, "\n".join(cleaned_lines) + "\n")
     else:
-        path.unlink()
+        remove_config_file(path)
     return True
 
 
@@ -296,7 +315,7 @@ def persist_provider_selection(settings: AppSettings, provider_name: str, model:
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
     _upsert_section_value(lines, "providers", "default", _toml_string(normalized_provider))
     _upsert_section_value(lines, f"providers.{normalized_provider}", "default_model", _toml_string(normalized_model))
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
 
     providers_raw = settings.raw_config.setdefault("providers", {})
     if not isinstance(providers_raw, dict):
@@ -332,7 +351,7 @@ def persist_provider_reasoning_level(settings: AppSettings, provider_name: str, 
         lines = _remove_section_value(lines, section_name, "reasoning_level")
     else:
         _upsert_section_value(lines, section_name, "reasoning_level", _toml_string(normalized_level))
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
 
     providers_raw = settings.raw_config.setdefault("providers", {})
     if not isinstance(providers_raw, dict):
@@ -385,7 +404,7 @@ def persist_vision_model(
     else:
         _upsert_section_value(lines, "routing", "vision_provider", _toml_string(""))
         _upsert_section_value(lines, "routing", "vision_model", _toml_string(""))
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
 
     routing_raw = settings.raw_config.setdefault("routing", {})
     if not isinstance(routing_raw, dict):
@@ -473,7 +492,7 @@ def persist_provider_profile(
     _upsert_section_value(lines, provider_section, "default_model", _toml_string(default_model))
     _upsert_section_value(lines, provider_section, "api_key", _toml_string(normalized_api_key))
     _upsert_section_value(lines, provider_section, "base_url", _toml_string(normalized_base_url))
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
     _ensure_global_builtin_notify_hooks(config_path=config_path)
     return config_path
 
@@ -741,7 +760,7 @@ def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> N
     updated.extend(_render_builtin_hook_block(target_script, desired_hooks))
     if updated == lines:
         return
-    config_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(updated) + "\n")
 
 
 def _find_hook_block_bounds(lines: list[str], hook_index: int) -> tuple[int | None, int | None]:
@@ -788,7 +807,7 @@ def persist_hook_enabled(hook: HookSettings, enabled: bool) -> Path:
     config_path.parent.mkdir(parents=True, exist_ok=True)
     lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
     _upsert_hook_boolean(lines, int(config_index), "enabled", enabled)
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_config_text(config_path, "\n".join(lines) + "\n")
     return config_path
 
 
@@ -1070,8 +1089,52 @@ def load_settings(
     provider_override: str | None = None,
     model_override: str | None = None,
     allow_missing_provider: bool = False,
+    allow_config_recovery: bool = True,
 ) -> AppSettings:
     root = Path(workspace_root or Path.cwd()).resolve()
+    try:
+        settings = _load_settings_once(
+            root,
+            provider_override=provider_override,
+            model_override=model_override,
+            allow_missing_provider=allow_missing_provider,
+        )
+    except ConfigParseError as exc:
+        if not allow_config_recovery:
+            raise
+        if not _recover_config_from_last_good(exc.path):
+            raise
+        settings = _load_settings_once(
+            root,
+            provider_override=provider_override,
+            model_override=model_override,
+            allow_missing_provider=allow_missing_provider,
+        )
+        settings.config_recovery_message = f"Restored invalid config from last known good backup: {exc.path}"
+    _save_loaded_configs_as_last_good(root)
+    return settings
+
+
+def _recover_config_from_last_good(path: Path) -> bool:
+    save_broken_backup(path)
+    return restore_last_good(path)
+
+
+def _save_loaded_configs_as_last_good(root: Path) -> None:
+    for path in (global_config_path(), workspace_config_path(root)):
+        try:
+            save_last_good(path)
+        except OSError:
+            continue
+
+
+def _load_settings_once(
+    root: Path,
+    *,
+    provider_override: str | None = None,
+    model_override: str | None = None,
+    allow_missing_provider: bool = False,
+) -> AppSettings:
     _ensure_global_builtin_notify_hooks()
     global_raw = _read_toml(global_config_path())
     workspace_raw = _read_toml(workspace_config_path(root))
