@@ -119,7 +119,10 @@ turn = self.provider.complete(
 Agent Loop 会把 `project_scan`、`tree`、`glob`、`grep`、`read_file`、`find_symbol` 以及只读型 shell 查询识别为探索工具：
 
 - 达到 `runtime.exploration_soft_limit`（默认 10）后，下一轮 payload 会临时注入总结提醒，要求先给出阶段性结论
-- 超过 `runtime.exploration_hard_streak_limit`（默认 14）个连续探索调用，或超过 `runtime.exploration_hard_total_limit`（默认 25）个本轮总探索调用时，runtime 不再执行下一个探索工具
+- 如果模型在被提醒后输出了可见阶段性结论，这会被视为一次探索段落边界：`exploration_streak` 会清零，后续 `read/search` 从新的连续探索段重新计数；`exploration_total` 不清零，但默认不启用总量硬停
+- 如果模型在阶段性结论后同时继续发起必要的 `read/search`，这些工具会按新的 `exploration_streak` 计数，避免刚总结完又立刻因为旧连续计数触发第二次提醒
+- 超过 `runtime.exploration_hard_streak_limit`（默认 14）个连续探索调用时，runtime 不再执行下一个探索工具
+- `runtime.exploration_hard_total_limit` 默认为 `0`，表示关闭本轮总探索次数硬停；显式设为正数后，超过该总量时同样会拦截下一个探索工具
 - 硬停止以 `exploration_budget_exceeded` 工具错误返回给模型，并结束当前工具批次，让模型总结已有证据或向用户请求继续
 - 三个阈值都可在 `[runtime]` 中配置；硬阈值设为 `0` 可关闭对应硬限制
 

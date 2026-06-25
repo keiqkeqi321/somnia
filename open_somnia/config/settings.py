@@ -1185,7 +1185,7 @@ def _load_settings_once(
         max_tool_calls_per_turn=int(runtime_raw.get("max_tool_calls_per_turn", 64)),
         exploration_soft_limit=int(runtime_raw.get("exploration_soft_limit", 10)),
         exploration_hard_streak_limit=int(runtime_raw.get("exploration_hard_streak_limit", 14)),
-        exploration_hard_total_limit=int(runtime_raw.get("exploration_hard_total_limit", 25)),
+        exploration_hard_total_limit=int(runtime_raw.get("exploration_hard_total_limit", 0)),
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
     )

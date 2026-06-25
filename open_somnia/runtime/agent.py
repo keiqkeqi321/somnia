@@ -132,7 +132,7 @@ class OpenAgentRuntime:
     DEBUG_PROVIDER_PAYLOAD_ENV = "SOMNIA_DEBUG_PROVIDER_PAYLOADS"
     EXPLORATION_SOFT_LIMIT = 10
     EXPLORATION_HARD_STREAK_LIMIT = 14
-    EXPLORATION_HARD_TOTAL_LIMIT = 25
+    EXPLORATION_HARD_TOTAL_LIMIT = 0
     EXPLORATION_TOOL_NAMES = frozenset({"project_scan", "tree", "glob", "grep", "read_file", "find_symbol"})
     EXPLORATION_GITNEXUS_TOOL_NAMES = frozenset(
         {
@@ -3374,11 +3374,11 @@ class OpenAgentRuntime:
                     ),
                 )
                 self._raise_if_interrupted(should_interrupt)
+                turn_text = "\n\n".join(turn.text_blocks).strip()
                 if turn.has_tool_calls() and text_callback is not None and not "".join(streamed_text_chunks).strip():
-                    unstreamed_tool_text = "\n\n".join(turn.text_blocks).strip()
-                    if unstreamed_tool_text:
+                    if turn_text:
                         notify_thinking_finished_if_needed()
-                        text_callback(unstreamed_tool_text)
+                        text_callback(turn_text)
                 if callable(stream_flush_callback):
                     stream_flush_callback()
                 if not turn.has_tool_calls():
@@ -3391,7 +3391,10 @@ class OpenAgentRuntime:
                     )
                     session.messages.append(assistant_message)
                     self._append_transcript_entry(session.id, assistant_message)
-                    final_text = "\n\n".join(turn.text_blocks).strip()
+                    final_text = turn_text
+                    if final_text:
+                        exploration_streak = 0
+                        pending_exploration_summary_reminder = False
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
                     if not final_text:
@@ -3415,6 +3418,11 @@ class OpenAgentRuntime:
                     if self._drain_lead_visible_inbox(session):
                         continue
                     return self._agent_loop_result(final_text, status="completed", session=session)
+
+                if turn_text:
+                    # Treat a visible interim conclusion as the boundary between exploration bursts.
+                    exploration_streak = 0
+                    pending_exploration_summary_reminder = False
 
                 if not thinking_finished_notified:
                     pre_tool_thinking_message = self._attach_thinking_log_marker(

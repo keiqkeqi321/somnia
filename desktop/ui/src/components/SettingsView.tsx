@@ -382,6 +382,13 @@ function SettingsView({
                     </div>
                     </>
                   ) : null}
+                  {activeConfigSection === "runtime" ? (
+                    <RuntimeLimitsEditor
+                      text={configDrafts[activeDraftKey] ?? ""}
+                      onChange={(value) => onConfigDraftChange(activeDraftKey, value)}
+                      disabled={configLoading}
+                    />
+                  ) : null}
                   <div className="config-editor-head">
                     <div>
                       <strong>
@@ -613,6 +620,57 @@ function SettingsView({
         ) : null}
       </div>
     </section>
+  );
+}
+
+const RUNTIME_LIMIT_FIELDS = [
+  {
+    key: "exploration_soft_limit",
+    labelKey: "settings.runtimeLimits.soft",
+    defaultValue: "10",
+  },
+  {
+    key: "exploration_hard_streak_limit",
+    labelKey: "settings.runtimeLimits.hardStreak",
+    defaultValue: "14",
+  },
+  {
+    key: "exploration_hard_total_limit",
+    labelKey: "settings.runtimeLimits.hardTotal",
+    defaultValue: "0",
+  },
+] as const;
+
+type RuntimeLimitKey = (typeof RUNTIME_LIMIT_FIELDS)[number]["key"];
+
+function RuntimeLimitsEditor({
+  text,
+  onChange,
+  disabled,
+}: {
+  text: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const { t } = useI18n();
+  const values = parseRuntimeLimitValues(text);
+
+  return (
+    <div className="runtime-limits-editor">
+      {RUNTIME_LIMIT_FIELDS.map((field) => (
+        <label key={field.key}>
+          <span>{t(field.labelKey)}</span>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={values[field.key]}
+            onChange={(event) => onChange(updateRuntimeLimitValue(text, field.key, event.currentTarget.value))}
+            disabled={disabled}
+          />
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -1159,9 +1217,80 @@ function configPlaceholder(section: SettingsConfigSectionKey): string {
     return '[[hooks]]\nevent = "AssistantResponse"\ncommand = "python"\nargs = ["scripts/hook.py"]\nenabled = true';
   }
   if (section === "runtime") {
-    return "[runtime]\nexploration_soft_limit = 10\nexploration_hard_streak_limit = 14\nexploration_hard_total_limit = 25";
+    return "[runtime]\nexploration_soft_limit = 10\nexploration_hard_streak_limit = 14\nexploration_hard_total_limit = 0";
   }
   return '[agent]\nsystem_prompt = "You are Somnia."';
+}
+
+function parseRuntimeLimitValues(text: string): Record<RuntimeLimitKey, string> {
+  const values = Object.fromEntries(RUNTIME_LIMIT_FIELDS.map((field) => [field.key, field.defaultValue])) as Record<RuntimeLimitKey, string>;
+  const lines = text.split(/\r?\n/);
+  let inRuntime = false;
+  for (const line of lines) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)]\s*$/);
+    if (sectionMatch) {
+      inRuntime = sectionMatch[1].trim() === "runtime";
+      continue;
+    }
+    if (!inRuntime) {
+      continue;
+    }
+    for (const field of RUNTIME_LIMIT_FIELDS) {
+      const match = line.match(new RegExp(`^\\s*${field.key}\\s*=\\s*(.+?)\\s*(?:#.*)?$`));
+      if (match) {
+        values[field.key] = normalizeRuntimeLimitValue(match[1], field.defaultValue);
+      }
+    }
+  }
+  return values;
+}
+
+function updateRuntimeLimitValue(text: string, key: RuntimeLimitKey, rawValue: string): string {
+  const value = normalizeRuntimeLimitValue(rawValue, "0");
+  const lines = text ? text.replace(/\r\n/g, "\n").split("\n") : [];
+  let runtimeStart = -1;
+  let runtimeEnd = lines.length;
+  for (let index = 0; index < lines.length; index += 1) {
+    const sectionMatch = lines[index].match(/^\s*\[([^\]]+)]\s*$/);
+    if (!sectionMatch) {
+      continue;
+    }
+    if (sectionMatch[1].trim() === "runtime") {
+      runtimeStart = index;
+      continue;
+    }
+    if (runtimeStart >= 0 && index > runtimeStart) {
+      runtimeEnd = index;
+      break;
+    }
+  }
+
+  if (runtimeStart < 0) {
+    const prefix = text.trimEnd();
+    return `${prefix ? `${prefix}\n\n` : ""}[runtime]\n${key} = ${value}`;
+  }
+
+  const keyPattern = new RegExp(`^\\s*${key}\\s*=`);
+  for (let index = runtimeStart + 1; index < runtimeEnd; index += 1) {
+    if (keyPattern.test(lines[index])) {
+      lines[index] = `${key} = ${value}`;
+      return lines.join("\n");
+    }
+  }
+  lines.splice(runtimeEnd, 0, `${key} = ${value}`);
+  return lines.join("\n");
+}
+
+function normalizeRuntimeLimitValue(rawValue: string, fallback: string): string {
+  const stripped = String(rawValue ?? "").split("#")[0].trim().replace(/^["']|["']$/g, "");
+  if (!stripped) {
+    return fallback;
+  }
+  const value = Number.parseInt(stripped, 10);
+  if (!Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return String(value);
 }
 
 function parentPath(path: string): string {

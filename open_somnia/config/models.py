@@ -97,7 +97,7 @@ class RuntimeSettings:
     max_tool_calls_per_turn: int = 64
     exploration_soft_limit: int = 10
     exploration_hard_streak_limit: int = 14
-    exploration_hard_total_limit: int = 25
+    exploration_hard_total_limit: int = 0
     max_subagent_rounds: int = 30
     max_agent_rounds: int = 100
 

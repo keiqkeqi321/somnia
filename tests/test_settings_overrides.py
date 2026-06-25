@@ -147,7 +147,7 @@ class SettingsOverrideTests(unittest.TestCase):
             self.assertEqual(settings.runtime.max_agent_rounds, 100)
             self.assertEqual(settings.runtime.exploration_soft_limit, 10)
             self.assertEqual(settings.runtime.exploration_hard_streak_limit, 14)
-            self.assertEqual(settings.runtime.exploration_hard_total_limit, 25)
+            self.assertEqual(settings.runtime.exploration_hard_total_limit, 0)
             self.assertEqual((root / ".open_somnia" / ".gitignore").read_text(encoding="utf-8"), APP_DIR_GITIGNORE)
 
     def test_load_settings_saves_last_good_config_snapshot(self) -> None:
