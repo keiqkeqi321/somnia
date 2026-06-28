@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sys
+import webbrowser
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from open_somnia.app_service import AppService
@@ -16,6 +18,7 @@ from open_somnia.app_service.models import TurnRunResult
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.messages import MarkdownStreamRenderer, render_markdown_text, render_message_content, render_text_content
 from open_somnia.cli.prompting import choose_session_interactively, format_session_timestamp
+from open_somnia.analysis.trace_viewer import build_trace_viewer_report, provider_payload_dir
 
 
 ASSISTANT_BULLET = "\u25cf"
@@ -340,4 +343,27 @@ def cmd_compact(runtime: OpenAgentRuntime) -> int:
 
 def cmd_doctor(runtime: OpenAgentRuntime) -> int:
     print(runtime.doctor())
+    return 0
+
+
+def cmd_trace_viewer(
+    settings,
+    *,
+    session_id: str | None = None,
+    limit: int | None = None,
+    output_path: Path | None = None,
+    open_browser: bool = False,
+) -> int:
+    logs_dir = settings.storage.logs_dir
+    report_path = build_trace_viewer_report(
+        logs_dir,
+        output_path=output_path,
+        session_id=session_id,
+        limit=limit,
+    )
+    payload_dir = provider_payload_dir(logs_dir)
+    print(f"Generated trace viewer: {report_path}")
+    print(f"Provider payload source: {payload_dir}")
+    if open_browser:
+        webbrowser.open(report_path.resolve().as_uri())
     return 0

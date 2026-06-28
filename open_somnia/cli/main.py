@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from open_somnia import __version__
 from open_somnia.config.settings import (
@@ -103,6 +104,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_provider_overrides(compact_parser)
     doctor_parser = subparsers.add_parser("doctor", help="Validate runtime configuration.")
     _add_provider_overrides(doctor_parser)
+    trace_parser = subparsers.add_parser("trace-viewer", help="Generate an HTML viewer for provider payload debug dumps.")
+    trace_parser.add_argument(
+        "--session",
+        dest="session_id",
+        default=None,
+        help="Only include provider payloads for this session ID.",
+    )
+    trace_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only include the latest N matching provider payloads.",
+    )
+    trace_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write the HTML report to this path instead of the default provider payload log directory.",
+    )
+    trace_parser.add_argument(
+        "--open",
+        dest="open_browser",
+        action="store_true",
+        help="Open the generated report in the default browser.",
+    )
     subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
     return parser
 
@@ -183,6 +209,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "providers":
         return _manage_providers(args.workspace)
+    if args.command == "trace-viewer":
+        settings = load_settings(
+            args.workspace,
+            provider_override=getattr(args, "provider", None),
+            model_override=getattr(args, "model", None),
+            allow_missing_provider=True,
+        )
+        from open_somnia.cli.commands import cmd_trace_viewer
+
+        return cmd_trace_viewer(
+            settings,
+            session_id=args.session_id,
+            limit=args.limit,
+            output_path=args.output,
+            open_browser=args.open_browser,
+        )
     try:
         settings = load_settings(
             args.workspace,
