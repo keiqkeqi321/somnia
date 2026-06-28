@@ -123,7 +123,18 @@ def _add_message_cache_control(messages: list[dict[str, Any]]) -> list[dict[str,
     if not messages:
         return messages
     converted = [dict(message) for message in messages]
-    last = dict(converted[-1])
+    target_index: int | None = None
+    for index in range(len(converted) - 1, -1, -1):
+        if bool(converted[index].get("transient")):
+            continue
+        target_index = index
+        break
+    if target_index is None:
+        return [
+            {key: value for key, value in message.items() if key != "transient"}
+            for message in converted
+        ]
+    last = dict(converted[target_index])
     content = last.get("content")
     if isinstance(content, str):
         if content.strip():
@@ -135,8 +146,11 @@ def _add_message_cache_control(messages: list[dict[str, Any]]) -> list[dict[str,
                 content_blocks[index] = _with_cache_control(content_blocks[index])
                 last["content"] = content_blocks
                 break
-    converted[-1] = last
-    return converted
+    converted[target_index] = last
+    return [
+        {key: value for key, value in message.items() if key != "transient"}
+        for message in converted
+    ]
 
 
 def _to_anthropic_messages(messages: list[dict[str, Any]], *, cache_last_message: bool = False) -> list[dict[str, Any]]:
@@ -145,7 +159,10 @@ def _to_anthropic_messages(messages: list[dict[str, Any]], *, cache_last_message
         role = message["role"]
         content = message["content"]
         if isinstance(content, str):
-            converted.append({"role": role, "content": content})
+            converted_message = {"role": role, "content": content}
+            if bool(message.get("transient")):
+                converted_message["transient"] = True
+            converted.append(converted_message)
             continue
         blocks: list[dict[str, Any]] = []
         for item in content:
@@ -198,7 +215,10 @@ def _to_anthropic_messages(messages: list[dict[str, Any]], *, cache_last_message
                         "is_error": bool(item.get("is_error", False)),
                     }
                 )
-        converted.append({"role": role, "content": blocks})
+        converted_message = {"role": role, "content": blocks}
+        if bool(message.get("transient")):
+            converted_message["transient"] = True
+        converted.append(converted_message)
     if cache_last_message:
         return _add_message_cache_control(converted)
     return converted

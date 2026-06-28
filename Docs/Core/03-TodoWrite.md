@@ -101,33 +101,29 @@ Todo 清单渲染时**不显示 cancelled 项**，可见状态为 `pending / in_
 
 ## 运行时提醒机制
 
-只要会话里仍有 **open todo**（`pending` 或 `in_progress`），运行时就会在**每一轮发给模型的 payload** 里临时追加一条 reminder：
+TodoWrite 的常规规则写在稳定 system prompt 中，不再因为存在 open todo 就每轮向模型 payload 注入 reminder。这样能减少 OpenAI 自动 prompt cache miss，也避免 Anthropic 的消息缓存断点被高频动态提醒移动。
 
-```text
-<reminder>If any todo changed, call TodoWrite now. Do not just say you will. If nothing changed, ignore this and continue.</reminder>
-```
+运行时只在必要事件上追加一条临时 `runtime-notice`：
 
-这条 reminder 的规则是：
+- 模型准备结束，但会话里仍有 open todo 且已有未同步轮次
+- 上一轮空响应，需要修复
+- 工具调用失败且存在可自修复提示
+- 探索预算达到提醒阈值
+
+临时 notice 的规则是：
 
 - 仅注入到当前轮次的模型 payload
 - **不会**写入 `session.messages`
 - **不会**写入 transcript snapshot
-- 当所有 todo 都进入 closed 状态（`completed` 或 `cancelled`）后立即停止注入
-
-这样做的目的不是强制每轮都调用 `TodoWrite`，而是约束 Agent：
-
-- 如果 todo 状态确实发生变化，就先调用 `TodoWrite`
-- 不要只口头说“我来更新 todo”
-- 如果 todo 状态没有变化，就忽略 reminder 并继续当前任务
+- 多个提醒会合并成一条尾部 `<runtime-notice>`，减少动态 message 数量
 
 因此：
 
-- reminder 本身**不是**“有 open todo 就禁止结束”的硬门禁
-- 但如果 Agent Loop 达到 `max_agent_rounds`（默认 100）时仍有 open todo，runtime 会返回显式状态 `stopped_with_open_todos`
-- 上层 REPL / CLI 应把它视为“停在未完成任务上”，而不是正常 done
+- open todo 本身不会导致每轮 cache miss
+- runtime 仍会在结束前做一次 TodoWrite reconcile 兜底
+- 如果 Agent Loop 达到 `max_agent_rounds`（默认 100）时仍有 open todo，runtime 会返回显式状态 `stopped_with_open_todos`
 
 ---
-
 ## 与上下文治理的关系
 
 Todo 在上下文治理（Semantic Janitor）中仅作为**弱锚点**使用：

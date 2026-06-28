@@ -47,7 +47,6 @@ from open_somnia.runtime.compact import (
     ToolResultCandidate,
     build_payload_messages,
     estimate_payload_tokens,
-    extract_latest_read_file_overlap_state,
     extract_tool_result_candidates,
     persist_semantic_compression,
     should_auto_compact,
@@ -184,6 +183,7 @@ class OpenAgentRuntime:
         "<reminder>Your previous response ended without any visible assistant text or tool calls. "
         "Continue the task now and either call the next needed tool or provide a visible final answer.</reminder>"
     )
+    RUNTIME_NOTICE_TAG = "runtime-notice"
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -782,22 +782,11 @@ class OpenAgentRuntime:
             )
         except Exception:
             last_message_digest = str(last_message)
-        read_file_overlap_state = self._session_read_file_overlap_state(session)
-        try:
-            read_file_overlap_state_digest = json.dumps(
-                read_file_overlap_state,
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            )
-        except Exception:
-            read_file_overlap_state_digest = str(read_file_overlap_state)
         return (
             id(messages),
             len(messages),
             getattr(session, "latest_turn_id", None),
             last_message_digest,
-            read_file_overlap_state_digest,
             actor,
             role,
             system_prompt,
@@ -837,14 +826,6 @@ class OpenAgentRuntime:
             counter_name=counter_name,
         )
 
-    def _session_read_file_overlap_state(self, session: AgentSession | None) -> dict[str, Any] | None:
-        if session is None:
-            return None
-        state = getattr(session, "read_file_overlap_state", None)
-        if not isinstance(state, dict):
-            return None
-        return state
-
     def _build_payload_messages(
         self,
         messages: list[dict[str, Any]],
@@ -855,9 +836,21 @@ class OpenAgentRuntime:
         return build_payload_messages(
             messages,
             semantic_decisions=semantic_decisions,
-            read_file_overlap_state=self._session_read_file_overlap_state(session),
             preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
         )
+
+    def _runtime_notice_message(self, notices: list[str]) -> dict[str, Any] | None:
+        lines = [str(notice).strip() for notice in notices if str(notice).strip()]
+        if not lines:
+            return None
+        if len(lines) == 1:
+            content = f"<{self.RUNTIME_NOTICE_TAG}>{lines[0]}</{self.RUNTIME_NOTICE_TAG}>"
+        else:
+            body = "\n".join(f"- {line}" for line in lines)
+            content = f"<{self.RUNTIME_NOTICE_TAG}>\n{body}\n</{self.RUNTIME_NOTICE_TAG}>"
+        message = make_user_text_message(content)
+        message["transient"] = True
+        return message
 
     def _preserve_provider_thinking_blocks(self) -> bool:
         settings = getattr(self, "settings", None)
@@ -1622,7 +1615,6 @@ class OpenAgentRuntime:
         messages: list[dict[str, Any]],
         *,
         session: AgentSession | None = None,
-        read_file_overlap_state: dict[str, Any] | None = None,
         actor: str = "lead",
         role: str = "lead coding agent",
         system_prompt: str | None = None,
@@ -1631,7 +1623,6 @@ class OpenAgentRuntime:
         if session is None:
             return build_payload_messages(
                 messages,
-                read_file_overlap_state=read_file_overlap_state,
                 preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
             )
         if system_prompt is None:
@@ -3211,26 +3202,26 @@ class OpenAgentRuntime:
                 except TypeError:
                     system_prompt = self.build_system_prompt()
                 tool_schemas = self._tool_schemas_for_model("lead")
-                transient_payload_messages: list[dict[str, Any]] = []
-                if self.todo_manager.has_open_items(session):
-                    transient_payload_messages.append(make_user_text_message(self.TODO_REMINDER_TEXT))
+                transient_notices: list[str] = []
                 if pending_todo_reconcile:
-                    transient_payload_messages.append(make_user_text_message(self.TODO_RECONCILE_REMINDER_TEXT))
+                    transient_notices.append(self.TODO_RECONCILE_REMINDER_TEXT)
                 if pending_empty_response_repair:
-                    transient_payload_messages.append(make_user_text_message(self.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT))
+                    transient_notices.append(self.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT)
                     pending_empty_response_repair = False
                 if pending_exploration_summary_reminder:
-                    transient_payload_messages.append(
-                        make_user_text_message(
-                            self._exploration_summary_reminder(streak=exploration_streak, total=exploration_total)
-                        )
+                    transient_notices.append(
+                        self._exploration_summary_reminder(streak=exploration_streak, total=exploration_total)
                     )
                     pending_exploration_summary_reminder = False
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
                     if repair_message:
-                        transient_payload_messages.append(make_user_text_message(repair_message))
+                        transient_notices.append(repair_message)
+                transient_payload_messages: list[dict[str, Any]] = []
+                transient_notice_message = self._runtime_notice_message(transient_notices)
+                if transient_notice_message is not None:
+                    transient_payload_messages.append(transient_notice_message)
                 payload_source_messages = session.messages
                 payload_session: AgentSession | None = session
                 if transient_payload_messages:
@@ -3238,14 +3229,12 @@ class OpenAgentRuntime:
                     payload_session = None
                     payload_messages = build_payload_messages(
                         payload_source_messages,
-                        read_file_overlap_state=self._session_read_file_overlap_state(session),
                         preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
                     )
                 else:
                     payload_messages = self._messages_for_model(
                         payload_source_messages,
                         session=payload_session,
-                        read_file_overlap_state=self._session_read_file_overlap_state(session),
                         system_prompt=system_prompt,
                         tools=tool_schemas,
                     )
@@ -3435,7 +3424,6 @@ class OpenAgentRuntime:
                 tool_results: list[dict[str, Any]] = []
                 executed_tool_calls = []
                 used_todo = False
-                used_read_file = False
                 manual_compact = False
                 end_turn_after_tool = False
                 max_tool_calls = self._max_tool_calls_per_turn()
@@ -3572,8 +3560,6 @@ class OpenAgentRuntime:
                         pending_exploration_summary_reminder = False
                     if tool_name == "TodoWrite":
                         used_todo = True
-                    if tool_name == "read_file":
-                        used_read_file = True
                     if tool_name in self.TURN_BOUNDARY_TOOL_NAMES:
                         end_turn_after_tool = True
                         break
@@ -3595,8 +3581,6 @@ class OpenAgentRuntime:
                 session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
                 tool_result_message = make_tool_result_message(tool_results)
                 session.messages.append(tool_result_message)
-                if used_read_file:
-                    session.read_file_overlap_state = extract_latest_read_file_overlap_state(session.messages)
                 if manual_compact:
                     preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
                     session.messages = self.compact_manager.auto_compact(

@@ -22,10 +22,9 @@
 | 14 | [Hooks](./14-Hooks.md) | 运行时 Hook 系统：事件模型、同步/异步 Hook、上下文引用、Python SDK、内置通知与 `/hooks` 管理 |
 | 15 | [桌面端基础设施与UI实施计划](./15-桌面端基础设施与UI实施计划.md) | 桌面化演进路线：先抽应用服务层，再实现桌面 sidecar、独立 UI 与跨平台安装器 |
 | 16 | [Provider 缓存命中优化](./16-Provider缓存命中优化.md) | Provider 请求前缀稳定化、Anthropic Prompt Cache、OpenAI 自动缓存诊断 |
-| 16 | [Provider 缓存命中优化](./16-Provider缓存命中优化.md) | Provider 请求前缀稳定化、Anthropic Prompt Cache、OpenAI 自动缓存诊断 |
 
 ## Tool 文档
 
 | 文档 | 说明 |
 |------|------|
-| [ReadFile](./Tool/ReadFile.md) | `read_file` 工具：范围读取、显式截断提示、与 payload 去重及同文件重叠抑制的关系 |
+| [ReadFile](./Tool/ReadFile.md) | `read_file` 工具：范围读取、显式截断提示、与上下文治理的关系 |

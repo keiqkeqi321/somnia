@@ -39,7 +39,10 @@
 
 1. 第一个 breakpoint 放在最后一个稳定 system block 上。
 2. 如果 system 为空，则第一个 breakpoint 退回放在最后一个 tool schema 上。
-3. 第二个 breakpoint 放在最后一条消息的最后一个 content block 上。
+3. 第二个 breakpoint 放在最后一条非 transient 消息的最后一个 content block 上。
+
+Runtime 生成的 `<runtime-notice>` 会带 `transient=true` 元数据。Anthropic adapter 只用它选择 cache breakpoint，发送给 provider 前会剥离该字段，避免动态提醒成为缓存断点。
+
 
 生成字段为：
 
@@ -55,6 +58,7 @@ OpenAI、DeepSeek、MiMo 等兼容链路主要依赖服务端自动前缀缓存�
 - 保持 tools 顺序稳定。
 - 不回放不必要的 reasoning 内容。
 - 不注入 `cache_control`，避免兼容接口因未知字段返回 400。
+- 不再为 open todo 每轮注入 reminder；动态提醒只在必要事件上合并为尾部 `<runtime-notice>`。
 
 ### Cache Usage 诊断
 
@@ -69,7 +73,7 @@ Usage 解析已补充 cache token 字段：
 ## 当前边界
 
 - Anthropic 的 `cache_control` 是 provider 私有字段，不能在通用 payload 中无条件加入。
-- OpenAI 兼容链路没有显式 breakpoint，缓存命中主要依赖稳定前缀和服务端自动匹配。
+- OpenAI 兼容链路没有显式 breakpoint，缓存命中主要依赖稳定前缀、稀疏动态尾部和服务端自动匹配。
 - 压缩或语义清理如果频繁重写较早历史，仍会破坏后续前缀命中。
 
 ## 验证

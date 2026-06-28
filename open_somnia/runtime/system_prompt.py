@@ -71,6 +71,7 @@ class SystemPromptBuilder:
             "Workflow rules:\n"
             "- Use `TodoWrite` to break down meaningful work and keep progress visible to the user.\n"
             "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
+            "- Before ending a task, reconcile `TodoWrite` with the work just completed.\n"
             "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
             "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
             "- When a tool result matters for later context governance, you may set `importance` on the tool input: "

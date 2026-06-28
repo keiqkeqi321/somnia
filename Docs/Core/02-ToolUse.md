@@ -129,7 +129,7 @@ Worker 工具**不包含**：子代理、后台任务、团队管理、MCP、技
 - 当只想看某个命中位置附近的实现时，优先配合 `grep` / `find_symbol` 后做局部范围读取
 - 如果输出尾部出现 `[read_file output truncated ...]`，说明当前片段仍然过大，应继续缩小范围
 
-发送给模型前，payload 组装还会对较大的完全重复工具结果做去重：旧副本会被折叠为简短占位，最新副本保留完整内容。这一去重只作用于 payload，不改写原始会话历史。
+发送给模型前，payload 组装只做轻量归一化，例如移除工具结果里的 `raw_output` / `log_id`。为保持 provider prompt cache 前缀稳定，它不会再对旧工具结果做 duplicate dedupe 或 read_file overlap 裁剪。
 
 ---
 

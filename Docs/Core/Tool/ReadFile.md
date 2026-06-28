@@ -103,31 +103,12 @@
 
 - `read_file` 的 tool result 仍会进入会话历史
 - 发送给模型前，payload 构建会移除 `raw_output` / `log_id`
-- 对于**较大的完全重复 `read_file` 结果**，payload 构建会折叠旧副本，只保留最新完整副本，旧副本会被替换成：
+- 为保持 provider prompt cache 前缀稳定，payload 构建不会再对重复 `read_file` 结果做 exact dedupe
+- payload 构建也不会再根据后续 `read_file` 结果裁剪、替换或折叠更早的同文件重叠区间
 
-```text
-[Duplicate tool result omitted | read_file] Identical output appears later.
-```
-
-- 如果**最新一轮 tool result 里出现了 `read_file`**，payload 构建还会只针对这一轮读过的路径，逆向裁剪更早的同文件重叠区间：
-
-```text
-[Overlapping read_file result omitted | demo.txt:3-8] Covered by later read(s) of the same file.
-```
-
-- 当某一轮出现 `read_file` 时，runtime 会把这一轮的覆盖区间提取到 `session.read_file_overlap_state`
-- 完全覆盖时会替换成上面的占位
-- 部分重叠时只移除重叠行，保留前后独有片段，并插入显式 overlap marker
-- 后续轮次即使没有新的 `read_file`，只要 session 里仍有最近一次 coverage，这一步仍可继续生效
-- 这份 state 只保存路径和行区间，不保存文件内容本身
-- checkpoint / rollback 会一起保存并恢复这份 overlap state
-
-这只是 payload 级别的去重与重叠抑制，不会改写原始 `session.messages`。
-
-换句话说，去重能减少重复上下文污染，但它不是鼓励整文件反复重读的替代品。正确做法仍然是优先使用范围读取。
+换句话说，避免重复读取现在主要依赖模型按范围读取、Active Working File Cache 提示，以及必要时由 Semantic Janitor / Auto Compact 做显式上下文治理。
 
 ---
-
 ## 相关代码
 
 - `open_somnia/tools/filesystem.py` — `read_file`

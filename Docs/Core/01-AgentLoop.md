@@ -99,20 +99,14 @@ turn = self.provider.complete(
 
 1. **Deep clone** 原始消息
 2. **Strip metadata**（移除 payload 副本里的 `raw_output` / `log_id`）
-3. **Dedupe duplicate large results**（折叠较大的完全重复工具结果，保留最新副本）
+3. **Strip stale media/tool blocks**（清理过期图片块和旧工具结果的富内容块）
 4. **返回最终 payload**
 
 `_messages_for_model()` 现在是**无副作用**的。自动 `Semantic Janitor` 不在这里执行，而是在新 user message 入列后的 turn boundary 先完成。
 
-在进入 `_messages_for_model()` 之前，调用方还可能临时扩展消息列表。例如当会话里仍有 open todo 时，Agent Loop 会先追加一条**仅当前轮次可见**的 `TodoWrite` reminder，再把扩展后的列表送入 `_messages_for_model()`。这条 reminder 不会写回会话历史。
+在进入 `_messages_for_model()` 之前，调用方还可能临时扩展消息列表。例如 Todo reconcile、空响应修复、工具修复提示或探索预算提醒会被合并成一条**仅当前轮次可见**的 `<runtime-notice>`，再把扩展后的列表送入 `_messages_for_model()`。这条 notice 不会写回会话历史。
 
-另外，`_messages_for_model()` 做的是**payload 级别**的归一化，而不是会话历史改写。像重复大 `read_file` 结果这类折叠，只影响本轮发给模型的 payload，不会回写 `session.messages`。
-
-`_messages_for_model()` 还会接收会话里的 `read_file_overlap_state`：
-
-- 某轮执行过 `read_file` 后，runtime 会把该轮覆盖到的路径与行区间提取出来
-- 这份状态会写入 `AgentSession`
-- 后续轮次即使只是插入临时 reminder 或执行了别的工具，payload 构建仍可沿用这份 overlap state 继续抑制旧的重叠 `read_file` 结果
+另外，`_messages_for_model()` 做的是**payload 级别**的归一化，而不是会话历史改写。为保持 provider prompt cache 前缀稳定，它不再对旧工具结果做 duplicate dedupe，也不再根据后续 `read_file` 结果裁剪早期 `read_file` 内容。
 
 ### 探索预算
 
@@ -175,7 +169,6 @@ Agent Loop 不只有“正常完成”这一种退出方式：
 | `token_usage` | 累计 token 用量 |
 | `todo_items` | 当前待办清单 |
 | `rounds_without_todo` | 自上次 `TodoWrite` 以来的轮数计数器 |
-| `read_file_overlap_state` | 最近一组 `read_file` 覆盖区间及其 source tool call ids |
 | `latest_turn_id` | 最新轮次 ID |
 | `last_turn_file_changes` | 上一轮文件变更摘要 |
 | `undo_stack` | 文件修改撤销栈（最多 10 轮） |
