@@ -9,6 +9,7 @@ from unittest.mock import patch
 from open_somnia.cli.main import main
 from open_somnia.analysis.trace_viewer import (
     build_trace_diffs,
+    build_session_summaries,
     build_trace_viewer_report,
     load_trace_records,
     provider_payload_dir,
@@ -114,7 +115,8 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn('id="panel-requests"', html)
         self.assertIn('id="panel-diffs"', html)
         self.assertIn('id="panel-details"', html)
-        self.assertIn('<option value="session-1">session-1</option>', html)
+        self.assertIn('<option value="session-1">session-1 · ', html)
+        self.assertIn(' · 2 traces</option>', html)
         self.assertIn('data-session="session-1"', html)
         self.assertIn('data-record="trace"', html)
         self.assertIn('data-input-tokens="1000"', html)
@@ -185,9 +187,30 @@ class TraceViewerTests(unittest.TestCase):
             html = report.read_text(encoding="utf-8")
 
         self.assertIn('<select id="session-filter"', html)
-        self.assertIn('<option value="session-b" selected>session-b</option>', html)
+        self.assertIn('<option value="session-b" selected>session-b · ', html)
+        self.assertIn(' · 1 traces</option>', html)
         self.assertIn('data-session="session-b"', html)
         self.assertNotIn('data-session="session-a"', html)
+
+    def test_trace_viewer_session_options_sort_by_latest_activity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / ".open_somnia" / "logs"
+            payloads = provider_payload_dir(logs_dir)
+            self._write_payload(payloads, "older-1000.json", {"timestamp": 1000.0, "session_id": "older"})
+            self._write_payload(payloads, "newer-2000.json", {"timestamp": 2000.0, "session_id": "newer"})
+            self._write_payload(payloads, "older-3000.json", {"timestamp": 3000.0, "session_id": "older"})
+
+            records = load_trace_records(payloads)
+            summaries = build_session_summaries(records)
+            report = build_trace_viewer_report(logs_dir)
+            html = report.read_text(encoding="utf-8")
+
+        self.assertEqual([summary.session_id for summary in summaries], ["older", "newer"])
+        self.assertEqual(summaries[0].trace_count, 2)
+        self.assertLess(html.index('value="older"'), html.index('value="newer"'))
+        self.assertIn("older · ", html)
+        self.assertIn(" -&gt; ", html)
+        self.assertIn(" · 2 traces", html)
 
     def test_trace_viewer_handles_empty_payload_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

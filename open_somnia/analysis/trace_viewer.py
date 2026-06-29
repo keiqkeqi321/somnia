@@ -82,6 +82,14 @@ class TraceDiff:
     cache_risks: list[str]
 
 
+@dataclass(slots=True)
+class SessionSummary:
+    session_id: str
+    first_timestamp: float
+    last_timestamp: float
+    trace_count: int
+
+
 def provider_payload_dir(logs_dir: Path) -> Path:
     return Path(logs_dir) / PROVIDER_PAYLOAD_DIRNAME
 
@@ -248,7 +256,7 @@ def render_trace_viewer(
     total_cache_read = sum(record.cache_read_input_tokens for record in records)
     total_cache_creation = sum(record.cache_creation_input_tokens for record in records)
     total_prompt_including_cache = sum(record.prompt_tokens_including_cache for record in records)
-    sessions = sorted({record.session_id for record in records if record.session_id})
+    session_summaries = build_session_summaries(records)
     hit_ratio = _cache_hit_ratio(total_input, total_cache_read)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     filter_note = []
@@ -257,7 +265,7 @@ def render_trace_viewer(
     if limit:
         filter_note.append(f"limit={limit}")
     subtitle = " · ".join(filter_note) if filter_note else "all provider payload dumps"
-    session_options = _render_session_options(sessions, selected_session=session_id)
+    session_options = _render_session_options(session_summaries, selected_session=session_id)
 
     rows = "\n".join(_render_trace_row(record, index) for index, record in enumerate(records, start=1))
     details = "\n".join(_render_trace_detail(record, index) for index, record in enumerate(records, start=1))
@@ -453,7 +461,7 @@ def render_trace_viewer(
     </div>
     <div class="grid">
       {_metric_card("Traces", str(len(records)), value_id="metric-traces")}
-      {_metric_card("Sessions", str(len(sessions)), value_id="metric-sessions")}
+      {_metric_card("Sessions", str(len(session_summaries)), value_id="metric-sessions")}
       {_metric_card("Cache hit", _format_percent(hit_ratio), value_id="metric-cache-hit")}
       {_metric_card("Prompt tokens", _format_int(total_prompt_including_cache), value_id="metric-prompt")}
       {_metric_card("Input tokens", _format_int(total_input), value_id="metric-input")}
@@ -760,12 +768,35 @@ def _metric_card(label: str, value: str, *, value_id: str | None = None) -> str:
     return f"<div class=\"card\"><span class=\"muted\">{html.escape(label)}</span><strong{id_attr}>{html.escape(value)}</strong></div>"
 
 
-def _render_session_options(sessions: list[str], *, selected_session: str | None = None) -> str:
+def build_session_summaries(records: list[TraceRecord]) -> list[SessionSummary]:
+    by_session: dict[str, SessionSummary] = {}
+    for record in records:
+        session_id = str(record.session_id or "").strip()
+        if not session_id:
+            continue
+        current = by_session.get(session_id)
+        if current is None:
+            by_session[session_id] = SessionSummary(
+                session_id=session_id,
+                first_timestamp=record.timestamp,
+                last_timestamp=record.timestamp,
+                trace_count=1,
+            )
+            continue
+        current.first_timestamp = min(current.first_timestamp, record.timestamp)
+        current.last_timestamp = max(current.last_timestamp, record.timestamp)
+        current.trace_count += 1
+    return sorted(by_session.values(), key=lambda item: (item.last_timestamp, item.session_id), reverse=True)
+
+
+def _render_session_options(sessions: list[SessionSummary], *, selected_session: str | None = None) -> str:
     selected = str(selected_session or "").strip()
     options: list[str] = []
     for session in sessions:
-        selected_attr = " selected" if session == selected else ""
-        options.append(f"<option value=\"{html.escape(session)}\"{selected_attr}>{html.escape(session)}</option>")
+        session_id = session.session_id
+        selected_attr = " selected" if session_id == selected else ""
+        label = f"{session_id} · {_format_session_activity(session)} · {session.trace_count} traces"
+        options.append(f"<option value=\"{html.escape(session_id)}\"{selected_attr}>{html.escape(label)}</option>")
     return "\n        ".join(options)
 
 
@@ -910,6 +941,14 @@ def _format_time(timestamp: float) -> str:
     if timestamp <= 0:
         return "-"
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_session_activity(session: SessionSummary) -> str:
+    first_time = _format_time(session.first_timestamp)
+    last_time = _format_time(session.last_timestamp)
+    if first_time == last_time:
+        return last_time
+    return f"{first_time} -> {last_time}"
 
 
 def _format_int(value: int) -> str:
