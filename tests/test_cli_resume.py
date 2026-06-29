@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import io
+import os
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia import __version__
 from open_somnia.cli.commands import _build_session_choices, cmd_chat, cmd_run, print_user_message
-from open_somnia.cli.main import _default_base_url, _parse_model_ids, build_parser, main
+from open_somnia.cli.main import _default_base_url, _open_trace_report, _parse_model_ids, build_parser, main
 from open_somnia.cli.provider_management import collect_provider_profile_interactively
 from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.config.settings import NoConfiguredProvidersError, NoUsableProvidersError
+from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.cli.repl import _print_resumed_history
 
 
@@ -62,6 +65,14 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(args.provider, "openai")
         self.assertEqual(args.model, "gpt-4.1")
         self.assertEqual(args.command, "doctor")
+
+    def test_parser_supports_trace_subcommand(self) -> None:
+        args = build_parser().parse_args(["trace", "--provider", "openrouter", "--model", "glm-5", "hello"])
+
+        self.assertEqual(args.command, "trace")
+        self.assertEqual(args.provider, "openrouter")
+        self.assertEqual(args.model, "glm-5")
+        self.assertEqual(args.prompt, "hello")
 
     def test_parser_supports_providers_subcommand(self) -> None:
         args = build_parser().parse_args(["providers"])
@@ -118,6 +129,79 @@ class CliResumeTests(unittest.TestCase):
             base_url="https://openrouter.ai/api/v1",
         )
         mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
+
+    def test_main_trace_enables_provider_payload_debug_and_marks_provider(self) -> None:
+        settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openrouter", model="glm-5", provider_type="openai"),
+            storage=SimpleNamespace(logs_dir=Path("workspace") / ".open_somnia" / "logs"),
+        )
+        runtime = SimpleNamespace(close=lambda: None)
+        output = io.StringIO()
+        debug_env_value = None
+
+        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: ""}, clear=False), patch(
+            "open_somnia.cli.main.load_settings",
+            return_value=settings,
+        ) as mock_load, patch(
+            "open_somnia.cli.main.OpenAgentRuntime",
+            return_value=runtime,
+        ) as mock_runtime, patch(
+            "open_somnia.cli.commands.cmd_run",
+            return_value=0,
+        ) as mock_run, patch(
+            "open_somnia.cli.main._open_trace_report",
+            return_value=0,
+        ) as mock_open_report, redirect_stdout(output):
+            mock_runtime.DEBUG_PROVIDER_PAYLOAD_ENV = OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV
+            result = main(["--workspace", "workspace", "trace", "--provider", "openrouter", "--model", "glm-5", "hello"])
+            debug_env_value = os.environ.get(OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(debug_env_value, "1")
+        mock_load.assert_called_once_with("workspace", provider_override="openrouter", model_override="glm-5")
+        mock_runtime.assert_called_once_with(settings)
+        mock_run.assert_called_once_with(runtime, "hello")
+        mock_open_report.assert_called_once_with(settings)
+        text = output.getvalue()
+        self.assertIn("Provider debug tracing enabled: openrouter / glm-5 (openai)", text)
+        self.assertIn("Trace payloads:", text)
+        self.assertIn("Trace report will open automatically after exit.", text)
+
+    def test_main_trace_chat_opens_report_after_exit(self) -> None:
+        settings = SimpleNamespace(
+            provider=SimpleNamespace(name="openai", model="gpt-5", provider_type="openai"),
+            storage=SimpleNamespace(logs_dir=Path("workspace") / ".open_somnia" / "logs"),
+        )
+        runtime = SimpleNamespace(close=lambda: None)
+
+        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: ""}, clear=False), patch(
+            "open_somnia.cli.main.load_settings",
+            return_value=settings,
+        ), patch(
+            "open_somnia.cli.main.OpenAgentRuntime",
+            return_value=runtime,
+        ) as mock_runtime, patch(
+            "open_somnia.cli.commands.cmd_chat",
+            return_value=0,
+        ) as mock_chat, patch(
+            "open_somnia.cli.main._open_trace_report",
+            return_value=0,
+        ) as mock_open_report, redirect_stdout(io.StringIO()):
+            mock_runtime.DEBUG_PROVIDER_PAYLOAD_ENV = OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV
+            result = main(["--workspace", "workspace", "trace"])
+
+        self.assertEqual(result, 0)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
+        mock_open_report.assert_called_once_with(settings)
+
+    def test_open_trace_report_opens_browser_viewer(self) -> None:
+        settings = SimpleNamespace(storage=SimpleNamespace(logs_dir=Path("workspace") / ".open_somnia" / "logs"))
+
+        with patch("open_somnia.cli.commands.cmd_trace_viewer", return_value=0) as mock_trace_viewer, redirect_stdout(io.StringIO()):
+            result = _open_trace_report(settings)
+
+        self.assertEqual(result, 0)
+        mock_trace_viewer.assert_called_once_with(settings, open_browser=True)
 
     def test_main_bootstraps_first_provider_when_stale_provider_config_was_cleared(self) -> None:
         settings = SimpleNamespace()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -104,6 +105,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_provider_overrides(compact_parser)
     doctor_parser = subparsers.add_parser("doctor", help="Validate runtime configuration.")
     _add_provider_overrides(doctor_parser)
+    trace_start_parser = subparsers.add_parser(
+        "trace",
+        help="Start Somnia with provider payload debug tracing enabled.",
+    )
+    trace_start_parser.add_argument(
+        "prompt",
+        nargs="?",
+        default=None,
+        help="Optional prompt to run once. Omit to start interactive chat mode.",
+    )
+    trace_start_session_group = trace_start_parser.add_mutually_exclusive_group()
+    trace_start_session_group.add_argument(
+        "-r",
+        "-resume",
+        "--resume",
+        dest="resume",
+        action="store_true",
+        help="Open the interactive session picker and resume a saved chat.",
+    )
+    trace_start_session_group.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue the latest saved chat in this workspace.",
+    )
+    _add_provider_overrides(trace_start_parser)
     trace_parser = subparsers.add_parser("trace-viewer", help="Generate an HTML viewer for provider payload debug dumps.")
     trace_parser.add_argument(
         "--session",
@@ -122,12 +150,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Write the HTML report to this path instead of the default provider payload log directory.",
-    )
-    trace_parser.add_argument(
-        "--open",
-        dest="open_browser",
-        action="store_true",
-        help="Open the generated report in the default browser.",
     )
     subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
     return parser
@@ -204,6 +226,13 @@ def _manage_providers(workspace: str) -> int:
     return 0
 
 
+def _open_trace_report(settings) -> int:
+    from open_somnia.cli.commands import cmd_trace_viewer
+
+    print("Opening trace report...")
+    return cmd_trace_viewer(settings, open_browser=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -223,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             session_id=args.session_id,
             limit=args.limit,
             output_path=args.output,
-            open_browser=args.open_browser,
+            open_browser=True,
         )
     try:
         settings = load_settings(
@@ -246,6 +275,8 @@ def main(argv: list[str] | None = None) -> int:
             provider_override=getattr(args, "provider", None),
             model_override=getattr(args, "model", None),
         )
+    if args.command == "trace":
+        os.environ[OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV] = "1"
     runtime = OpenAgentRuntime(settings)
     try:
         from open_somnia.cli.commands import (
@@ -265,6 +296,30 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "run":
             return cmd_run(runtime, args.prompt)
+        if args.command == "trace":
+            provider = getattr(settings, "provider", None)
+            provider_name = getattr(provider, "name", "unknown")
+            provider_model = getattr(provider, "model", "unknown")
+            provider_type = getattr(provider, "provider_type", "unknown")
+            print(
+                "Provider debug tracing enabled: "
+                f"{provider_name} / {provider_model} ({provider_type})"
+            )
+            print(f"Trace payloads: {settings.storage.logs_dir / 'provider_payloads'}")
+            print("Trace report will open automatically after exit.")
+            if args.prompt is not None:
+                status = cmd_run(runtime, args.prompt)
+                if status == 0:
+                    return _open_trace_report(settings)
+                return status
+            status = cmd_chat(
+                runtime,
+                resume=getattr(args, "resume", False),
+                continue_session=getattr(args, "continue_session", False),
+            )
+            if status == 0:
+                return _open_trace_report(settings)
+            return status
         if args.command == "tasks" and args.tasks_command == "list":
             return cmd_tasks_list(runtime)
         if args.command == "tasks" and args.tasks_command == "get":

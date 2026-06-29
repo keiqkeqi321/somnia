@@ -38,8 +38,6 @@ class SystemPromptBuilder:
     def build_prompt_bundle(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> PromptBundle:
         del session
         mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
-        working_file_context_getter = getattr(self.runtime, "current_working_file_context", None)
-        working_file_context = working_file_context_getter() if callable(working_file_context_getter) else ""
         working_file_path_getter = getattr(self.runtime, "current_working_file_path", None)
         working_file_path = working_file_path_getter() if callable(working_file_path_getter) else ""
         project_instruction_paths = [working_file_path] if working_file_path else None
@@ -78,7 +76,7 @@ class SystemPromptBuilder:
             "`glance`, `investigate`, or `foundation`.\n"
             "- Use `edit_file` with `edits=[...]` for every text replacement, including a single replacement.\n"
             "- When editing one file in several nearby places, prefer a single `edit_file` call with multiple `edits` items over many tiny follow-up patches.\n"
-            "- After `write_file` or `edit_file`, use the returned updated snippet or active working file cache before rereading the same file.\n"
+            "- After `write_file` or `edit_file`, use the returned updated snippet before rereading the same file.\n"
             "- Do not claim a root cause until your evidence materially narrows the main alternatives.\n"
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
             "- Treat repository exploration as an investigation: gather evidence, update hypotheses, then conclude."
@@ -117,7 +115,7 @@ class SystemPromptBuilder:
             PromptSection(
                 "runtime",
                 "B. Runtime Injection",
-                f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}\n{working_file_context}",
+                f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}",
                 dynamic=True,
             ),
             PromptSection("skills", "C. Skill Prompt", f"Available skills:\n{skill_descriptions}", dynamic=True),

@@ -7,7 +7,7 @@ Somnia Trace Viewer 是一个离线 HTML 对话分析工具，用来排查 provi
 Trace Viewer 读取 runtime 已经支持的 provider payload debug dump：
 
 ```bash
-SOMNIA_DEBUG_PROVIDER_PAYLOADS=1 somnia
+somnia trace
 ```
 
 生成的 JSON 位于：
@@ -30,11 +30,7 @@ somnia trace-viewer
 .open_somnia/logs/provider_payloads/trace-viewer.html
 ```
 
-直接打开浏览器：
-
-```bash
-somnia trace-viewer --open
-```
+生成后会自动打开浏览器。
 
 只分析一个会话：
 
@@ -69,6 +65,6 @@ OpenAI 兼容链路主要依赖服务端自动前缀缓存，所以重点看相�
 - `First diff = 0` 通常意味着 message 前缀从第一条就变了，缓存命中风险最高。
 - `transient/runtime notice present` 表示本次 payload 中有临时提示，应该确认它是否只出现在尾部。
 - `system changed` 或 `tools changed` 表示请求前缀的更早部分变化，会显著影响缓存命中。
-- cache hit ratio 直接来自 provider usage 中的 `cache_read_input_tokens / input_tokens`。
+- cache hit ratio 使用 `cache_read_input_tokens / (input_tokens + cache_read_input_tokens)`，兼容 provider 将 cached tokens 单独统计的 usage 格式。
 
 Anthropic 链路还可以结合 `cache_creation_input_tokens` 看本轮是否创建了新缓存；OpenAI 链路通常只暴露 cached/read tokens。

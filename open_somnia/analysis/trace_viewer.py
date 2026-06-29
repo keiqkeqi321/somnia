@@ -51,9 +51,11 @@ class TraceRecord:
 
     @property
     def cache_hit_ratio(self) -> float | None:
-        if self.input_tokens <= 0:
-            return None
-        return self.cache_read_input_tokens / self.input_tokens
+        return _cache_hit_ratio(self.input_tokens, self.cache_read_input_tokens)
+
+    @property
+    def prompt_tokens_including_cache(self) -> int:
+        return _prompt_tokens_including_cache(self.input_tokens, self.cache_read_input_tokens)
 
     @property
     def context_usage_ratio(self) -> float | None:
@@ -245,8 +247,9 @@ def render_trace_viewer(
     total_output = sum(record.output_tokens for record in records)
     total_cache_read = sum(record.cache_read_input_tokens for record in records)
     total_cache_creation = sum(record.cache_creation_input_tokens for record in records)
-    sessions = {record.session_id for record in records if record.session_id}
-    hit_ratio = total_cache_read / total_input if total_input else None
+    total_prompt_including_cache = sum(record.prompt_tokens_including_cache for record in records)
+    sessions = sorted({record.session_id for record in records if record.session_id})
+    hit_ratio = _cache_hit_ratio(total_input, total_cache_read)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     filter_note = []
     if session_id:
@@ -254,6 +257,7 @@ def render_trace_viewer(
     if limit:
         filter_note.append(f"limit={limit}")
     subtitle = " · ".join(filter_note) if filter_note else "all provider payload dumps"
+    session_options = _render_session_options(sessions, selected_session=session_id)
 
     rows = "\n".join(_render_trace_row(record, index) for index, record in enumerate(records, start=1))
     details = "\n".join(_render_trace_detail(record, index) for index, record in enumerate(records, start=1))
@@ -308,12 +312,13 @@ def render_trace_viewer(
     .muted {{ color: var(--muted); }}
     .toolbar {{
       display: flex;
+      flex-wrap: wrap;
       gap: 10px;
       align-items: center;
       margin: 18px 0 4px;
-      max-width: 760px;
+      max-width: 980px;
     }}
-    input[type="search"] {{
+    input[type="search"], select {{
       width: 100%;
       padding: 10px 12px;
       border: 1px solid var(--line);
@@ -321,6 +326,8 @@ def render_trace_viewer(
       background: #fff;
       color: var(--text);
     }}
+    input[type="search"] {{ flex: 1 1 420px; }}
+    select {{ flex: 0 1 280px; }}
     .grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -405,16 +412,21 @@ def render_trace_viewer(
     <h1>Somnia Trace Viewer</h1>
     <div class="muted">Generated {html.escape(generated_at)} from {html.escape(str(payload_dir or 'provider payloads'))} · {html.escape(subtitle)}</div>
     <div class="toolbar">
+      <select id="session-filter" aria-label="Filter by session">
+        <option value="">All sessions</option>
+        {session_options}
+      </select>
       <input id="filter" type="search" placeholder="Filter by session, model, provider, kind, risk, filename, or message preview" aria-label="Filter traces">
     </div>
     <div class="grid">
-      {_metric_card("Traces", str(len(records)))}
-      {_metric_card("Sessions", str(len(sessions)))}
-      {_metric_card("Cache hit", _format_percent(hit_ratio))}
-      {_metric_card("Input tokens", _format_int(total_input))}
-      {_metric_card("Cache read", _format_int(total_cache_read))}
-      {_metric_card("Cache create", _format_int(total_cache_creation))}
-      {_metric_card("Output tokens", _format_int(total_output))}
+      {_metric_card("Traces", str(len(records)), value_id="metric-traces")}
+      {_metric_card("Sessions", str(len(sessions)), value_id="metric-sessions")}
+      {_metric_card("Cache hit", _format_percent(hit_ratio), value_id="metric-cache-hit")}
+      {_metric_card("Prompt tokens", _format_int(total_prompt_including_cache), value_id="metric-prompt")}
+      {_metric_card("Input tokens", _format_int(total_input), value_id="metric-input")}
+      {_metric_card("Cache read", _format_int(total_cache_read), value_id="metric-cache-read")}
+      {_metric_card("Cache create", _format_int(total_cache_creation), value_id="metric-cache-create")}
+      {_metric_card("Output tokens", _format_int(total_output), value_id="metric-output")}
     </div>
   </header>
   <main>
@@ -448,13 +460,67 @@ def render_trace_viewer(
   </main>
   <script>
     const filter = document.getElementById('filter');
+    const sessionFilter = document.getElementById('session-filter');
+    const metricIds = {{
+      traces: 'metric-traces',
+      sessions: 'metric-sessions',
+      cacheHit: 'metric-cache-hit',
+      prompt: 'metric-prompt',
+      input: 'metric-input',
+      cacheRead: 'metric-cache-read',
+      cacheCreate: 'metric-cache-create',
+      output: 'metric-output',
+    }};
+    function formatInt(value) {{
+      return Number(value || 0).toLocaleString('en-US');
+    }}
+    function formatPercent(value) {{
+      return value == null ? '-' : `${{(value * 100).toFixed(1)}}%`;
+    }}
+    function setMetric(id, value) {{
+      const node = document.getElementById(id);
+      if (node) node.textContent = value;
+    }}
+    function updateMetrics() {{
+      const visibleRows = Array.from(document.querySelectorAll('#trace-rows tr[data-record="trace"]'))
+        .filter(row => !row.classList.contains('hidden'));
+      let input = 0;
+      let output = 0;
+      let cacheRead = 0;
+      let cacheCreate = 0;
+      let prompt = 0;
+      const sessions = new Set();
+      for (const row of visibleRows) {{
+        input += Number(row.dataset.inputTokens || 0);
+        output += Number(row.dataset.outputTokens || 0);
+        cacheRead += Number(row.dataset.cacheReadTokens || 0);
+        cacheCreate += Number(row.dataset.cacheCreateTokens || 0);
+        prompt += Number(row.dataset.promptTokens || 0);
+        if (row.dataset.session) sessions.add(row.dataset.session);
+      }}
+      const denominator = input + cacheRead;
+      setMetric(metricIds.traces, formatInt(visibleRows.length));
+      setMetric(metricIds.sessions, formatInt(sessions.size));
+      setMetric(metricIds.cacheHit, denominator > 0 ? formatPercent(cacheRead / denominator) : '-');
+      setMetric(metricIds.prompt, formatInt(prompt));
+      setMetric(metricIds.input, formatInt(input));
+      setMetric(metricIds.cacheRead, formatInt(cacheRead));
+      setMetric(metricIds.cacheCreate, formatInt(cacheCreate));
+      setMetric(metricIds.output, formatInt(output));
+    }}
     function applyFilter() {{
       const q = (filter.value || '').trim().toLowerCase();
+      const session = (sessionFilter.value || '').trim();
       for (const row of document.querySelectorAll('[data-search]')) {{
-        row.classList.toggle('hidden', q.length > 0 && !row.dataset.search.includes(q));
+        const matchesText = q.length === 0 || row.dataset.search.includes(q);
+        const matchesSession = session.length === 0 || row.dataset.session === session;
+        row.classList.toggle('hidden', !matchesText || !matchesSession);
       }}
+      updateMetrics();
     }}
     filter.addEventListener('input', applyFilter);
+    sessionFilter.addEventListener('change', applyFilter);
+    updateMetrics();
   </script>
 </body>
 </html>
@@ -479,7 +545,7 @@ def _render_trace_row(record: TraceRecord, index: int) -> str:
     transient = ""
     if record.transient_message_count or record.runtime_notice_count:
         transient = f" <span class=\"pill warn\">transient {record.transient_message_count} / notice {record.runtime_notice_count}</span>"
-    return f"""<tr data-search="{html.escape(search)}">
+    return f"""<tr data-record="trace" data-search="{html.escape(search)}" data-session="{html.escape(record.session_id)}" data-input-tokens="{record.input_tokens}" data-output-tokens="{record.output_tokens}" data-cache-read-tokens="{record.cache_read_input_tokens}" data-cache-create-tokens="{record.cache_creation_input_tokens}" data-prompt-tokens="{record.prompt_tokens_including_cache}">
   <td>{index}</td>
   <td>{html.escape(_format_time(record.timestamp))}</td>
   <td><code>{html.escape(record.session_id or "-")}</code><div class="muted">{html.escape(record.actor)}</div></td>
@@ -489,7 +555,7 @@ def _render_trace_row(record: TraceRecord, index: int) -> str:
   <td>{record.message_count}<div class="muted">{_format_int(record.message_content_chars)} chars</div>{transient}</td>
   <td>{_format_int(record.system_prompt_chars)} chars<div class="muted">stable {_format_int(record.system_stable_chars)} / dynamic {_format_int(record.system_dynamic_chars)}</div></td>
   <td>{record.tool_count}</td>
-  <td><span class="pill {cache_class}">{_format_percent(record.cache_hit_ratio)}</span><div class="muted">read {_format_int(record.cache_read_input_tokens)} · create {_format_int(record.cache_creation_input_tokens)}</div></td>
+  <td><span class="pill {cache_class}">{_format_percent(record.cache_hit_ratio)}</span><div class="muted">read {_format_int(record.cache_read_input_tokens)} · prompt {_format_int(record.prompt_tokens_including_cache)} · create {_format_int(record.cache_creation_input_tokens)}</div></td>
   <td>{_format_int(record.context_used_tokens)} / {_format_int(record.context_max_tokens)}<div class="muted">{_format_percent(record.context_usage_ratio)}</div></td>
   <td><span class="pill {status_class}">{status}</span><div class="muted">{_format_latency(record.latency_ms)}</div></td>
 </tr>"""
@@ -508,7 +574,7 @@ def _render_diff_row(diff: TraceDiff, index: int) -> str:
     risk_html = _chips(diff.cache_risks, default="low risk", default_class="good")
     search = _search_text(diff.current.session_id, diff.previous.path.name, diff.current.path.name, *diff.cache_risks, *changed)
     first_diff = "-" if diff.first_diff_message_index is None else str(diff.first_diff_message_index)
-    return f"""<tr data-search="{html.escape(search)}">
+    return f"""<tr data-search="{html.escape(search)}" data-session="{html.escape(diff.current.session_id)}">
   <td>{index}</td>
   <td><code>{html.escape(diff.current.session_id or "-")}</code></td>
   <td>{html.escape(diff.previous.path.name)}</td>
@@ -537,7 +603,7 @@ def _render_trace_detail(record: TraceRecord, index: int) -> str:
     message_rows = "\n".join(_render_message_preview(message, idx) for idx, message in enumerate(messages))
     if not message_rows:
         message_rows = "<div class=\"muted\">No messages captured.</div>"
-    return f"""<details class="trace" data-search="{html.escape(search)}">
+    return f"""<details class="trace" data-search="{html.escape(search)}" data-session="{html.escape(record.session_id)}">
   <summary>#{index} {html.escape(record.path.name)} · {html.escape(record.session_id or "-")} · {html.escape(record.kind)} · cache {_format_percent(record.cache_hit_ratio)}</summary>
   <div class="detail-body">
     <div class="two-col">
@@ -549,6 +615,7 @@ def _render_trace_detail(record: TraceRecord, index: int) -> str:
         <h3>Payload Metrics</h3>
         <div class="chips">
           <span class="pill">input {_format_int(record.input_tokens)}</span>
+          <span class="pill">prompt {_format_int(record.prompt_tokens_including_cache)}</span>
           <span class="pill">output {_format_int(record.output_tokens)}</span>
           <span class="pill accent">cache read {_format_int(record.cache_read_input_tokens)}</span>
           <span class="pill accent">cache create {_format_int(record.cache_creation_input_tokens)}</span>
@@ -625,14 +692,25 @@ def _summary_payload(record: TraceRecord) -> dict[str, Any]:
             "cache_read_input_tokens": record.cache_read_input_tokens,
             "cache_creation_input_tokens": record.cache_creation_input_tokens,
             "cache_hit_ratio": record.cache_hit_ratio,
+            "prompt_tokens_including_cache": record.prompt_tokens_including_cache,
         },
         "context_usage": record.payload.get("context_usage"),
         "provider_error": record.payload.get("provider_error"),
     }
 
 
-def _metric_card(label: str, value: str) -> str:
-    return f"<div class=\"card\"><span class=\"muted\">{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>"
+def _metric_card(label: str, value: str, *, value_id: str | None = None) -> str:
+    id_attr = f" id=\"{html.escape(value_id)}\"" if value_id else ""
+    return f"<div class=\"card\"><span class=\"muted\">{html.escape(label)}</span><strong{id_attr}>{html.escape(value)}</strong></div>"
+
+
+def _render_session_options(sessions: list[str], *, selected_session: str | None = None) -> str:
+    selected = str(selected_session or "").strip()
+    options: list[str] = []
+    for session in sessions:
+        selected_attr = " selected" if session == selected else ""
+        options.append(f"<option value=\"{html.escape(session)}\"{selected_attr}>{html.escape(session)}</option>")
+    return "\n        ".join(options)
 
 
 def _chips(values: list[str], *, default: str, default_class: str) -> str:
@@ -792,6 +870,19 @@ def _format_latency(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:.1f} ms"
+
+
+def _prompt_tokens_including_cache(input_tokens: int, cache_read_input_tokens: int) -> int:
+    input_tokens = max(0, int(input_tokens or 0))
+    cache_read_input_tokens = max(0, int(cache_read_input_tokens or 0))
+    return input_tokens + cache_read_input_tokens
+
+
+def _cache_hit_ratio(input_tokens: int, cache_read_input_tokens: int) -> float | None:
+    total_prompt_tokens = _prompt_tokens_including_cache(input_tokens, cache_read_input_tokens)
+    if total_prompt_tokens <= 0:
+        return None
+    return max(0.0, min(1.0, cache_read_input_tokens / total_prompt_tokens))
 
 
 def _ratio_class(value: float | None) -> str:

@@ -104,10 +104,84 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn("transient/runtime notice present", diffs[0].cache_risks)
         self.assertIn("Somnia Trace Viewer", html)
         self.assertIn("session-1", html)
-        self.assertIn("80.0%", html)
+        self.assertIn('id="session-filter"', html)
+        self.assertIn('id="metric-traces"', html)
+        self.assertIn('id="metric-cache-hit"', html)
+        self.assertIn("function updateMetrics()", html)
+        self.assertIn('<option value="session-1">session-1</option>', html)
+        self.assertIn('data-session="session-1"', html)
+        self.assertIn('data-record="trace"', html)
+        self.assertIn('data-input-tokens="1000"', html)
+        self.assertIn('data-cache-read-tokens="800"', html)
+        self.assertIn("28.6%", html)
+        self.assertIn("Prompt tokens", html)
         self.assertIn("cache read 800", html)
+        self.assertIn("prompt 1,800", html)
         self.assertIn("message prefix changed at start", html)
         self.assertIn("&lt;runtime-notice&gt;todo changed&lt;/runtime-notice&gt;", html)
+
+    def test_trace_viewer_cache_hit_ratio_uses_prompt_tokens_including_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / ".open_somnia" / "logs"
+            payloads = provider_payload_dir(logs_dir)
+            payload = {
+                "timestamp": 1000.0,
+                "session_id": "session-cache",
+                "kind": "turn",
+                "provider": {"name": "mimo", "type": "openai", "model": "mimo-v2.5-pro"},
+                "provider_response": {
+                    "usage": {
+                        "input_tokens": 223,
+                        "output_tokens": 141,
+                        "total_tokens": 364,
+                        "cache_read_input_tokens": 41344,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }
+            self._write_payload(payloads, "session-cache-1000.json", payload)
+
+            records = load_trace_records(payloads)
+            report = build_trace_viewer_report(logs_dir)
+            html = report.read_text(encoding="utf-8")
+
+        self.assertEqual(len(records), 1)
+        self.assertAlmostEqual(records[0].cache_hit_ratio or 0.0, 41344 / (223 + 41344))
+        self.assertEqual(records[0].prompt_tokens_including_cache, 41567)
+        self.assertIn("99.5%", html)
+        self.assertIn("prompt 41,567", html)
+        self.assertNotIn("18539.9%", html)
+
+    def test_trace_viewer_session_filter_can_preselect_generated_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / ".open_somnia" / "logs"
+            payloads = provider_payload_dir(logs_dir)
+            self._write_payload(
+                payloads,
+                "session-a-1000.json",
+                {
+                    "timestamp": 1000.0,
+                    "session_id": "session-a",
+                    "provider_response": {"usage": {"input_tokens": 10}},
+                },
+            )
+            self._write_payload(
+                payloads,
+                "session-b-1001.json",
+                {
+                    "timestamp": 1001.0,
+                    "session_id": "session-b",
+                    "provider_response": {"usage": {"input_tokens": 20}},
+                },
+            )
+
+            report = build_trace_viewer_report(logs_dir, session_id="session-b")
+            html = report.read_text(encoding="utf-8")
+
+        self.assertIn('<select id="session-filter"', html)
+        self.assertIn('<option value="session-b" selected>session-b</option>', html)
+        self.assertIn('data-session="session-b"', html)
+        self.assertNotIn('data-session="session-a"', html)
 
     def test_trace_viewer_handles_empty_payload_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -127,12 +201,13 @@ class TraceViewerTests(unittest.TestCase):
             workspace.mkdir()
             home.mkdir()
 
-            with patch("pathlib.Path.home", return_value=home):
+            with patch("pathlib.Path.home", return_value=home), patch("webbrowser.open") as mock_open:
                 status = main(["--workspace", str(workspace), "trace-viewer", "--output", str(output)])
 
             html = output.read_text(encoding="utf-8")
 
         self.assertEqual(status, 0)
+        mock_open.assert_called_once()
         self.assertIn("Somnia Trace Viewer", html)
         self.assertIn("No provider payload dumps found.", html)
 
