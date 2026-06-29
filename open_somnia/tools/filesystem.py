@@ -28,14 +28,24 @@ EXPLORATION_IGNORED_DIR_NAMES = {
     ".open_somnia",
     "__pycache__",
     ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
     "node_modules",
     "Library",
     "Temp",
     "Logs",
     "obj",
     "bin",
+    "build",
+    "coverage",
     "dist",
+    "target",
 }
+EXPLORATION_IGNORED_DIR_PREFIXES = (
+    ".tmp",
+    "tmp",
+)
 CODE_FILE_EXTENSIONS = {
     ".c",
     ".cc",
@@ -204,9 +214,13 @@ def _read_text_with_fallback(path: Path) -> str:
 
 
 def _should_skip_name(name: str, *, include_hidden: bool) -> bool:
+    if name in EXPLORATION_IGNORED_DIR_NAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in EXPLORATION_IGNORED_DIR_PREFIXES):
+        return True
     if not include_hidden and name.startswith("."):
         return True
-    return name in EXPLORATION_IGNORED_DIR_NAMES
+    return False
 
 
 def _raise_if_tool_interrupted(ctx: Any) -> None:

@@ -1066,6 +1066,52 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "(no matches)")
 
+    def test_grep_search_skips_generated_and_tmp_dirs_during_recursive_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("needle\n", encoding="utf-8")
+            for ignored_dir in ("tmpabcdef", ".tmp-cache", "target", "build", "coverage"):
+                ignored = root / ignored_dir
+                ignored.mkdir(parents=True)
+                (ignored / "ignored.py").write_text("needle\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "needle", "glob": "*.py"})
+
+        self.assertEqual(result, "src/app.py:1:needle")
+
+    def test_glob_search_skips_generated_and_tmp_dirs_during_recursive_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("print('ready')\n", encoding="utf-8")
+            for ignored_dir in ("tmpabcdef", ".tmp-cache", "target"):
+                ignored = root / ignored_dir
+                ignored.mkdir(parents=True)
+                (ignored / "ignored.py").write_text("print('skip')\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = glob_search(ctx, {"pattern": "*.py", "recursive": True})
+
+        self.assertEqual(result, "src/app.py")
+
     def test_grep_search_supports_brace_expansion_and_base_relative_glob(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
