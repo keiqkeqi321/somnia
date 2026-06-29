@@ -301,6 +301,9 @@ def render_trace_viewer(
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }}
     header {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
       padding: 28px 32px 18px;
       background: var(--panel);
       border-bottom: 1px solid var(--line);
@@ -308,7 +311,7 @@ def render_trace_viewer(
     h1 {{ margin: 0 0 6px; font-size: 28px; letter-spacing: 0; }}
     h2 {{ margin: 28px 0 12px; font-size: 18px; letter-spacing: 0; }}
     h3 {{ margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }}
-    main {{ padding: 22px 32px 40px; }}
+    main {{ padding: 18px 32px 40px; }}
     .muted {{ color: var(--muted); }}
     .toolbar {{
       display: flex;
@@ -330,19 +333,44 @@ def render_trace_viewer(
     select {{ flex: 0 1 280px; }}
     .grid {{
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 8px;
       margin-top: 18px;
     }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 14px;
+      padding: 10px 12px;
     }}
-    .card strong {{ display: block; font-size: 22px; margin-top: 4px; }}
+    .card strong {{ display: block; font-size: 19px; margin-top: 2px; }}
+    .tabs {{
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }}
+    .tab-button {{
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      padding: 9px 12px;
+      font: inherit;
+    }}
+    .tab-button[aria-selected="true"] {{
+      background: var(--accent-weak);
+      border-color: #87dcca;
+      color: var(--accent);
+      font-weight: 650;
+    }}
+    .panel.hidden {{ display: none; }}
+    .panel h2 {{ margin-top: 0; }}
     .table-wrap {{
       overflow-x: auto;
+      max-height: calc(100vh - 310px);
+      overflow-y: auto;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -390,6 +418,11 @@ def render_trace_viewer(
       margin-bottom: 10px;
       overflow: hidden;
     }}
+    #trace-details {{
+      max-height: calc(100vh - 310px);
+      overflow: auto;
+      padding-right: 4px;
+    }}
     details.trace > summary {{
       cursor: pointer;
       padding: 12px 14px;
@@ -430,33 +463,45 @@ def render_trace_viewer(
     </div>
   </header>
   <main>
-    <h2>Requests</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th><th>Time</th><th>Session</th><th>Kind</th><th>Provider</th><th>Model</th>
-            <th>Messages</th><th>System</th><th>Tools</th><th>Cache</th><th>Context</th><th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="trace-rows">{rows}</tbody>
-      </table>
-    </div>
+    <nav class="tabs" aria-label="Trace views">
+      <button class="tab-button" type="button" data-tab="requests" aria-selected="true">Requests</button>
+      <button class="tab-button" type="button" data-tab="diffs" aria-selected="false">Prefix Diffs</button>
+      <button class="tab-button" type="button" data-tab="details" aria-selected="false">Details</button>
+    </nav>
 
-    <h2>Adjacent Prefix Diffs</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th><th>Session</th><th>From</th><th>To</th><th>Common prefix</th><th>First diff</th><th>Changed</th><th>Cache risk</th>
-          </tr>
-        </thead>
-        <tbody id="diff-rows">{diff_rows}</tbody>
-      </table>
-    </div>
+    <section class="panel" id="panel-requests" data-panel="requests">
+      <h2>Requests</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Time</th><th>Session</th><th>Kind</th><th>Provider</th><th>Model</th>
+              <th>Messages</th><th>System</th><th>Tools</th><th>Cache</th><th>Context</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="trace-rows">{rows}</tbody>
+        </table>
+      </div>
+    </section>
 
-    <h2>Trace Details</h2>
-    <section id="trace-details">{details}</section>
+    <section class="panel hidden" id="panel-diffs" data-panel="diffs">
+      <h2>Adjacent Prefix Diffs</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Session</th><th>From</th><th>To</th><th>Common prefix</th><th>First diff</th><th>Changed</th><th>Cache risk</th>
+            </tr>
+          </thead>
+          <tbody id="diff-rows">{diff_rows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="panel-details" data-panel="details">
+      <h2>Trace Details</h2>
+      <div id="trace-details">{details}</div>
+    </section>
   </main>
   <script>
     const filter = document.getElementById('filter');
@@ -520,6 +565,17 @@ def render_trace_viewer(
     }}
     filter.addEventListener('input', applyFilter);
     sessionFilter.addEventListener('change', applyFilter);
+    for (const button of document.querySelectorAll('.tab-button')) {{
+      button.addEventListener('click', () => {{
+        const tab = button.dataset.tab;
+        for (const item of document.querySelectorAll('.tab-button')) {{
+          item.setAttribute('aria-selected', String(item.dataset.tab === tab));
+        }}
+        for (const panel of document.querySelectorAll('[data-panel]')) {{
+          panel.classList.toggle('hidden', panel.dataset.panel !== tab);
+        }}
+      }});
+    }}
     updateMetrics();
   </script>
 </body>
