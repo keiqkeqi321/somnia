@@ -1897,6 +1897,33 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(cached["scope"], "builtin")
         self.assertTrue(cached["cached"])
 
+    def test_builtin_authorization_file_allows_wildcard_tool_patterns(self) -> None:
+        root = self._stable_test_dir("builtin-auth-wildcard")
+        builtin_path = root / "permissions.json"
+        builtin_path.write_text(json.dumps({"allow": ["mcp__codegraph__*"]}), encoding="utf-8")
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
+        runtime.execution_mode = "plan"
+        runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.authorization_request_handler = lambda **kwargs: self.fail("builtin wildcard authorization should be cached")
+
+        self.assertEqual(runtime._builtin_authorized_tools, {"mcp__codegraph__*"})
+        self.assertIsNone(
+            OpenAgentRuntime.authorize_tool_call(runtime, "mcp__codegraph__codegraph_explore", {"query": "PermissionManager"})
+        )
+        self.assertIn(
+            "requires broader tool access",
+            OpenAgentRuntime.authorize_tool_call(runtime, "mcp__external__query", {"query": "demo"}),
+        )
+        cached = json.loads(
+            OpenAgentRuntime.request_authorization(runtime, "mcp__codegraph__codegraph_explore", "Read code graph")
+        )
+        self.assertEqual(cached["status"], "approved")
+        self.assertEqual(cached["scope"], "builtin")
+        self.assertTrue(cached["cached"])
+
     def test_workspace_authorization_persistence_excludes_builtin_authorizations(self) -> None:
         root = self._stable_test_dir("workspace-auth-excludes-builtin")
         data_dir = root / ".open_somnia"

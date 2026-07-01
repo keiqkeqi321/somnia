@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, tool_block_message
+from open_somnia.runtime.permissions import is_tool_authorized_by_patterns
 from open_somnia.tools.registry import ToolDefinition
 
 VALID_MSG_TYPES = [
@@ -110,7 +111,9 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             lead_workspace = getattr(runtime, "_workspace_authorized_tools", set())
             lead_builtin = getattr(runtime, "_builtin_authorized_tools", set())
             lead_can_grant = False
-            if tool_name in lead_builtin or tool_name in lead_workspace:
+            if is_tool_authorized_by_patterns(tool_name, lead_builtin) or is_tool_authorized_by_patterns(
+                tool_name, lead_workspace
+            ):
                 lead_can_grant = True
             elif int(lead_once.get(tool_name, 0) or 0) > 0:
                 remaining = int(lead_once.get(tool_name, 0) or 0)

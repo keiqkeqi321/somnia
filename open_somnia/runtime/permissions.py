@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,10 @@ from open_somnia.runtime.execution_mode import (
 )
 from open_somnia.integrations.gitnexus import should_allow_gitnexus_tool_without_authorization
 from open_somnia.storage.common import read_json, write_json
+
+
+def is_tool_authorized_by_patterns(tool_name: str, authorized_tools: set[str]) -> bool:
+    return any(fnmatchcase(tool_name, pattern) for pattern in authorized_tools)
 
 
 class PermissionManager:
@@ -88,9 +93,9 @@ class PermissionManager:
         if include_mode and normalize_execution_mode(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)) == "yolo":
             return {"status": "approved", "scope": "mode", "tool_name": tool_name, "cached": True}
         builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
-        if tool_name in builtin_authorized:
+        if is_tool_authorized_by_patterns(tool_name, builtin_authorized):
             return {"status": "approved", "scope": "builtin", "tool_name": tool_name, "cached": True}
-        if tool_name in self.runtime._workspace_authorized_tools:
+        if is_tool_authorized_by_patterns(tool_name, self.runtime._workspace_authorized_tools):
             return {"status": "approved", "scope": "workspace", "tool_name": tool_name, "cached": True}
         once_authorized = getattr(self.runtime, "_once_authorized_tools", {})
         if int(once_authorized.get(tool_name, 0) or 0) > 0:
@@ -116,7 +121,9 @@ class PermissionManager:
                     worker_once[worker_key] = remaining_worker - 1
                 return None
         builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
-        if tool_name in builtin_authorized or tool_name in self.runtime._workspace_authorized_tools:
+        if is_tool_authorized_by_patterns(
+            tool_name, builtin_authorized
+        ) or is_tool_authorized_by_patterns(tool_name, self.runtime._workspace_authorized_tools):
             return None
         remaining = self.runtime._once_authorized_tools.get(tool_name, 0)
         if remaining > 0:
