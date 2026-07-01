@@ -73,6 +73,18 @@ export interface ProviderDescriptor {
   is_active: boolean;
 }
 
+export interface ProviderPresetDescriptor {
+  id: string;
+  label: string;
+  provider_name: string;
+  provider_type: string;
+  base_url: string;
+  models: string[];
+  default_model: string;
+  api_key_url?: string;
+  notes?: string;
+}
+
 export interface ModelDescriptor {
   provider_name: string;
   name: string;

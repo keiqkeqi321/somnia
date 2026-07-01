@@ -5,6 +5,7 @@ import type {
   ModelDescriptor,
   McpServerSummary,
   ProviderDescriptor,
+  ProviderPresetDescriptor,
   SaveSettingsConfigSectionResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
@@ -161,6 +162,11 @@ export class SidecarClient {
   async listProviders(): Promise<ProviderDescriptor[]> {
     const payload = await parseResponse<{ providers: ProviderDescriptor[] }>(await fetch(`${this.baseUrl}/providers`));
     return payload.providers;
+  }
+
+  async listProviderPresets(): Promise<ProviderPresetDescriptor[]> {
+    const payload = await parseResponse<{ presets: ProviderPresetDescriptor[] }>(await fetch(`${this.baseUrl}/provider-presets`));
+    return payload.presets;
   }
 
   async listModels(providerName?: string): Promise<ModelDescriptor[]> {

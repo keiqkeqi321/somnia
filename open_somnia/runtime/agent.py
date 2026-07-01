@@ -26,13 +26,18 @@ from open_somnia.collaboration.bus import MessageBus
 from open_somnia.collaboration.protocols import RequestTracker
 from open_somnia.config.models import AppSettings, HookSettings, ModelTraits, ProviderProfileSettings, ProviderSettings
 from open_somnia.config.settings import (
+    _load_mcp_servers,
     _materialize_provider,
+    _merge_config,
     _normalize_model_id,
+    _read_toml,
+    global_config_path,
     load_settings,
     persist_hook_enabled,
     persist_provider_reasoning_level,
     persist_provider_selection,
     persist_vision_model,
+    workspace_config_path,
 )
 from open_somnia.config.settings import BUILTIN_NOTIFY_MANAGER
 from open_somnia.hooks.manager import HookManager
@@ -69,6 +74,7 @@ from open_somnia.runtime.messages import (
     render_text_content,
 )
 from open_somnia.runtime.permissions import PermissionManager
+from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
@@ -696,6 +702,45 @@ class OpenAgentRuntime:
         self.background_manager.max_output_chars = reloaded.runtime.max_tool_output_chars
         self._context_usage_cache = {}
         self._payload_message_cache = {}
+
+    def reload_plugin_configuration(self, *, mcp_registry_factory=None, progress_callback=None) -> dict[str, Any]:
+        def emit_progress(message: str) -> None:
+            if callable(progress_callback):
+                progress_callback(message)
+
+        emit_progress("loading configuration")
+        global_raw = _read_toml(global_config_path())
+        workspace_raw = _read_toml(workspace_config_path(self.settings.workspace_root))
+        raw_config = _merge_config(global_raw, workspace_raw)
+        mcp_servers = _load_mcp_servers(self.settings.workspace_root, raw_config)
+        old_registry = getattr(self, "mcp_registry", None)
+        if old_registry is not None:
+            emit_progress("closing existing MCP clients")
+            old_registry.close()
+        self.settings.raw_config = raw_config
+        self.settings.mcp_servers = mcp_servers
+        registry_factory = mcp_registry_factory or MCPRegistry
+        emit_progress("registering MCP tools")
+        self.mcp_registry = registry_factory(self.settings.mcp_servers)
+        self.registry = ToolRegistry()
+        self._register_core_tools(self.registry)
+        emit_progress("reloading skills")
+        self.skill_loader = SkillLoader.for_workspace(self.settings.workspace_root)
+        self.skill_loader.reload()
+        emit_progress("reloading project instructions")
+        self.system_prompt_builder = SystemPromptBuilder(self)
+        self.invalidate_tool_schema_state()
+        project_instructions = ProjectInstructionsLoader(self.settings.workspace_root).load_scoped()
+        enabled_mcp_servers = [server for server in self.settings.mcp_servers if getattr(server, "enabled", True)]
+        server_tools = getattr(self.mcp_registry, "server_tools", {})
+        mcp_tool_count = sum(len(tools) for tools in server_tools.values()) if isinstance(server_tools, dict) else 0
+        return {
+            "mcp_server_count": len(enabled_mcp_servers),
+            "mcp_tool_count": mcp_tool_count,
+            "skill_count": len(getattr(self.skill_loader, "skills", {}) or {}),
+            "project_instruction_count": len(project_instructions),
+            "mcp_errors": dict(getattr(self.mcp_registry, "errors", {}) or {}),
+        }
 
     def set_hook_enabled(self, hook: HookSettings, enabled: bool) -> str:
         config_path = persist_hook_enabled(hook, enabled)

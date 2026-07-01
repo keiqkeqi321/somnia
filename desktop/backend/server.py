@@ -40,6 +40,7 @@ from open_somnia import __version__
 from open_somnia.app_service import AppService
 from open_somnia.config.models import AppSettings
 from open_somnia.config.backup import write_config_text, remove_config_file
+from open_somnia.config.provider_presets import list_provider_presets, serialize_provider_preset
 from open_somnia.config.settings import (
     APP_DIRNAME,
     _load_mcp_servers,
@@ -641,6 +642,9 @@ class SidecarServer:
         except ValueError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
+    def list_provider_presets(self) -> list[dict[str, object]]:
+        return [serialize_provider_preset(preset) for preset in list_provider_presets()]
+
     def debug_model_connection(self, provider_name: str, model: str) -> dict[str, Any]:
         try:
             result = self.service.debug_model_connection(provider_name, model)
@@ -766,20 +770,8 @@ class SidecarServer:
         }
 
     def reload_mcp_runtime(self) -> None:
-        global_raw = _read_toml(global_config_path())
-        workspace_raw = _read_toml(workspace_config_path(self.settings.workspace_root))
-        raw = _merge_config(global_raw, workspace_raw)
-        mcp_servers = _load_mcp_servers(self.settings.workspace_root, raw)
-        old_registry = getattr(self.runtime, "mcp_registry", None)
-        if old_registry is not None:
-            old_registry.close()
-        unregister_prefix = getattr(self.runtime.registry, "unregister_prefix", None)
-        if callable(unregister_prefix):
-            unregister_prefix("mcp__")
-        self.settings.mcp_servers = mcp_servers
-        self.runtime.settings.mcp_servers = mcp_servers
-        self.runtime.mcp_registry = MCPRegistry(mcp_servers)
-        self.runtime.mcp_registry.register_tools(self.runtime.registry)
+        self.runtime.reload_plugin_configuration(mcp_registry_factory=MCPRegistry)
+        self.settings.mcp_servers = self.runtime.settings.mcp_servers
         self._mark_tool_registry_changed()
 
     def _mark_tool_registry_changed(self) -> None:
@@ -1178,6 +1170,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"session": self.sidecar.load_session(path_parts[1])}
         if path_parts == ["providers"]:
             return {"providers": self.sidecar.list_providers()}
+        if path_parts == ["provider-presets"]:
+            return {"presets": self.sidecar.list_provider_presets()}
         if path_parts == ["models"]:
             provider_name = (query.get("provider") or [None])[0]
             return {"models": self.sidecar.list_models(provider_name)}

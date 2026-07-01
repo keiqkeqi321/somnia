@@ -73,6 +73,7 @@ _CONTEXT_WINDOW_EXACT_MAPPINGS: dict[str, int] = {
     "minimax-m2.5-highspeed": 204_800,
     "minimax-m2.7": 204_800,
     "minimax-m2.7-highspeed": 204_800,
+    "minimax-m3": 1_000_000,
 }
 
 _CONTEXT_WINDOW_PREFIX_MAPPINGS: tuple[tuple[str, int], ...] = (
@@ -87,6 +88,7 @@ _CONTEXT_WINDOW_PREFIX_MAPPINGS: tuple[tuple[str, int], ...] = (
     ("minimax-m2.5", 204_800),
     ("minimax-m2.1", 204_800),
     ("minimax-m2", 204_800),
+    ("minimax-m3", 1_000_000),
 )
 
 

@@ -2095,6 +2095,77 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(runtime.settings.vision_model, "vision-model")
         mock_persist.assert_called_once_with(runtime.settings, "openai", "vision-model", scope="project")
 
+    def test_reload_plugin_configuration_refreshes_mcp_skills_and_project_instructions(self) -> None:
+        root = self._stable_test_dir("reload-plugin")
+        (root / "AGENTS.md").write_text("project guidance", encoding="utf-8")
+        (root / ".open_somnia" / "skills" / "review").mkdir(parents=True)
+        (root / ".open_somnia" / "skills" / "review" / "SKILL.md").write_text(
+            "---\ndescription: Review code\n---\nUse review guidance.",
+            encoding="utf-8",
+        )
+        config_path = root / ".open_somnia" / "open_somnia.toml"
+        config_path.write_text(
+            '[mcp_servers.fresh]\ntransport = "stdio"\ncommand = "python"\n',
+            encoding="utf-8",
+        )
+        provider = ProviderSettings(
+            name="openai",
+            provider_type="openai",
+            model="gpt-4.1",
+            api_key="",
+            max_tokens=4096,
+        )
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            workspace_root=root,
+            provider=provider,
+            mcp_servers=[],
+            raw_config={},
+        )
+        runtime.todo_manager = SimpleNamespace()
+        runtime.task_store = SimpleNamespace()
+        runtime.background_manager = SimpleNamespace()
+        runtime.team_manager = SimpleNamespace()
+        runtime.bus = SimpleNamespace()
+        runtime.request_tracker = SimpleNamespace()
+        runtime._context_usage_cache = {"session-1": "stale"}
+        runtime._payload_message_cache = {"session-1": "stale"}
+        runtime._recent_context_usage = {"session-1": "stale"}
+        old_registry = SimpleNamespace(closed=False, close=lambda: setattr(old_registry, "closed", True))
+        runtime.mcp_registry = old_registry
+
+        class FakeMCPRegistry:
+            def __init__(self, servers):
+                self.servers = list(servers)
+                self.server_tools = {}
+                self.errors = {}
+
+            def register_tools(self, registry):
+                self.server_tools["fresh"] = ["echo"]
+                registry.register(
+                    ToolDefinition(
+                        name="mcp__fresh__echo",
+                        description="Echo",
+                        input_schema={"type": "object", "properties": {}},
+                        handler=lambda ctx, payload: "ok",
+                    )
+                )
+
+        with patch("open_somnia.runtime.agent.MCPRegistry", FakeMCPRegistry):
+            summary = OpenAgentRuntime.reload_plugin_configuration(runtime)
+
+        self.assertTrue(old_registry.closed)
+        self.assertIn("mcp__fresh__echo", runtime.registry.names())
+        self.assertIn("fresh", [server.name for server in runtime.settings.mcp_servers])
+        self.assertGreaterEqual(summary["mcp_server_count"], 1)
+        self.assertEqual(summary["mcp_tool_count"], 1)
+        self.assertGreaterEqual(summary["skill_count"], 1)
+        self.assertIn("review", runtime.skill_loader.names())
+        self.assertEqual(summary["project_instruction_count"], 1)
+        self.assertEqual(runtime._context_usage_cache, {})
+        self.assertEqual(runtime._payload_message_cache, {})
+        self.assertEqual(runtime._recent_context_usage, {})
+
     def test_set_reasoning_level_updates_runtime_and_compact_manager(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

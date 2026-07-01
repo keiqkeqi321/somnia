@@ -22,6 +22,7 @@ from open_somnia.cli.repl import (
     _ensure_accept_edits_for_command,
     _expand_skill_command,
     _handle_hooks_command,
+    _handle_reloadplugin_command,
     _handle_scan_command,
     _handle_symbols_command,
     _is_exit_command,
@@ -935,6 +936,40 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertEqual(mock_choose.call_count, 5)
         mock_print.assert_not_called()
+
+    def test_reloadplugin_command_prints_reload_summary(self) -> None:
+        progress_messages: list[str] = []
+
+        def reload_plugin_configuration(progress_callback=None):
+            if callable(progress_callback):
+                progress_callback("registering MCP tools")
+                progress_messages.append("called")
+            return {
+                "mcp_server_count": 1,
+                "mcp_tool_count": 2,
+                "skill_count": 3,
+                "project_instruction_count": 1,
+                "mcp_errors": {"broken": "connection failed"},
+            }
+
+        runtime = SimpleNamespace(
+            reload_plugin_configuration=reload_plugin_configuration,
+        )
+
+        with patch("builtins.print") as mock_print:
+            _handle_reloadplugin_command(runtime)
+
+        printed_calls = [call.args[0] for call in mock_print.call_args_list]
+        self.assertEqual(progress_messages, ["called"])
+        self.assertIn("[reloadplugin] started", printed_calls)
+        self.assertIn("[reloadplugin] registering MCP tools...", printed_calls)
+        printed = printed_calls[-1]
+        self.assertIn("[reloadplugin complete]", printed)
+        self.assertIn("MCP servers: 1", printed)
+        self.assertIn("MCP tools: 2", printed)
+        self.assertIn("Skills: 3", printed)
+        self.assertIn("Project instruction files: 1", printed)
+        self.assertIn("- broken: connection failed", printed)
 
     def test_hooks_command_browses_events_and_toggles_selected_hook(self) -> None:
         builtin_hook = SimpleNamespace(
