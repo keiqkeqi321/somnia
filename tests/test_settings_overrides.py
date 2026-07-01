@@ -413,6 +413,43 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(openrouter_settings.provider.context_window_tokens, 131072)
         self.assertEqual(glm_settings.provider.context_window_tokens, 262144)
 
+    def test_provider_model_traits_merge_with_global_model_traits_by_field(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_global_config(
+                home,
+                """
+                [providers]
+                default = "deepseek-openai"
+
+                [providers.deepseek-openai]
+                provider_type = "openai"
+                models = ["deepseek-v4-pro"]
+                default_model = "deepseek-v4-pro"
+                api_key = "deepseek-test-key"
+
+                [model_traits."deepseek-v4-pro"]
+                cwt = 400000
+                """,
+            )
+            self._write_workspace_config(
+                root,
+                """
+                [model_traits.deepseek-openai."deepseek-v4-pro"]
+                reasoning_level = "deep"
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        traits = settings.provider_profiles["deepseek-openai"].model_traits["deepseek-v4-pro"]
+        self.assertEqual(settings.provider.context_window_tokens, 400000)
+        self.assertEqual(settings.provider.reasoning_level, "deep")
+        self.assertEqual(traits.context_window_tokens, 400000)
+        self.assertEqual(traits.reasoning_level, "deep")
+
     def test_load_settings_reads_provider_model_max_tokens(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)

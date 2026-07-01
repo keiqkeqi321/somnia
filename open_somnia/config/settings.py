@@ -980,6 +980,22 @@ def _load_provider_model_traits(raw: dict, provider_name: str) -> dict[str, Mode
     return model_traits
 
 
+def _merge_model_traits(base: ModelTraits, override: ModelTraits) -> ModelTraits:
+    return ModelTraits(
+        context_window_tokens=(
+            override.context_window_tokens if override.context_window_tokens is not None else base.context_window_tokens
+        ),
+        max_tokens=override.max_tokens if override.max_tokens is not None else base.max_tokens,
+        reasoning_level=override.reasoning_level if override.reasoning_level is not None else base.reasoning_level,
+        supports_reasoning=override.supports_reasoning if override.supports_reasoning is not None else base.supports_reasoning,
+        supports_adaptive_reasoning=(
+            override.supports_adaptive_reasoning
+            if override.supports_adaptive_reasoning is not None
+            else base.supports_adaptive_reasoning
+        ),
+    )
+
+
 def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfileSettings:
     provider_name = name.strip().lower()
     defaults = _default_provider_profile(provider_name)
@@ -997,7 +1013,11 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
         models = list(defaults.models)
         default_model = defaults.default_model
     model_traits = dict(_load_global_model_traits(raw))
-    model_traits.update(_load_provider_model_traits(raw, provider_name))
+    for model_name, provider_traits in _load_provider_model_traits(raw, provider_name).items():
+        global_traits = model_traits.get(model_name)
+        model_traits[model_name] = (
+            _merge_model_traits(global_traits, provider_traits) if global_traits is not None else provider_traits
+        )
     return ProviderProfileSettings(
         name=provider_name,
         provider_type=provider_type,
