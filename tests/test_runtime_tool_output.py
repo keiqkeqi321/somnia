@@ -343,6 +343,28 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(log_id, "team-log")
         self.assertEqual(fake_stdout.getvalue(), "")
 
+    def test_tool_started_prints_running_state_and_input(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime._supports_ansi_output = lambda: False
+
+        class _Stdout(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        fake_stdout = _Stdout()
+        with patch("sys.stdout", fake_stdout):
+            OpenAgentRuntime.print_tool_started(
+                runtime,
+                "lead",
+                "bash",
+                {"command": "python slow.py", "timeout_ms": 120000},
+            )
+
+        rendered = fake_stdout.getvalue()
+        self.assertIn("Running Bash(python slow.py)", rendered)
+        self.assertIn('"command":"python slow.py"', rendered)
+        self.assertIn('"timeout_ms":120000', rendered)
+
     def test_file_edit_tool_event_uses_compact_diffstat_output(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(write=lambda **kwargs: {"id": "edit-log"})

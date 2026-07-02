@@ -1200,6 +1200,7 @@ function App() {
       return;
     }
     const toolName = readEventString(event.payload.tool_name, "tool");
+    const toolCallId = runtimeToolCallId(event);
     if (toolName === "subagent" && readEventString(event.payload.actor, "lead") === "lead") {
       noteSubagentStarted(projectPath, event);
     }
@@ -1208,10 +1209,10 @@ function App() {
       [key]: [
         ...(previous[key] ?? []),
         {
-          id: runtimeItemId("tool", event.turn_id),
+          id: runtimeItemId("tool", toolCallId),
           type: "tool_call",
           toolCall: {
-            id: runtimeItemId("tool-call", event.turn_id),
+            id: runtimeItemId("tool-call", toolCallId),
             name: toolName,
             input: stringifyToolValue(event.payload.tool_input ?? {}),
             output: "(running)",
@@ -1234,8 +1235,9 @@ function App() {
     if (toolName === "subagent" && readEventString(event.payload.actor, "lead") === "lead") {
       noteSubagentFinished(projectPath, event);
     }
+    const toolCallId = runtimeToolCallId(event);
     const finishedTool = {
-      id: runtimeItemId("tool-call", event.turn_id),
+      id: runtimeItemId("tool-call", toolCallId),
       name: toolName,
       input: stringifyToolValue(event.payload.tool_input ?? {}),
       output: stringifyToolValue(event.payload.output ?? "(no output)"),
@@ -1247,11 +1249,11 @@ function App() {
     };
     setRuntimeConversationItems((previous) => {
       const current = previous[key] ?? [];
-      const matchIndex = findLastRunningToolIndex(current, toolName);
+      const matchIndex = findLastRunningToolIndex(current, toolName, runtimeItemId("tool-call", toolCallId));
       if (matchIndex < 0) {
         return {
           ...previous,
-          [key]: [...current, { id: runtimeItemId("tool", event.turn_id), type: "tool_call", toolCall: finishedTool }],
+          [key]: [...current, { id: runtimeItemId("tool", toolCallId), type: "tool_call", toolCall: finishedTool }],
         };
       }
       return {
@@ -6403,7 +6405,19 @@ function removeProjectActivityKeys<T>(state: Record<string, T>, projectPath: str
   return changed ? next : state;
 }
 
-function findLastRunningToolIndex(items: ConversationRuntimeItem[], toolName: string): number {
+function runtimeToolCallId(event: SidecarEvent): string {
+  return readEventString(event.payload.tool_call_id, readEventString(event.turn_id, `tool-${event.timestamp ?? Date.now()}`));
+}
+
+function findLastRunningToolIndex(items: ConversationRuntimeItem[], toolName: string, toolCallId?: string): number {
+  if (toolCallId) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (item.type === "tool_call" && item.toolCall.id === toolCallId && item.toolCall.status === "running") {
+        return index;
+      }
+    }
+  }
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.type === "tool_call" && item.toolCall.name === toolName && item.toolCall.status === "running") {

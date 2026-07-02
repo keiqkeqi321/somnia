@@ -256,6 +256,29 @@ class ReplTodoTests(unittest.TestCase):
             ],
         )
 
+    def test_tool_started_updates_repl_panel_without_printing_body_output(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        event = SimpleNamespace(
+            type="tool_started",
+            payload={
+                "actor": "lead",
+                "tool_name": "bash",
+                "tool_input": {"command": "Start-Sleep -Seconds 5"},
+                "tool_call_id": "call-1",
+            },
+        )
+
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout):
+            runner._process_service_event(event, ConsoleStreamer())
+
+        prompt_text = _render_prompt_text(runner.prompt_message())
+        self.assertEqual(fake_stdout.getvalue(), "")
+        self.assertIn("tools (1 running)", prompt_text)
+        self.assertIn("bash", prompt_text)
+        self.assertIn("Start-Sleep -Seconds 5", prompt_text)
+
     def test_bottom_toolbar_includes_recent_context_governance_label(self) -> None:
         runtime = SimpleNamespace(
             settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),

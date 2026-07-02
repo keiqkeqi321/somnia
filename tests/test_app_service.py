@@ -246,10 +246,15 @@ class AppServiceTests(unittest.TestCase):
             tool_started = next(event for event in events if event.type == "tool_started")
             tool_finished = next(event for event in events if event.type == "tool_finished")
             todo_updated = next(event for event in events if event.type == "todo_updated")
+            event_types = [event.type for event in events]
 
             self.assertEqual(tool_started.payload["tool_name"], "TodoWrite")
+            self.assertEqual(tool_started.payload["tool_call_id"], "call-1")
+            self.assertEqual(tool_started.payload["tool_input"]["items"][0]["content"], "Build service layer")
+            self.assertIn("Running", "\n".join(tool_started.payload["rendered_lines"]))
             self.assertEqual(tool_finished.payload["tool_name"], "TodoWrite")
             self.assertTrue(tool_finished.payload["log_id"])
+            self.assertLess(event_types.index("tool_started"), event_types.index("tool_finished"))
             self.assertEqual(todo_updated.payload["items"][0]["status"], "in_progress")
             self.assertEqual(result.text, "Done.")
             self.assertEqual(session.todo_items[0]["content"], "Build service layer")

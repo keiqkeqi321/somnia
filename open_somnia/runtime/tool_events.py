@@ -18,6 +18,19 @@ class ToolEventRenderer:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
+    def print_tool_started(self, actor: str, tool_name: str, tool_input: dict[str, Any]) -> None:
+        if tool_name in self.SILENT_TOOL_NAMES:
+            return
+        if actor != "lead":
+            return
+        if not sys.stdout.isatty():
+            return
+        print()
+        for line in self.render_tool_started_lines(tool_name, tool_input):
+            print(line)
+        print()
+        sys.stdout.flush()
+
     def print_tool_event(self, actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
         category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
         log_entry = self.runtime.tool_log_store.write(
@@ -38,6 +51,13 @@ class ToolEventRenderer:
             print(line)
         print()
         return log_entry["id"]
+
+    def render_tool_started_lines(self, tool_name: str, tool_input: dict[str, Any]) -> list[str]:
+        lines = [f"{self._running_bullet()} Running {self._tool_title(tool_name, tool_input, None)}"]
+        input_text = self._tool_input_summary(tool_name, tool_input)
+        if input_text:
+            lines.extend(self._prefixed_input_block(input_text))
+        return lines
 
     def render_tool_event_lines(
         self,
@@ -62,6 +82,12 @@ class ToolEventRenderer:
         if self.runtime._supports_ansi_output():
             color = "\x1b[31m" if failed else "\x1b[32m"
             bullet = f"{color}{bullet}\x1b[0m"
+        return bullet
+
+    def _running_bullet(self) -> str:
+        bullet = "\u25cc"
+        if self.runtime._supports_ansi_output():
+            bullet = f"\x1b[33m{bullet}\x1b[0m"
         return bullet
 
     def _tool_title(self, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
@@ -134,6 +160,24 @@ class ToolEventRenderer:
             parts.append(f"{key}={rendered}")
         preview = ", ".join(parts)
         return self.runtime._compact_preview(preview, limit=limit)
+
+    def _tool_input_summary(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        if not isinstance(tool_input, dict) or not tool_input:
+            return ""
+        limit = 180
+        if tool_name in {"write_file", "edit_file"}:
+            limit = 260
+        return self.runtime._compact_preview(self.runtime._stringify_tool_value(tool_input), limit=limit)
+
+    def _prefixed_input_block(self, text: str) -> list[str]:
+        lines = (text or "").splitlines()
+        if not lines:
+            return []
+        formatted: list[str] = []
+        for index, line in enumerate(lines):
+            prefix = "  \u23f5  " if index == 0 else "     "
+            formatted.append(prefix + line)
+        return formatted
 
     def _format_tool_result_lines(
         self,

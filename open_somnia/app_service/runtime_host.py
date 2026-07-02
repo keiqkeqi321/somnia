@@ -366,33 +366,29 @@ class RuntimeHost:
             active_turn.runtime.context_window_usage = original_context_window_usage
 
     @contextmanager
-    def _patched_registry_execute(self, active_turn: _ActiveTurn) -> Iterator[None]:
-        registry = active_turn.runtime.registry
-        original_execute = registry.execute
+    def _patched_tool_logging(self, active_turn: _ActiveTurn) -> Iterator[None]:
+        original_print_tool_started = active_turn.runtime.print_tool_started
+        original_print_tool_event = active_turn.runtime.print_tool_event
+        renderer = active_turn.runtime._tool_event_renderer()
 
-        def wrapped_execute(ctx: Any, name: str, payload: dict[str, Any]) -> Any:
-            actor = getattr(ctx, "actor", "lead")
+        def wrapped_print_tool_started(
+            actor: str,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+        ) -> None:
             if _is_lead_actor(actor):
                 self._emit_for_turn(
                     active_turn,
                     TOOL_STARTED,
                     actor=actor,
-                    tool_name=name,
-                    tool_input=_clone_value(payload),
-                    trace_id=getattr(ctx, "trace_id", None),
+                    tool_name=tool_name,
+                    tool_input=_clone_value(tool_input),
+                    tool_call_id=tool_call_id,
+                    trace_id=f"{active_turn.session.id}-{active_turn.session.latest_turn_id}",
+                    rendered_lines=renderer.render_tool_started_lines(tool_name, tool_input),
                 )
-            return original_execute(ctx, name, payload)
-
-        registry.execute = wrapped_execute
-        try:
-            yield
-        finally:
-            registry.execute = original_execute
-
-    @contextmanager
-    def _patched_tool_logging(self, active_turn: _ActiveTurn) -> Iterator[None]:
-        original_print_tool_event = active_turn.runtime.print_tool_event
-        renderer = active_turn.runtime._tool_event_renderer()
 
         def wrapped_print_tool_event(actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
             category = "MCP" if tool_name.startswith("mcp__") else "TOOL"
@@ -426,10 +422,12 @@ class RuntimeHost:
                 self._emit_todo_if_changed(active_turn)
             return log_entry["id"]
 
+        active_turn.runtime.print_tool_started = wrapped_print_tool_started
         active_turn.runtime.print_tool_event = wrapped_print_tool_event
         try:
             yield
         finally:
+            active_turn.runtime.print_tool_started = original_print_tool_started
             active_turn.runtime.print_tool_event = original_print_tool_event
 
     @contextmanager
@@ -465,7 +463,6 @@ class RuntimeHost:
             with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=active_turn.runtime):
                 with (
                     self._patched_context_usage_events(active_turn),
-                    self._patched_registry_execute(active_turn),
                     self._patched_tool_logging(active_turn),
                     self._patched_subagent_activity(active_turn),
                 ):

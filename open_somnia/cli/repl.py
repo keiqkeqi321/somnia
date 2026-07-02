@@ -760,6 +760,8 @@ class TurnQueueRunner:
     CONTEXT_REDUCING_STYLE = "fg:#f59e0b"
     CONTEXT_CRITICAL_STYLE = "fg:#ef4444"
     SUBAGENT_PREVIEW_CHARS = 72
+    TOOL_ACTIVITY_LIMIT = 2
+    TOOL_ACTIVITY_PREVIEW_CHARS = 96
 
     def __init__(self, runtime, session, *, stable_prompt: bool = False, service: AppService | None = None) -> None:
         self.runtime = runtime
@@ -787,6 +789,7 @@ class TurnQueueRunner:
         self._authorization_requests: list[AuthorizationRequest] = []
         self._mode_switch_requests: list[ModeSwitchRequest] = []
         self._active_turn_handle = None
+        self._active_tools: dict[str, dict[str, object]] = {}
         self._active_subagents: dict[str, dict[str, object]] = {}
         self._thinking_preview_text = ""
         self._thinking_log_path: str | None = None
@@ -1260,6 +1263,7 @@ class TurnQueueRunner:
         for line in rendered_lines:
             print(str(line))
         print()
+        sys.stdout.flush()
 
     def _worker_loop(self) -> None:
         while True:
@@ -1311,6 +1315,7 @@ class TurnQueueRunner:
                     self._ready_loop_injections = []
                     self._ready_loop_injection_previews = []
                     self._active_turn_handle = None
+                    self._active_tools = {}
                     self._thinking_preview_text = ""
                     self._thinking_log_path = None
                 self._set_status(self._status_for_response(response))
@@ -1328,6 +1333,7 @@ class TurnQueueRunner:
         status_line = self._status_line()
         todo_lines = self._todo_lines()
         subagent_lines = self._subagent_lines()
+        tool_lines = self._tool_lines()
         team_lines = self._team_lines()
         queue_notice = self._queue_notice()
         queue_lines = self._queue_preview_lines()
@@ -1345,6 +1351,8 @@ class TurnQueueRunner:
             for style, line in todo_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in subagent_lines:
+                fragments.extend([panel_prefix, (style, line), ("", "\n")])
+            for style, line in tool_lines:
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
             for style, line in self._thinking_lines():
                 fragments.extend([panel_prefix, (style, line), ("", "\n")])
@@ -1636,6 +1644,30 @@ class TurnQueueRunner:
         output.append(("fg:#64748b", ""))
         return output
 
+    def _tool_lines(self) -> list[tuple[str, str]]:
+        with self._lock:
+            active = [dict(item) for item in self._active_tools.values()]
+        if not active:
+            return []
+        dots = "." * (int(time.monotonic() / self.THINKING_FRAME_SECONDS) % 4)
+        lines: list[tuple[str, str]] = [("fg:#fbbf24", f"tools ({len(active)} running){dots}")]
+        for item in active[: self.TOOL_ACTIVITY_LIMIT]:
+            tool_name = str(item.get("tool_name", "")).strip() or "tool"
+            tool_input = item.get("tool_input")
+            if not isinstance(tool_input, dict):
+                tool_input = {}
+            elapsed = max(0, int(time.monotonic() - float(item.get("started_at", time.monotonic()))))
+            title = self._tool_activity_title(tool_name, tool_input)
+            lines.append(("fg:#fde68a", f"⏳ {title} ({elapsed}s)"))
+            input_preview = self._tool_activity_input_preview(tool_input)
+            if input_preview:
+                lines.append(("fg:#94a3b8", f"↳ {input_preview}"))
+        remaining = len(active) - self.TOOL_ACTIVITY_LIMIT
+        if remaining > 0:
+            lines.append(("fg:#94a3b8", f"+{remaining} more"))
+        lines.append(("fg:#64748b", ""))
+        return lines
+
     def _wrap_thinking_preview(self, text: str) -> list[str]:
         normalized = " ".join(str(text or "").split())
         if not normalized:
@@ -1655,6 +1687,7 @@ class TurnQueueRunner:
     def _runtime_tool_activity_tracking(self):
         registry = getattr(self.runtime, "registry", None)
         original_execute = getattr(registry, "execute", None) if registry is not None else None
+        original_print_tool_started = getattr(self.runtime, "print_tool_started", None)
         original_handler = getattr(self.runtime, "subagent_activity_handler", None)
         had_original_handler = hasattr(self.runtime, "subagent_activity_handler")
         self.runtime.subagent_activity_handler = self._note_subagent_activity
@@ -1672,6 +1705,22 @@ class TurnQueueRunner:
                         pass
             return
 
+        def wrapped_print_tool_started(
+            actor: str,
+            tool_name: str,
+            tool_input: dict[str, object],
+            *,
+            tool_call_id: str | None = None,
+        ) -> None:
+            self._note_tool_started(
+                {
+                    "actor": actor,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "trace_id": tool_call_id,
+                }
+            )
+
         def wrapped_execute(ctx, name: str, payload: dict[str, object]):
             activity_payload = {
                 "actor": getattr(ctx, "actor", "lead"),
@@ -1679,16 +1728,21 @@ class TurnQueueRunner:
                 "tool_input": payload,
                 "trace_id": getattr(ctx, "trace_id", None),
             }
-            self._note_tool_started(activity_payload)
+            if not callable(original_print_tool_started):
+                self._note_tool_started(activity_payload)
             try:
                 return original_execute(ctx, name, payload)
             finally:
                 self._note_tool_finished(activity_payload)
 
+        if callable(original_print_tool_started):
+            self.runtime.print_tool_started = wrapped_print_tool_started
         registry.execute = wrapped_execute
         try:
             yield
         finally:
+            if callable(original_print_tool_started):
+                self.runtime.print_tool_started = original_print_tool_started
             registry.execute = original_execute
             if had_original_handler:
                 self.runtime.subagent_activity_handler = original_handler
@@ -1698,14 +1752,70 @@ class TurnQueueRunner:
                 except AttributeError:
                     pass
 
+    def _tool_activity_key(self, payload: dict[str, object], tool_name: str, tool_input: dict[str, object]) -> str:
+        raw_key = str(payload.get("tool_call_id") or payload.get("trace_id") or "").strip()
+        if raw_key:
+            return raw_key
+        try:
+            input_key = json.dumps(tool_input, ensure_ascii=False, sort_keys=True, default=str)
+        except TypeError:
+            input_key = str(tool_input)
+        return f"{tool_name}\0{input_key}"
+
+    def _clear_tool_activity(self, payload: dict[str, object], tool_name: str, tool_input: dict[str, object]) -> None:
+        key = self._tool_activity_key(payload, tool_name, tool_input)
+        with self._lock:
+            if key in self._active_tools:
+                self._active_tools.pop(key, None)
+            else:
+                matched_key = None
+                for candidate_key, item in self._active_tools.items():
+                    if item.get("tool_name") == tool_name and item.get("tool_input") == tool_input:
+                        matched_key = candidate_key
+                        break
+                if matched_key is not None:
+                    self._active_tools.pop(matched_key, None)
+                elif len(self._active_tools) == 1:
+                    self._active_tools.clear()
+        self._invalidate_ui()
+
+    def _tool_activity_title(self, tool_name: str, tool_input: dict[str, object]) -> str:
+        renderer_getter = getattr(self.runtime, "_tool_event_renderer", None)
+        if callable(renderer_getter):
+            try:
+                renderer = renderer_getter()
+                title = renderer._tool_title(tool_name, tool_input, None)
+                return self._compact_panel_text(str(title), limit=self.TOOL_ACTIVITY_PREVIEW_CHARS)
+            except Exception:
+                pass
+        return self._compact_panel_text(tool_name, limit=self.TOOL_ACTIVITY_PREVIEW_CHARS)
+
+    def _tool_activity_input_preview(self, tool_input: dict[str, object]) -> str:
+        if not tool_input:
+            return ""
+        try:
+            text = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"), default=str)
+        except TypeError:
+            text = str(tool_input)
+        return self._compact_panel_text(text, limit=self.TOOL_ACTIVITY_PREVIEW_CHARS)
+
     def _note_tool_started(self, payload: dict[str, object]) -> None:
         tool_name = str(payload.get("tool_name", "")).strip()
         actor = str(payload.get("actor", "")).strip() or "lead"
-        if tool_name != "subagent" or actor != "lead":
-            return
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
+        if actor == "lead" and tool_name and tool_name != "TodoWrite":
+            key = self._tool_activity_key(payload, tool_name, tool_input)
+            with self._lock:
+                self._active_tools[key] = {
+                    "tool_name": tool_name,
+                    "tool_input": dict(tool_input),
+                    "started_at": time.monotonic(),
+                }
+            self._invalidate_ui()
+        if tool_name != "subagent" or actor != "lead":
+            return
         key = str(payload.get("trace_id", "")).strip()
         if not key:
             key = f"subagent-{time.monotonic_ns()}"
@@ -1768,12 +1878,14 @@ class TurnQueueRunner:
     def _note_tool_finished(self, payload: dict[str, object]) -> None:
         tool_name = str(payload.get("tool_name", "")).strip()
         actor = str(payload.get("actor", "")).strip() or "lead"
-        if tool_name != "subagent" or actor != "lead":
-            return
-        key = str(payload.get("trace_id", "")).strip()
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
+        if actor == "lead" and tool_name:
+            self._clear_tool_activity(payload, tool_name, tool_input)
+        if tool_name != "subagent" or actor != "lead":
+            return
+        key = str(payload.get("trace_id", "")).strip()
         prompt = str(tool_input.get("prompt", "")).strip()
         agent_type = str(tool_input.get("agent_type", "Explore")).strip() or "Explore"
         with self._lock:

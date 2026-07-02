@@ -343,6 +343,16 @@ class OpenAgentRuntime:
     def print_tool_event(self, actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
         return self._tool_event_renderer().print_tool_event(actor, tool_name, tool_input, output)
 
+    def print_tool_started(
+        self,
+        actor: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        *,
+        tool_call_id: str | None = None,
+    ) -> None:
+        self._tool_event_renderer().print_tool_started(actor, tool_name, tool_input)
+
     def render_tool_event_lines(
         self,
         tool_name: str,
@@ -3550,6 +3560,7 @@ class OpenAgentRuntime:
                     if tool_name == "compress":
                         manual_compact = True
                     if output is None:
+                        self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
                         try:
                             output = self.registry.execute(ctx, tool_name, tool_call.input)
                         except TurnInterrupted:
