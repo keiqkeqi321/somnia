@@ -77,6 +77,7 @@ READ_ONLY_COMMAND_PREFIXES = (
     "/scan",
     "/symbols",
     "/janitor",
+    "/reloadplugin",
     "/providers",
     "/skills",
     "/tasks",
@@ -2238,6 +2239,34 @@ def _handle_mcp_command(runtime) -> None:
             )
 
 
+def _format_reload_plugin_summary(summary: dict[str, object]) -> str:
+    mcp_errors = summary.get("mcp_errors")
+    error_count = len(mcp_errors) if isinstance(mcp_errors, dict) else 0
+    lines = [
+        "[reloadplugin complete]",
+        f"MCP servers: {int(summary.get('mcp_server_count') or 0)}",
+        f"MCP tools: {int(summary.get('mcp_tool_count') or 0)}",
+        f"Skills: {int(summary.get('skill_count') or 0)}",
+        f"Project instruction files: {int(summary.get('project_instruction_count') or 0)}",
+    ]
+    if error_count:
+        lines.append(f"MCP errors: {error_count}")
+        if isinstance(mcp_errors, dict):
+            for name, error in sorted(mcp_errors.items()):
+                lines.append(f"- {name}: {error}")
+    return "\n".join(lines)
+
+
+def _handle_reloadplugin_command(runtime) -> None:
+    reloader = getattr(runtime, "reload_plugin_configuration", None)
+    if not callable(reloader):
+        print("Plugin reload is unavailable in this runtime.")
+        return
+    print("[reloadplugin] started", flush=True)
+    summary = reloader(progress_callback=lambda message: print(f"[reloadplugin] {message}...", flush=True))
+    print(_format_reload_plugin_summary(summary if isinstance(summary, dict) else {}))
+
+
 def _hook_identity_label(hook) -> str:
     command = str(getattr(hook, "command", "")).strip() or "(no command)"
     args = [str(arg) for arg in getattr(hook, "args", []) or []]
@@ -2822,6 +2851,12 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                         print("[busy; wait for queued responses before /mcp]")
                         continue
                     _handle_mcp_command(runtime)
+                    continue
+                if stripped == "/reloadplugin":
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /reloadplugin]")
+                        continue
+                    _handle_reloadplugin_command(runtime)
                     continue
                 if stripped == "/toollog":
                     print(runtime.recent_tool_logs())

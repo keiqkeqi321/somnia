@@ -119,6 +119,15 @@ const translations = {
     "providerSetup.validation": "Add a provider profile with a default model and API key before saving.",
     "providerSetup.stillMissing": "Provider configuration was saved, but the sidecar still has no active provider.",
     "providerSetup.saveBeforeTest": "Save the provider before testing the model.",
+    "providerSetup.modePreset": "Preset",
+    "providerSetup.modeCustom": "Custom TOML",
+    "providerSetup.modeLabel": "Provider setup mode",
+    "providerSetup.scope": "Scope",
+    "providerSetup.preset": "Preset",
+    "providerSetup.providerName": "Provider name",
+    "providerSetup.compatibility": "Compatibility",
+    "providerSetup.defaultModel": "Default model",
+    "providerSetup.apiKeys": "API keys",
 
     /* ── Settings / Archived ── */
     "settings.archived.selectAll": "Select all",
@@ -456,6 +465,15 @@ const translations = {
     "providerSetup.validation": "请先添加 provider profile，并填写默认模型和 API Key。",
     "providerSetup.stillMissing": "Provider 配置已保存，但 sidecar 仍没有可用 provider。",
     "providerSetup.saveBeforeTest": "请先保存 provider，再测试模型。",
+    "providerSetup.modePreset": "预设",
+    "providerSetup.modeCustom": "自定义 TOML",
+    "providerSetup.modeLabel": "Provider 配置模式",
+    "providerSetup.scope": "Scope",
+    "providerSetup.preset": "预设",
+    "providerSetup.providerName": "Provider 名称",
+    "providerSetup.compatibility": "兼容模式",
+    "providerSetup.defaultModel": "默认模型",
+    "providerSetup.apiKeys": "API Keys",
 
     /* ── Settings / Archived ── */
     "settings.archived.selectAll": "全选",

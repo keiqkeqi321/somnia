@@ -5,6 +5,7 @@ from typing import Mapping
 
 from open_somnia.cli.prompting import choose_item_interactively, prompt_provider_details_interactively
 from open_somnia.config.models import ProviderProfileSettings
+from open_somnia.config.provider_presets import ProviderPreset, list_provider_presets
 from open_somnia.config.settings import global_config_path
 
 
@@ -31,6 +32,25 @@ def default_base_url(provider_type: str) -> str:
     if provider_type == "openai":
         return "https://api.openai.com/v1"
     return "https://api.anthropic.com"
+
+
+def choose_provider_preset_interactively() -> ProviderPreset | None:
+    items = [
+        (
+            preset.id,
+            f"{preset.label} | type={preset.provider_type} | default={preset.default_model}",
+        )
+        for preset in list_provider_presets()
+    ]
+    items.append(("__custom__", "Custom provider | fill provider type, base URL, and models manually"))
+    selected = choose_item_interactively(
+        "Provider Preset",
+        "Choose a preset to prefill provider details, or choose Custom Provider.",
+        items,
+    )
+    if selected is None or selected == "__custom__":
+        return None
+    return next((preset for preset in list_provider_presets() if preset.id == selected), None)
 
 
 def choose_provider_type_interactively(*, current_type: str | None = None) -> str | None:
@@ -72,15 +92,23 @@ def collect_provider_profile_interactively(
     previous_provider_name: str | None = None,
 ) -> ProviderProfileSubmission | None:
     current_profile = existing_profiles.get(previous_provider_name or "")
-    provider_type = choose_provider_type_interactively(
-        current_type=current_profile.provider_type if current_profile is not None else None
-    )
-    if provider_type is None:
-        return None
+    preset = None if current_profile is not None else choose_provider_preset_interactively()
+    if preset is None:
+        provider_type = choose_provider_type_interactively(
+            current_type=current_profile.provider_type if current_profile is not None else None
+        )
+        if provider_type is None:
+            return None
+    else:
+        provider_type = preset.provider_type
 
-    provider_name = current_profile.name if current_profile is not None else provider_type
-    base_url = current_profile.base_url or default_base_url(provider_type) if current_profile is not None else default_base_url(provider_type)
-    models = ", ".join(current_profile.models) if current_profile is not None else ""
+    provider_name = current_profile.name if current_profile is not None else preset.provider_name if preset is not None else provider_type
+    base_url = (
+        current_profile.base_url or default_base_url(provider_type)
+        if current_profile is not None
+        else preset.base_url if preset is not None else default_base_url(provider_type)
+    )
+    models = ", ".join(current_profile.models) if current_profile is not None else ", ".join(preset.models) if preset is not None else ""
     existing_api_key = current_profile.api_key if current_profile is not None else ""
     api_key_hint = "Existing API key is prefilled and hidden." if existing_api_key else ""
 

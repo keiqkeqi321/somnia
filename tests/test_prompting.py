@@ -250,6 +250,7 @@ class PromptingTests(unittest.TestCase):
         plus_prefixed = list(completer.get_completions(Document(text="/+u", cursor_position=3), None))
 
         self.assertTrue(any(item.display_text == "/model" for item in slash_only))
+        self.assertTrue(any(item.display_text == "/reloadplugin" for item in slash_only))
         self.assertFalse(any(item.display_text == "/+unity" for item in slash_only))
         self.assertEqual([item.display_text for item in plus_prefixed], ["/+unity"])
 

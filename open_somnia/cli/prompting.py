@@ -52,6 +52,7 @@ VISIBLE_COMMAND_SPECS = [
     ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),
     ("/compact", "Compact the current session context"),
     ("/janitor", "Run semantic janitor on the current payload"),
+    ("/reloadplugin", "Reload MCP tools, skills, and project instructions"),
     ("/skills", "Choose a skill to apply to the next prompt"),
     ("/tasks", "Show persistent tasks"),
     ("/team", "Show teammate roster and states"),

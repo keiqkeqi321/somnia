@@ -51,6 +51,7 @@ import type {
   McpServerSummary,
   ModelDescriptor,
   ProviderDescriptor,
+  ProviderPresetDescriptor,
   SettingsConfigScope,
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
@@ -295,6 +296,15 @@ function App() {
   const [providerSetupOpen, setProviderSetupOpen] = useState(false);
   const [providerSetupScope, setProviderSetupScope] = useState<SettingsConfigScopeKey>("user");
   const [providerSetupDraft, setProviderSetupDraft] = useState("");
+  const [providerSetupMode, setProviderSetupMode] = useState<"preset" | "custom">("preset");
+  const [providerSetupPresets, setProviderSetupPresets] = useState<ProviderPresetDescriptor[]>([]);
+  const [providerSetupSelectedPreset, setProviderSetupSelectedPreset] = useState("");
+  const [providerSetupProviderName, setProviderSetupProviderName] = useState("");
+  const [providerSetupProviderType, setProviderSetupProviderType] = useState("openai");
+  const [providerSetupBaseUrl, setProviderSetupBaseUrl] = useState("");
+  const [providerSetupApiKey, setProviderSetupApiKey] = useState("");
+  const [providerSetupModelsText, setProviderSetupModelsText] = useState("");
+  const [providerSetupDefaultModel, setProviderSetupDefaultModel] = useState("");
   const [providerSetupLoading, setProviderSetupLoading] = useState(false);
   const [providerSetupSaving, setProviderSetupSaving] = useState(false);
   const [providerSetupMessage, setProviderSetupMessage] = useState("");
@@ -2616,19 +2626,78 @@ function App() {
     }
   }
 
-  function defaultProviderSetupDraft() {
+  function defaultProviderSetupDraft(preset?: ProviderPresetDescriptor | null, apiKey = "") {
+    const providerName = normalizeProviderNameForToml(preset?.provider_name || "openai");
+    const models = preset?.models?.length ? preset.models : ["gpt-4.1"];
+    const defaultModel = preset?.default_model || models[0] || "gpt-4.1";
+    const providerType = preset?.provider_type || "openai";
+    const baseUrl = preset?.base_url || "https://api.openai.com/v1";
     return [
       "[providers]",
-      'default = "provider"',
+      `default = ${tomlString(providerName)}`,
       "",
-      "[providers.provider]",
-      'provider_type = "openai"',
-      'models = ["gpt-4.1"]',
-      'default_model = "gpt-4.1"',
-      'api_key = ""',
-      'base_url = "https://api.openai.com/v1"',
+      `[providers.${providerName}]`,
+      `provider_type = ${tomlString(providerType)}`,
+      `models = [${models.map(tomlString).join(", ")}]`,
+      `default_model = ${tomlString(defaultModel)}`,
+      `api_key = ${tomlString(apiKey)}`,
+      `base_url = ${tomlString(baseUrl)}`,
       "",
     ].join("\n");
+  }
+
+  function applyProviderSetupPreset(preset: ProviderPresetDescriptor | null) {
+    if (!preset) {
+      setProviderSetupSelectedPreset("");
+      setProviderSetupProviderName("custom-provider");
+      setProviderSetupProviderType("openai");
+      setProviderSetupBaseUrl("https://api.openai.com/v1");
+      setProviderSetupModelsText("gpt-4.1");
+      setProviderSetupDefaultModel("gpt-4.1");
+      return;
+    }
+    setProviderSetupSelectedPreset(preset.id);
+    setProviderSetupProviderName(preset.provider_name);
+    setProviderSetupProviderType(preset.provider_type);
+    setProviderSetupBaseUrl(preset.base_url);
+    setProviderSetupModelsText(preset.models.join(", "));
+    setProviderSetupDefaultModel(preset.default_model || preset.models[0] || "");
+  }
+
+  function providerSetupFormDraft() {
+    const models = providerSetupModelsText
+      .split(/[,，、]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const defaultModel = providerSetupDefaultModel.trim() || models[0] || "";
+    const providerName = normalizeProviderNameForToml(providerSetupProviderName || providerSetupSelectedPreset || "provider");
+    return [
+      "[providers]",
+      `default = ${tomlString(providerName)}`,
+      "",
+      `[providers.${providerName}]`,
+      `provider_type = ${tomlString(providerSetupProviderType || "openai")}`,
+      `models = [${models.map(tomlString).join(", ")}]`,
+      `default_model = ${tomlString(defaultModel)}`,
+      `api_key = ${tomlString(providerSetupApiKey)}`,
+      `base_url = ${tomlString(providerSetupBaseUrl)}`,
+      "",
+    ].join("\n");
+  }
+
+  function providerSetupFormIsComplete() {
+    const models = providerSetupModelsText
+      .split(/[,，、]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return Boolean(
+      providerSetupProviderName.trim() &&
+        providerSetupProviderType.trim() &&
+        providerSetupBaseUrl.trim() &&
+        providerSetupApiKey.trim() &&
+        models.length > 0 &&
+        (providerSetupDefaultModel.trim() || models[0]),
+    );
   }
 
   function providerSetupDraftIsComplete(value: string) {
@@ -2653,8 +2722,12 @@ function App() {
     setProviderSetupLoading(true);
     setProviderSetupMessage("");
     setProviderSetupScope("user");
+    setProviderSetupMode("preset");
+    setProviderSetupApiKey("");
     try {
-      const payload = await client.getSettingsConfig();
+      const [payload, presets] = await Promise.all([client.getSettingsConfig(), client.listProviderPresets()]);
+      setProviderSetupPresets(presets);
+      applyProviderSetupPreset(presets[0] ?? null);
       const userScope = payload.scopes.find((item) => item.scope === "user");
       const projectScope = payload.scopes.find((item) => item.scope === "project");
       const userProviderConfig = userScope?.sections.provider?.trim() ?? "";
@@ -2666,10 +2739,12 @@ function App() {
         setProviderSetupDraft(projectProviderConfig);
         setProviderSetupScope("project");
       } else {
-        setProviderSetupDraft(defaultProviderSetupDraft());
+        setProviderSetupDraft(defaultProviderSetupDraft(presets[0] ?? null));
         setProviderSetupScope("user");
       }
     } catch (error) {
+      setProviderSetupPresets([]);
+      applyProviderSetupPreset(null);
       setProviderSetupDraft(defaultProviderSetupDraft());
       setProviderSetupScope("user");
       setProviderSetupMessage(formatErrorMessage(error));
@@ -2684,14 +2759,16 @@ function App() {
       setProviderSetupMessage(t("common.connectFirst"));
       return;
     }
-    if (!providerSetupDraftIsComplete(providerSetupDraft)) {
+    const content = providerSetupMode === "custom" ? providerSetupDraft : providerSetupFormDraft();
+    const complete = providerSetupMode === "custom" ? providerSetupDraftIsComplete(content) : providerSetupFormIsComplete();
+    if (!complete) {
       setProviderSetupMessage(t("providerSetup.validation"));
       return;
     }
     setProviderSetupSaving(true);
     setProviderSetupMessage("");
     try {
-      await client.saveSettingsConfigSection(providerSetupScope, "provider", providerSetupDraft);
+      await client.saveSettingsConfigSection(providerSetupScope, "provider", content);
       const refreshed = await refreshStatusAndProviders();
       await refreshSettingsConfig();
       if (!refreshed || refreshed.runtimeStatus.provider === "unconfigured" || refreshed.providerList.length === 0) {
@@ -3291,12 +3368,38 @@ function App() {
                   <p>{t("settings.config.loading")}</p>
                 </div>
               ) : (
-                <ProviderProfilesEditor
-                  text={providerSetupDraft}
-                  inheritedText=""
+                <ProviderSetupForm
+                  mode={providerSetupMode}
+                  presets={providerSetupPresets}
+                  selectedPreset={providerSetupSelectedPreset}
                   scope={providerSetupScope}
-                  onChange={setProviderSetupDraft}
-                  onDebugModel={async () => ({ ok: false, message: t("providerSetup.saveBeforeTest") })}
+                  providerName={providerSetupProviderName}
+                  providerType={providerSetupProviderType}
+                  baseUrl={providerSetupBaseUrl}
+                  apiKey={providerSetupApiKey}
+                  modelsText={providerSetupModelsText}
+                  defaultModel={providerSetupDefaultModel}
+                  customDraft={providerSetupDraft}
+                  onModeChange={setProviderSetupMode}
+                  onScopeChange={setProviderSetupScope}
+                  onPresetChange={(presetId) => {
+                    const preset = providerSetupPresets.find((item) => item.id === presetId) ?? null;
+                    applyProviderSetupPreset(preset);
+                    setProviderSetupDraft(defaultProviderSetupDraft(preset));
+                  }}
+                  onProviderNameChange={setProviderSetupProviderName}
+                  onProviderTypeChange={setProviderSetupProviderType}
+                  onBaseUrlChange={setProviderSetupBaseUrl}
+                  onApiKeyChange={setProviderSetupApiKey}
+                  onModelsTextChange={(value) => {
+                    setProviderSetupModelsText(value);
+                    const models = value.split(/[,，、]/).map((item) => item.trim()).filter(Boolean);
+                    if (!providerSetupDefaultModel || (models.length > 0 && !models.includes(providerSetupDefaultModel))) {
+                      setProviderSetupDefaultModel(models[0] ?? "");
+                    }
+                  }}
+                  onDefaultModelChange={setProviderSetupDefaultModel}
+                  onCustomDraftChange={setProviderSetupDraft}
                 />
               )}
             </div>
@@ -3306,7 +3409,11 @@ function App() {
                 className="settings-inline-button"
                 type="button"
                 onClick={() => void handleSaveProviderSetup()}
-                disabled={providerSetupLoading || providerSetupSaving || !providerSetupDraftIsComplete(providerSetupDraft)}
+                disabled={
+                  providerSetupLoading ||
+                  providerSetupSaving ||
+                  (providerSetupMode === "custom" ? !providerSetupDraftIsComplete(providerSetupDraft) : !providerSetupFormIsComplete())
+                }
               >
                 {providerSetupSaving ? t("settings.config.saving") : t("providerSetup.save")}
               </button>
@@ -6413,6 +6520,165 @@ function getPathLeafName(path: string): string {
   }
   const segments = normalized.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] || normalized;
+}
+
+function ProviderSetupForm({
+  mode,
+  presets,
+  selectedPreset,
+  scope,
+  providerName,
+  providerType,
+  baseUrl,
+  apiKey,
+  modelsText,
+  defaultModel,
+  customDraft,
+  onModeChange,
+  onScopeChange,
+  onPresetChange,
+  onProviderNameChange,
+  onProviderTypeChange,
+  onBaseUrlChange,
+  onApiKeyChange,
+  onModelsTextChange,
+  onDefaultModelChange,
+  onCustomDraftChange,
+}: {
+  mode: "preset" | "custom";
+  presets: ProviderPresetDescriptor[];
+  selectedPreset: string;
+  scope: SettingsConfigScopeKey;
+  providerName: string;
+  providerType: string;
+  baseUrl: string;
+  apiKey: string;
+  modelsText: string;
+  defaultModel: string;
+  customDraft: string;
+  onModeChange: (mode: "preset" | "custom") => void;
+  onScopeChange: (scope: SettingsConfigScopeKey) => void;
+  onPresetChange: (presetId: string) => void;
+  onProviderNameChange: (value: string) => void;
+  onProviderTypeChange: (value: string) => void;
+  onBaseUrlChange: (value: string) => void;
+  onApiKeyChange: (value: string) => void;
+  onModelsTextChange: (value: string) => void;
+  onDefaultModelChange: (value: string) => void;
+  onCustomDraftChange: (value: string) => void;
+}) {
+  const { t } = useI18n();
+  const models = modelsText
+    .split(/[,，、]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const selected = presets.find((preset) => preset.id === selectedPreset) ?? null;
+
+  return (
+    <div className="provider-setup-form">
+      <div className="provider-setup-toggle" role="tablist" aria-label={t("providerSetup.modeLabel")}>
+        <button type="button" className={mode === "preset" ? "selected" : ""} onClick={() => onModeChange("preset")}>
+          {t("providerSetup.modePreset")}
+        </button>
+        <button type="button" className={mode === "custom" ? "selected" : ""} onClick={() => onModeChange("custom")}>
+          {t("providerSetup.modeCustom")}
+        </button>
+      </div>
+
+      {mode === "preset" ? (
+        <>
+          <div className="provider-setup-grid">
+            <label>
+              <span>{t("providerSetup.scope")}</span>
+              <select value={scope} onChange={(event) => onScopeChange(event.currentTarget.value as SettingsConfigScopeKey)}>
+                <option value="user">{t("settings.config.user")}</option>
+                <option value="project">{t("settings.config.project")}</option>
+              </select>
+            </label>
+            <label>
+              <span>{t("providerSetup.preset")}</span>
+              <select value={selectedPreset} onChange={(event) => onPresetChange(event.currentTarget.value)}>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t("providerSetup.providerName")}</span>
+              <input value={providerName} onChange={(event) => onProviderNameChange(event.currentTarget.value)} />
+            </label>
+            <label>
+              <span>{t("providerSetup.compatibility")}</span>
+              <select value={providerType} onChange={(event) => onProviderTypeChange(event.currentTarget.value)}>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+              </select>
+            </label>
+            <label className="wide">
+              <span>{t("settings.providerProfiles.baseUrl")}</span>
+              <input value={baseUrl} onChange={(event) => onBaseUrlChange(event.currentTarget.value)} />
+            </label>
+            <label className="wide">
+              <span>{t("settings.providerProfiles.apiKey")}</span>
+              <input type="password" value={apiKey} onChange={(event) => onApiKeyChange(event.currentTarget.value)} />
+            </label>
+            <label className="wide">
+              <span>{t("settings.providerProfiles.models")}</span>
+              <input value={modelsText} onChange={(event) => onModelsTextChange(event.currentTarget.value)} />
+            </label>
+            <label>
+              <span>{t("providerSetup.defaultModel")}</span>
+              <select value={defaultModel} onChange={(event) => onDefaultModelChange(event.currentTarget.value)}>
+                {models.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+                {defaultModel && !models.includes(defaultModel) ? <option value={defaultModel}>{defaultModel}</option> : null}
+              </select>
+            </label>
+          </div>
+          {selected?.notes || selected?.api_key_url ? (
+            <p className="provider-setup-hint">
+              {selected.notes}
+              {selected.api_key_url ? (
+                <>
+                  {" "}
+                  <a href={selected.api_key_url} target="_blank" rel="noreferrer">
+                    {t("providerSetup.apiKeys")}
+                  </a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <ProviderProfilesEditor
+          text={customDraft}
+          inheritedText=""
+          scope={scope}
+          onChange={onCustomDraftChange}
+          onDebugModel={async () => ({ ok: false, message: t("providerSetup.saveBeforeTest") })}
+        />
+      )}
+    </div>
+  );
+}
+
+function tomlString(value: string): string {
+  return `"${String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function normalizeProviderNameForToml(value: string): string {
+  return String(value || "provider")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "provider";
 }
 
 export default App;
