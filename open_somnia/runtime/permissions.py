@@ -16,7 +16,6 @@ from open_somnia.runtime.execution_mode import (
     execution_mode_spec,
     tool_block_message,
 )
-from open_somnia.integrations.gitnexus import should_allow_gitnexus_tool_without_authorization
 from open_somnia.storage.common import read_json, write_json
 
 
@@ -104,8 +103,6 @@ class PermissionManager:
 
     def authorize_tool_call(self, tool_name: str, payload: dict[str, Any], *, ctx=None) -> str | None:
         if tool_name in {AUTHORIZATION_TOOL_NAME, MODE_SWITCH_TOOL_NAME}:
-            return None
-        if should_allow_gitnexus_tool_without_authorization(tool_name):
             return None
         actor = str(getattr(ctx, "actor", "") or "").strip()
         if actor and actor not in {"lead", "subagent"}:

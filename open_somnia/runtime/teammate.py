@@ -590,7 +590,7 @@ class TeammateRuntimeManager:
         status = str(task.get("status") or "unknown").strip()
         description = str(task.get("description") or "").strip()
         lines = [
-            f"<owned-task-reminder>Task #{task_id} is still {status}.",
+            f"Owned task reminder: Task #{task_id} is still {status}.",
             "If the work is complete, call task_update with status completed now.",
             "If it is not complete, continue working on this task before going idle.",
         ]
@@ -598,7 +598,6 @@ class TeammateRuntimeManager:
             lines.append(f"Subject: {subject}")
         if description:
             lines.append(f"Description: {description}")
-        lines.append("</owned-task-reminder>")
         return "\n".join(lines)
 
     def _sync_completed_task_state(self, name: str, tool_input: dict, tool_output, session_id: str | None) -> None:

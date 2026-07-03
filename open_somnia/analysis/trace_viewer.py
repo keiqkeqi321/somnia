@@ -14,7 +14,7 @@ from open_somnia.storage.common import atomic_write_text
 
 PROVIDER_PAYLOAD_DIRNAME = "provider_payloads"
 DEFAULT_REPORT_NAME = "trace-viewer.html"
-RUNTIME_NOTICE_MARKER = "<runtime-notice"
+RUNTIME_NOTICE_MARKERS = ("<runtime-notice", "Runtime notice:")
 
 
 @dataclass(slots=True)
@@ -795,7 +795,7 @@ def _render_message_preview(message: Any, index: int) -> str:
     flags: list[str] = []
     if message.get("transient") is True:
         flags.append("transient")
-    if RUNTIME_NOTICE_MARKER in content_text:
+    if any(marker in content_text for marker in RUNTIME_NOTICE_MARKERS):
         flags.append("runtime-notice")
     chip_html = _chips(flags, default="", default_class="accent")
     preview = content_text[:1200]
@@ -964,7 +964,11 @@ def _count_transient_messages(messages: list[Any]) -> int:
 
 
 def _count_runtime_notices(messages: list[Any]) -> int:
-    return sum(1 for message in messages if isinstance(message, dict) and RUNTIME_NOTICE_MARKER in _message_content_text(message))
+    return sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and any(marker in _message_content_text(message) for marker in RUNTIME_NOTICE_MARKERS)
+    )
 
 
 def _is_trace_viewer_command_payload(payload: dict[str, Any]) -> bool:

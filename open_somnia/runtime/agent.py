@@ -173,24 +173,24 @@ class OpenAgentRuntime:
         "type ",
     )
     TODO_REMINDER_TEXT = (
-        "<reminder>If any todo changed, call TodoWrite now. "
-        "Do not just say you will. If nothing changed, ignore this and continue.</reminder>"
+        "Reminder: If any todo changed, call TodoWrite now. "
+        "Do not just say you will. If nothing changed, ignore this and continue."
     )
     EXPLORATION_SUMMARY_REMINDER_TEXT = (
-        "<reminder>You have been exploring for {streak} consecutive read/search step(s) "
+        "Reminder: You have been exploring for {streak} consecutive read/search step(s) "
         "({total} total this turn). Stop broad exploration and provide a concise interim conclusion before reading more: "
-        "state the likely finding, evidence already gathered, confidence, and the smallest remaining verification if any.</reminder>"
+        "state the likely finding, evidence already gathered, confidence, and the smallest remaining verification if any."
     )
     TODO_RECONCILE_REMINDER_TEXT = (
-        "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
-        "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
+        "Reminder: Before ending, reconcile TodoWrite with the work just completed. "
+        "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose."
     )
-    TODO_STALE_STATUS_REMINDER_TEXT = "<reminder>Pay attention to the status of todos</reminder>"
+    TODO_STALE_STATUS_REMINDER_TEXT = "Reminder: Pay attention to the status of todos"
     EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT = (
-        "<reminder>Your previous response ended without any visible assistant text or tool calls. "
-        "Continue the task now and either call the next needed tool or provide a visible final answer.</reminder>"
+        "Reminder: Your previous response ended without any visible assistant text or tool calls. "
+        "Continue the task now and either call the next needed tool or provide a visible final answer."
     )
-    RUNTIME_NOTICE_TAG = "runtime-notice"
+    RUNTIME_NOTICE_PREFIX = "Runtime notice:"
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -900,10 +900,10 @@ class OpenAgentRuntime:
         if not lines:
             return None
         if len(lines) == 1:
-            content = f"<{self.RUNTIME_NOTICE_TAG}>{lines[0]}</{self.RUNTIME_NOTICE_TAG}>"
+            content = f"{self.RUNTIME_NOTICE_PREFIX} {lines[0]}"
         else:
             body = "\n".join(f"- {line}" for line in lines)
-            content = f"<{self.RUNTIME_NOTICE_TAG}>\n{body}\n</{self.RUNTIME_NOTICE_TAG}>"
+            content = f"{self.RUNTIME_NOTICE_PREFIX}\n{body}"
         message = make_user_text_message(content)
         message["transient"] = True
         return message

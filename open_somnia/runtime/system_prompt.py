@@ -4,8 +4,6 @@ import platform
 import sys
 from typing import Any
 
-from open_somnia.integrations.gitnexus import prompt_guidance as gitnexus_prompt_guidance
-from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, execution_mode_spec
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
 from open_somnia.runtime.prompt_sections import PromptBundle, PromptSection
 
@@ -37,7 +35,6 @@ class SystemPromptBuilder:
 
     def build_prompt_bundle(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> PromptBundle:
         del session
-        mode_guidance = execution_mode_spec(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE)).guidance
         working_file_path_getter = getattr(self.runtime, "current_working_file_path", None)
         working_file_path = working_file_path_getter() if callable(working_file_path_getter) else ""
         project_instruction_paths = [working_file_path] if working_file_path else None
@@ -84,7 +81,6 @@ class SystemPromptBuilder:
         runtime_identity = (
             f"You are '{actor}', role: {role}, operating inside workspace {self.runtime.settings.workspace_root}.\n"
             f"{identity_guidance}\n"
-            f"{mode_guidance}\n"
             f"{self.environment_guidance()}"
         )
         lead_guidance = (
@@ -101,15 +97,12 @@ class SystemPromptBuilder:
         runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance
         skill_prompt_getter = getattr(self.runtime.skill_loader, "prompt_index", None)
         skill_descriptions = skill_prompt_getter() if callable(skill_prompt_getter) else self.runtime.skill_loader.descriptions()
-        gitnexus_guidance = gitnexus_prompt_guidance(self.runtime)
         mcp_guidance = (
             "MCP tools are provided through the tool schema and are not repeated here.\n"
             "Use MCP tools when they are more specific to the task than generic filesystem or shell tools.\n"
             "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
             "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters."
         )
-        if gitnexus_guidance:
-            mcp_guidance = f"{mcp_guidance}\n{gitnexus_guidance}"
         sections = (
             PromptSection("core", "A. Core System Prompt", self.base_system_prompt(), dynamic=False),
             PromptSection(

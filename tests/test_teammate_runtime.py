@@ -1022,7 +1022,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                     return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-1", "idle", {})])
                 if any("Here is the lead input" in str(message.get("content", "")) for message in messages):
                     resumed_from_inbox.set()
-                if any("owned-task-reminder" in str(message.get("content", "")) for message in messages):
+                if any("Owned task reminder:" in str(message.get("content", "")) for message in messages):
                     reminder_seen.set()
                     return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-2", "idle", {})])
                 while not release.is_set():

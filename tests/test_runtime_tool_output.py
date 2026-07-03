@@ -626,9 +626,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("Active model: kimi-k2.5", prompt)
         self.assertNotIn("Active working file cache:", prompt)
         self.assertNotIn("frontend/src/App.tsx", prompt)
-        self.assertIn("Current mode: ⏸ plan mode on.", prompt)
-        self.assertIn("Return a concrete implementation plan", prompt)
-        self.assertIn("request_mode_switch", prompt)
+        self.assertNotIn("Current mode:", prompt)
+        self.assertNotIn("Return a concrete implementation plan", prompt)
+        self.assertNotIn("request_mode_switch", prompt)
         self.assertIn("Use subagent for isolated subagent work.", prompt)
         self.assertIn("Do not claim to be Claude", prompt)
 
@@ -735,7 +735,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertIsInstance(seen["system_prompt"], str)
 
-    def test_build_system_prompt_includes_gitnexus_guidance_only_when_available(self) -> None:
+    def test_build_system_prompt_omits_gitnexus_guidance_even_when_available(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             workspace_root=Path("D:/workspace"),
@@ -752,11 +752,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
-        self.assertIn("GitNexus integration:", prompt)
-        self.assertIn("GitNexus is available through MCP-backed code intelligence tools", prompt)
-        self.assertIn("treat those requirements as binding", prompt)
-        self.assertIn("retry with a narrower target, file_path, or route", prompt)
-        self.assertIn("require normal Somnia authorization", prompt)
+        self.assertNotIn("gitnexus", prompt.lower())
 
     def test_build_system_prompt_omits_gitnexus_guidance_when_server_is_disabled(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -775,8 +771,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
-        self.assertNotIn("GitNexus integration:", prompt)
-        self.assertNotIn("GitNexus is available through MCP-backed code intelligence tools", prompt)
+        self.assertNotIn("gitnexus", prompt.lower())
 
     def test_build_system_prompt_does_not_include_removed_exploration_memory_sections(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -1358,7 +1353,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(allowed)
         self.assertIsNone(read_image_allowed)
 
-    def test_authorize_tool_call_allows_read_only_gitnexus_mcp_tools_by_default(self) -> None:
+    def test_authorize_tool_call_blocks_gitnexus_mcp_tools_by_default(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.execution_mode = "plan"
         runtime._workspace_authorized_tools = set()
@@ -1390,8 +1385,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
             {"path": "demo.txt"},
         )
 
-        self.assertIsNone(impact_allowed)
-        self.assertIsNone(detect_changes_allowed)
+        self.assertIn("requires broader tool access", impact_allowed)
+        self.assertIn("requires broader tool access", detect_changes_allowed)
         self.assertIn("requires broader tool access", rename_blocked)
         self.assertIn("requires broader tool access", group_sync_blocked)
         self.assertIn("requires broader tool access", blocked_other_mcp)
@@ -2002,7 +1997,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn('"current_mode": "plan"', result)
         self.assertEqual(runtime.execution_mode, "plan")
 
-    def test_build_system_prompt_drops_plan_guidance_after_mode_switch(self) -> None:
+    def test_build_system_prompt_is_stable_after_mode_switch(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             workspace_root=Path("D:/workspace"),
@@ -2021,11 +2016,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
         OpenAgentRuntime.request_mode_switch(runtime, "accept_edits", "Plan is done")
         edit_prompt = OpenAgentRuntime.build_system_prompt(runtime)
 
-        self.assertIn("Return a concrete implementation plan", plan_prompt)
-        self.assertIn("plan mode on.", plan_prompt)
+        self.assertEqual(plan_prompt, edit_prompt)
         self.assertNotIn("Return a concrete implementation plan", edit_prompt)
-        self.assertIn("accept edits on.", edit_prompt)
-        self.assertIn("write_file and edit_file", edit_prompt)
+        self.assertNotIn("Current mode:", edit_prompt)
+        self.assertNotIn("accept edits on.", edit_prompt)
         self.assertNotIn("! Yolo", edit_prompt)
 
     def test_switch_provider_model_updates_runtime_and_compact_manager(self) -> None:
@@ -4546,7 +4540,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             "system",
             [
                 {"role": "user", "content": "stable history"},
-                {"role": "user", "content": "<runtime-notice>dynamic</runtime-notice>", "transient": True},
+                {"role": "user", "content": "Runtime notice: dynamic", "transient": True},
             ],
             [],
             4096,
@@ -5867,7 +5861,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(reminder_counts, [0, 0, 0, 0, 0])
         self.assertEqual(reconcile_counts, [0, 0, 0, 0, 1])
         self.assertEqual(stale_counts, [0, 0, 0, 1, 1])
-        self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_TAG, json.dumps(payloads[4], ensure_ascii=False))
+        self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_PREFIX, json.dumps(payloads[4], ensure_ascii=False))
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
         self.assertNotIn(reconcile_reminder, json.dumps(session.messages, ensure_ascii=False))
         self.assertNotIn(stale_reminder, json.dumps(session.messages, ensure_ascii=False))
@@ -5912,7 +5906,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(result, "Done.")
         self.assertIn(stale_reminder, payload_text)
-        self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_TAG, payload_text)
+        self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_PREFIX, payload_text)
         self.assertNotIn(stale_reminder, json.dumps(session.messages, ensure_ascii=False))
 
     def test_agent_loop_runs_one_todo_reconcile_round_before_finishing_when_open_todos_remain(self) -> None:

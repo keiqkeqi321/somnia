@@ -70,7 +70,7 @@ class TraceViewerTests(unittest.TestCase):
                     "timestamp": 1001.0,
                     "messages": [
                         {"role": "user", "content": "changed first message"},
-                        {"role": "user", "content": "<runtime-notice>todo changed</runtime-notice>", "transient": True},
+                        {"role": "user", "content": "Runtime notice: Reminder: todo changed", "transient": True},
                     ],
                     "message_summary": {"total": 2, "roles": {"user": 2}, "content_chars": 64},
                     "payload_summary": {
@@ -129,7 +129,7 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn("cache read 800", html)
         self.assertIn("prompt 1,800", html)
         self.assertIn("message prefix changed at start", html)
-        self.assertIn("&lt;runtime-notice&gt;todo changed&lt;/runtime-notice&gt;", html)
+        self.assertIn("Runtime notice: Reminder: todo changed", html)
 
     def test_trace_viewer_cache_hit_ratio_uses_prompt_tokens_including_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
