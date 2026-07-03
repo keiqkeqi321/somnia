@@ -3825,6 +3825,56 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.text_blocks, ["hello"])
         self.assertEqual(chunks, ["hello"])
 
+    def test_openai_provider_streaming_collects_usage_only_events(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="deepseek",
+                provider_type="openai",
+                model="deepseek-chat",
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        class _StreamingResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def __iter__(self):
+                return iter(
+                    [
+                        b'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
+                        b'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n',
+                        b'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":36}}\n\n',
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+
+        chunks: list[str] = []
+        captured_payload: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured_payload.update(json.loads(request.data.decode("utf-8")))
+            return _StreamingResponse()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            turn = provider.complete(
+                "system",
+                [{"role": "user", "content": "hello"}],
+                [],
+                max_tokens=1024,
+                text_callback=chunks.append,
+            )
+
+        self.assertEqual("".join(chunks), "hello world")
+        self.assertEqual(turn.usage["input_tokens"], 36)
+        self.assertEqual(turn.usage["cache_read_input_tokens"], 64)
+        self.assertEqual(captured_payload["stream_options"], {"include_usage": True})
+
     def test_openai_provider_streams_compatible_reasoning_content(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(
@@ -4034,6 +4084,24 @@ class RuntimeToolOutputTests(unittest.TestCase):
         payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
 
         self.assertEqual(payload["body"]["reasoning"], {"effort": "xhigh"})
+
+    def test_openai_provider_debug_request_payload_requests_stream_usage(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://example.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        streaming_payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=True)
+        non_streaming_payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertEqual(streaming_payload["body"]["stream_options"], {"include_usage": True})
+        self.assertNotIn("stream_options", non_streaming_payload["body"])
 
     def test_openai_provider_debug_request_payload_defaults_to_reasoning_when_support_flag_is_unset(self) -> None:
         provider = OpenAIProvider(
@@ -4560,6 +4628,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(usage["input_tokens"], 36)
         self.assertEqual(usage["cache_read_input_tokens"], 64)
 
         responses_usage = provider._extract_usage(
@@ -4571,7 +4640,22 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 }
             }
         )
+        self.assertEqual(responses_usage["input_tokens"], 68)
         self.assertEqual(responses_usage["cache_read_input_tokens"], 32)
+
+        compatible_usage = provider._extract_usage(
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "prompt_cache_hit_tokens": 70,
+                    "prompt_cache_miss_tokens": 30,
+                }
+            }
+        )
+        self.assertEqual(compatible_usage["input_tokens"], 30)
+        self.assertEqual(compatible_usage["cache_read_input_tokens"], 70)
 
     def test_anthropic_provider_debug_request_payload_supports_local_input_image_blocks(self) -> None:
         image_root = self._stable_test_dir("vision-anthropic")

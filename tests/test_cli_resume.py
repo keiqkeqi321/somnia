@@ -74,6 +74,12 @@ class CliResumeTests(unittest.TestCase):
         self.assertEqual(args.model, "glm-5")
         self.assertEqual(args.prompt, "hello")
 
+    def test_parser_supports_traceviewer_subcommand(self) -> None:
+        args = build_parser().parse_args(["traceviewer", "--session", "session-1"])
+
+        self.assertEqual(args.command, "trace-viewer")
+        self.assertEqual(args.session_id, "session-1")
+
     def test_parser_supports_providers_subcommand(self) -> None:
         args = build_parser().parse_args(["providers"])
 
@@ -153,7 +159,7 @@ class CliResumeTests(unittest.TestCase):
             return_value=0,
         ) as mock_open_report, redirect_stdout(output):
             mock_runtime.DEBUG_PROVIDER_PAYLOAD_ENV = OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV
-            result = main(["--workspace", "workspace", "trace", "--provider", "openrouter", "--model", "glm-5", "hello"])
+            result = main(["--workspace", "workspace", "-trace", "--provider", "openrouter", "--model", "glm-5", "hello"])
             debug_env_value = os.environ.get(OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV)
 
         self.assertEqual(result, 0)
@@ -166,6 +172,13 @@ class CliResumeTests(unittest.TestCase):
         self.assertIn("Provider debug tracing enabled: openrouter / glm-5 (openai)", text)
         self.assertIn("Trace payloads:", text)
         self.assertIn("Trace report will open automatically after exit.", text)
+
+    def test_main_rejects_trace_viewer_split_command(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as exited:
+                main(["trace", "viewer"])
+
+        self.assertEqual(exited.exception.code, 2)
 
     def test_main_trace_chat_opens_report_after_exit(self) -> None:
         settings = SimpleNamespace(

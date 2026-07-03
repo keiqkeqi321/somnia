@@ -16,6 +16,17 @@ from open_somnia.config.settings import (
 )
 from open_somnia.runtime.agent import OpenAgentRuntime
 
+_COMMAND_FLAG_ALIASES = {
+    "-trace": "trace",
+    "-traceviewer": "trace-viewer",
+}
+
+_GLOBAL_OPTIONS_WITH_VALUES = {
+    "--workspace",
+    "--provider",
+    "--model",
+}
+
 
 def choose_provider_target_interactively(existing_profiles):
     from open_somnia.cli.provider_management import choose_provider_target_interactively as choose_provider_target
@@ -40,6 +51,31 @@ def _add_provider_overrides(parser: argparse.ArgumentParser) -> None:
         default=argparse.SUPPRESS,
         help="Override the configured model for this invocation.",
     )
+
+
+def _normalize_command_aliases(argv: list[str] | None) -> list[str]:
+    args = list(sys.argv[1:] if argv is None else argv)
+    command_seen = False
+    expecting_value = False
+
+    for index, token in enumerate(args):
+        if expecting_value:
+            expecting_value = False
+            continue
+        if token in _GLOBAL_OPTIONS_WITH_VALUES:
+            expecting_value = True
+            continue
+        if any(token.startswith(f"{option}=") for option in _GLOBAL_OPTIONS_WITH_VALUES):
+            continue
+        if not command_seen and token in _COMMAND_FLAG_ALIASES:
+            args[index] = _COMMAND_FLAG_ALIASES[token]
+            command_seen = True
+            continue
+        if token.startswith("-"):
+            continue
+        command_seen = True
+
+    return args
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,7 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Continue the latest saved chat in this workspace.",
     )
     _add_provider_overrides(trace_start_parser)
-    trace_parser = subparsers.add_parser("trace-viewer", help="Generate an HTML viewer for provider payload debug dumps.")
+    trace_parser = subparsers.add_parser(
+        "traceviewer",
+        aliases=["trace-viewer"],
+        help="Generate an HTML viewer for provider payload debug dumps.",
+    )
+    trace_parser.set_defaults(command="trace-viewer")
     trace_parser.add_argument(
         "--session",
         dest="session_id",
@@ -235,7 +276,9 @@ def _open_trace_report(settings) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_normalize_command_aliases(argv))
+    if args.command == "trace" and args.prompt == "viewer":
+        parser.error("Use 'somnia traceviewer' to open the trace report.")
     if args.command == "providers":
         return _manage_providers(args.workspace)
     if args.command == "trace-viewer":

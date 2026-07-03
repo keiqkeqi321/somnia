@@ -494,20 +494,25 @@ class OpenAIProvider(LLMProvider):
         usage = body.get("usage")
         if not isinstance(usage, dict):
             return None
-        input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + output_tokens))
+        cache_hit_tokens = int(usage.get("prompt_cache_hit_tokens") or 0)
+        cache_miss_tokens = int(usage.get("prompt_cache_miss_tokens") or 0)
+        prompt_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if cache_hit_tokens == 0 and isinstance(prompt_details, dict):
+            cache_hit_tokens = int(prompt_details.get("cached_tokens") or 0)
+        if cache_miss_tokens == 0 and cache_hit_tokens and prompt_tokens > cache_hit_tokens:
+            cache_miss_tokens = prompt_tokens - cache_hit_tokens
+        input_tokens = cache_miss_tokens if cache_hit_tokens else prompt_tokens
         result = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "source": "provider",
         }
-        prompt_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
-        if isinstance(prompt_details, dict):
-            cached_tokens = int(prompt_details.get("cached_tokens") or 0)
-            if cached_tokens:
-                result["cache_read_input_tokens"] = cached_tokens
+        if cache_hit_tokens:
+            result["cache_read_input_tokens"] = cache_hit_tokens
         return result
 
     def _responses_reasoning_payload(self) -> dict[str, Any]:
@@ -554,17 +559,20 @@ class OpenAIProvider(LLMProvider):
                     **self._responses_reasoning_payload(),
                 },
             }
+        body = {
+            "model": self.settings.model,
+            "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
+            "tools": [_schema_to_openai_tool(tool) for tool in tools],
+            "tool_choice": "auto",
+            "max_tokens": max_tokens,
+            "stream": stream,
+            **reasoning_payload,
+        }
+        if stream:
+            body["stream_options"] = {"include_usage": True}
         return {
             "url": f"{self.settings.base_url.rstrip('/')}/chat/completions",
-            "body": {
-                "model": self.settings.model,
-                "messages": [{"role": "system", "content": system_prompt}] + _to_openai_messages(messages),
-                "tools": [_schema_to_openai_tool(tool) for tool in tools],
-                "tool_choice": "auto",
-                "max_tokens": max_tokens,
-                "stream": stream,
-                **reasoning_payload,
-            },
+            "body": body,
         }
 
     def complete(
@@ -791,6 +799,7 @@ class OpenAIProvider(LLMProvider):
         tool_calls_by_index: dict[int, dict[str, Any]] = {}
         think_splitter = _ThinkTagSplitter()
         finish_reason = "stop"
+        usage: dict[str, Any] | None = None
 
         def emit_text(text: str) -> None:
             aggregated_message["content"] += text
@@ -821,6 +830,9 @@ class OpenAIProvider(LLMProvider):
             if data == "[DONE]":
                 break
             event = json.loads(data)
+            event_usage = event.get("usage")
+            if isinstance(event_usage, dict):
+                usage = event_usage
             choices = event.get("choices")
             if not isinstance(choices, list) or not choices:
                 continue
@@ -875,7 +887,7 @@ class OpenAIProvider(LLMProvider):
         if thinking_parts:
             aggregated_message["reasoning_content"] = "".join(thinking_parts)
         aggregated_message["tool_calls"] = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
-        return {
+        body = {
             "_thinking_streamed": bool(thinking_parts),
             "choices": [
                 {
@@ -884,6 +896,9 @@ class OpenAIProvider(LLMProvider):
                 }
             ]
         }
+        if usage is not None:
+            body["usage"] = usage
+        return body
 
     def _read_responses_streaming_response(
         self,

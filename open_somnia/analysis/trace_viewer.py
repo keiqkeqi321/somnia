@@ -107,6 +107,8 @@ def load_trace_records(payload_dir: Path, *, session_id: str | None = None, limi
             continue
         if not isinstance(payload, dict):
             continue
+        if _is_trace_viewer_command_payload(payload):
+            continue
         record = trace_record_from_payload(path, payload)
         if session_id and record.session_id != session_id:
             continue
@@ -267,15 +269,13 @@ def render_trace_viewer(
     subtitle = " · ".join(filter_note) if filter_note else "all provider payload dumps"
     session_options = _render_session_options(session_summaries, selected_session=session_id)
 
-    rows = "\n".join(_render_trace_row(record, index) for index, record in enumerate(records, start=1))
-    details = "\n".join(_render_trace_detail(record, index) for index, record in enumerate(records, start=1))
-    diff_rows = "\n".join(_render_diff_row(diff, index) for index, diff in enumerate(diffs, start=1))
-    if not rows:
-        rows = "<tr><td colspan=\"12\" class=\"empty\">No provider payload dumps found.</td></tr>"
-    if not details:
-        details = "<section class=\"empty-panel\">No traces available. Enable SOMNIA_DEBUG_PROVIDER_PAYLOADS=1 and run a turn first.</section>"
-    if not diff_rows:
-        diff_rows = "<tr><td colspan=\"8\" class=\"empty\">Need at least two payloads in the same session to diff prefixes.</td></tr>"
+    diffs_by_current_path = {diff.current.path: diff for diff in diffs}
+    request_items = "\n".join(
+        _render_request_item(record, index, diffs_by_current_path.get(record.path))
+        for index, record in enumerate(records, start=1)
+    )
+    if not request_items:
+        request_items = "<section class=\"empty-panel\">No provider payload dumps found. Enable SOMNIA_DEBUG_PROVIDER_PAYLOADS=1 and run a turn first.</section>"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -352,41 +352,11 @@ def render_trace_viewer(
       padding: 10px 12px;
     }}
     .card strong {{ display: block; font-size: 19px; margin-top: 2px; }}
-    .tabs {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 14px;
-    }}
-    .tab-button {{
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel);
-      color: var(--text);
-      cursor: pointer;
-      padding: 9px 12px;
-      font: inherit;
-    }}
-    .tab-button[aria-selected="true"] {{
-      background: var(--accent-weak);
-      border-color: #87dcca;
-      color: var(--accent);
-      font-weight: 650;
-    }}
-    .panel.hidden {{ display: none; }}
-    .panel h2 {{ margin-top: 0; }}
-    .table-wrap {{
-      overflow-x: auto;
+    .request-list {{
       max-height: calc(100vh - 310px);
-      overflow-y: auto;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      overflow: auto;
+      padding-right: 4px;
     }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 980px; }}
-    th, td {{ padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }}
-    th {{ position: sticky; top: 0; background: #f9fafb; color: #475467; font-size: 12px; text-transform: uppercase; }}
-    tr:last-child td {{ border-bottom: 0; }}
     code, pre {{
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
@@ -426,20 +396,42 @@ def render_trace_viewer(
       margin-bottom: 10px;
       overflow: hidden;
     }}
-    #trace-details {{
-      max-height: calc(100vh - 310px);
-      overflow: auto;
-      padding-right: 4px;
-    }}
     details.trace > summary {{
       cursor: pointer;
       padding: 12px 14px;
       font-weight: 650;
       border-bottom: 1px solid transparent;
     }}
+    .request-summary {{
+      display: grid;
+      grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(86px, auto)) minmax(180px, 0.8fr);
+      gap: 10px;
+      align-items: start;
+    }}
+    .summary-main {{ min-width: 0; }}
+    .summary-main code {{ word-break: break-all; }}
+    .summary-stat {{ color: var(--muted); font-weight: 500; }}
+    .summary-stat strong {{ display: block; color: var(--text); font-size: 13px; }}
     details.trace[open] > summary {{ border-bottom-color: var(--line); }}
     .detail-body {{ padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }}
+    .detail-section h3 {{ margin-bottom: 8px; }}
     .two-col {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }}
+    .diff-panel {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+    }}
+    .nested-detail {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fff;
+    }}
+    .nested-detail > summary {{
+      cursor: pointer;
+      font-weight: 650;
+    }}
     .empty, .empty-panel {{ color: var(--muted); text-align: center; padding: 24px; }}
     .hidden {{ display: none; }}
     @media (max-width: 760px) {{
@@ -471,44 +463,9 @@ def render_trace_viewer(
     </div>
   </header>
   <main>
-    <nav class="tabs" aria-label="Trace views">
-      <button class="tab-button" type="button" data-tab="requests" aria-selected="true">Requests</button>
-      <button class="tab-button" type="button" data-tab="diffs" aria-selected="false">Prefix Diffs</button>
-      <button class="tab-button" type="button" data-tab="details" aria-selected="false">Details</button>
-    </nav>
-
-    <section class="panel" id="panel-requests" data-panel="requests">
+    <section>
       <h2>Requests</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Time</th><th>Session</th><th>Kind</th><th>Provider</th><th>Model</th>
-              <th>Messages</th><th>System</th><th>Tools</th><th>Cache</th><th>Context</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody id="trace-rows">{rows}</tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel hidden" id="panel-diffs" data-panel="diffs">
-      <h2>Adjacent Prefix Diffs</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Session</th><th>From</th><th>To</th><th>Common prefix</th><th>First diff</th><th>Changed</th><th>Cache risk</th>
-            </tr>
-          </thead>
-          <tbody id="diff-rows">{diff_rows}</tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel hidden" id="panel-details" data-panel="details">
-      <h2>Trace Details</h2>
-      <div id="trace-details">{details}</div>
+      <div id="request-list" class="request-list">{request_items}</div>
     </section>
   </main>
   <script>
@@ -535,7 +492,7 @@ def render_trace_viewer(
       if (node) node.textContent = value;
     }}
     function updateMetrics() {{
-      const visibleRows = Array.from(document.querySelectorAll('#trace-rows tr[data-record="trace"]'))
+      const visibleRows = Array.from(document.querySelectorAll('#request-list [data-record="trace"]'))
         .filter(row => !row.classList.contains('hidden'));
       let input = 0;
       let output = 0;
@@ -573,22 +530,148 @@ def render_trace_viewer(
     }}
     filter.addEventListener('input', applyFilter);
     sessionFilter.addEventListener('change', applyFilter);
-    for (const button of document.querySelectorAll('.tab-button')) {{
-      button.addEventListener('click', () => {{
-        const tab = button.dataset.tab;
-        for (const item of document.querySelectorAll('.tab-button')) {{
-          item.setAttribute('aria-selected', String(item.dataset.tab === tab));
-        }}
-        for (const panel of document.querySelectorAll('[data-panel]')) {{
-          panel.classList.toggle('hidden', panel.dataset.panel !== tab);
-        }}
-      }});
-    }}
     updateMetrics();
   </script>
 </body>
 </html>
 """
+
+
+def _render_request_item(record: TraceRecord, index: int, diff: TraceDiff | None) -> str:
+    search = _search_text(
+        record.session_id,
+        record.actor,
+        record.kind,
+        record.provider_name,
+        record.provider_type,
+        record.model,
+        record.path.name,
+        _message_preview(record),
+        record.provider_error,
+        *(diff.cache_risks if diff is not None else []),
+    )
+    cache_class = _ratio_class(record.cache_hit_ratio)
+    status = "error" if record.provider_error else "ok"
+    status_class = "bad" if record.provider_error else "good"
+    changed: list[str] = []
+    risk_labels: list[str] = []
+    if diff is not None:
+        if diff.system_changed:
+            changed.append("system")
+        if diff.tools_changed:
+            changed.append("tools")
+        if diff.model_changed:
+            changed.append("model")
+        if diff.first_diff_message_index is not None:
+            changed.append("messages")
+        risk_labels = list(diff.cache_risks)
+    summary_risks = _chips([*changed, *risk_labels], default="low risk", default_class="good")
+    transient = ""
+    if record.transient_message_count or record.runtime_notice_count:
+        transient = f"<span class=\"pill warn\">transient {record.transient_message_count} / notice {record.runtime_notice_count}</span>"
+    return f"""<details class="trace" data-record="trace" data-search="{html.escape(search)}" data-session="{html.escape(record.session_id)}" data-input-tokens="{record.input_tokens}" data-output-tokens="{record.output_tokens}" data-cache-read-tokens="{record.cache_read_input_tokens}" data-cache-create-tokens="{record.cache_creation_input_tokens}" data-prompt-tokens="{record.prompt_tokens_including_cache}">
+  <summary>
+    <div class="request-summary">
+      <div class="summary-main">
+        #{index} <code>{html.escape(record.path.name)}</code>
+        <div class="muted">{html.escape(_format_time(record.timestamp))} · {html.escape(record.session_id or "-")} · {html.escape(record.actor)} · <span class="pill accent">{html.escape(record.kind)}</span> <span class="pill {status_class}">{status}</span></div>
+      </div>
+      <div class="summary-stat"><strong>{html.escape(record.provider_name or "-")}</strong>{html.escape(record.provider_type or "-")}</div>
+      <div class="summary-stat"><strong>{html.escape(record.model or "-")}</strong>model</div>
+      <div class="summary-stat"><strong>{record.message_count}</strong>messages</div>
+      <div class="summary-stat"><strong>{_format_percent(record.cache_hit_ratio)}</strong><span class="pill {cache_class}">cache</span></div>
+      <div class="summary-stat"><strong>{_format_latency(record.latency_ms)}</strong>latency</div>
+      <div class="summary-stat">{summary_risks}</div>
+    </div>
+  </summary>
+  <div class="detail-body">
+    <div class="chips">
+      <span class="pill">input {_format_int(record.input_tokens)}</span>
+      <span class="pill">prompt {_format_int(record.prompt_tokens_including_cache)}</span>
+      <span class="pill">output {_format_int(record.output_tokens)}</span>
+      <span class="pill accent">cache read {_format_int(record.cache_read_input_tokens)}</span>
+      <span class="pill accent">cache create {_format_int(record.cache_creation_input_tokens)}</span>
+      <span class="pill">context {_format_int(record.context_used_tokens)} / {_format_int(record.context_max_tokens)} ({_format_percent(record.context_usage_ratio)})</span>
+      <span class="pill">tools {record.tool_count}</span>
+      <span class="pill">system {_format_int(record.system_prompt_chars)} chars</span>
+      {transient}
+    </div>
+    {_render_prefix_diff_panel(diff)}
+    {_render_trace_detail_sections(record)}
+  </div>
+</details>"""
+
+
+def _render_prefix_diff_panel(diff: TraceDiff | None) -> str:
+    if diff is None:
+        return """<section class="diff-panel detail-section">
+  <h3>Prefix Diff</h3>
+  <div class="muted">No previous request in this session. Need at least two payloads in the same session to compare prefixes.</div>
+</section>"""
+    changed: list[str] = []
+    if diff.system_changed:
+        changed.append("system")
+    if diff.tools_changed:
+        changed.append("tools")
+    if diff.model_changed:
+        changed.append("model")
+    if diff.first_diff_message_index is not None:
+        changed.append("messages")
+    first_diff = "-" if diff.first_diff_message_index is None else str(diff.first_diff_message_index)
+    return f"""<section class="diff-panel detail-section">
+  <h3>Prefix Diff</h3>
+  <div class="two-col">
+    <div>
+      <div class="muted">Previous</div>
+      <code>{html.escape(diff.previous.path.name)}</code>
+    </div>
+    <div>
+      <div class="muted">Current</div>
+      <code>{html.escape(diff.current.path.name)}</code>
+    </div>
+  </div>
+  <div class="chips" style="margin-top: 10px;">
+    <span class="pill">common prefix {diff.common_prefix_messages} / {diff.previous_message_count} -> {diff.current_message_count}</span>
+    <span class="pill">first diff {html.escape(first_diff)}</span>
+    {_chips(changed, default="no structural changes", default_class="good")}
+    {_chips(diff.cache_risks, default="low risk", default_class="good")}
+  </div>
+</section>"""
+
+
+def _render_trace_detail_sections(record: TraceRecord) -> str:
+    messages = _list_value(record.payload.get("messages"))
+    provider_request = record.payload.get("provider_request")
+    provider_response = record.payload.get("provider_response")
+    system_sections = record.payload.get("system_prompt_sections")
+    message_rows = "\n".join(_render_message_preview(message, idx) for idx, message in enumerate(messages))
+    if not message_rows:
+        message_rows = "<div class=\"muted\">No messages captured.</div>"
+    return f"""<section class="detail-section">
+  <h3>Details</h3>
+  <div class="two-col">
+    <details class="nested-detail">
+      <summary>Messages</summary>
+      {message_rows}
+    </details>
+    <div>
+      <h3>Payload Metrics</h3>
+      <pre>{html.escape(json.dumps(_summary_payload(record), ensure_ascii=False, indent=2, default=str))}</pre>
+    </div>
+  </div>
+  <details>
+    <summary>System prompt sections</summary>
+    <pre>{html.escape(json.dumps(system_sections, ensure_ascii=False, indent=2, default=str))}</pre>
+  </details>
+  <details>
+    <summary>Provider request</summary>
+    <pre>{html.escape(json.dumps(provider_request, ensure_ascii=False, indent=2, default=str))}</pre>
+  </details>
+  <details>
+    <summary>Provider response</summary>
+    <pre>{html.escape(json.dumps(provider_response, ensure_ascii=False, indent=2, default=str))}</pre>
+  </details>
+</section>"""
 
 
 def _render_trace_row(record: TraceRecord, index: int) -> str:
@@ -882,6 +965,47 @@ def _count_transient_messages(messages: list[Any]) -> int:
 
 def _count_runtime_notices(messages: list[Any]) -> int:
     return sum(1 for message in messages if isinstance(message, dict) and RUNTIME_NOTICE_MARKER in _message_content_text(message))
+
+
+def _is_trace_viewer_command_payload(payload: dict[str, Any]) -> bool:
+    messages = [message for message in _list_value(payload.get("messages")) if isinstance(message, dict)]
+    visible_messages = []
+    for message in messages:
+        if message.get("transient") is True:
+            continue
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = _message_content_text(message).strip()
+        if not content:
+            continue
+        visible_messages.append((role, content))
+    if len(visible_messages) != 1:
+        return False
+    role, content = visible_messages[0]
+    if role != "user":
+        return False
+    normalized = " ".join(content.lower().replace("_", "-").split())
+    return any(
+        _matches_trace_viewer_command(normalized, prefix)
+        for prefix in (
+            "somnia traceviewer",
+            "somnia trace-viewer",
+            "python -m open-somnia traceviewer",
+            "python -m open-somnia trace-viewer",
+        )
+    )
+
+
+def _matches_trace_viewer_command(value: str, prefix: str) -> bool:
+    if value == prefix:
+        return True
+    if not value.startswith(f"{prefix} "):
+        return False
+    suffix = value[len(prefix) :].strip()
+    if suffix.startswith("--"):
+        return True
+    return "打开" in suffix and ("报告" in suffix or "分析" in suffix)
 
 
 def _message_content_text(message: dict[str, Any]) -> str:

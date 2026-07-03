@@ -109,16 +109,19 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn('id="metric-traces"', html)
         self.assertIn('id="metric-cache-hit"', html)
         self.assertIn("function updateMetrics()", html)
-        self.assertIn('data-tab="requests"', html)
-        self.assertIn('data-tab="diffs"', html)
-        self.assertIn('data-tab="details"', html)
-        self.assertIn('id="panel-requests"', html)
-        self.assertIn('id="panel-diffs"', html)
-        self.assertIn('id="panel-details"', html)
+        self.assertIn('id="request-list"', html)
+        self.assertNotIn('data-tab="requests"', html)
+        self.assertNotIn('id="panel-diffs"', html)
+        self.assertNotIn('id="panel-details"', html)
         self.assertIn('<option value="session-1">session-1 · ', html)
         self.assertIn(' · 2 traces</option>', html)
         self.assertIn('data-session="session-1"', html)
         self.assertIn('data-record="trace"', html)
+        self.assertIn("Prefix Diff", html)
+        self.assertIn("Details", html)
+        self.assertIn("summary-stat\"><span class=\"chips\"><span class=\"pill warn\">messages</span>", html)
+        self.assertIn('<details class="nested-detail">\n      <summary>Messages</summary>', html)
+        self.assertNotIn('<details class="nested-detail" open>', html)
         self.assertIn('data-input-tokens="1000"', html)
         self.assertIn('data-cache-read-tokens="800"', html)
         self.assertIn("28.6%", html)
@@ -159,6 +162,42 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn("99.5%", html)
         self.assertIn("prompt 41,567", html)
         self.assertNotIn("18539.9%", html)
+
+    def test_trace_viewer_excludes_self_open_command_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logs_dir = Path(tmpdir) / ".open_somnia" / "logs"
+            payloads = provider_payload_dir(logs_dir)
+            self._write_payload(
+                payloads,
+                "normal-1000.json",
+                {
+                    "timestamp": 1000.0,
+                    "session_id": "normal-session",
+                    "kind": "turn",
+                    "messages": [{"role": "user", "content": "inspect cache behavior"}],
+                    "provider_response": {"usage": {"input_tokens": 10}},
+                },
+            )
+            self._write_payload(
+                payloads,
+                "trace-viewer-1001.json",
+                {
+                    "timestamp": 1001.0,
+                    "session_id": "trace-viewer-session",
+                    "kind": "turn",
+                    "messages": [{"role": "user", "content": "somnia traceviewer 这是打开分析报告的命令"}],
+                    "provider_response": {"usage": {"input_tokens": 20}},
+                },
+            )
+
+            records = load_trace_records(payloads)
+            report = build_trace_viewer_report(logs_dir)
+            html = report.read_text(encoding="utf-8")
+
+        self.assertEqual([record.session_id for record in records], ["normal-session"])
+        self.assertIn("normal-session", html)
+        self.assertNotIn("trace-viewer-session", html)
+        self.assertNotIn("trace-viewer-1001.json", html)
 
     def test_trace_viewer_session_filter_can_preselect_generated_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -221,24 +260,29 @@ class TraceViewerTests(unittest.TestCase):
         self.assertIn("No provider payload dumps found.", html)
         self.assertIn("SOMNIA_DEBUG_PROVIDER_PAYLOADS=1", html)
 
-    def test_cli_trace_viewer_does_not_require_configured_provider(self) -> None:
+    def test_cli_traceviewer_does_not_require_configured_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workspace = root / "workspace"
             home = root / "home"
-            output = root / "trace.html"
             workspace.mkdir()
             home.mkdir()
 
-            with patch("pathlib.Path.home", return_value=home), patch("webbrowser.open") as mock_open:
-                status = main(["--workspace", str(workspace), "trace-viewer", "--output", str(output)])
+            for command in ("traceviewer", "-traceviewer", "trace-viewer"):
+                output = root / f"{command.lstrip('-')}.html"
+                with self.subTest(command=command):
+                    with patch("pathlib.Path.home", return_value=home), patch("webbrowser.open") as mock_open, patch(
+                        "open_somnia.cli.main.OpenAgentRuntime"
+                    ) as mock_runtime:
+                        status = main(["--workspace", str(workspace), command, "--output", str(output)])
 
-            html = output.read_text(encoding="utf-8")
+                    html = output.read_text(encoding="utf-8")
 
-        self.assertEqual(status, 0)
-        mock_open.assert_called_once()
-        self.assertIn("Somnia Trace Viewer", html)
-        self.assertIn("No provider payload dumps found.", html)
+                    self.assertEqual(status, 0)
+                    mock_open.assert_called_once()
+                    mock_runtime.assert_not_called()
+                    self.assertIn("Somnia Trace Viewer", html)
+                    self.assertIn("No provider payload dumps found.", html)
 
 
 if __name__ == "__main__":
