@@ -5,7 +5,6 @@ import io
 import json
 import os
 import time
-import urllib.error
 import unittest
 from pathlib import Path
 from threading import Event, Thread
@@ -50,6 +49,20 @@ from open_somnia.tools.team import register_team_tools
 
 
 class RuntimeToolOutputTests(unittest.TestCase):
+    def _patch_openai_chat_create(self, provider: OpenAIProvider, create):
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            responses=SimpleNamespace(create=lambda **kwargs: None),
+        )
+        return patch.object(provider, "_client", return_value=client)
+
+    def _patch_openai_responses_create(self, provider: OpenAIProvider, create):
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: None)),
+            responses=SimpleNamespace(create=create),
+        )
+        return patch.object(provider, "_client", return_value=client)
+
     _TINY_PNG_BYTES = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
     )
@@ -3680,19 +3693,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 timeout_seconds=30,
             )
         )
-        overload_body = (
-            '{"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"},'
-            '"request_id":"req-1"}'
-        ).encode("utf-8")
-        http_error = urllib.error.HTTPError(
-            url="https://example.com/v1/chat/completions",
-            code=400,
-            msg="Bad Request",
-            hdrs=None,
-            fp=io.BytesIO(overload_body),
-        )
+        def fake_create(**kwargs):
+            raise ProviderError(
+                'OpenAI request failed: 400 {"error":{"code":"1305","message":"该模型当前访问量过大，请您稍后再试"}}',
+                retryable=False,
+            )
 
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with self._patch_openai_chat_create(provider, fake_create):
             with self.assertRaises(ProviderError) as context:
                 provider.complete("system", [], [], max_tokens=1024)
 
@@ -3710,19 +3717,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 timeout_seconds=30,
             )
         )
-        forbidden_body = (
-            '{"error":{"message":"Upstream access forbidden, please contact administrator",'
-            '"type":"upstream_error"}}'
-        ).encode("utf-8")
-        http_error = urllib.error.HTTPError(
-            url="https://example.com/v1/chat/completions",
-            code=502,
-            msg="Bad Gateway",
-            hdrs=None,
-            fp=io.BytesIO(forbidden_body),
-        )
+        def fake_create(**kwargs):
+            raise ProviderError(
+                'OpenAI request failed: 502 {"error":{"message":"Upstream access forbidden, please contact administrator","type":"upstream_error"}}',
+                retryable=False,
+            )
 
-        with patch("urllib.request.urlopen", side_effect=http_error):
+        with self._patch_openai_chat_create(provider, fake_create):
             with self.assertRaises(ProviderError) as context:
                 provider.complete("system", [], [], max_tokens=1024)
 
@@ -3741,7 +3742,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("temporary upstream network error")):
+        def fake_create(**kwargs):
+            raise RuntimeError("temporary upstream network error")
+
+        with self._patch_openai_chat_create(provider, fake_create):
             with self.assertRaises(ProviderError) as context:
                 provider.complete("system", [], [], max_tokens=1024)
 
@@ -3761,17 +3765,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _Response:
-            def __enter__(self):
-                return self
+        def fake_create(**kwargs):
+            return {"choices": []}
 
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return b'{"choices":[]}'
-
-        with patch("urllib.request.urlopen", return_value=_Response()):
+        with self._patch_openai_chat_create(provider, fake_create):
             with self.assertRaises(ProviderError) as context:
                 provider.complete("system", [{"role": "user", "content": "hello"}], [], max_tokens=1024)
 
@@ -3790,24 +3787,14 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b'data: {"choices":[]}\n\n',
-                        b'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
-                        b'data: [DONE]\n\n',
-                    ]
-                )
-
         chunks: list[str] = []
-        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+        stream = iter(
+            [
+                {"choices": []},
+                {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]},
+            ]
+        )
+        with self._patch_openai_chat_create(provider, lambda **kwargs: stream):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -3831,31 +3818,29 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}\n\n',
-                        b'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n',
-                        b'data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":36}}\n\n',
-                        b"data: [DONE]\n\n",
-                    ]
-                )
-
         chunks: list[str] = []
         captured_payload: dict = {}
 
-        def fake_urlopen(request, timeout=None):
-            captured_payload.update(json.loads(request.data.decode("utf-8")))
-            return _StreamingResponse()
+        def fake_create(**kwargs):
+            captured_payload.update(kwargs)
+            return iter(
+                [
+                    {"choices": [{"delta": {"content": "hello"}, "finish_reason": None}]},
+                    {"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]},
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                            "prompt_cache_hit_tokens": 64,
+                            "prompt_cache_miss_tokens": 36,
+                        },
+                    },
+                ]
+            )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with self._patch_openai_chat_create(provider, fake_create):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -3881,26 +3866,16 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b'data: {"choices":[{"delta":{"reasoning_content":"think "},"finish_reason":null}]}\n\n',
-                        b'data: {"choices":[{"delta":{"reasoning_content":"first"},"finish_reason":null}]}\n\n',
-                        b'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n',
-                        b"data: [DONE]\n\n",
-                    ]
-                )
-
         text_chunks: list[str] = []
         thinking_events: list[dict] = []
-        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+        stream = iter(
+            [
+                {"choices": [{"delta": {"reasoning_content": "think "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"reasoning_content": "first"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}]},
+            ]
+        )
+        with self._patch_openai_chat_create(provider, lambda **kwargs: stream):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -3928,25 +3903,15 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b'data: {"choices":[{"delta":{"content":"<thi"},"finish_reason":null}]}\n\n',
-                        b'data: {"choices":[{"delta":{"content":"nk>hidden</think>visible"},"finish_reason":"stop"}]}\n\n',
-                        b"data: [DONE]\n\n",
-                    ]
-                )
-
         text_chunks: list[str] = []
         thinking_events: list[dict] = []
-        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+        stream = iter(
+            [
+                {"choices": [{"delta": {"content": "<thi"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "nk>hidden</think>visible"}, "finish_reason": "stop"}]},
+            ]
+        )
+        with self._patch_openai_chat_create(provider, lambda **kwargs: stream):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -3974,24 +3939,14 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b'data: {"choices":[{"delta":{"content":"hello","tool_calls":null},"finish_reason":null}]}\n\n',
-                        b'data: {"choices":[{"delta":{"content":" world"},"finish_reason":"stop"}]}\n\n',
-                        b"data: [DONE]\n\n",
-                    ]
-                )
-
         chunks: list[str] = []
-        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+        stream = iter(
+            [
+                {"choices": [{"delta": {"content": "hello", "tool_calls": None}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": " world"}, "finish_reason": "stop"}]},
+            ]
+        )
+        with self._patch_openai_chat_create(provider, lambda **kwargs: stream):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -4016,39 +3971,29 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return json.dumps(
+        def fake_create(**kwargs):
+            return {
+                "choices": [
                     {
-                        "choices": [
-                            {
-                                "message": {
-                                    "content": "Need a tool.",
-                                    "tool_calls": [
-                                        {
-                                            "id": "call-1",
-                                            "type": "function",
-                                            "function": {
-                                                "name": "bash",
-                                                "arguments": '{"command":"pwd"',
-                                            },
-                                        }
-                                    ],
-                                },
-                                "finish_reason": "tool_calls",
-                            }
-                        ]
-                    },
-                    ensure_ascii=False,
-                ).encode("utf-8")
+                        "message": {
+                            "content": "Need a tool.",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "bash",
+                                        "arguments": '{"command":"pwd"',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
 
-        with patch("urllib.request.urlopen", return_value=_Response()):
+        with self._patch_openai_chat_create(provider, fake_create):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -4135,6 +4080,70 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(payload["body"]["max_output_tokens"], 1024)
         self.assertEqual(payload["body"]["reasoning"], {"effort": "high", "summary": "auto"})
 
+    def test_openai_provider_debug_request_payload_includes_prompt_cache_controls_for_official_api(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                prompt_cache_key="somnia-main",
+                prompt_cache_retention="24h",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertEqual(payload["body"]["prompt_cache_key"], "somnia-main")
+        self.assertEqual(payload["body"]["prompt_cache_retention"], "24h")
+
+    def test_openai_provider_complete_passes_prompt_cache_controls_to_sdk(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="openai",
+                provider_type="openai",
+                model="gpt-4.1",
+                api_key="test-key",
+                base_url="https://api.openai.com/v1",
+                timeout_seconds=30,
+                prompt_cache_key="somnia-main",
+                prompt_cache_retention="24h",
+            )
+        )
+        captured_kwargs: dict = {}
+
+        def fake_create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return {"choices": [{"message": {"content": "Done."}, "finish_reason": "stop"}]}
+
+        with self._patch_openai_chat_create(provider, fake_create):
+            turn = provider.complete("system", [{"role": "user", "content": "hello"}], [], max_tokens=1024)
+
+        self.assertEqual(turn.text_blocks, ["Done."])
+        self.assertEqual(captured_kwargs["prompt_cache_key"], "somnia-main")
+        self.assertEqual(captured_kwargs["prompt_cache_retention"], "24h")
+
+    def test_openai_provider_debug_request_payload_omits_prompt_cache_controls_for_compatible_api(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="deepseek",
+                provider_type="openai",
+                model="deepseek-chat",
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                timeout_seconds=30,
+                prompt_cache_key="somnia-main",
+                prompt_cache_retention="24h",
+            )
+        )
+
+        payload = provider.debug_request_payload("system", [{"role": "user", "content": "hello"}], [], 1024, stream=False)
+
+        self.assertNotIn("prompt_cache_key", payload["body"])
+        self.assertNotIn("prompt_cache_retention", payload["body"])
+
     def test_openai_provider_maps_responses_reasoning_summary_to_thinking_callback(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(
@@ -4149,37 +4158,25 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         captured_requests: list[dict] = []
 
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return json.dumps(
+        def fake_create(**kwargs):
+            captured_requests.append(kwargs)
+            return {
+                "output": [
                     {
-                        "output": [
-                            {
-                                "type": "reasoning",
-                                "summary": [{"type": "summary_text", "text": "Checked constraints."}],
-                            },
-                            {
-                                "type": "message",
-                                "role": "assistant",
-                                "content": [{"type": "output_text", "text": "Done."}],
-                            },
-                        ],
-                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-                    }
-                ).encode("utf-8")
-
-        def fake_urlopen(request, timeout=None):
-            captured_requests.append(json.loads(request.data.decode("utf-8")))
-            return _Response()
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "Checked constraints."}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Done."}],
+                    },
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            }
 
         thinking_events: list[dict] = []
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with self._patch_openai_responses_create(provider, fake_create):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -4207,28 +4204,19 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return json.dumps(
+        def fake_create(**kwargs):
+            return {
+                "output": [
                     {
-                        "output": [
-                            {
-                                "type": "function_call",
-                                "call_id": "call-1",
-                                "name": "bash",
-                                "arguments": '{"command":"pwd","importance":"glance"}',
-                            }
-                        ]
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "bash",
+                        "arguments": '{"command":"pwd","importance":"glance"}',
                     }
-                ).encode("utf-8")
+                ]
+            }
 
-        with patch("urllib.request.urlopen", return_value=_Response()):
+        with self._patch_openai_responses_create(provider, fake_create):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],
@@ -4256,34 +4244,28 @@ class RuntimeToolOutputTests(unittest.TestCase):
             )
         )
 
-        class _StreamingResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def __iter__(self):
-                return iter(
-                    [
-                        b"event: response.reasoning_summary_text.delta\n",
-                        b'data: {"delta":"Checked "}\n',
-                        b"\n",
-                        b"event: response.reasoning_summary_text.delta\n",
-                        b'data: {"delta":"constraints."}\n',
-                        b"\n",
-                        b"event: response.output_text.delta\n",
-                        b'data: {"delta":"Done."}\n',
-                        b"\n",
-                        b"event: response.completed\n",
-                        b'data: {"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}]}}\n',
-                        b"\n",
-                    ]
-                )
-
         text_chunks: list[str] = []
         thinking_events: list[dict] = []
-        with patch("urllib.request.urlopen", return_value=_StreamingResponse()):
+        stream = iter(
+            [
+                {"type": "response.reasoning_summary_text.delta", "delta": "Checked "},
+                {"type": "response.reasoning_summary_text.delta", "delta": "constraints."},
+                {"type": "response.output_text.delta", "delta": "Done."},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Done."}],
+                            }
+                        ]
+                    },
+                },
+            ]
+        )
+        with self._patch_openai_responses_create(provider, lambda **kwargs: stream):
             turn = provider.complete(
                 "system",
                 [{"role": "user", "content": "hello"}],

@@ -1035,6 +1035,10 @@ def _build_provider_profile(name: str, item: dict, raw: dict) -> ProviderProfile
         max_tokens=int(item.get("max_tokens", defaults.max_tokens)),
         timeout_seconds=int(item.get("timeout_seconds", defaults.timeout_seconds)),
         reasoning_level=None,
+        prompt_cache_key=str(item["prompt_cache_key"]).strip() if item.get("prompt_cache_key") else None,
+        prompt_cache_retention=(
+            str(item["prompt_cache_retention"]).strip() if item.get("prompt_cache_retention") else None
+        ),
     )
 
 
@@ -1102,6 +1106,8 @@ def _materialize_provider(profile: ProviderProfileSettings, model: str | None = 
         reasoning_level=model_traits.reasoning_level if model_traits and model_traits.reasoning_level is not None else None,
         supports_reasoning=model_traits.supports_reasoning if model_traits is not None else None,
         supports_adaptive_reasoning=model_traits.supports_adaptive_reasoning if model_traits is not None else None,
+        prompt_cache_key=profile.prompt_cache_key,
+        prompt_cache_retention=profile.prompt_cache_retention,
     )
 
 

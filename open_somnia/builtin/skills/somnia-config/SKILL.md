@@ -100,6 +100,8 @@ context_window_tokens = 1047576
 max_tokens = 8000
 timeout_seconds = 120
 reasoning_level = "medium"
+prompt_cache_key = "somnia-main"
+prompt_cache_retention = "24h"
 
 [routing]
 vision_provider = "openai"
@@ -119,6 +121,8 @@ Fields:
 - `max_tokens`: max output tokens. Default: `8000`.
 - `timeout_seconds`: provider request timeout. Default: `120`.
 - `reasoning_level`: optional reasoning preference. Supported normalized values: `auto`, `low`, `medium`, `high`, `deep`; unset/`auto` means automatic/default behavior.
+- `prompt_cache_key`: optional OpenAI prompt cache routing key. Sent only to the official `api.openai.com` endpoint.
+- `prompt_cache_retention`: optional OpenAI prompt cache retention policy, such as `"in-memory"` or `"24h"`. Sent only to the official `api.openai.com` endpoint.
 
 Provider names are normalized lowercase by the loader.
 

@@ -28,6 +28,8 @@ class ProviderSettings:
     reasoning_level: str | None = None
     supports_reasoning: bool | None = None
     supports_adaptive_reasoning: bool | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_retention: str | None = None
 
 
 @dataclass(slots=True)
@@ -44,6 +46,8 @@ class ProviderProfileSettings:
     max_tokens: int = 8_000
     timeout_seconds: int = 120
     reasoning_level: str | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_retention: str | None = None
 
 
 @dataclass(slots=True)

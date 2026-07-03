@@ -3,11 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import socket
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from open_somnia.config.models import ProviderSettings
 from open_somnia.providers.base import LLMProvider, ProviderError, StopChecker, TextCallback
@@ -27,6 +27,29 @@ try:
     import tiktoken
 except Exception:  # pragma: no cover - optional until dependencies are installed
     tiktoken = None
+
+
+_CHAT_COMPLETION_KWARGS = {
+    "model",
+    "messages",
+    "tools",
+    "tool_choice",
+    "max_tokens",
+    "stream",
+    "stream_options",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+}
+
+
+def _dump_openai_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "dict"):
+        return value.dict()
+    return json.loads(value.model_dump_json())
 
 
 def _schema_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -476,6 +499,17 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         self.settings = settings
 
+    def _client(self) -> OpenAI:
+        kwargs: dict[str, Any] = {
+            "api_key": self.settings.api_key,
+            "timeout": self.settings.timeout_seconds,
+        }
+        if self.settings.base_url:
+            kwargs["base_url"] = self.settings.base_url
+        if self.settings.organization:
+            kwargs["organization"] = self.settings.organization
+        return OpenAI(**kwargs)
+
     def count_tokens(
         self,
         system_prompt: str,
@@ -545,6 +579,7 @@ class OpenAIProvider(LLMProvider):
             reasoning_level=getattr(self.settings, "reasoning_level", None),
             supports_reasoning=getattr(self.settings, "supports_reasoning", None),
         )
+        prompt_cache_payload = self._prompt_cache_payload()
         if self._use_responses_api():
             return {
                 "url": _responses_api_url(self.settings.base_url),
@@ -556,6 +591,7 @@ class OpenAIProvider(LLMProvider):
                     "tool_choice": "auto",
                     "max_output_tokens": max_tokens,
                     "stream": stream,
+                    **prompt_cache_payload,
                     **self._responses_reasoning_payload(),
                 },
             }
@@ -566,6 +602,7 @@ class OpenAIProvider(LLMProvider):
             "tool_choice": "auto",
             "max_tokens": max_tokens,
             "stream": stream,
+            **prompt_cache_payload,
             **reasoning_payload,
         }
         if stream:
@@ -574,6 +611,25 @@ class OpenAIProvider(LLMProvider):
             "url": f"{self.settings.base_url.rstrip('/')}/chat/completions",
             "body": body,
         }
+
+    def _prompt_cache_payload(self) -> dict[str, Any]:
+        if not _is_official_openai_base_url(self.settings.base_url):
+            return {}
+        payload: dict[str, Any] = {}
+        prompt_cache_key = str(getattr(self.settings, "prompt_cache_key", "") or "").strip()
+        if prompt_cache_key:
+            payload["prompt_cache_key"] = prompt_cache_key
+        prompt_cache_retention = str(getattr(self.settings, "prompt_cache_retention", "") or "").strip()
+        if prompt_cache_retention:
+            payload["prompt_cache_retention"] = prompt_cache_retention
+        return payload
+
+    def _chat_completion_kwargs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        kwargs = {key: value for key, value in payload.items() if key in _CHAT_COMPLETION_KWARGS}
+        extra_body = {key: value for key, value in payload.items() if key not in _CHAT_COMPLETION_KWARGS}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return kwargs
 
     def complete(
         self,
@@ -593,50 +649,45 @@ class OpenAIProvider(LLMProvider):
             max_tokens,
             stream=should_stream,
         )
-        url = str(debug_payload["url"])
         payload = debug_payload["body"]
-        headers = {
-            "Authorization": f"Bearer {self.settings.api_key}",
-            "Content-Type": "application/json",
-        }
-        if self.settings.organization:
-            headers["OpenAI-Organization"] = self.settings.organization
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
-                if not should_stream:
-                    body = json.loads(response.read().decode("utf-8"))
-                    if self._use_responses_api():
-                        self._emit_responses_reasoning_summary(body, thinking_callback)
+            client = self._client()
+            if self._use_responses_api():
+                response = client.responses.create(**payload)
+                if should_stream:
+                    body = self._read_responses_streaming_response(
+                        response,
+                        text_callback,
+                        thinking_callback=thinking_callback,
+                        stop_checker=stop_checker,
+                    )
                 else:
-                    if self._use_responses_api():
-                        body = self._read_responses_streaming_response(
-                            response,
-                            text_callback,
-                            thinking_callback=thinking_callback,
-                            stop_checker=stop_checker,
-                        )
-                    else:
-                        body = self._read_streaming_response(
-                            response,
-                            text_callback,
-                            thinking_callback=thinking_callback,
-                            stop_checker=stop_checker,
-                        )
-        except urllib.error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
-            retryable = exc.code >= 500 and not _is_overloaded_error(exc.code, details) and not _is_forbidden_like_error(exc.code, details)
+                    body = _dump_openai_object(response)
+                    self._emit_responses_reasoning_summary(body, thinking_callback)
+            else:
+                response = client.chat.completions.create(**self._chat_completion_kwargs(payload))
+                if should_stream:
+                    body = self._read_streaming_response(
+                        response,
+                        text_callback,
+                        thinking_callback=thinking_callback,
+                        stop_checker=stop_checker,
+                    )
+                else:
+                    body = _dump_openai_object(response)
+        except APIStatusError as exc:
+            details = str(getattr(exc, "body", None) or exc.response.text or exc)
+            retryable = (
+                exc.status_code >= 500
+                and not _is_overloaded_error(exc.status_code, details)
+                and not _is_forbidden_like_error(exc.status_code, details)
+            )
             raise ProviderError(
-                f"OpenAI request failed: {exc.code} {details}",
+                f"OpenAI request failed: {exc.status_code} {details}",
                 retryable=retryable,
             ) from exc
-        except urllib.error.URLError as exc:
-            retryable = isinstance(getattr(exc, "reason", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()
+        except (APIConnectionError, APITimeoutError) as exc:
+            retryable = isinstance(getattr(exc, "__cause__", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()
             raise ProviderError(f"OpenAI request failed: {exc}", retryable=retryable) from exc
         except Exception as exc:
             raise _wrap_openai_exception(exc) from exc
@@ -820,16 +871,10 @@ class OpenAIProvider(LLMProvider):
                 else:
                     emit_text(part)
 
-        for raw_line in response:
+        for raw_event in response:
             if stop_checker is not None and stop_checker():
                 raise TurnInterrupted("Interrupted by user.")
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            event = json.loads(data)
+            event = _dump_openai_object(raw_event)
             event_usage = event.get("usage")
             if isinstance(event_usage, dict):
                 usage = event_usage
@@ -910,8 +955,6 @@ class OpenAIProvider(LLMProvider):
     ) -> dict[str, Any]:
         completed_body: dict[str, Any] | None = None
         output_items: list[dict[str, Any]] = []
-        current_event = ""
-        data_lines: list[str] = []
 
         def dispatch_event(event_name: str, data_text: str) -> None:
             nonlocal completed_body
@@ -942,23 +985,11 @@ class OpenAIProvider(LLMProvider):
                 if isinstance(response_body, dict):
                     completed_body = response_body
 
-        for raw_line in response:
+        for raw_event in response:
             if stop_checker is not None and stop_checker():
                 raise TurnInterrupted("Interrupted by user.")
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            if not line:
-                dispatch_event(current_event, "\n".join(data_lines).strip())
-                current_event = ""
-                data_lines = []
-                continue
-            if line.startswith("event:"):
-                current_event = line[6:].strip()
-                continue
-            if line.startswith("data:"):
-                data_lines.append(line[5:].strip())
-
-        if data_lines:
-            dispatch_event(current_event, "\n".join(data_lines).strip())
+            event = _dump_openai_object(raw_event)
+            dispatch_event(str(event.get("type", "")), json.dumps(event, ensure_ascii=False))
         if completed_body is not None:
             return completed_body
         return {"output": output_items}

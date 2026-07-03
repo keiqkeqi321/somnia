@@ -376,6 +376,34 @@ class SettingsOverrideTests(unittest.TestCase):
             settings.provider_profiles["anthropic"].model_traits["claude-sonnet-4-6"].supports_adaptive_reasoning
         )
 
+    def test_load_settings_reads_openai_prompt_cache_controls(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                provider_type = "openai"
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "openai-test-key"
+                base_url = "https://api.openai.com/v1"
+                prompt_cache_key = "somnia-main"
+                prompt_cache_retention = "24h"
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        self.assertEqual(settings.provider.prompt_cache_key, "somnia-main")
+        self.assertEqual(settings.provider.prompt_cache_retention, "24h")
+        self.assertEqual(settings.provider_profiles["openai"].prompt_cache_key, "somnia-main")
+
     def test_load_settings_provider_model_traits_override_global_model_traits(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
