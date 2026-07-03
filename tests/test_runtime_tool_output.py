@@ -5774,15 +5774,62 @@ class RuntimeToolOutputTests(unittest.TestCase):
         result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
         reminder = OpenAgentRuntime.TODO_REMINDER_TEXT
         reconcile_reminder = OpenAgentRuntime.TODO_RECONCILE_REMINDER_TEXT
+        stale_reminder = OpenAgentRuntime.TODO_STALE_STATUS_REMINDER_TEXT
         reminder_counts = [json.dumps(payload, ensure_ascii=False).count(reminder) for payload in payloads]
         reconcile_counts = [json.dumps(payload, ensure_ascii=False).count(reconcile_reminder) for payload in payloads]
+        stale_counts = [json.dumps(payload, ensure_ascii=False).count(stale_reminder) for payload in payloads]
 
         self.assertEqual(result, "Still done.")
         self.assertEqual(reminder_counts, [0, 0, 0, 0, 0])
         self.assertEqual(reconcile_counts, [0, 0, 0, 0, 1])
+        self.assertEqual(stale_counts, [0, 0, 0, 1, 1])
         self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_TAG, json.dumps(payloads[4], ensure_ascii=False))
         self.assertNotIn(reminder, json.dumps(session.messages, ensure_ascii=False))
         self.assertNotIn(reconcile_reminder, json.dumps(session.messages, ensure_ascii=False))
+        self.assertNotIn(stale_reminder, json.dumps(session.messages, ensure_ascii=False))
+
+    def test_agent_loop_injects_stale_todo_status_reminder_after_three_rounds_without_todowrite(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(
+            has_open_items=lambda session: any(item.get("status") in {"pending", "in_progress"} for item in getattr(session, "todo_items", []))
+        )
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        runtime.transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: None
+        runtime.build_system_prompt = lambda session=None: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
+        runtime.registry = SimpleNamespace(schemas=lambda: [], execute=lambda ctx, name, payload: "ok")
+
+        payloads: list[list[dict]] = []
+
+        def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            payloads.append(json.loads(json.dumps(messages, ensure_ascii=False)))
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["Done."])
+
+        runtime.complete = fake_complete
+
+        session = AgentSession(
+            id="session-1",
+            todo_items=[{"content": "Update status", "status": "in_progress", "activeForm": "Updating status"}],
+            rounds_without_todo=3,
+        )
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "inspect")
+        stale_reminder = OpenAgentRuntime.TODO_STALE_STATUS_REMINDER_TEXT
+        payload_text = json.dumps(payloads[0], ensure_ascii=False)
+
+        self.assertEqual(result, "Done.")
+        self.assertIn(stale_reminder, payload_text)
+        self.assertIn(OpenAgentRuntime.RUNTIME_NOTICE_TAG, payload_text)
+        self.assertNotIn(stale_reminder, json.dumps(session.messages, ensure_ascii=False))
 
     def test_agent_loop_runs_one_todo_reconcile_round_before_finishing_when_open_todos_remain(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

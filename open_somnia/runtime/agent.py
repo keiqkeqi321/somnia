@@ -185,6 +185,7 @@ class OpenAgentRuntime:
         "<reminder>Before ending, reconcile TodoWrite with the work just completed. "
         "If any todo changed, call TodoWrite now. If the current todo list is already accurate, end the turn without extra prose.</reminder>"
     )
+    TODO_STALE_STATUS_REMINDER_TEXT = "<reminder>Pay attention to the status of todos</reminder>"
     EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT = (
         "<reminder>Your previous response ended without any visible assistant text or tool calls. "
         "Continue the task now and either call the next needed tool or provide a visible final answer.</reminder>"
@@ -3258,6 +3259,8 @@ class OpenAgentRuntime:
                     system_prompt = self.build_system_prompt()
                 tool_schemas = self._tool_schemas_for_model("lead")
                 transient_notices: list[str] = []
+                if session.rounds_without_todo >= 3 and self.todo_manager.has_open_items(session):
+                    transient_notices.append(self.TODO_STALE_STATUS_REMINDER_TEXT)
                 if pending_todo_reconcile:
                     transient_notices.append(self.TODO_RECONCILE_REMINDER_TEXT)
                 if pending_empty_response_repair:
