@@ -41,7 +41,7 @@ def serialize_session_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "created_at": summary.get("created_at"),
         "updated_at": summary.get("updated_at"),
         "messages": [],
-        "token_usage": {},
+        "token_usage": deepcopy(dict(summary.get("token_usage", {}) or {})),
         "todo_items": [],
         "rounds_without_todo": 0,
         "read_file_overlap_state": {},

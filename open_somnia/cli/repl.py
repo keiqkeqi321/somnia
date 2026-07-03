@@ -1432,6 +1432,18 @@ class TurnQueueRunner:
             return ""
         return f"sum: {self._format_token_count(total_tokens)}"
 
+    def current_cache_hit_label(self) -> str:
+        usage = getattr(self.session, "token_usage", None)
+        if not isinstance(usage, dict):
+            return ""
+        input_tokens = int(usage.get("input_tokens") or 0)
+        cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
+        prompt_tokens = input_tokens + cache_read_tokens
+        if prompt_tokens <= 0 or cache_read_tokens <= 0:
+            return ""
+        ratio = cache_read_tokens / prompt_tokens
+        return f"cache: {ratio * 100:.1f}% ({self._format_token_count(cache_read_tokens)} read)"
+
     def current_context_governance_label(self) -> str:
         label_getter = getattr(self.runtime, "recent_context_governance_label", None)
         if not callable(label_getter):
@@ -1447,6 +1459,7 @@ class TurnQueueRunner:
     def _status_bar_fragments(self, *, include_unknown_model: bool):
         context_label = self.current_context_label()
         token_sum_label = self.current_token_sum_label()
+        cache_hit_label = self.current_cache_hit_label()
         governance_label = self.current_context_governance_label()
         model_label = self.current_model_label()
         fragments = []
@@ -1464,6 +1477,10 @@ class TurnQueueRunner:
             if fragments:
                 fragments.append(("fg:#64748b", " | "))
             fragments.append(("fg:#7dd3fc", token_sum_label))
+        if cache_hit_label:
+            if fragments:
+                fragments.append(("fg:#64748b", " | "))
+            fragments.append(("fg:#86efac", cache_hit_label))
         return fragments
 
     def bottom_toolbar(self):

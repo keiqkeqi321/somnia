@@ -256,6 +256,30 @@ class ReplTodoTests(unittest.TestCase):
             ],
         )
 
+    def test_bottom_toolbar_shows_session_cache_hit_rate(self) -> None:
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),
+            context_window_usage=lambda session: ContextWindowUsage(
+                used_tokens=40_000,
+                max_tokens=200_000,
+                counter_name="tiktoken",
+            ),
+        )
+        runner = TurnQueueRunner(
+            runtime,
+            SimpleNamespace(
+                todo_items=[],
+                token_usage={
+                    "input_tokens": 25_000,
+                    "cache_read_input_tokens": 75_000,
+                    "total_tokens": 30_000,
+                },
+            ),
+            stable_prompt=True,
+        )
+
+        self.assertIn(("fg:#86efac", "cache: 75.0% (75.0k read)"), runner.bottom_toolbar())
+
     def test_tool_started_updates_repl_panel_without_printing_body_output(self) -> None:
         runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")))
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)

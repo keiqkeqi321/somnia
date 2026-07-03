@@ -6670,7 +6670,14 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.complete = lambda *args, **kwargs: AssistantTurn(
             stop_reason="end_turn",
             text_blocks=["Done."],
-            usage={"input_tokens": 120, "output_tokens": 30, "total_tokens": 150, "source": "provider"},
+            usage={
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "total_tokens": 150,
+                "cache_read_input_tokens": 360,
+                "cache_creation_input_tokens": 40,
+                "source": "provider",
+            },
         )
 
         session = AgentSession(id="session-1")
@@ -6681,6 +6688,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(session.token_usage["input_tokens"], 120)
         self.assertEqual(session.token_usage["output_tokens"], 30)
         self.assertEqual(session.token_usage["total_tokens"], 150)
+        self.assertEqual(session.token_usage["cache_read_input_tokens"], 360)
+        self.assertEqual(session.token_usage["cache_creation_input_tokens"], 40)
 
     def test_lead_inbox_drains_shutdown_responses_as_internal_control_messages(self) -> None:
         marked: list[tuple[str, str]] = []

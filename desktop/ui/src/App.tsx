@@ -3163,6 +3163,13 @@ function App() {
   const contextUsedLabel = contextUsage ? formatTokenCount(contextUsage.used_tokens) : "--";
   const contextWindowLabel = contextUsage?.max_tokens ? formatTokenCount(contextUsage.max_tokens) : "--";
   const contextRatioLabel = contextPercent === null ? "--" : `${contextPercent.toFixed(1)}%`;
+  const cacheUsage = buildCacheUsageSummary(currentSession?.token_usage);
+  const cacheLabel = cacheUsage ? `Cache ${formatPercent(cacheUsage.ratio)}` : "Cache --";
+  const cacheTitle = cacheUsage
+    ? `Cache hit: ${formatPercent(cacheUsage.ratio)} (${formatTokenCount(cacheUsage.cacheReadTokens)} read / ${formatTokenCount(
+        cacheUsage.promptTokens,
+      )} prompt)`
+    : "Session cache hit unavailable";
   const commandSuggestions = currentCommandSuggestions(draft);
   const conversationPreview = currentSession ? buildSessionPreview(currentSession) : "";
   const conversationTitle = truncateTopic(conversationPreview || selectedSessionId || t("conversation.newConversation"));
@@ -3539,6 +3546,7 @@ function App() {
                             const isAnswering = (activeProjectTurns[group.path] ?? []).some((turn) => turn.sessionId === session.id);
                             const isWaitingForDecision = group.pendingInteractions.some((interaction) => interaction.session_id === session.id);
                             const sessionMenuKey = `${group.path}::${session.id}`;
+                            const sessionCacheUsage = buildCacheUsageSummary(session.token_usage);
                             return (
                               <div
                                 key={session.id}
@@ -3557,6 +3565,11 @@ function App() {
                                     <strong>{session.id}</strong>
                                   </div>
                                   <p>{buildSessionPreview(session)}</p>
+                                  {sessionCacheUsage ? (
+                                    <span className="session-card-cache">
+                                      Cache {formatPercent(sessionCacheUsage.ratio)} · {formatTokenCount(sessionCacheUsage.cacheReadTokens)} read
+                                    </span>
+                                  ) : null}
                                   <span className="session-card-time">{formatRelativeTime(session.updated_at ?? session.created_at)}</span>
                                 </button>
                                 <div className="session-card-side">
@@ -3975,6 +3988,8 @@ function App() {
                           <strong>{contextWindowLabel}</strong>
                           <span>{t("ctx.ratio")}</span>
                           <strong>{contextRatioLabel}</strong>
+                          <span>Cache hit</span>
+                          <strong title={cacheTitle}>{cacheLabel}</strong>
                         </div>
                         <div className="ctx-popover-actions">
                           <button
@@ -4073,6 +4088,10 @@ function App() {
                   <div className="fact-row">
                     <span>Messages</span>
                     <strong>{currentSession.messages.length}</strong>
+                  </div>
+                  <div className="fact-row">
+                    <span>Cache hit</span>
+                    <strong title={cacheTitle}>{cacheLabel}</strong>
                   </div>
                   <div className="fact-row">
                     <span>Current mode</span>
@@ -6503,6 +6522,36 @@ function contextUsageColor(percent: number | null): string {
     return "#f59e0b";
   }
   return "#ef4444";
+}
+
+function buildCacheUsageSummary(tokenUsage: Record<string, number> | undefined | null): {
+  ratio: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  promptTokens: number;
+} | null {
+  if (!tokenUsage || typeof tokenUsage !== "object") {
+    return null;
+  }
+  const inputTokens = Math.max(0, Number(tokenUsage.input_tokens) || 0);
+  const cacheReadTokens = Math.max(0, Number(tokenUsage.cache_read_input_tokens) || 0);
+  const promptTokens = inputTokens + cacheReadTokens;
+  if (promptTokens <= 0 || cacheReadTokens <= 0) {
+    return null;
+  }
+  return {
+    ratio: cacheReadTokens / promptTokens,
+    inputTokens,
+    cacheReadTokens,
+    promptTokens,
+  };
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+  return `${(Math.max(0, Math.min(1, value)) * 100).toFixed(1)}%`;
 }
 
 function formatTokenCount(tokenCount: number | null | undefined): string {

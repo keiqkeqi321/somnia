@@ -93,6 +93,7 @@ class SessionStore:
             "updated_at": updated_at,
             "has_visible_exchange": bool(has_user and has_assistant),
             "preview": preview or "[no visible messages]",
+            "token_usage": dict(session.get("token_usage", {}) or {}),
         }
 
     def create(self) -> dict[str, Any]:
@@ -106,6 +107,8 @@ class SessionStore:
                 "input_tokens": 0,
                 "output_tokens": 0,
                 "total_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
             },
             "todo_items": [],
             "rounds_without_todo": 0,

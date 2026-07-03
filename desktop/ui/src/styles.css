@@ -2144,6 +2144,17 @@ button {
   line-height: 1.15;
 }
 
+.session-card-cache {
+  display: block;
+  margin-top: 4px;
+  color: #86efac;
+  font-size: 0.64rem;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-answering-indicator {
   display: inline-flex;
   align-items: center;

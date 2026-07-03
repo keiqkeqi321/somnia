@@ -1733,12 +1733,16 @@ class OpenAgentRuntime:
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
             total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
+            cache_read_input_tokens = int(usage.get("cache_read_input_tokens") or 0)
+            cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens") or 0)
             source = str(usage.get("source", "provider"))
             if total_tokens > 0:
                 return {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
+                    "cache_read_input_tokens": cache_read_input_tokens,
+                    "cache_creation_input_tokens": cache_creation_input_tokens,
                     "source": source,
                 }
 
@@ -1763,7 +1767,7 @@ class OpenAgentRuntime:
         if not isinstance(usage, dict):
             usage = {}
             session.token_usage = usage
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
+        for key in ("input_tokens", "output_tokens", "total_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
             usage[key] = int(usage.get(key) or 0)
         return usage
 
@@ -1774,6 +1778,8 @@ class OpenAgentRuntime:
         totals["input_tokens"] += int(usage.get("input_tokens") or 0)
         totals["output_tokens"] += int(usage.get("output_tokens") or 0)
         totals["total_tokens"] += int(usage.get("total_tokens") or 0)
+        totals["cache_read_input_tokens"] += int(usage.get("cache_read_input_tokens") or 0)
+        totals["cache_creation_input_tokens"] += int(usage.get("cache_creation_input_tokens") or 0)
 
     def context_window_usage(
         self,
