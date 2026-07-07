@@ -234,7 +234,7 @@ class ReplTodoTests(unittest.TestCase):
             ],
         )
 
-    def test_bottom_toolbar_shows_token_sum_when_session_has_usage(self) -> None:
+    def test_bottom_toolbar_hides_token_sum_when_session_has_usage(self) -> None:
         runtime = SimpleNamespace(
             settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),
             context_window_usage=lambda session: ContextWindowUsage(
@@ -251,8 +251,6 @@ class ReplTodoTests(unittest.TestCase):
                 ("fg:#94a3b8", "model: openai / gpt-5|auto"),
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
-                ("fg:#64748b", " | "),
-                ("fg:#7dd3fc", "sum: 12.3k"),
             ],
         )
 

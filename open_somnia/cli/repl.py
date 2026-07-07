@@ -1423,15 +1423,6 @@ class TurnQueueRunner:
             return self.CONTEXT_REDUCING_STYLE
         return self.CONTEXT_CRITICAL_STYLE
 
-    def current_token_sum_label(self) -> str:
-        usage = getattr(self.session, "token_usage", None)
-        if not isinstance(usage, dict):
-            return ""
-        total_tokens = int(usage.get("total_tokens") or 0)
-        if total_tokens <= 0:
-            return ""
-        return f"sum: {self._format_token_count(total_tokens)}"
-
     def current_cache_hit_label(self) -> str:
         usage = getattr(self.session, "token_usage", None)
         if not isinstance(usage, dict):
@@ -1458,7 +1449,6 @@ class TurnQueueRunner:
 
     def _status_bar_fragments(self, *, include_unknown_model: bool):
         context_label = self.current_context_label()
-        token_sum_label = self.current_token_sum_label()
         cache_hit_label = self.current_cache_hit_label()
         governance_label = self.current_context_governance_label()
         model_label = self.current_model_label()
@@ -1473,10 +1463,6 @@ class TurnQueueRunner:
             if fragments:
                 fragments.append(("fg:#64748b", " | "))
             fragments.append(("fg:#67e8f9", governance_label))
-        if token_sum_label:
-            if fragments:
-                fragments.append(("fg:#64748b", " | "))
-            fragments.append(("fg:#7dd3fc", token_sum_label))
         if cache_hit_label:
             if fragments:
                 fragments.append(("fg:#64748b", " | "))
