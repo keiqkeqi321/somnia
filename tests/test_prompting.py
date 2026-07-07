@@ -254,6 +254,16 @@ class PromptingTests(unittest.TestCase):
         self.assertFalse(any(item.display_text == "/+unity" for item in slash_only))
         self.assertEqual([item.display_text for item in plus_prefixed], ["/+unity"])
 
+    def test_command_completion_prefers_command_name_matches_over_description_matches(self) -> None:
+        completer = OpenAgentCompleter(Path("."))
+
+        completions = list(completer.get_completions(Document(text="/mode", cursor_position=5), None))
+        display_texts = [item.display_text for item in completions]
+
+        self.assertIn("/model", display_texts)
+        self.assertIn("/image", display_texts)
+        self.assertLess(display_texts.index("/model"), display_texts.index("/image"))
+
     def test_at_completion_for_empty_query_uses_top_level_paths_without_full_scan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -327,11 +327,24 @@ class OpenAgentCompleter(Completer):
             yield from self._skill_command_completions(query)
             return
         lowered = query.lower()
-        for command, description in VISIBLE_COMMAND_SPECS:
+        matches: list[tuple[tuple[int, int, int], str, str]] = []
+        for index, (command, description) in enumerate(VISIBLE_COMMAND_SPECS):
             command_name = command[1:]
+            command_lower = command_name.lower()
             haystack = f"{command_name} {description}".lower()
             if lowered and lowered not in haystack:
                 continue
+            if not lowered:
+                score = (0, index, 0)
+            elif command_lower.startswith(lowered):
+                score = (0, index, len(command_name))
+            elif lowered in command_lower:
+                score = (1, index, len(command_name))
+            else:
+                score = (2, index, len(command_name))
+            matches.append((score, command, description))
+        for _, command, description in sorted(matches, key=lambda item: item[0]):
+            command_name = command[1:]
             yield Completion(
                 text=command_name,
                 start_position=-len(query),
