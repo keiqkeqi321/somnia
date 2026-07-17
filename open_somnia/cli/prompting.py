@@ -424,6 +424,33 @@ def _history_file(workspace_root: Path) -> Path:
     return history_dir / "repl_history.txt"
 
 
+def _strip_unicode_surrogates(text: str) -> str:
+    return "".join(ch for ch in text if not 0xD800 <= ord(ch) <= 0xDFFF)
+
+
+def _sanitize_buffer_text_for_submit(buffer) -> None:
+    text = getattr(buffer, "text", "")
+    if not isinstance(text, str) or not text:
+        return
+    sanitized = _strip_unicode_surrogates(text)
+    if sanitized == text:
+        return
+
+    cursor_position = getattr(buffer, "cursor_position", len(text))
+    try:
+        cursor_position = int(cursor_position)
+    except (TypeError, ValueError):
+        cursor_position = len(text)
+    cursor_position = max(0, min(len(text), cursor_position))
+    removed_before_cursor = len(text[:cursor_position]) - len(_strip_unicode_surrogates(text[:cursor_position]))
+
+    setattr(buffer, "text", sanitized)
+    try:
+        setattr(buffer, "cursor_position", max(0, min(len(sanitized), cursor_position - removed_before_cursor)))
+    except Exception:
+        pass
+
+
 def _apply_current_completion(buffer) -> bool:
     complete_state = getattr(buffer, "complete_state", None)
     if not complete_state:
@@ -552,6 +579,7 @@ def create_prompt_session(
         if should_insert_newline(buffer):
             buffer.insert_text("\n", fire_event=False)
             return
+        _sanitize_buffer_text_for_submit(buffer)
         buffer.validate_and_handle()
 
     @bindings.add("escape")

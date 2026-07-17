@@ -390,6 +390,22 @@ class PromptingTests(unittest.TestCase):
         self.assertEqual(inserted, [])
         self.assertEqual(validated, [True])
 
+    def test_enter_strips_invalid_surrogates_before_submit(self) -> None:
+        validated: list[bool] = []
+        buffer = SimpleNamespace(
+            complete_state=None,
+            text="health \ud83d\udfe2 active",
+            cursor_position=len("health \ud83d\udfe2"),
+            validate_and_handle=lambda: validated.append(True),
+        )
+        prompt_session = self._capture_prompt_session()
+
+        self._enter_handler(prompt_session)(SimpleNamespace(current_buffer=buffer))
+
+        self.assertEqual(buffer.text, "health  active")
+        self.assertEqual(buffer.cursor_position, len("health "))
+        self.assertEqual(validated, [True])
+
     def test_apply_image_command_to_buffer_prefixes_existing_prompt(self) -> None:
         buffer = SimpleNamespace(text="describe this", cursor_position=0)
 

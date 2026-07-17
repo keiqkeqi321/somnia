@@ -3891,6 +3891,44 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.content_blocks[0], {"type": "thinking", "thinking": "think first"})
         self.assertEqual(turn.content_blocks[1], {"type": "text", "text": "answer"})
 
+    def test_openai_provider_preserves_reasoning_content_in_payload_history(self) -> None:
+        provider = OpenAIProvider(
+            ProviderSettings(
+                name="deepseek",
+                provider_type="openai",
+                model="deepseek-reasoner",
+                api_key="test-key",
+                base_url="https://api.deepseek.com/v1",
+                timeout_seconds=30,
+            )
+        )
+
+        payload = provider.debug_request_payload(
+            "system",
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking_log", "path": "thinking/session.turn.jsonl", "characters": 42},
+                        {"type": "thinking", "thinking": "private reasoning"},
+                        {"type": "text", "text": "Need to inspect files."},
+                        {"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "pwd"}},
+                    ],
+                }
+            ],
+            [],
+            max_tokens=1024,
+            stream=False,
+        )
+
+        assistant_message = payload["body"]["messages"][1]
+
+        self.assertEqual(assistant_message["role"], "assistant")
+        self.assertEqual(assistant_message["reasoning_content"], "private reasoning")
+        self.assertEqual(assistant_message["content"], "Need to inspect files.")
+        self.assertEqual(assistant_message["tool_calls"][0]["id"], "call-1")
+        self.assertNotIn("thinking_log", json.dumps(assistant_message))
+
     def test_openai_provider_streams_compatible_think_tags_outside_answer(self) -> None:
         provider = OpenAIProvider(
             ProviderSettings(

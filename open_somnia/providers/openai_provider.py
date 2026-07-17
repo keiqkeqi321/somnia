@@ -131,6 +131,7 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         text_parts: list[str] = []
         content_parts: list[dict[str, Any]] = []
         has_non_text_parts = False
+        thinking_parts: list[str] = []
         tool_results: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
         tool_result_followup_blocks: list[dict[str, Any]] = []
@@ -151,6 +152,11 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             elif item["type"] == "tool_result":
                 tool_results.append(item)
                 tool_result_followup_blocks.extend(active_tool_result_content_blocks(item))
+            elif item["type"] == "thinking":
+                if role == "assistant":
+                    thinking = str(item.get("thinking", ""))
+                    if thinking:
+                        thinking_parts.append(thinking)
             elif item["type"] == "tool_call":
                 tool_calls.append(
                     {
@@ -167,6 +173,7 @@ def _to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 {
                     "role": "assistant",
                     "content": "\n".join(part for part in text_parts if part) or "",
+                    **({"reasoning_content": "\n".join(thinking_parts)} if thinking_parts else {}),
                     **({"tool_calls": tool_calls} if tool_calls else {}),
                 }
             )
