@@ -30,7 +30,10 @@ dependencies = [
     "openai>=1.47.0",
     "Pillow>=10.3.0",
     "prompt_toolkit>=3.0.43",
+    "starlette>=0.41,<2",
     "tiktoken>=0.8.0",
+    "uvicorn>=0.30,<1",
+    "websockets>=14,<16",
 ]
 
 [project.urls]
@@ -41,6 +44,8 @@ Issues = "https://github.com/your-org/somnia/issues"
 [project.scripts]
 somnia = "open_somnia.cli.main:main"
 somnia-sidecar = "desktop.backend.bootstrap:main"
+somnia-connector = "open_somnia.remote.cli:connector_main"
+somnia-relay = "open_somnia.remote.cli:relay_main"
 
 [tool.setuptools]
 include-package-data = true

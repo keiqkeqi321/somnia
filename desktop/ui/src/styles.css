@@ -35,6 +35,190 @@ body {
   overflow: hidden;
 }
 
+.remote-shell {
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: 52px auto 32px minmax(0, 1fr);
+  background: #101214;
+  color: #edf0f2;
+}
+
+.remote-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 18px;
+  border-bottom: 1px solid #31363a;
+  background: #171a1d;
+}
+
+.remote-header > div,
+.remote-pane-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.remote-project-label,
+.remote-message > span,
+.remote-session-row span,
+.remote-empty,
+.remote-conversation-empty {
+  color: #9aa3aa;
+  font-size: 12px;
+}
+
+.remote-status {
+  font-size: 11px;
+  color: #abb3b9;
+}
+
+.remote-status-connected { color: #67c58d; }
+.remote-status-error { color: #e48181; }
+.remote-status-connecting { color: #e0bd69; }
+
+.remote-connection {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.5fr) minmax(130px, 1fr) minmax(130px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #2b3034;
+  background: #141719;
+}
+
+.remote-connection label {
+  display: grid;
+  gap: 5px;
+  color: #aeb6bb;
+  font-size: 11px;
+}
+
+.remote-connection input,
+.remote-composer textarea {
+  width: 100%;
+  border: 1px solid #3a4247;
+  border-radius: 5px;
+  background: #0f1113;
+  color: #edf0f2;
+}
+
+.remote-connection input {
+  height: 34px;
+  padding: 0 9px;
+}
+
+.remote-shell button {
+  min-height: 34px;
+  border: 1px solid #465158;
+  border-radius: 5px;
+  background: #253038;
+  color: #f2f4f5;
+  cursor: pointer;
+}
+
+.remote-shell button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.remote-notice {
+  padding: 7px 18px;
+  border-bottom: 1px solid #2b3034;
+  color: #b8c0c5;
+  font-size: 12px;
+}
+
+.remote-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+}
+
+.remote-session-pane {
+  padding: 12px;
+  border-right: 1px solid #30363a;
+  background: #15181a;
+}
+
+.remote-pane-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.remote-pane-heading button { min-height: 28px; padding: 0 10px; }
+
+.remote-session-row {
+  width: 100%;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  text-align: left;
+}
+
+.remote-session-row-selected { border-color: #5c7868 !important; background: #1e2924 !important; }
+
+.remote-conversation {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.remote-messages {
+  overflow: auto;
+  padding: 18px max(18px, calc((100% - 820px) / 2));
+}
+
+.remote-message {
+  padding: 12px 0;
+  border-bottom: 1px solid #272c30;
+}
+
+.remote-message p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.remote-message-user p { color: #c8e3d4; }
+.remote-message-streaming p { color: #f0f2f3; }
+.remote-message-pending { opacity: 0.72; }
+
+.remote-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  gap: 10px;
+  padding: 12px max(18px, calc((100% - 820px) / 2));
+  border-top: 1px solid #30363a;
+  background: #171a1d;
+}
+
+.remote-composer textarea {
+  min-height: 58px;
+  max-height: 150px;
+  resize: vertical;
+  padding: 10px;
+}
+
+@media (max-width: 700px) {
+  .remote-shell { grid-template-rows: 48px auto auto minmax(0, 1fr); }
+  .remote-header { padding: 0 12px; }
+  .remote-project-label { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .remote-connection { grid-template-columns: 1fr 1fr; padding: 10px 12px; }
+  .remote-connection label:first-child { grid-column: 1 / -1; }
+  .remote-notice { padding: 7px 12px; }
+  .remote-workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .remote-session-pane { padding: 8px 12px; border-right: 0; border-bottom: 1px solid #30363a; }
+  .remote-pane-heading { margin-bottom: 7px; }
+  .remote-session-row { padding: 7px 9px; }
+  .remote-messages { padding: 10px 14px; }
+  .remote-composer { grid-template-columns: minmax(0, 1fr) 64px; padding: 10px 12px; }
+}
+
 button,
 input,
 select,

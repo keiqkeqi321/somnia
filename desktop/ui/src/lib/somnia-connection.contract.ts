@@ -17,8 +17,12 @@ export function describeSomniaConnectionContract(
 ) {
   describe(`${name} Somnia Connection contract`, () => {
     it("loads a Session and starts a Turn through the shared interface", async () => {
-      const { connection } = createHarness();
+      const harness = createHarness();
+      const { connection } = harness;
+      connection.subscribe(() => undefined);
+      harness.openStream();
 
+      await expect(connection.execute({ type: "session.create" })).resolves.toEqual(loadedSession);
       await expect(connection.query({ type: "session.load", sessionId: loadedSession.id })).resolves.toEqual(loadedSession);
       await expect(
         connection.execute({ type: "turn.start", sessionId: loadedSession.id, userInput: "Continue" }),

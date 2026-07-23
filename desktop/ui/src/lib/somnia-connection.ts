@@ -20,8 +20,13 @@ export interface TurnStartCommand {
   userInput: string | Record<string, unknown>;
 }
 
+export interface SessionCreateCommand {
+  type: "session.create";
+}
+
 export interface SomniaConnection {
   query(query: SessionLoadQuery): Promise<AgentSession>;
+  execute(command: SessionCreateCommand): Promise<AgentSession>;
   execute(command: TurnStartCommand): Promise<TurnStartResponse>;
   subscribe(listener: SomniaConnectionListener): () => void;
   connectionState(): SomniaConnectionState;
@@ -37,6 +42,7 @@ interface SomniaEventSocket {
 }
 
 export interface DirectSomniaClient {
+  createSession(): Promise<AgentSession>;
   loadSession(sessionId: string): Promise<AgentSession>;
   startTurn(sessionId: string, userInput: string | Record<string, unknown>): Promise<TurnStartResponse>;
   createEventSocket(wsUrl?: string): SomniaEventSocket;
@@ -56,7 +62,12 @@ export class DirectSomniaConnection implements SomniaConnection {
     return this.client.loadSession(query.sessionId);
   }
 
-  execute(command: TurnStartCommand): Promise<TurnStartResponse> {
+  execute(command: SessionCreateCommand): Promise<AgentSession>;
+  execute(command: TurnStartCommand): Promise<TurnStartResponse>;
+  execute(command: SessionCreateCommand | TurnStartCommand): Promise<AgentSession | TurnStartResponse> {
+    if (command.type === "session.create") {
+      return this.client.createSession();
+    }
     return this.client.startTurn(command.sessionId, command.userInput);
   }
 

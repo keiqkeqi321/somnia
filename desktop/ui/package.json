@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && python scripts/esbuild_ui.py build",
     "preview": "python -m http.server 4173 --directory dist",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "dev:sidecar": "python -m desktop.backend.bootstrap --workspace ../..",
     "tauri:dev": "tauri dev",
@@ -20,6 +21,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

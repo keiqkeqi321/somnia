@@ -1109,6 +1109,7 @@ class SidecarServer:
 
 class _SidecarRequestHandler(BaseHTTPRequestHandler):
     server_version = "SomniaSidecar/0.1"
+    protocol_version = "HTTP/1.1"
 
     @property
     def sidecar(self) -> SidecarServer:
