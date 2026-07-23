@@ -110,7 +110,7 @@ Clear-OwnedListener $SidecarPort "desktop\.backend\.bootstrap"
 Write-Host "Starting Relay, Web preview, and Sidecar..." -ForegroundColor Cyan
 Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --host 127.0.0.1 --port $RelayPort" $repo
 Start-Terminal "Somnia Web" "$pythonCommand scripts/preview_server.py --host 127.0.0.1 --port $WebPort" $uiDirectory
-Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
+Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort --disable-mcp" $repo
 
 Wait-HttpReady "Relay" "http://127.0.0.1:$RelayPort/health"
 Wait-HttpReady "Web preview" "http://127.0.0.1:$WebPort/?remote=1"

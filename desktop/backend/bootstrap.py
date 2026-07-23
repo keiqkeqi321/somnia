@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not print the startup readiness payload to stdout.",
     )
+    parser.add_argument(
+        "--disable-mcp",
+        action="store_true",
+        help="Skip MCP server initialization for a constrained local runtime.",
+    )
     return parser
 
 
@@ -39,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
         model_override=getattr(args, "model", None),
         allow_missing_provider=True,
     )
+    if args.disable_mcp:
+        settings.mcp_servers = []
 
     server = SidecarServer.from_settings(settings, host=args.host, port=args.port)
     try:
