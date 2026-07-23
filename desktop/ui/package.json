@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "python scripts/esbuild_ui.py dev",
     "build": "tsc --noEmit && python scripts/esbuild_ui.py build",
-    "preview": "python -m http.server 4173 --directory dist",
+    "preview": "python scripts/preview_server.py",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",

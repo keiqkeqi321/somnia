@@ -26,6 +26,18 @@ function Start-Terminal([string]$Title, [string]$Command, [string]$WorkingDirect
     Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $body)
 }
 
+function Clear-OwnedListener([int]$Port, [string]$ExpectedCommand) {
+    $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    foreach ($listener in $listeners) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
+        if ($process.CommandLine -notmatch $ExpectedCommand) {
+            throw "Port $Port is already used by $($process.Name) (PID $($process.ProcessId))."
+        }
+        Write-Host "Stopping the previous Somnia process on port $Port..." -ForegroundColor DarkGray
+        Stop-Process -Id $process.ProcessId -Force
+    }
+}
+
 if (-not $env:SOMNIA_ADMIN_PASSWORD) {
     $secure = Read-Host "Relay administrator password" -AsSecureString
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
@@ -65,9 +77,13 @@ if (-not $SkipBuild) {
     try { npm run build } finally { Pop-Location }
 }
 
+Clear-OwnedListener $RelayPort "open_somnia\.remote\.cli relay"
+Clear-OwnedListener $WebPort "(preview_server\.py|http\.server)"
+Clear-OwnedListener $SidecarPort "desktop\.backend\.bootstrap"
+
 Write-Host "Starting Relay, Web preview, and Sidecar..." -ForegroundColor Cyan
 Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --host 127.0.0.1 --port $RelayPort" $repo
-Start-Terminal "Somnia Web" "npm run preview" $uiDirectory
+Start-Terminal "Somnia Web" "$pythonCommand scripts/preview_server.py --host 127.0.0.1 --port $WebPort" $uiDirectory
 Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
 
 Start-Sleep -Seconds 3
