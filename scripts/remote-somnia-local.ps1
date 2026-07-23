@@ -18,8 +18,17 @@ $Workspace = (Resolve-Path $Workspace).Path
 $dbDirectory = Join-Path $repo ".scratch\remote-somnia"
 $dbPath = (Resolve-Path $dbDirectory).Path.Replace("\", "/")
 $identityPath = Join-Path $HOME ".open_somnia\remote\device-identity.json"
-$python = (Get-Command python -ErrorAction Stop).Source
+$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($pyLauncher) {
+    $python = (& $pyLauncher.Source -3 -c "import sys; print(sys.executable)").Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $python) {
+        throw "Unable to resolve the system Python through py -3."
+    }
+} else {
+    $python = (Get-Command python -ErrorAction Stop).Source
+}
 $pythonCommand = "& '$python'"
+Write-Host "Using Python: $python" -ForegroundColor DarkGray
 
 function Start-Terminal([string]$Title, [string]$Command, [string]$WorkingDirectory) {
     $body = "`$Host.UI.RawUI.WindowTitle = '$Title'; Set-Location -LiteralPath '$WorkingDirectory'; $Command"
