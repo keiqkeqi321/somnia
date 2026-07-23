@@ -27,13 +27,7 @@ if ($pyLauncher) {
 } else {
     $python = (Get-Command python -ErrorAction Stop).Source
 }
-$pythonCommand = "& '$python'"
 Write-Host "Using Python: $python" -ForegroundColor DarkGray
-
-function Start-Terminal([string]$Title, [string]$Command, [string]$WorkingDirectory) {
-    $body = "`$Host.UI.RawUI.WindowTitle = '$Title'; Set-Location -LiteralPath '$WorkingDirectory'; $Command"
-    Start-Process powershell.exe -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $body)
-}
 
 function Clear-OwnedListener([int]$Port, [string]$ExpectedCommand) {
     $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
@@ -48,21 +42,6 @@ function Clear-OwnedListener([int]$Port, [string]$ExpectedCommand) {
     }
 }
 
-function Wait-HttpReady([string]$Name, [string]$Url, [int]$TimeoutSeconds = 60) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        try {
-            $response = Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec 2
-            if ($response.StatusCode -eq 200) {
-                Write-Host "$Name is ready." -ForegroundColor DarkGray
-                return
-            }
-        } catch {
-            Start-Sleep -Milliseconds 300
-        }
-    }
-    throw "$Name did not become ready at $Url. Check its Somnia window for the startup error."
-}
 
 if (-not $env:SOMNIA_ADMIN_PASSWORD) {
     $secure = Read-Host "Relay administrator password" -AsSecureString
@@ -107,26 +86,15 @@ Clear-OwnedListener $RelayPort "open_somnia\.remote\.cli relay"
 Clear-OwnedListener $WebPort "(preview_server\.py|http\.server)"
 Clear-OwnedListener $SidecarPort "desktop\.backend\.bootstrap"
 
-Write-Host "Starting Relay, Web preview, and Sidecar..." -ForegroundColor Cyan
-Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --host 127.0.0.1 --port $RelayPort" $repo
-Start-Terminal "Somnia Web" "$pythonCommand scripts/preview_server.py --host 127.0.0.1 --port $WebPort" $uiDirectory
-Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort --disable-mcp" $repo
-
-Wait-HttpReady "Relay" "http://127.0.0.1:$RelayPort/health"
-Wait-HttpReady "Web preview" "http://127.0.0.1:$WebPort/?remote=1"
-Wait-HttpReady "Sidecar" "http://127.0.0.1:$SidecarPort/health"
-Start-Process "http://127.0.0.1:$WebPort/?remote=1"
-Write-Host "`n1. Sign in at the opened Web page." -ForegroundColor Yellow
-Write-Host "2. Create a Device pairing code." -ForegroundColor Yellow
-$pairingCode = Read-Host "Paste the pairing code here"
-if (-not $pairingCode) { throw "A pairing code is required." }
-
-Write-Host "Pairing this computer..." -ForegroundColor Cyan
-& $python -m open_somnia.remote.cli connector pair --relay "http://127.0.0.1:$RelayPort" --code $pairingCode --identity $identityPath
-
-Start-Terminal "Somnia Connector" "$pythonCommand -m open_somnia.remote.cli connector run --project '$Project' --sidecar 'http://127.0.0.1:$SidecarPort' --identity '$identityPath'" $repo
-
-# Do not leave the password in the shell that launched this helper.
+Write-Host "Starting the supervised local stack..." -ForegroundColor Cyan
+& $python (Join-Path $PSScriptRoot "remote_somnia_supervisor.py") `
+    --repo $repo `
+    --workspace $Workspace `
+    --project $Project `
+    --relay-port $RelayPort `
+    --sidecar-port $SidecarPort `
+    --web-port $WebPort `
+    --identity $identityPath
+$exitCode = $LASTEXITCODE
 $env:SOMNIA_ADMIN_PASSWORD = $null
-Write-Host "`nReady. Sign in again to refresh the Device list, select the paired Device, and Connect." -ForegroundColor Green
-Write-Host "Close the four Somnia windows to stop the local stack." -ForegroundColor DarkGray
+if ($exitCode -ne 0) { throw "Remote Somnia supervisor failed with exit code $exitCode." }
