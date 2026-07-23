@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import sys
 from urllib.parse import urlparse
 
 import uvicorn
@@ -86,3 +87,15 @@ def _websocket_origin(http_origin: str) -> str:
     if parsed.scheme == "https":
         return parsed._replace(scheme="wss").geturl()
     raise ValueError("Paired Relay URL must use http or https.")
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or sys.argv[1] not in {"relay", "connector"}:
+        print("Usage: python -m open_somnia.remote.cli {relay|connector} ...", file=sys.stderr)
+        return 2
+    command = sys.argv.pop(1)
+    return relay_main() if command == "relay" else connector_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

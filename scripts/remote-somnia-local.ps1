@@ -18,6 +18,8 @@ $Workspace = (Resolve-Path $Workspace).Path
 $dbDirectory = Join-Path $repo ".scratch\remote-somnia"
 $dbPath = (Resolve-Path $dbDirectory).Path.Replace("\", "/")
 $identityPath = Join-Path $HOME ".open_somnia\remote\device-identity.json"
+$python = (Get-Command python -ErrorAction Stop).Source
+$pythonCommand = "& '$python'"
 
 function Start-Terminal([string]$Title, [string]$Command, [string]$WorkingDirectory) {
     $body = "`$Host.UI.RawUI.WindowTitle = '$Title'; Set-Location -LiteralPath '$WorkingDirectory'; $Command"
@@ -44,9 +46,9 @@ if (-not $SkipBuild) {
 }
 
 Write-Host "Starting Relay, Web preview, and Sidecar..." -ForegroundColor Cyan
-Start-Terminal "Somnia Relay" "somnia-relay --host 127.0.0.1 --port $RelayPort" $repo
+Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --host 127.0.0.1 --port $RelayPort" $repo
 Start-Terminal "Somnia Web" "npm run preview" (Join-Path $repo "desktop\ui")
-Start-Terminal "Somnia Sidecar" "somnia-sidecar --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
+Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
 
 Start-Sleep -Seconds 3
 Start-Process "http://127.0.0.1:$WebPort/?remote=1"
@@ -56,9 +58,9 @@ $pairingCode = Read-Host "Paste the pairing code here"
 if (-not $pairingCode) { throw "A pairing code is required." }
 
 Write-Host "Pairing this computer..." -ForegroundColor Cyan
-somnia-connector pair --relay "http://127.0.0.1:$RelayPort" --code $pairingCode --identity $identityPath
+& $python -m open_somnia.remote.cli connector pair --relay "http://127.0.0.1:$RelayPort" --code $pairingCode --identity $identityPath
 
-Start-Terminal "Somnia Connector" "somnia-connector run --project '$Project' --sidecar 'http://127.0.0.1:$SidecarPort' --identity '$identityPath'" $repo
+Start-Terminal "Somnia Connector" "$pythonCommand -m open_somnia.remote.cli connector run --project '$Project' --sidecar 'http://127.0.0.1:$SidecarPort' --identity '$identityPath'" $repo
 
 # Do not leave the password in the shell that launched this helper.
 $env:SOMNIA_ADMIN_PASSWORD = $null
