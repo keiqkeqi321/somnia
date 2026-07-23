@@ -4,7 +4,7 @@ param(
     [string]$Project = "default-project",
     [string]$AdminUsername = "admin",
     [int]$RelayPort = 8787,
-    [int]$SidecarPort = 8765,
+    [int]$SidecarPort = 18765,
     [int]$WebPort = 4173,
     [switch]$SkipBuild
 )
