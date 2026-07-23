@@ -108,3 +108,20 @@ Platform-aware: Unix uses system shell; Windows uses PowerShell. Common Unix com
 - Verify both tool output and REPL status rendering for todo changes.
 - Preserve the session filter for resume behavior.
 - The runtime appends execution-environment guidance to the system prompt — preserve that when modifying prompt construction.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked as local Markdown files under `.scratch/`.
+See `Docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default engineering skill triage labels.
+See `Docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain documentation layout.
+See `Docs/agents/domain.md`.

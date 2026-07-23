@@ -38,6 +38,13 @@ import {
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
+import {
+  createConversationState,
+  readSessionPayload,
+  transitionConversationEvent,
+  type ConversationState,
+} from "./lib/conversation-state";
+import { DirectSomniaConnection, type SomniaConnection } from "./lib/somnia-connection";
 import type {
   AgentSession,
   ContextWindowUsage,
@@ -326,9 +333,10 @@ function App() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   const clientRef = useRef<SidecarClient | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const connectionRef = useRef<SomniaConnection | null>(null);
   const projectClientsRef = useRef<Record<string, SidecarClient>>({});
-  const projectSocketsRef = useRef<Record<string, WebSocket>>({});
+  const projectConnectionsRef = useRef<Record<string, SomniaConnection>>({});
+  const conversationCoreStateRef = useRef<Record<string, ConversationState>>({});
   const selectedProjectPathRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
@@ -372,8 +380,8 @@ function App() {
   useEffect(() => {
     void initializeConnection();
     return () => {
-      socketRef.current?.close();
-      Object.values(projectSocketsRef.current).forEach((socket) => socket.close());
+      connectionRef.current?.close();
+      Object.values(projectConnectionsRef.current).forEach((connection) => connection.close());
     };
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -842,7 +850,7 @@ function App() {
     projectClientsRef.current[projectPath] = client;
     setProjects((previous) => upsertProject(previous, project));
     persistProjectPath(projectPath);
-    openEventSocket(client, runtimeStatus.ws_url, projectPath);
+    openEventConnection(client, runtimeStatus.ws_url, projectPath);
     setConnectionState("connected");
 
     if (options.expandProject) {
@@ -867,7 +875,7 @@ function App() {
       return;
     }
     clientRef.current = client;
-    socketRef.current = projectSocketsRef.current[projectPath] ?? null;
+    connectionRef.current = projectConnectionsRef.current[projectPath] ?? null;
     setSelectedProjectPath(projectPath);
     setStatus(nextProject.status);
     setSessions(nextProject.sessions);
@@ -911,7 +919,7 @@ function App() {
     setConnectionState("connecting");
     setBaseUrlInput(normalizedBaseUrl);
     setBannerMessage("Connecting to sidecar...");
-    socketRef.current?.close();
+    connectionRef.current?.close();
 
     try {
       const nextClient = new SidecarClient(normalizedBaseUrl);
@@ -959,6 +967,7 @@ function App() {
         toolLogs: logList,
       };
       projectClientsRef.current[projectPath] = nextClient;
+      openEventConnection(nextClient, runtimeStatus.ws_url, projectPath);
       setProjects((previous) => upsertProject(previous, project));
       setSelectedProjectPath(projectPath);
       setSessions(sortedSessions);
@@ -981,7 +990,6 @@ function App() {
       }
       await refreshModels(runtimeStatus.provider, nextClient, runtimeStatus.model);
       await refreshVisionModels(runtimeStatus.vision_provider ?? "", nextClient, runtimeStatus.vision_model ?? "");
-      openEventSocket(nextClient, runtimeStatus.ws_url, runtimeStatus.workspace_root);
     } catch (error) {
       clientRef.current = null;
       setConnectionState("error");
@@ -990,38 +998,29 @@ function App() {
     }
   }
 
-  function openEventSocket(client: SidecarClient, wsUrl: string, projectPath: string) {
-    projectSocketsRef.current[projectPath]?.close();
-    const socket = client.createEventSocket(wsUrl);
-    projectSocketsRef.current[projectPath] = socket;
+  function openEventConnection(client: SidecarClient, wsUrl: string, projectPath: string) {
+    projectConnectionsRef.current[projectPath]?.close();
+    const connection = new DirectSomniaConnection(client, wsUrl);
+    projectConnectionsRef.current[projectPath] = connection;
     if (selectedProjectPathRef.current === projectPath || !selectedProjectPathRef.current) {
-      socketRef.current = socket;
+      connectionRef.current = connection;
     }
-
-    socket.onopen = () => {
-      setConnectionState("connected");
-    };
-
-    socket.onclose = () => {
-      if (clientRef.current === client) {
-        setConnectionState("disconnected");
+    connection.subscribe((notification) => {
+      if (notification.kind === "event") {
+        void handleSidecarEvent(projectPath, notification.event);
+        return;
+      }
+      if (notification.kind === "protocol_error") {
+        setBannerMessage(notification.error);
+        return;
+      }
+      setConnectionState(notification.state);
+      if (notification.state === "disconnected" && clientRef.current === client) {
         setBannerMessage("Sidecar event stream disconnected.");
+      } else if (notification.state === "error") {
+        setBannerMessage(notification.error ?? "Sidecar event stream failed.");
       }
-    };
-
-    socket.onerror = () => {
-      setConnectionState("error");
-      setBannerMessage("Sidecar event stream failed.");
-    };
-
-    socket.onmessage = (messageEvent) => {
-      try {
-        const event = JSON.parse(String(messageEvent.data)) as SidecarEvent;
-        void handleSidecarEvent(projectPath, event);
-      } catch (error) {
-        setBannerMessage(`Ignored malformed sidecar event: ${formatErrorMessage(error)}`);
-      }
-    };
+    });
   }
 
   function conversationStateKey(projectPath: string | null | undefined, sessionId: string | null | undefined): string | null {
@@ -1470,11 +1469,22 @@ function App() {
 
   async function handleSidecarEvent(projectPath: string, event: SidecarEvent) {
     const isActiveProject = selectedProjectPathRef.current === projectPath;
+    const coreKey = conversationStateKey(projectPath, event.session_id);
+    let conversationTransition = null;
+    let previousConversationState = null;
+    if (coreKey && event.session_id) {
+      const selectedSession = currentSessionRef.current;
+      previousConversationState =
+        conversationCoreStateRef.current[coreKey] ??
+        createConversationState(selectedSession?.id === event.session_id ? selectedSession : event.session_id);
+      conversationTransition = transitionConversationEvent(previousConversationState, event);
+      conversationCoreStateRef.current[coreKey] = conversationTransition.state;
+    }
     if (event.type === "sidecar_ready") {
       return;
     }
     if (event.type === "session_created") {
-      const payloadSession = readSessionFromPayload(event.payload.session);
+      const payloadSession = readSessionPayload(event.payload.session);
       if (payloadSession) {
         upsertProjectSession(projectPath, payloadSession);
         if (isActiveProject) {
@@ -1485,38 +1495,42 @@ function App() {
       }
       return;
     }
-    if (event.type === "turn_started") {
-      if (event.session_id) {
+    if (conversationTransition?.effect.type === "turn_started") {
+      const coreState = conversationTransition.state;
+      if (coreState.sessionId) {
         updateActiveProjectTurns((previous) => ({
           ...previous,
           [projectPath]: (() => {
             const current = previous[projectPath] ?? [];
-            const existing = current.find((turn) => turn.turnId === event.turn_id || turn.sessionId === event.session_id);
+            const existing = current.find(
+              (turn) => turn.turnId === coreState.activeTurnId || turn.sessionId === coreState.sessionId,
+            );
             const selectedSession = currentSessionRef.current;
             const baseMessageCount =
               existing?.baseMessageCount ??
-              (selectedSession && event.session_id === selectedSession.id ? selectedSession.messages.length : 0);
+              (selectedSession && coreState.sessionId === selectedSession.id ? selectedSession.messages.length : 0);
             return [
-              ...current.filter((turn) => turn.turnId !== event.turn_id && turn.sessionId !== event.session_id),
+              ...current.filter(
+                (turn) => turn.turnId !== coreState.activeTurnId && turn.sessionId !== coreState.sessionId,
+              ),
               {
-                sessionId: event.session_id ?? "",
-                turnId: event.turn_id ?? null,
+                sessionId: coreState.sessionId,
+                turnId: coreState.activeTurnId,
                 baseMessageCount,
               },
             ].slice(-2);
           })(),
         }));
       }
-      if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
-        setActiveTurnId(event.turn_id ?? null);
+      if (isActiveProject && coreState.sessionId === selectedSessionIdRef.current) {
+        setActiveTurnId(coreState.activeTurnId);
       }
       return;
     }
-    if (event.type === "assistant_delta") {
-      const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
-      if (delta) {
-        appendAssistantRuntimeDelta(projectPath, event.session_id, event.turn_id, delta);
-      }
+    if (conversationTransition?.effect.type === "assistant_delta") {
+      const coreState = conversationTransition.state;
+      const delta = coreState.assistantText.slice(previousConversationState?.assistantText.length ?? 0);
+      appendAssistantRuntimeDelta(projectPath, coreState.sessionId, coreState.activeTurnId, delta);
       return;
     }
     if (event.type === "thinking_delta") {
@@ -1554,7 +1568,7 @@ function App() {
       return;
     }
     if (event.type === "session_updated") {
-      const payloadSession = readSessionFromPayload(event.payload.session);
+      const payloadSession = readSessionPayload(event.payload.session);
       if (payloadSession) {
         const sessionHasActiveTurn = (activeProjectTurnsRef.current[projectPath] ?? []).some((turn) => turn.sessionId === payloadSession.id);
         upsertProjectSession(projectPath, payloadSession);
@@ -1643,17 +1657,19 @@ function App() {
       }
       return;
     }
-    if (event.type === "turn_result") {
-      clearActiveProjectTurn(projectPath, event.turn_id ?? null);
-      clearConversationRuntimeState(projectPath, event.session_id);
-      clearActivityState(projectPath, event.session_id);
-      const completedSessionId = event.session_id ?? null;
+    if (conversationTransition?.effect.type === "turn_completed") {
+      const coreState = conversationTransition.state;
+      const completedTurnId = previousConversationState?.activeTurnId ?? event.turn_id ?? null;
+      clearActiveProjectTurn(projectPath, completedTurnId);
+      clearConversationRuntimeState(projectPath, coreState.sessionId);
+      clearActivityState(projectPath, coreState.sessionId);
+      const completedSessionId = coreState.sessionId;
       if (isActiveProject) {
         if (completedSessionId === selectedSessionIdRef.current) {
-          setActiveTurnId((current) => (current === event.turn_id ? null : current));
+          setActiveTurnId((current) => (current === completedTurnId ? null : current));
         }
       }
-      const payloadSession = readSessionFromPayload(event.payload.session);
+      const payloadSession = coreState.session;
       if (payloadSession) {
         clearConversationRuntimeState(projectPath, payloadSession.id);
         upsertProjectSession(projectPath, payloadSession);
@@ -1797,7 +1813,15 @@ function App() {
     if (!client) {
       return;
     }
-    const loadedSession = await client.loadSession(sessionId);
+    const connection = projectPath ? projectConnectionsRef.current[projectPath] : connectionRef.current;
+    if (!connection) {
+      throw new Error("Somnia connection is unavailable.");
+    }
+    const loadedSession = await connection.query({ type: "session.load", sessionId });
+    const coreKey = conversationStateKey(projectPath, sessionId);
+    if (coreKey) {
+      conversationCoreStateRef.current[coreKey] = createConversationState(loadedSession);
+    }
     setSelectedSessionId(sessionId);
     setCurrentSession(loadedSession);
     if (projectPath) {
@@ -2028,8 +2052,8 @@ function App() {
     }
     setBusyAction("remove-project");
     try {
-      projectSocketsRef.current[projectPath]?.close();
-      delete projectSocketsRef.current[projectPath];
+      projectConnectionsRef.current[projectPath]?.close();
+      delete projectConnectionsRef.current[projectPath];
       delete projectClientsRef.current[projectPath];
       await stopManagedSidecar(projectPath);
       removeStoredProjectPath(projectPath);
@@ -2058,7 +2082,7 @@ function App() {
           await activateProject(nextProject.path, projectClientsRef.current[nextProject.path], nextProject);
         } else {
           clientRef.current = null;
-          socketRef.current = null;
+          connectionRef.current = null;
           setSelectedProjectPath(null);
           setStatus(null);
           setSessions([]);
@@ -2110,7 +2134,11 @@ function App() {
       }));
     }
     const userInput = await buildPromptPayload(client, prompt, images);
-    const response = await client.startTurn(session.id, userInput);
+    const connection = projectPath ? projectConnectionsRef.current[projectPath] : connectionRef.current;
+    if (!connection) {
+      throw new Error("Somnia connection is unavailable.");
+    }
+    const response = await connection.execute({ type: "turn.start", sessionId: session.id, userInput });
     if (key) {
       setPendingTurns((previous) => {
         const current = previous[key];
@@ -6444,17 +6472,6 @@ function findLastRunningToolIndex(items: ConversationRuntimeItem[], toolName: st
     }
   }
   return -1;
-}
-
-function readSessionFromPayload(value: unknown): AgentSession | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const payload = value as AgentSession;
-  if (typeof payload.id !== "string" || !Array.isArray(payload.messages)) {
-    return null;
-  }
-  return payload;
 }
 
 function readContextUsageFromPayload(value: unknown): ContextWindowUsage | null {
