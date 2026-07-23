@@ -2,18 +2,35 @@ import { expect, test } from "@playwright/test";
 
 test("hosted browser streams a real Runtime turn and renders the reloaded Session", async ({ page }) => {
   await page.goto(
-    "/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787&device=e2e-device&project=e2e-project",
+    "/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787&project=e2e-project",
   );
+
+  await page.getByLabel("Username").fill("admin");
+  await page.getByLabel("Password").fill("admin-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByLabel("Device", { exact: true })).toContainText("Browser Test Device");
+
+  await page.getByLabel("New Device name").fill("Spare Device");
+  await page.getByRole("button", { name: "Create pairing code" }).click();
+  await expect(page.locator(".remote-pairing-code")).toHaveText(/^[A-Z2-9]{10}$/);
 
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.locator(".remote-status")).toHaveText("connected");
   await page.getByRole("button", { name: "New" }).click();
-  await expect(page.getByRole("status")).toContainText("is ready");
+  await expect(page.locator(".remote-notice")).toContainText("is ready");
 
   await page.getByPlaceholder("Ask Somnia").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.locator(".remote-message-streaming p")).toHaveText("Hello ");
   await expect(page.locator(".remote-message-assistant:not(.remote-message-streaming) p")).toHaveText("Hello remote");
   await expect(page.locator(".remote-message-streaming")).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const overflowing = await page.evaluate(() => Array.from(document.querySelectorAll("body *"))
+    .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
+    .map((element) => ({
+      element: `${element.tagName.toLowerCase()}.${element.className}`,
+      right: Math.round(element.getBoundingClientRect().right),
+      width: Math.round(element.getBoundingClientRect().width),
+      scrollWidth: element.scrollWidth,
+    })));
+  expect(overflowing).toEqual([]);
 });

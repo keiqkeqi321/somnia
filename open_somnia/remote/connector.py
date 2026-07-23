@@ -8,6 +8,9 @@ import urllib.request
 
 from websockets.sync.client import connect
 
+from open_somnia.remote.auth import encode_bytes
+from open_somnia.remote.identity import DeviceIdentity
+
 
 JsonRequest = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
@@ -66,12 +69,15 @@ class RemoteConnector:
         self,
         relay_url: str,
         *,
-        device_id: str,
+        identity: DeviceIdentity,
         project_id: str,
         sidecar: LocalSidecarBridge,
     ) -> None:
         self.relay_url = str(relay_url).strip()
-        self.device_id = _nonempty(device_id, "device_id")
+        if not identity.is_paired:
+            raise ValueError("Device identity must be paired before the Connector can run.")
+        self.identity = identity
+        self.device_id = identity.device_id
         self.project_id = _nonempty(project_id, "project_id")
         self.sidecar = sidecar
 
@@ -80,6 +86,7 @@ class RemoteConnector:
         connector_url = f"{self.relay_url.rstrip('/')}/ws/connector/{quote(self.device_id, safe='')}"
         with connect(self.sidecar.event_url, open_timeout=10, close_timeout=2) as sidecar_events:
             with connect(connector_url, open_timeout=10, close_timeout=2) as relay:
+                self._authenticate_relay(relay)
                 send_lock = Lock()
 
                 def send(message: dict[str, Any]) -> None:
@@ -101,6 +108,26 @@ class RemoteConnector:
                 finally:
                     stop.set()
                     event_thread.join(timeout=2.0)
+
+    def _authenticate_relay(self, relay: Any) -> None:
+        raw_challenge = relay.recv(timeout=10.0)
+        challenge = json.loads(raw_challenge)
+        if not isinstance(challenge, dict) or challenge.get("kind") != "auth_challenge":
+            raise RuntimeError("Relay did not provide a Device authentication challenge.")
+        nonce = _required_text(challenge, "nonce")
+        relay.send(
+            json.dumps(
+                {
+                    "kind": "auth_response",
+                    "signature": encode_bytes(self.identity.sign_challenge(nonce)),
+                },
+                separators=(",", ":"),
+            )
+        )
+        raw_result = relay.recv(timeout=10.0)
+        result = json.loads(raw_result)
+        if not isinstance(result, dict) or result != {"kind": "auth_ok", "device_id": self.device_id}:
+            raise RuntimeError("Relay rejected Device authentication.")
 
     def _handle_relay_message(self, raw_message: str | bytes, send: Callable[[dict[str, Any]], None]) -> None:
         request_id = ""

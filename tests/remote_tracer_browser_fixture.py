@@ -11,9 +11,11 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn
+import httpx
 
 from desktop.backend.server import SidecarServer
 from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
+from open_somnia.remote.identity import DeviceIdentity, pair_device
 from open_somnia.remote.relay import create_relay_app
 from open_somnia.runtime.messages import AssistantTurn
 from tests.remote_tracer_support import remote_tracer_settings, wait_until
@@ -36,7 +38,7 @@ def main() -> int:
         sidecar.runtime.complete = _streaming_complete()
         relay = uvicorn.Server(
             uvicorn.Config(
-                create_relay_app(),
+                create_relay_app(administrators={"admin": "admin-password"}),
                 host="127.0.0.1",
                 port=args.relay_port,
                 log_level="error",
@@ -45,12 +47,13 @@ def main() -> int:
         )
         relay_thread = Thread(target=relay.run, name="browser-test-relay", daemon=True)
         connector_errors: list[Exception] = []
+        identity: DeviceIdentity | None = None
 
         def run_connector() -> None:
             try:
                 RemoteConnector(
                     f"ws://127.0.0.1:{args.relay_port}",
-                    device_id="e2e-device",
+                    identity=identity,
                     project_id="e2e-project",
                     sidecar=LocalSidecarBridge(sidecar.base_url),
                 ).run(stop)
@@ -67,6 +70,17 @@ def main() -> int:
             relay_thread.start()
             if not wait_until(lambda: relay.started):
                 raise RuntimeError("Browser fixture Relay did not start.")
+            relay_url = f"http://127.0.0.1:{args.relay_port}"
+            with httpx.Client(base_url=relay_url) as auth_client:
+                login = auth_client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "admin-password"},
+                )
+                if login.status_code != 200:
+                    raise RuntimeError(login.text)
+                code = auth_client.post("/api/pairings", json={"name": "Browser Test Device"}).json()["code"]
+                identity = DeviceIdentity.load_or_create(Path(temp_dir) / "device-identity.json")
+                pair_device(identity, relay_url=relay_url, code=code)
             connector_thread.start()
             time.sleep(0.2)
             if connector_errors:

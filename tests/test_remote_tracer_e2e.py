@@ -8,11 +8,13 @@ from threading import Event, Thread
 import time
 import unittest
 
+import httpx
 import uvicorn
 from websockets.sync.client import connect
 
 from desktop.backend.server import SidecarServer
 from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
+from open_somnia.remote.identity import DeviceIdentity, pair_device
 from open_somnia.remote.relay import create_relay_app
 from open_somnia.runtime.messages import AssistantTurn
 from tests.remote_tracer_support import remote_tracer_settings, wait_until
@@ -26,17 +28,24 @@ class RemoteTracerProtocolIntegrationTests(unittest.TestCase):
             sidecar.runtime.complete = _streaming_complete("Hello remote")
             relay_port = _free_port()
             relay = uvicorn.Server(
-                uvicorn.Config(create_relay_app(), host="127.0.0.1", port=relay_port, log_level="error", lifespan="off")
+                uvicorn.Config(
+                    create_relay_app(administrators={"admin": "admin-password"}),
+                    host="127.0.0.1",
+                    port=relay_port,
+                    log_level="error",
+                    lifespan="off",
+                )
             )
             relay_thread = Thread(target=relay.run, name="test-remote-relay", daemon=True)
             connector_stop = Event()
             connector_errors: list[Exception] = []
+            identity: DeviceIdentity | None = None
 
             def run_connector() -> None:
                 try:
                     RemoteConnector(
                         f"ws://127.0.0.1:{relay_port}",
-                        device_id="device-1",
+                        identity=identity,
                         project_id="project-1",
                         sidecar=LocalSidecarBridge(sidecar.base_url),
                     ).run(connector_stop)
@@ -50,9 +59,24 @@ class RemoteTracerProtocolIntegrationTests(unittest.TestCase):
                 self.assertTrue(sidecar.wait_until_ready())
                 relay_thread.start()
                 self.assertTrue(wait_until(lambda: relay.started))
+                relay_http_url = f"http://127.0.0.1:{relay_port}"
+                with httpx.Client(base_url=relay_http_url) as auth_client:
+                    login = auth_client.post(
+                        "/api/auth/login",
+                        json={"username": "admin", "password": "admin-password"},
+                    )
+                    self.assertEqual(login.status_code, 200)
+                    code = auth_client.post("/api/pairings", json={"name": "Test Device"}).json()["code"]
+                    identity = DeviceIdentity.load_or_create(root / "device-identity.json")
+                    pair_device(identity, relay_url=relay_http_url, code=code)
+                    browser_cookie = f"somnia_access={auth_client.cookies.get('somnia_access')}"
                 connector_thread.start()
 
-                with connect(f"ws://127.0.0.1:{relay_port}/ws/client/device-1") as browser:
+                with connect(
+                    f"ws://127.0.0.1:{relay_port}/ws/client/{identity.device_id}",
+                    origin="http://127.0.0.1:4173",
+                    additional_headers={"Cookie": browser_cookie},
+                ) as browser:
                     created = _request_until_online(
                         browser,
                         request_id="create-1",

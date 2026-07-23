@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+import re
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from open_somnia.remote.auth import PairingCodeInvalid, RemoteAuth
+from open_somnia.remote.relay import create_relay_app
+from tests.remote_auth_support import BROWSER_ORIGIN, authenticate_connector, claim_pairing, login, pair_device
+
+
+class RemoteAuthenticationTests(unittest.TestCase):
+    def test_device_identity_and_revocation_survive_relay_restart(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{(Path(temp_dir) / 'relay.db').as_posix()}"
+            first_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(first_app) as first_client:
+                login(first_client)
+                private_key, device_id = pair_device(first_client, "Persistent Device")
+
+            second_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(second_app) as second_client:
+                login(second_client)
+                devices = second_client.get("/api/devices").json()["devices"]
+                self.assertEqual([device["device_id"] for device in devices], [device_id])
+                self.assertEqual(second_client.delete(f"/api/devices/{device_id}").status_code, 200)
+
+            third_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(third_app) as third_client:
+                login(third_client)
+                persisted = third_client.get("/api/devices").json()["devices"][0]
+                self.assertIsNotNone(persisted["revoked_at"])
+                with self.assertRaises(WebSocketDisconnect):
+                    with third_client.websocket_connect(f"/ws/connector/{device_id}") as connector:
+                        authenticate_connector(connector, device_id, private_key, expect_success=False)
+
+    def test_administrator_login_is_rate_limited_after_repeated_failures(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"}, login_attempt_limit=3)
+        with TestClient(app) as client:
+            for _ in range(3):
+                response = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+                self.assertEqual(response.status_code, 401)
+
+            blocked = client.post("/api/auth/login", json={"username": "admin", "password": "admin-password"})
+            self.assertEqual(blocked.status_code, 429)
+
+    def test_concurrent_login_attempts_cannot_bypass_the_rate_limit(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"}, login_attempt_limit=1)
+        with TestClient(app) as client:
+            def attempt_login(_: int) -> int:
+                return client.post(
+                    "/api/auth/login",
+                    json={"username": "admin", "password": "wrong"},
+                ).status_code
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                statuses = list(executor.map(attempt_login, range(4)))
+
+        self.assertEqual(statuses.count(401), 1)
+        self.assertEqual(statuses.count(429), 3)
+
+    def test_browser_session_and_pairing_capacity_are_bounded(self) -> None:
+        now = [1_000.0]
+        auth = RemoteAuth(
+            {"admin": "admin-password"},
+            clock=lambda: now[0],
+            max_browser_sessions=1,
+            max_pairings=1,
+        )
+        account = auth.authenticate_password("admin", "admin-password", source="test")
+        assert account is not None
+
+        first_tokens = auth.issue_browser_tokens(account.id)
+        second_tokens = auth.issue_browser_tokens(account.id)
+        self.assertIsNone(auth.resolve_access(first_tokens.access_token))
+        self.assertIsNotNone(auth.resolve_access(second_tokens.access_token))
+
+        first_code, _ = auth.create_pairing(account.id, "First")
+        auth.create_pairing(account.id, "Second")
+        with self.assertRaises(PairingCodeInvalid):
+            auth.claim_pairing(first_code, b"0" * 32, source="test")
+
+    def test_browser_access_expires_and_refresh_rotates_without_device_credentials(self) -> None:
+        now = [1_000.0]
+        app = create_relay_app(
+            administrators={"admin": "correct horse battery staple"},
+            clock=lambda: now[0],
+            access_ttl_seconds=60,
+            refresh_ttl_seconds=600,
+        )
+        with TestClient(app) as client:
+            login = client.post("/api/auth/login", json={"username": "admin", "password": "correct horse battery staple"})
+            self.assertEqual(login.status_code, 200)
+            original_refresh = client.cookies.get("somnia_refresh")
+            self.assertTrue(client.cookies.get("somnia_access"))
+            self.assertTrue(original_refresh)
+            self.assertEqual(client.get("/api/devices").status_code, 200)
+
+            now[0] += 61
+            self.assertEqual(client.get("/api/devices").status_code, 401)
+            refreshed = client.post("/api/auth/refresh")
+
+            self.assertEqual(refreshed.status_code, 200)
+            self.assertNotEqual(client.cookies.get("somnia_refresh"), original_refresh)
+            self.assertEqual(client.get("/api/devices").status_code, 200)
+            self.assertEqual(client.post("/api/auth/logout").status_code, 200)
+            self.assertEqual(client.get("/api/devices").status_code, 401)
+
+    def test_expired_browser_access_stops_an_existing_websocket(self) -> None:
+        now = [1_000.0]
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            clock=lambda: now[0],
+            access_ttl_seconds=60,
+        )
+        with TestClient(app) as client:
+            login(client)
+            private_key, device_id = pair_device(client, "Workstation")
+
+            with (
+                client.websocket_connect(f"/ws/connector/{device_id}") as connector,
+                client.websocket_connect(
+                    f"/ws/client/{device_id}", headers={"origin": BROWSER_ORIGIN}
+                ) as browser,
+            ):
+                authenticate_connector(connector, device_id, private_key)
+                now[0] += 61
+                connector.send_json({"kind": "event", "payload": "must-not-be-forwarded"})
+
+                with self.assertRaises(WebSocketDisconnect) as expired:
+                    browser.receive_json()
+                self.assertEqual(expired.exception.code, 4401)
+
+    def test_pairing_code_is_high_entropy_short_lived_and_single_use(self) -> None:
+        now = [2_000.0]
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            clock=lambda: now[0],
+            pairing_ttl_seconds=300,
+        )
+        with TestClient(app) as client:
+            login(client, "admin", "admin-password")
+            pairing = client.post("/api/pairings", json={"name": "Workstation"})
+            self.assertEqual(pairing.status_code, 201)
+            code = pairing.json()["code"]
+            self.assertRegex(code, re.compile(r"^[A-Z2-9]{10}$"))
+
+            first_key = Ed25519PrivateKey.generate()
+            claimed = claim_pairing(client, code, "Connector Override", first_key)
+            self.assertEqual(claimed.status_code, 201)
+            self.assertEqual(claimed.json()["name"], "Workstation")
+            self.assertEqual(claim_pairing(client, code, "Replay", Ed25519PrivateKey.generate()).status_code, 409)
+
+            expiring = client.post("/api/pairings", json={"name": "Late Device"}).json()["code"]
+            now[0] += 301
+            self.assertEqual(claim_pairing(client, expiring, "Late", Ed25519PrivateKey.generate()).status_code, 410)
+
+    def test_pairing_claims_are_rate_limited_against_online_guessing(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"}, pairing_attempt_limit=3)
+        with TestClient(app) as client:
+            for _ in range(3):
+                self.assertEqual(claim_pairing(client, "AAAAAAAAAA", "Guess", Ed25519PrivateKey.generate()).status_code, 401)
+
+            blocked = claim_pairing(client, "BBBBBBBBBB", "Guess", Ed25519PrivateKey.generate())
+            self.assertEqual(blocked.status_code, 429)
+
+    def test_signed_connector_and_authenticated_browser_are_isolated_by_account(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password", "other": "other-password"})
+        with TestClient(app) as admin, TestClient(app) as other:
+            login(admin, "admin", "admin-password")
+            login(other, "other", "other-password")
+            admin_key, admin_device = pair_device(admin, "Admin PC")
+            _, other_device = pair_device(other, "Other PC")
+
+            with admin.websocket_connect(f"/ws/connector/{admin_device}") as connector:
+                authenticate_connector(connector, admin_device, admin_key)
+                with admin.websocket_connect(
+                    f"/ws/client/{admin_device}", headers={"origin": BROWSER_ORIGIN}
+                ) as browser:
+                    request = {
+                        "kind": "request",
+                        "request_id": "request-1",
+                        "project_id": "project-1",
+                        "method": "session.create",
+                        "params": {},
+                    }
+                    browser.send_json(request)
+                    self.assertEqual(connector.receive_json(), request)
+
+                with self.assertRaises(WebSocketDisconnect) as cross_account:
+                    with other.websocket_connect(
+                        f"/ws/client/{admin_device}", headers={"origin": BROWSER_ORIGIN}
+                    ) as forbidden:
+                        forbidden.receive_json()
+                self.assertEqual(cross_account.exception.code, 4403)
+
+            wrong_key = Ed25519PrivateKey.generate()
+            with self.assertRaises(WebSocketDisconnect) as cross_device:
+                with admin.websocket_connect(f"/ws/connector/{other_device}") as forbidden_connector:
+                    authenticate_connector(forbidden_connector, other_device, wrong_key, expect_success=False)
+            self.assertEqual(cross_device.exception.code, 4403)
+
+    def test_browser_websocket_rejects_an_unapproved_origin(self) -> None:
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            allowed_origins=[BROWSER_ORIGIN],
+        )
+        with TestClient(app) as client:
+            login(client)
+            _, device_id = pair_device(client, "Workstation")
+
+            with self.assertRaises(WebSocketDisconnect) as forbidden:
+                with client.websocket_connect(
+                    f"/ws/client/{device_id}", headers={"origin": "https://attacker.example"}
+                ) as browser:
+                    browser.receive_json()
+            self.assertEqual(forbidden.exception.code, 4403)
+
+    def test_browser_cannot_route_a_request_to_another_device(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            login(client)
+            private_key, first_device = pair_device(client, "First")
+            _, second_device = pair_device(client, "Second")
+
+            with (
+                client.websocket_connect(f"/ws/connector/{first_device}") as connector,
+                client.websocket_connect(
+                    f"/ws/client/{first_device}", headers={"origin": BROWSER_ORIGIN}
+                ) as browser,
+            ):
+                authenticate_connector(connector, first_device, private_key)
+                browser.send_json(
+                    {
+                        "kind": "request",
+                        "request_id": "cross-device",
+                        "device_id": second_device,
+                        "method": "session.create",
+                    }
+                )
+
+                rejected = browser.receive_json()
+                self.assertEqual(rejected["request_id"], "cross-device")
+                self.assertFalse(rejected["ok"])
+                self.assertEqual(rejected["error"], "Cross-Device routing is not allowed.")
+
+    def test_revocation_disconnects_device_and_rejects_its_old_key(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            login(client, "admin", "admin-password")
+            private_key, device_id = pair_device(client, "Laptop")
+
+            with client.websocket_connect(f"/ws/connector/{device_id}") as connector:
+                authenticate_connector(connector, device_id, private_key)
+                revoked = client.delete(f"/api/devices/{device_id}")
+                self.assertEqual(revoked.status_code, 200)
+                with self.assertRaises(WebSocketDisconnect) as disconnected:
+                    connector.receive_json()
+                self.assertEqual(disconnected.exception.code, 4403)
+
+            with self.assertRaises(WebSocketDisconnect) as reconnect:
+                with client.websocket_connect(f"/ws/connector/{device_id}") as old_connector:
+                    authenticate_connector(old_connector, device_id, private_key, expect_success=False)
+            self.assertEqual(reconnect.exception.code, 4403)
+
+
+if __name__ == "__main__":
+    unittest.main()

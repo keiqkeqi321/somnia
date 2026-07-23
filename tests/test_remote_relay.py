@@ -5,6 +5,7 @@ import unittest
 from starlette.testclient import TestClient
 
 from open_somnia.remote.relay import create_relay_app
+from tests.remote_auth_support import BROWSER_ORIGIN, authenticate_connector, login, pair_device
 
 
 class RemoteRelayTests(unittest.TestCase):
@@ -16,11 +17,16 @@ class RemoteRelayTests(unittest.TestCase):
         self.assertEqual(response.json(), {"status": "ready"})
 
     def test_relay_forwards_requests_responses_and_events_without_interpreting_payloads(self) -> None:
-        with TestClient(create_relay_app()) as client:
+        with TestClient(create_relay_app(administrators={"admin": "admin-password"})) as client:
+            login(client)
+            private_key, device_id = pair_device(client)
             with (
-                client.websocket_connect("/ws/connector/device-1") as connector,
-                client.websocket_connect("/ws/client/device-1") as browser,
+                client.websocket_connect(f"/ws/connector/{device_id}") as connector,
+                client.websocket_connect(
+                    f"/ws/client/{device_id}", headers={"origin": BROWSER_ORIGIN}
+                ) as browser,
             ):
+                authenticate_connector(connector, device_id, private_key)
                 request = {
                     "kind": "request",
                     "request_id": "request-1",
@@ -54,8 +60,12 @@ class RemoteRelayTests(unittest.TestCase):
                 self.assertEqual(browser.receive_json(), event)
 
     def test_relay_rejects_content_when_device_is_offline_instead_of_queueing_it(self) -> None:
-        with TestClient(create_relay_app()) as client:
-            with client.websocket_connect("/ws/client/offline-device") as browser:
+        with TestClient(create_relay_app(administrators={"admin": "admin-password"})) as client:
+            login(client)
+            _, device_id = pair_device(client)
+            with client.websocket_connect(
+                f"/ws/client/{device_id}", headers={"origin": BROWSER_ORIGIN}
+            ) as browser:
                 browser.send_json(
                     {
                         "kind": "request",
