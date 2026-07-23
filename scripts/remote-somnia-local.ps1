@@ -39,15 +39,35 @@ if (-not $env:SOMNIA_ADMIN_PASSWORD) {
 $env:SOMNIA_ADMIN_USERNAME = $AdminUsername
 $env:SOMNIA_RELAY_DATABASE_URL = "sqlite:///$dbPath/relay.db"
 
+Write-Host "Checking Python dependencies..." -ForegroundColor Cyan
+& $python -c "import argon2, cryptography, sqlalchemy, starlette, uvicorn, websockets"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing Somnia and its Python dependencies..." -ForegroundColor Yellow
+    & $python -m pip install -e $repo
+    if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed." }
+}
+
+$uiDirectory = Join-Path $repo "desktop\ui"
+if (-not (Test-Path (Join-Path $uiDirectory "node_modules"))) {
+    Write-Host "Installing Web dependencies..." -ForegroundColor Yellow
+    Push-Location $uiDirectory
+    try {
+        npm install
+        if ($LASTEXITCODE -ne 0) { throw "Web dependency installation failed." }
+    } finally {
+        Pop-Location
+    }
+}
+
 if (-not $SkipBuild) {
     Write-Host "Building the Web client..." -ForegroundColor Cyan
-    Push-Location (Join-Path $repo "desktop\ui")
+    Push-Location $uiDirectory
     try { npm run build } finally { Pop-Location }
 }
 
 Write-Host "Starting Relay, Web preview, and Sidecar..." -ForegroundColor Cyan
 Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --host 127.0.0.1 --port $RelayPort" $repo
-Start-Terminal "Somnia Web" "npm run preview" (Join-Path $repo "desktop\ui")
+Start-Terminal "Somnia Web" "npm run preview" $uiDirectory
 Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
 
 Start-Sleep -Seconds 3
