@@ -35,7 +35,24 @@ function Clear-OwnedListener([int]$Port, [string]$ExpectedCommand) {
         }
         Write-Host "Stopping the previous Somnia process on port $Port..." -ForegroundColor DarkGray
         Stop-Process -Id $process.ProcessId -Force
+        Wait-Process -Id $process.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
     }
+}
+
+function Wait-HttpReady([string]$Name, [string]$Url, [int]$TimeoutSeconds = 60) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec 2
+            if ($response.StatusCode -eq 200) {
+                Write-Host "$Name is ready." -ForegroundColor DarkGray
+                return
+            }
+        } catch {
+            Start-Sleep -Milliseconds 300
+        }
+    }
+    throw "$Name did not become ready at $Url. Check its Somnia window for the startup error."
 }
 
 if (-not $env:SOMNIA_ADMIN_PASSWORD) {
@@ -86,7 +103,9 @@ Start-Terminal "Somnia Relay" "$pythonCommand -m open_somnia.remote.cli relay --
 Start-Terminal "Somnia Web" "$pythonCommand scripts/preview_server.py --host 127.0.0.1 --port $WebPort" $uiDirectory
 Start-Terminal "Somnia Sidecar" "$pythonCommand -m desktop.backend.bootstrap --workspace '$Workspace' --host 127.0.0.1 --port $SidecarPort" $repo
 
-Start-Sleep -Seconds 3
+Wait-HttpReady "Relay" "http://127.0.0.1:$RelayPort/health"
+Wait-HttpReady "Web preview" "http://127.0.0.1:$WebPort/?remote=1"
+Wait-HttpReady "Sidecar" "http://127.0.0.1:$SidecarPort/health"
 Start-Process "http://127.0.0.1:$WebPort/?remote=1"
 Write-Host "`n1. Sign in at the opened Web page." -ForegroundColor Yellow
 Write-Host "2. Create a Device pairing code." -ForegroundColor Yellow
