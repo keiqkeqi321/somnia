@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from open_somnia.remote.relay import RelayHub, _Peer, create_relay_app
 from tests.remote_auth_support import BROWSER_ORIGIN, authenticate_connector, login, pair_device
@@ -105,7 +108,6 @@ class RemoteRelayTests(unittest.TestCase):
                         "params": {"session_id": "session-1", "user_input": "do not retain"},
                     }
                 )
-
                 self.assertEqual(
                     browser.receive_json(),
                     {
@@ -115,6 +117,37 @@ class RemoteRelayTests(unittest.TestCase):
                         "error": "Device is offline.",
                     },
                 )
+
+    def test_relay_closes_oversized_content_frames_before_forwarding(self) -> None:
+        with TestClient(create_relay_app(administrators={"admin": "admin-password"}, max_message_bytes=1024)) as client:
+            login(client)
+            private_key, device_id = pair_device(client)
+            with (
+                client.websocket_connect(f"/ws/connector/{device_id}") as connector,
+                client.websocket_connect(f"/ws/client/{device_id}", headers={"origin": BROWSER_ORIGIN}) as browser,
+            ):
+                authenticate_connector(connector, device_id, private_key)
+                browser.send_json({"kind": "request", "request_id": "large", "payload": "x" * 4096})
+                with self.assertRaises(WebSocketDisconnect) as disconnected:
+                    browser.receive_json()
+                self.assertEqual(disconnected.exception.code, 1009)
+
+    def test_metadata_database_does_not_persist_forwarded_conversation_content(self) -> None:
+        marker = "conversation-secret-marker-7f4b"
+        with TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "relay.db"
+            database_url = f"sqlite:///{database_path.as_posix()}"
+            with TestClient(create_relay_app(administrators={"admin": "admin-password"}, database_url=database_url)) as client:
+                login(client)
+                private_key, device_id = pair_device(client)
+                with (
+                    client.websocket_connect(f"/ws/connector/{device_id}") as connector,
+                    client.websocket_connect(f"/ws/client/{device_id}", headers={"origin": BROWSER_ORIGIN}) as browser,
+                ):
+                    authenticate_connector(connector, device_id, private_key)
+                    browser.send_json({"kind": "request", "request_id": "content", "params": {"user_input": marker}})
+                    self.assertEqual(connector.receive_json()["params"]["user_input"], marker)
+            self.assertNotIn(marker.encode("utf-8"), database_path.read_bytes())
 
     def test_device_navigation_exposes_online_project_names_without_workspace_paths(self) -> None:
         with TestClient(create_relay_app(administrators={"admin": "admin-password"})) as client:

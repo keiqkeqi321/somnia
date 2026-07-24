@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import json
 import os
 import secrets
 import time
@@ -34,6 +35,7 @@ from open_somnia.remote.auth_store import AuthMetadataStore
 
 ACCESS_COOKIE = "somnia_access"
 REFRESH_COOKIE = "somnia_refresh"
+DEFAULT_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -63,12 +65,16 @@ class RelayHub:
         *,
         browser_origins: set[str],
         client_send_timeout_seconds: float = 2.0,
+        max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
     ) -> None:
         if client_send_timeout_seconds <= 0:
             raise ValueError("Relay client send timeout must be positive.")
+        if max_message_bytes < 1024:
+            raise ValueError("Relay max message size must be at least 1024 bytes.")
         self.auth = auth
         self._browser_origins = browser_origins
         self._client_send_timeout_seconds = client_send_timeout_seconds
+        self._max_message_bytes = max_message_bytes
         self._lock = asyncio.Lock()
         self._connectors: dict[str, _Peer] = {}
         self._clients: dict[str, dict[str, _Peer]] = {}
@@ -112,6 +118,9 @@ class RelayHub:
         try:
             while True:
                 message = await socket.receive_json()
+                if not _message_within_limit(message, self._max_message_bytes):
+                    await socket.close(code=1009, reason="Message exceeds the Relay payload limit.")
+                    break
                 current = self.auth.device(device_id)
                 if current is None or current.revoked_at is not None:
                     await socket.close(code=4403, reason="Device revoked.")
@@ -156,6 +165,9 @@ class RelayHub:
         try:
             while True:
                 message = await socket.receive_json()
+                if not _message_within_limit(message, self._max_message_bytes):
+                    await socket.close(code=1009, reason="Message exceeds the Relay payload limit.")
+                    break
                 if self.auth.resolve_access(peer.access_token) is None:
                     await socket.close(code=4401, reason="Browser authentication expired.")
                     break
@@ -315,6 +327,7 @@ def create_relay_app(
     allowed_origins: list[str] | None = None,
     database_url: str | None = None,
     client_send_timeout_seconds: float = 2.0,
+    max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
 ) -> Starlette:
     configured = administrators
     if configured is None:
@@ -340,6 +353,7 @@ def create_relay_app(
         auth,
         browser_origins=browser_origins,
         client_send_timeout_seconds=client_send_timeout_seconds,
+        max_message_bytes=max_message_bytes,
     )
 
     async def health_endpoint(request: Request) -> JSONResponse:
@@ -472,6 +486,14 @@ async def _json_body(request: Request) -> dict[str, Any]:
     except Exception:
         return {}
     return body if isinstance(body, dict) else {}
+
+
+def _message_within_limit(message: Any, limit: int) -> bool:
+    try:
+        encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    return len(encoded) <= limit
 
 
 def _set_browser_cookies(response: JSONResponse, tokens, auth: RemoteAuth, *, secure: bool) -> None:
