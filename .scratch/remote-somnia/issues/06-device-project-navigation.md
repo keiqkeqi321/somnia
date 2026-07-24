@@ -4,11 +4,17 @@
 
 **Blocked by:** 03 — Secure account access and Device pairing; 05 — Give the Connector authoritative Runtime ownership.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Device list distinguishes online, reconnecting, revoked, and offline states.
-- [ ] Project identity and display name are available without a workspace path.
-- [ ] Switching Device or Project tears down obsolete subscriptions cleanly.
-- [ ] Content-bearing commands to an offline Device fail immediately and are not persisted.
-- [ ] Several Devices can remain connected without receiving one another's traffic.
-- [ ] Phone and desktop browser navigation paths are covered by end-to-end tests.
+- [x] Device list distinguishes online, reconnecting, revoked, and offline states.
+- [x] Project identity and display name are available without a workspace path.
+- [x] Switching Device or Project tears down obsolete subscriptions cleanly.
+- [x] Content-bearing commands to an offline Device fail immediately and are not persisted.
+- [x] Several Devices can remain connected without receiving one another's traffic.
+- [x] Phone and desktop browser navigation paths are covered by end-to-end tests.
+
+## Verification
+
+- Python Connector, Relay, and Connector CLI tests pass (16 tests).
+- TypeScript typecheck and Vitest suite pass (9 tests).
+- Playwright navigation and tracer flow pass at desktop and mobile viewports (2 tests).

@@ -3,6 +3,13 @@ export interface RemoteDevice {
   name: string;
   created_at: number;
   revoked_at: number | null;
+  status: "online" | "reconnecting" | "offline" | "revoked";
+  projects: RemoteProject[];
+}
+
+export interface RemoteProject {
+  project_id: string;
+  name: string;
 }
 
 export interface PairingGrant {

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AgentSession } from "./types";
 import { createConversationState, transitionConversationEvent, type ConversationState } from "./lib/conversation-state";
@@ -148,6 +148,26 @@ export default function RemoteTracerApp() {
   }
 
   const connected = connectionState === "connected";
+  const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
+  const projects = selectedDevice?.projects ?? [];
+
+  useEffect(() => {
+    if (projects.length > 0 && !projects.some((project) => project.project_id === projectId)) {
+      setProjectId(projects[0].project_id);
+    }
+  }, [projectId, projects]);
+
+  function switchTarget(deviceId: string, nextProjectId: string) {
+    connectionRef.current?.close();
+    connectionRef.current = null;
+    conversationRef.current = null;
+    setSession(null);
+    setPendingPrompt("");
+    setStreamingText("");
+    setConnectionState("disconnected");
+    access.setDeviceId(deviceId);
+    setProjectId(nextProjectId);
+  }
   if (!access.authenticated) {
     return (
       <main className="remote-shell remote-shell-login">
@@ -169,13 +189,21 @@ export default function RemoteTracerApp() {
       <RemoteHeader state={connectionState} deviceId={access.deviceId} projectId={projectId} />
       <section className="remote-connection" aria-label="Remote connection">
         <label>Device
-          <select aria-label="Device" value={access.deviceId} onChange={(event) => access.setDeviceId(event.target.value)} disabled={connected}>
+          <select aria-label="Device" value={access.deviceId} onChange={(event) => {
+            const device = access.devices.find((candidate) => candidate.device_id === event.target.value);
+            switchTarget(event.target.value, device?.projects[0]?.project_id ?? "");
+          }} disabled={connected}>
             <option value="">Select Device</option>
-            {access.devices.filter((device) => !device.revoked_at).map((device) => <option key={device.device_id} value={device.device_id}>{device.name}</option>)}
+            {access.devices.filter((device) => !device.revoked_at).map((device) => <option key={device.device_id} value={device.device_id}>{device.name} ({device.status})</option>)}
           </select>
         </label>
-        <label>Project<input value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={connected} /></label>
-        <button type="button" onClick={() => void connect()} disabled={!access.deviceId || busy}>{connected ? "Reconnect" : "Connect"}</button>
+        <label>Project
+          <select aria-label="Project" value={projectId} onChange={(event) => switchTarget(access.deviceId, event.target.value)} disabled={connected || projects.length === 0}>
+            <option value="">Select Project</option>
+            {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
+          </select>
+        </label>
+        <button type="button" onClick={() => void connect()} disabled={!access.deviceId || !projectId || selectedDevice?.status !== "online" || busy}>{connected ? "Reconnect" : "Connect"}</button>
         <button type="button" onClick={() => void revokeSelectedDevice()} disabled={!access.deviceId || busy}>Revoke selected Device</button>
         <button type="button" onClick={() => void signOut()} disabled={busy}>Sign out</button>
       </section>

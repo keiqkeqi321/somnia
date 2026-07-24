@@ -38,7 +38,10 @@ def main() -> int:
         sidecar.runtime.complete = _streaming_complete()
         relay = uvicorn.Server(
             uvicorn.Config(
-                create_relay_app(administrators={"admin": "admin-password"}),
+                create_relay_app(
+                    administrators={"admin": "admin-password"},
+                    allowed_origins=["http://127.0.0.1:4173", "http://127.0.0.1:4174"],
+                ),
                 host="127.0.0.1",
                 port=args.relay_port,
                 log_level="error",
@@ -56,6 +59,7 @@ def main() -> int:
                     identity=identity,
                     project_id="e2e-project",
                     sidecar=LocalSidecarBridge(sidecar.base_url),
+                    project_names={"e2e-project": "Browser test project"},
                 ).run(stop)
             except Exception as exc:
                 if not stop.is_set():

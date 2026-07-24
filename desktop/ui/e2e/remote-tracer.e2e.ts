@@ -9,6 +9,9 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await page.getByLabel("Password").fill("admin-password");
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByLabel("Device", { exact: true })).toContainText("Browser Test Device");
+  await expect(page.getByLabel("Device", { exact: true })).toContainText("online");
+  await expect(page.getByLabel("Project", { exact: true })).toHaveValue("e2e-project");
+  await expect(page.getByLabel("Project", { exact: true })).toContainText("Browser test project");
 
   await page.getByLabel("New Device name").fill("Spare Device");
   await page.getByRole("button", { name: "Create pairing code" }).click();

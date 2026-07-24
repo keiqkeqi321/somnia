@@ -111,6 +111,23 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(second.turn_calls, 1)
             self.assertEqual([response["project_id"] for response in sent], ["project-1", "project-2"])
 
+    def test_presence_announces_project_identity_and_name_without_local_paths(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnector(
+                "wss://relay.example.com",
+                identity=identity,
+                project_id="project-1",
+                sidecar=CountingSidecar(),
+                project_names={"project-1": "Personal notes"},
+            )
+
+            self.assertEqual(
+                connector.presence_message(),
+                {"kind": "connector_presence", "projects": [{"project_id": "project-1", "name": "Personal notes"}]},
+            )
+
     def test_device_identity_is_generated_paired_and_reloaded_from_local_storage(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "device-identity.json"

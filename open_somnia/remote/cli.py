@@ -105,6 +105,7 @@ def connector_main() -> int:
             parser.error("--sidecar supports exactly one --project; omit --sidecar for managed Projects.")
         sidecar = LocalSidecarBridge(args.sidecar)
         sidecars: dict[str, LocalSidecarBridge] | None = None
+        project_names = {project_ids[0]: project_ids[0]}
     else:
         registry = ProjectRegistry(args.registry)
         project_ids = args.project or [project.project_id for project in registry.list()]
@@ -114,12 +115,14 @@ def connector_main() -> int:
         bridges = manager.bridges(project_ids)
         sidecar = bridges[project_ids[0]]
         sidecars = {project_id: bridge for project_id, bridge in bridges.items() if project_id != project_ids[0]}
+        project_names = {project.project_id: project.name for project in registry.list() if project.project_id in project_ids}
     connector = RemoteConnector(
         relay_url,
         identity=identity,
         project_id=project_ids[0],
         sidecar=sidecar,
         sidecars=sidecars,
+        project_names=project_names,
     )
     try:
         connector.run()

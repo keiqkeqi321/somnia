@@ -72,6 +72,8 @@ class RelayHub:
         self._lock = asyncio.Lock()
         self._connectors: dict[str, _Peer] = {}
         self._clients: dict[str, dict[str, _Peer]] = {}
+        self._project_metadata: dict[str, list[dict[str, str]]] = {}
+        self._reconnecting_until: dict[str, float] = {}
         self._delivery_tasks: set[asyncio.Task[None]] = set()
 
     async def serve_connector(self, device_id: str, socket: WebSocket) -> None:
@@ -103,6 +105,7 @@ class RelayHub:
         async with self._lock:
             previous = self._connectors.get(device_id)
             self._connectors[device_id] = peer
+            self._reconnecting_until.pop(device_id, None)
         if previous is not None:
             await previous.socket.close(code=1012, reason="Connector replaced.")
         await socket.send_json({"kind": "auth_ok", "device_id": device_id})
@@ -114,6 +117,9 @@ class RelayHub:
                     await socket.close(code=4403, reason="Device revoked.")
                     break
                 if isinstance(message, dict):
+                    if message.get("kind") == "connector_presence":
+                        await self._record_project_metadata(device_id, message)
+                        continue
                     await self._broadcast_to_clients(device_id, message)
         except WebSocketDisconnect:
             pass
@@ -121,6 +127,7 @@ class RelayHub:
             async with self._lock:
                 if self._connectors.get(device_id) is peer:
                     self._connectors.pop(device_id, None)
+                    self._reconnecting_until[device_id] = time.monotonic() + 30.0
 
     async def serve_client(self, device_id: str, socket: WebSocket) -> None:
         if socket.headers.get("origin") not in self._browser_origins:
@@ -172,12 +179,40 @@ class RelayHub:
         async with self._lock:
             connector = self._connectors.pop(device_id, None)
             clients = list(self._clients.pop(device_id, {}).values())
+            self._project_metadata.pop(device_id, None)
+            self._reconnecting_until.pop(device_id, None)
         peers = ([connector] if connector is not None else []) + clients
         for peer in peers:
             try:
                 await peer.socket.close(code=4403, reason="Device revoked.")
             except RuntimeError:
                 pass
+
+    async def navigation_metadata(self, device) -> dict[str, Any]:
+        async with self._lock:
+            online = device.id in self._connectors
+            projects = list(self._project_metadata.get(device.id, []))
+            reconnecting = self._reconnecting_until.get(device.id, 0.0) > time.monotonic()
+        return {
+            **_serialize_device(device),
+            "status": "revoked" if device.revoked_at is not None else "online" if online else "reconnecting" if reconnecting else "offline",
+            "projects": projects,
+        }
+
+    async def _record_project_metadata(self, device_id: str, message: dict[str, Any]) -> None:
+        raw_projects = message.get("projects")
+        if not isinstance(raw_projects, list):
+            return
+        projects: list[dict[str, str]] = []
+        for item in raw_projects:
+            if not isinstance(item, dict):
+                continue
+            project_id = str(item.get("project_id", "")).strip()
+            name = str(item.get("name", "")).strip()
+            if project_id and name and len(project_id) <= 128 and len(name) <= 120:
+                projects.append({"project_id": project_id, "name": name})
+        async with self._lock:
+            self._project_metadata[device_id] = projects
 
     async def _forward_to_connector(self, device_id: str, client: _Peer, message: dict[str, Any]) -> None:
         claimed_device = str(message.get("device_id", device_id)).strip()
@@ -373,7 +408,8 @@ def create_relay_app(
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
         if account is None:
             return JSONResponse({"error": "Authentication required."}, status_code=401)
-        return JSONResponse({"devices": [_serialize_device(device) for device in auth.devices_for_account(account.id)]})
+        devices = [await hub.navigation_metadata(device) for device in auth.devices_for_account(account.id)]
+        return JSONResponse({"devices": devices})
 
     async def revoke_device_endpoint(request: Request) -> JSONResponse:
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))

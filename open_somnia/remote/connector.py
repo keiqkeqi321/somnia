@@ -95,6 +95,7 @@ class RemoteConnector:
         project_id: str,
         sidecar: LocalSidecarBridge,
         sidecars: dict[str, LocalSidecarBridge] | None = None,
+        project_names: dict[str, str] | None = None,
         replay_limit: int = 256,
         deduplication_limit: int = 256,
     ) -> None:
@@ -115,6 +116,10 @@ class RemoteConnector:
         self._projects = {
             key: _ProjectStream(bridge, event_ring=deque(maxlen=replay_limit)) for key, bridge in bridges.items()
         }
+        supplied_names = project_names or {}
+        self._project_names = {
+            key: _nonempty(supplied_names.get(key, key), "project name") for key in self._projects
+        }
         self._state_lock = Lock()
 
     def run(self, stop_event: Event | None = None) -> None:
@@ -129,6 +134,7 @@ class RemoteConnector:
             }
             with connect(connector_url, open_timeout=10, close_timeout=2) as relay:
                 self._authenticate_relay(relay)
+                relay.send(json.dumps(self.presence_message(), ensure_ascii=False, separators=(",", ":")))
                 send_lock = Lock()
 
                 def send(message: dict[str, Any]) -> None:
@@ -170,6 +176,16 @@ class RemoteConnector:
         result = json.loads(raw_result)
         if not isinstance(result, dict) or result != {"kind": "auth_ok", "device_id": self.device_id}:
             raise RuntimeError("Relay rejected Device authentication.")
+
+    def presence_message(self) -> dict[str, Any]:
+        """Return the Relay-safe metadata for Projects served by this Connector."""
+        return {
+            "kind": "connector_presence",
+            "projects": [
+                {"project_id": project_id, "name": self._project_names[project_id]}
+                for project_id in self._projects
+            ],
+        }
 
     def handle_relay_message(self, raw_message: str | bytes, send: Callable[[dict[str, Any]], None]) -> None:
         """Handle one Relay frame; this is the Connector's protocol seam."""

@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 const requestedChannel = process.env.PLAYWRIGHT_CHANNEL as "chrome" | "chromium" | "msedge" | undefined;
+const uiPort = Number(process.env.PLAYWRIGHT_UI_PORT ?? "4173");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -14,7 +15,7 @@ export default defineConfig({
     { name: "mobile", use: { viewport: { width: 390, height: 844 } } },
   ],
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: `http://127.0.0.1:${uiPort}`,
     headless: true,
     ...(requestedChannel ? { channel: requestedChannel } : {}),
   },
@@ -26,8 +27,8 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: "npm run build && npm run preview",
-      url: "http://127.0.0.1:4173",
+      command: `npm run build && python scripts/preview_server.py --port ${uiPort}`,
+      url: `http://127.0.0.1:${uiPort}`,
       timeout: 60_000,
       reuseExistingServer: false,
     },

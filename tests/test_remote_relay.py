@@ -116,6 +116,35 @@ class RemoteRelayTests(unittest.TestCase):
                     },
                 )
 
+    def test_device_navigation_exposes_online_project_names_without_workspace_paths(self) -> None:
+        with TestClient(create_relay_app(administrators={"admin": "admin-password"})) as client:
+            login(client)
+            private_key, device_id = pair_device(client)
+            with client.websocket_connect(f"/ws/connector/{device_id}") as connector:
+                authenticate_connector(connector, device_id, private_key)
+                connector.send_json(
+                    {
+                        "kind": "connector_presence",
+                        "projects": [
+                            {"project_id": "notes", "name": "Personal notes"},
+                            {"project_id": "work", "name": "Work"},
+                        ],
+                    }
+                )
+
+                devices = client.get("/api/devices").json()["devices"]
+
+            self.assertEqual(devices[0]["status"], "online")
+            self.assertEqual(
+                devices[0]["projects"],
+                [
+                    {"project_id": "notes", "name": "Personal notes"},
+                    {"project_id": "work", "name": "Work"},
+                ],
+            )
+            self.assertNotIn("path", str(devices))
+            self.assertEqual(client.get("/api/devices").json()["devices"][0]["status"], "reconnecting")
+
 
 class _SlowSocket:
     def __init__(self) -> None:
