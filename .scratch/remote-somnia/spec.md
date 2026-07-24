@@ -14,6 +14,103 @@ The Relay stores only account, device identity, device public key, non-sensitive
 
 Somnia Desktop and Somnia Web share the same conversation domain logic and connect through a small Somnia Connection interface. Direct and remote adapters must satisfy the same behavioral contract. Web layouts may differ for mobile ergonomics, but conversation capabilities and state transitions must match Desktop except for intentionally restricted high-risk actions.
 
+## Controlled Runtime Architecture
+
+```mermaid
+flowchart TB
+    subgraph Clients[User Clients]
+        Phone[Phone Browser]
+        Tablet[Tablet Browser]
+        Browser[Desktop Browser]
+    end
+
+    subgraph Cloud[Cloud Deployment]
+        Edge[HTTPS / WSS Reverse Proxy]
+        Web[Somnia Web Static App]
+        Relay["Somnia Relay<br/>Authentication, presence, routing"]
+        Metadata[("PostgreSQL<br/>Account, Device, allowed metadata only")]
+
+        Edge --> Web
+        Edge --> Relay
+        Relay --> Metadata
+    end
+
+    Phone -->|HTTPS| Edge
+    Tablet -->|HTTPS| Edge
+    Browser -->|HTTPS and WSS| Edge
+
+    subgraph DeviceA[Controlled Device A - Windows Workstation]
+        ConnectorA["Connector Service<br/>Authoritative Runtime owner"]
+        RegistryA[("Local Project Registry<br/>Paths remain local")]
+        RuntimeA1[Project A Runtime Host]
+        RuntimeA2[Project B Runtime Host]
+        StoreA[("Local .open_somnia<br/>Sessions and transcripts")]
+        CLIA[Somnia CLI]
+        DesktopA[Somnia Desktop]
+        ConfirmA[Local confirmation UI]
+
+        ConnectorA --> RegistryA
+        ConnectorA --> RuntimeA1
+        ConnectorA --> RuntimeA2
+        RuntimeA1 --> StoreA
+        RuntimeA2 --> StoreA
+        CLIA -->|Local IPC| ConnectorA
+        DesktopA -->|Local IPC| ConnectorA
+        ConfirmA -->|Approve restricted actions| ConnectorA
+    end
+
+    subgraph DeviceB[Controlled Device B - Headless Server]
+        ConnectorB["Connector Service<br/>systemd or Windows service"]
+        RegistryB[(Local Project Registry)]
+        RuntimeB1[Server Project Runtime]
+        StoreB[(Local .open_somnia)]
+        SSHB["SSH / Server Console<br/>Local confirmation"]
+
+        ConnectorB --> RegistryB
+        ConnectorB --> RuntimeB1
+        RuntimeB1 --> StoreB
+        SSHB -->|Approve restricted actions| ConnectorB
+    end
+
+    ConnectorA -->|Outbound authenticated WSS| Edge
+    ConnectorB -->|Outbound authenticated WSS| Edge
+
+    Relay -.->|"Transient opaque envelopes only<br/>No offline content queue"| ConnectorA
+    Relay -.->|"Transient opaque envelopes only<br/>No offline content queue"| ConnectorB
+```
+
+### Ownership and routing model
+
+```mermaid
+flowchart LR
+    Account[Administrator Account] --> D1[Device A]
+    Account --> D2[Device B]
+    Account --> D3[Device C]
+
+    D1 --> P1[Registered Project A]
+    D1 --> P2[Registered Project B]
+    D2 --> P3[Registered Server Project]
+
+    P1 --> R1[Exactly one managed Runtime owner]
+    P2 --> R2[Exactly one managed Runtime owner]
+    P3 --> R3[Exactly one managed Runtime owner]
+
+    R1 --> S1[Local Sessions]
+    R2 --> S2[Local Sessions]
+    R3 --> S3[Local Sessions]
+```
+
+Architecture invariants:
+
+- The Relay and Web deployment are the cloud control plane; the Relay never owns a Somnia Runtime.
+- Every controlled computer runs an outbound Connector service. No Sidecar or Runtime port is exposed to the internet.
+- The Connector is the sole Runtime owner for every registered Project on its Device. CLI, Desktop, and Remote Web are clients of that ownership boundary rather than competing Runtime owners.
+- A headless server is a normal Device. It runs the Connector and registered Runtime hosts without keeping an interactive CLI terminal open.
+- Project paths, provider secrets, Session state, transcripts, and Runtime artifacts remain on the controlled Device.
+- PostgreSQL stores only the explicitly allowed account, Device, public-key, Project identity, and presence metadata.
+- Conversation-bearing frames exist in Relay process memory only while being forwarded. Offline Devices receive immediate errors rather than durable queued commands.
+- Permission persistence, sensitive configuration, and Yolo activation require confirmation on the controlled computer or its trusted server console.
+
 ## User Stories
 
 1. As the administrator, I want to sign in securely, so that only I can access my computers.
