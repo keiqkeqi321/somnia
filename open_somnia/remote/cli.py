@@ -98,15 +98,19 @@ def connector_main() -> int:
 
     identity = DeviceIdentity.load(args.identity)
     relay_url = str(args.relay or _websocket_origin(identity.relay_url))
-    project_ids = args.project or ["default-project"]
     manager: ProjectRuntimeManager | None = None
     if args.sidecar:
+        project_ids = args.project or ["default-project"]
         if len(project_ids) != 1:
             parser.error("--sidecar supports exactly one --project; omit --sidecar for managed Projects.")
         sidecar = LocalSidecarBridge(args.sidecar)
         sidecars: dict[str, LocalSidecarBridge] | None = None
     else:
-        manager = ProjectRuntimeManager(ProjectRegistry(args.registry))
+        registry = ProjectRegistry(args.registry)
+        project_ids = args.project or [project.project_id for project in registry.list()]
+        if not project_ids:
+            parser.error("No registered Projects. Run 'somnia-connector register' before starting the Connector.")
+        manager = ProjectRuntimeManager(registry)
         bridges = manager.bridges(project_ids)
         sidecar = bridges[project_ids[0]]
         sidecars = {project_id: bridge for project_id, bridge in bridges.items() if project_id != project_ids[0]}

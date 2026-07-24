@@ -15,6 +15,6 @@
 
 ## Verification
 
-- Remote Runtime Manager, Connector, Relay, tracer, and Sidecar tests pass (33 tests).
+- Remote Runtime Manager, Connector CLI, Relay, tracer, and Sidecar tests pass (34 tests).
 - Full Python suite ran 660 tests; the pre-existing missing `pytest` dependency and `kimi-coding-plan` preset mismatch remain outside this issue.
 - Rust checking is blocked locally: the supplied toolchain lacks `rustfmt` and the required Windows GNU/GNULLVM target libraries.
