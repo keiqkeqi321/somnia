@@ -10,6 +10,12 @@ import { RemoteConversationRow } from "./RemoteRichContent";
 
 const defaults = readConnectionDefaults();
 
+type RemoteQueuedPrompt = {
+  id: string;
+  prompt: string;
+  injectionRequested: boolean;
+};
+
 export default function RemoteTracerApp() {
   const access = useRemoteAccess(defaults.relayUrl);
   const [projectId, setProjectId] = useState(defaults.projectId);
@@ -19,6 +25,7 @@ export default function RemoteTracerApp() {
   const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
+  const [queuedPrompts, setQueuedPrompts] = useState<RemoteQueuedPrompt[]>([]);
   const [progress, setProgress] = useState<ConversationState | null>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMemberActivity[]>([]);
   const [tasks, setTasks] = useState<TaskGraphItem[]>([]);
@@ -37,6 +44,7 @@ export default function RemoteTracerApp() {
       conversationRef.current = null;
       setSession(null);
       setSessions([]);
+      setQueuedPrompts([]);
       setProgress(null);
       clearExecutionDetails();
       setConnectionState("disconnected");
@@ -49,6 +57,7 @@ export default function RemoteTracerApp() {
     connectionRef.current = null;
     conversationRef.current = null;
     setSession(null);
+    setQueuedPrompts([]);
     setProgress(null);
     clearExecutionDetails();
     setConnectionState("disconnected");
@@ -63,6 +72,7 @@ export default function RemoteTracerApp() {
       setSession(null);
       setSessions([]);
       setPendingPrompt("");
+      setQueuedPrompts([]);
       setProgress(null);
       clearExecutionDetails();
       conversationRef.current = null;
@@ -99,6 +109,9 @@ export default function RemoteTracerApp() {
       const runtimeStatus = runtime && typeof runtime === "object"
         ? String((runtime as { status?: unknown }).status ?? "unknown")
         : "unknown";
+      const activeTurns = runtime && typeof runtime === "object" && Array.isArray((runtime as { active_turns?: unknown }).active_turns)
+        ? (runtime as { active_turns: Array<{ session_id?: unknown; turn_id?: unknown }> }).active_turns
+        : [];
       const currentSessionId = conversationRef.current?.session?.id ?? session?.id;
       if (Array.isArray(sessions) && currentSessionId) {
         const knownSession = sessions.find((candidate) => (
@@ -108,6 +121,10 @@ export default function RemoteTracerApp() {
           void connectionRef.current.query({ type: "session.load", sessionId: currentSessionId }).then((recovered) => {
             setSession(recovered);
             const recoveredState = createConversationState(recovered);
+            const activeTurn = activeTurns.find((candidate) => candidate.session_id === recovered.id && typeof candidate.turn_id === "string");
+            if (activeTurn) {
+              recoveredState.activeTurnId = activeTurn.turn_id as string;
+            }
             conversationRef.current = recoveredState;
             setProgress(recoveredState);
             void refreshExecutionDetails(recovered.id);
@@ -123,12 +140,19 @@ export default function RemoteTracerApp() {
     const transition = transitionConversationEvent(previous, event);
     conversationRef.current = transition.state;
     setProgress(transition.state);
+    if (event.type === "loop_user_message_injected") {
+      const injectionId = typeof event.payload.injection_id === "string" ? event.payload.injection_id : "";
+      if (injectionId) {
+        setQueuedPrompts((current) => current.filter((prompt) => prompt.id !== injectionId));
+      }
+    }
     if (transition.effect.type === "turn_started") {
     } else if (transition.effect.type === "turn_completed") {
       if (transition.state.session) setSession(transition.state.session);
       setPendingPrompt("");
       setConversationBusy(false);
       void refreshExecutionDetails(event.session_id);
+      void startNextQueuedPrompt(event.session_id, transition.state.session);
     } else if (event.type === "tool_finished" || event.type === "subagent_activity") {
       void refreshExecutionDetails(event.session_id);
     }
@@ -160,6 +184,7 @@ export default function RemoteTracerApp() {
       setSession(loaded);
       conversationRef.current = createConversationState(loaded);
       setProgress(conversationRef.current);
+      setQueuedPrompts([]);
       clearExecutionDetails();
       await refreshExecutionDetails(sessionId);
     } catch (error) {
@@ -178,6 +203,7 @@ export default function RemoteTracerApp() {
       if (session?.id === sessionId) {
         setSession(null);
         setProgress(null);
+        setQueuedPrompts([]);
         clearExecutionDetails();
         conversationRef.current = null;
       }
@@ -187,7 +213,14 @@ export default function RemoteTracerApp() {
   async function sendPrompt() {
     const connection = connectionRef.current;
     const prompt = draft.trim();
-    if (!connection || !session || !prompt || busy) return;
+    if (!connection || !session || !prompt) return;
+    if (progress?.activeTurnId) {
+      setQueuedPrompts((current) => [...current, { id: createRequestId("queue"), prompt, injectionRequested: false }]);
+      setDraft("");
+      access.setNotice("Prompt queued for this active Session.");
+      return;
+    }
+    if (busy) return;
     setConversationBusy(true);
     setDraft("");
     setPendingPrompt(prompt);
@@ -197,6 +230,56 @@ export default function RemoteTracerApp() {
     } catch (error) {
       setConversationBusy(false);
       setPendingPrompt("");
+      access.setNotice(formatError(error));
+    }
+  }
+
+  async function startNextQueuedPrompt(sessionId: string, completedSession: AgentSession | null) {
+    const next = queuedPrompts[0];
+    const connection = connectionRef.current;
+    if (!next || !connection || session?.id !== sessionId) return;
+    setQueuedPrompts((current) => current.slice(1));
+    setConversationBusy(true);
+    setPendingPrompt(next.prompt);
+    try {
+      await connection.execute({
+        type: "turn.start",
+        sessionId,
+        userInput: next.prompt,
+      });
+      if (completedSession) setSession(completedSession);
+      access.setNotice("Queued prompt started.");
+    } catch (error) {
+      setQueuedPrompts((current) => [next, ...current]);
+      setPendingPrompt("");
+      setConversationBusy(false);
+      access.setNotice(formatError(error));
+    }
+  }
+
+  async function injectQueuedPrompt(prompt: RemoteQueuedPrompt) {
+    const connection = connectionRef.current;
+    const turnId = progress?.activeTurnId;
+    if (!connection || !turnId || prompt.injectionRequested) return;
+    setQueuedPrompts((current) => current.map((candidate) => candidate.id === prompt.id ? { ...candidate, injectionRequested: true } : candidate));
+    try {
+      const result = await connection.queueLoopInjection(turnId, prompt.id, prompt.prompt);
+      if (!result.queued) throw new Error("The active Turn rejected this injection. It may have finished already.");
+      access.setNotice("Queued prompt will be injected on the next agent loop.");
+    } catch (error) {
+      setQueuedPrompts((current) => current.map((candidate) => candidate.id === prompt.id ? { ...candidate, injectionRequested: false } : candidate));
+      access.setNotice(formatError(error));
+    }
+  }
+
+  async function interruptActiveTurn() {
+    const connection = connectionRef.current;
+    const turnId = progress?.activeTurnId;
+    if (!connection || !turnId) return;
+    try {
+      const result = await connection.interruptTurn(turnId);
+      access.setNotice(result.interrupted ? "Interrupt requested." : "The Turn had already finished.");
+    } catch (error) {
       access.setNotice(formatError(error));
     }
   }
@@ -248,6 +331,7 @@ export default function RemoteTracerApp() {
     conversationRef.current = null;
     setSession(null);
     setPendingPrompt("");
+    setQueuedPrompts([]);
     setProgress(null);
     clearExecutionDetails();
     setConnectionState("disconnected");
@@ -303,6 +387,7 @@ export default function RemoteTracerApp() {
     ...(progress.thinking ? [{ id: `thinking-${progress.activeTurnId ?? "active"}`, type: "thinking_log" as const, thinkingLog: { turnId: progress.activeTurnId, path: progress.thinking.path, text: progress.thinking.text, status: progress.thinking.status }, isStreaming: progress.thinking.status === "running" }] : []),
     ...progress.tools.map((tool) => ({ id: `tool-${tool.id}`, type: "tool_call" as const, toolCall: { ...tool, input: stringifyToolValue(tool.input), output: stringifyToolValue(tool.output), contentBlocks: tool.contentBlocks as never[] } })),
     ...(progress.assistantText ? [{ id: `assistant-${progress.activeTurnId ?? "active"}`, type: "assistant_text" as const, text: progress.assistantText, isStreaming: true }] : []),
+    ...progress.injectedUserMessages.map((message) => ({ id: `injected-${message.id}`, type: "user_text" as const, text: message.text })),
   ] : [];
   const conversationRows = buildConversationRows(session, runtimeItems, pendingPrompt ? { id: "remote-pending", sessionId: session?.id ?? null, userText: pendingPrompt, placeholderText: "Working…" } : null, progress?.activeTurnId ? session?.messages.length ?? 0 : null);
   if (!access.authenticated) {
@@ -350,6 +435,10 @@ export default function RemoteTracerApp() {
         {access.pairingCode ? <output className="remote-pairing-code">{access.pairingCode}</output> : null}
       </section>
       <div className="remote-notice" role="status">{access.notice}</div>
+      {queuedPrompts.length ? <section className="remote-queue" aria-label="Queued prompts">
+        <strong>Queued prompts ({queuedPrompts.length})</strong>
+        {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button></div>)}
+      </section> : null}
       <section className="remote-workspace">
         <aside className="remote-session-pane">
           <div className="remote-pane-heading"><span>Session</span><button type="button" onClick={() => void createSession()} disabled={!connected || busy}>New</button></div>
@@ -371,6 +460,7 @@ export default function RemoteTracerApp() {
               {progress?.tools.map((tool) => <button type="button" key={tool.id} onClick={() => tool.logId && void showToolLog(tool.logId)} disabled={!tool.logId}>{tool.name} · {tool.status}</button>)}
               {progress?.todoItems.map((item, index) => <div key={index}>Todo · {activitySummary(item as Record<string, unknown>)}</div>)}
               {progress?.contextUsage ? <div>Context · {activitySummary(progress.contextUsage)}</div> : null}
+              {progress?.interruptStatus ? <div>Interrupt · {progress.interruptStatus}</div> : null}
             </details>
             <details><summary>Workers ({teamMembers.length + (progress?.subagents.length ?? 0)})</summary>{teamMembers.map((member) => <button type="button" key={member.name} onClick={() => void showTeamLog(member.name)}>{member.name} · {member.status ?? member.activity ?? "active"}</button>)}{progress?.subagents.map((worker, index) => <div key={index}>{activitySummary(worker)}</div>)}</details>
             <details><summary>Tasks ({tasks.length})</summary>{tasks.map((task) => <div key={task.id}>#{task.id} {task.subject ?? task.description} · {task.status}</div>)}</details>
@@ -378,8 +468,9 @@ export default function RemoteTracerApp() {
             {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
           </aside> : null}
           <div className="remote-composer">
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Somnia" disabled={!session || !connected || busy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); } }} />
-            <button type="button" onClick={() => void sendPrompt()} disabled={!session || !draft.trim() || busy}>Send</button>
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Somnia" disabled={!session || !connected || access.busy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); } }} />
+            <button type="button" onClick={() => void sendPrompt()} disabled={!session || !draft.trim() || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
+            {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
           </div>
         </section>
       </section>
@@ -413,4 +504,8 @@ function archiveStorageKey(deviceId: string, projectId: string): string {
 
 function activitySummary(payload: Record<string, unknown>): string {
   return String(payload.content ?? payload.subject ?? payload.tool_name ?? payload.name ?? payload.message ?? payload.status ?? payload.used_tokens ?? "updated");
+}
+
+function createRequestId(prefix: string): string {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}`;
 }

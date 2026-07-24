@@ -70,6 +70,10 @@ describe("conversation state", () => {
       { type: "todo_updated", session_id: session.id, payload: { items: [{ content: "Ship", status: "in_progress" }] } },
       { type: "context_usage_updated", session_id: session.id, payload: { context_window_usage: { used_tokens: 12, max_tokens: 100 } } },
       { type: "subagent_activity", session_id: session.id, payload: { name: "Scout", status: "working", text: "Scanning" } },
+      { type: "interrupt_requested", session_id: session.id, turn_id: "turn-1", payload: {} },
+      { type: "interrupt_completed", session_id: session.id, turn_id: "turn-1", payload: {} },
+      { type: "loop_user_message_injected", session_id: session.id, turn_id: "turn-1", payload: { injection_id: "inject-1", text: "Continue" } },
+      { type: "loop_user_message_injected", session_id: session.id, turn_id: "turn-1", payload: { injection_id: "inject-1", text: "Continue" } },
       { type: "thinking_finished", session_id: session.id, turn_id: "turn-1", payload: { path: ".open_somnia/thinking/turn-1.jsonl" } },
     ];
 
@@ -80,5 +84,7 @@ describe("conversation state", () => {
     expect(final.todoItems).toEqual([{ content: "Ship", status: "in_progress" }]);
     expect(final.contextUsage).toEqual({ used_tokens: 12, max_tokens: 100 });
     expect(final.subagents).toEqual([expect.objectContaining({ name: "Scout", status: "working", text: "Scanning" })]);
+    expect(final.interruptStatus).toBe("completed");
+    expect(final.injectedUserMessages).toEqual([{ id: "inject-1", text: "Continue" }]);
   });
 });

@@ -10,6 +10,8 @@ export interface ConversationState {
   todoItems: unknown[];
   contextUsage: Record<string, unknown> | null;
   subagents: Array<Record<string, unknown>>;
+  injectedUserMessages: Array<{ id: string; text: string }>;
+  interruptStatus: "requested" | "completed" | null;
 }
 
 export interface ConversationProgressTool {
@@ -45,6 +47,8 @@ export function createConversationState(session: AgentSession | string): Convers
     todoItems: Array.isArray(loaded?.todo_items) ? loaded.todo_items : [],
     contextUsage: isRecord(loaded?.context_window_usage) ? loaded.context_window_usage : null,
     subagents: [],
+    injectedUserMessages: [],
+    interruptStatus: null,
   };
 }
 
@@ -55,9 +59,24 @@ export function transitionConversationEvent(state: ConversationState, event: Sid
   if (event.type === "turn_started") {
     const turnId = event.turn_id ?? null;
     return {
-      state: { ...state, activeTurnId: turnId, assistantText: "", thinking: null, tools: [], subagents: [] },
+      state: {
+        ...state,
+        activeTurnId: turnId,
+        assistantText: "",
+        thinking: null,
+        tools: [],
+        subagents: [],
+        injectedUserMessages: [],
+        interruptStatus: null,
+      },
       effect: { type: "turn_started" },
     };
+  }
+  if (event.type === "interrupt_requested") {
+    return changed(state, { interruptStatus: "requested" });
+  }
+  if (event.type === "interrupt_completed") {
+    return changed(state, { interruptStatus: "completed" });
   }
   if (event.type === "thinking_delta") {
     const delta = text(event.payload.delta ?? event.payload.text);
@@ -128,6 +147,16 @@ export function transitionConversationEvent(state: ConversationState, event: Sid
     const name = text(event.payload.name ?? event.payload.actor) || "worker";
     return changed(state, {
       subagents: [...state.subagents.filter((item) => text(item.name ?? item.actor) !== name), { ...event.payload, name }],
+    });
+  }
+  if (event.type === "loop_user_message_injected") {
+    const id = text(event.payload.injection_id);
+    const messageText = text(event.payload.text) || text(event.payload.user_input);
+    if (!id || !messageText || state.injectedUserMessages.some((message) => message.id === id)) {
+      return unchanged(state);
+    }
+    return changed(state, {
+      injectedUserMessages: [...state.injectedUserMessages, { id, text: messageText }],
     });
   }
   if (event.type === "assistant_delta") {

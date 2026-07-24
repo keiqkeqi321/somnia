@@ -43,7 +43,7 @@ body {
   max-height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 52px auto auto 32px minmax(0, 1fr);
+  grid-template-rows: 52px auto auto 32px auto minmax(0, 1fr);
   background: #101214;
   color: #edf0f2;
   overflow: hidden;
@@ -203,6 +203,26 @@ body {
   font-size: 12px;
 }
 
+.remote-queue {
+  min-width: 0;
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px 18px;
+  border-bottom: 1px solid #2b3034;
+  background: #171a1d;
+  color: #c8d0d5;
+  font-size: 12px;
+}
+.remote-queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.remote-queue-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-queue-row button { min-height: 28px; padding: 3px 8px; }
+
 .remote-workspace {
   min-height: 0;
   min-width: 0;
@@ -304,7 +324,7 @@ body {
 .remote-composer {
   grid-column: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 76px;
+  grid-template-columns: minmax(0, 1fr) 76px auto;
   gap: 10px;
   padding: 12px max(18px, calc((100% - 820px) / 2));
   border-top: 1px solid #30363a;
@@ -317,9 +337,10 @@ body {
   resize: vertical;
   padding: 10px;
 }
+.remote-interrupt-button { border-color: #8b4d4d !important; background: #432629 !important; }
 
 @media (max-width: 700px) {
-  .remote-shell { grid-template-rows: 48px auto auto auto minmax(0, 1fr); }
+  .remote-shell { grid-template-rows: 48px auto auto auto auto minmax(0, 1fr); }
   .remote-shell-login { grid-template-rows: 48px minmax(0, 1fr); }
   .remote-header { padding: 0 12px; }
   .remote-project-label { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -337,7 +358,8 @@ body {
   .remote-conversation { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto auto; }
   .remote-messages { grid-column: 1; grid-row: 1; padding: 10px 14px; }
   .remote-progress { grid-column: 1; grid-row: 2; max-height: 190px; border-left: 0; border-top: 1px solid #30363a; }
-  .remote-composer { grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr) 64px; padding: 10px 12px; }
+  .remote-composer { grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr) 64px auto; padding: 10px 12px; }
+  .remote-queue { padding: 8px 12px; }
 }
 
 button,

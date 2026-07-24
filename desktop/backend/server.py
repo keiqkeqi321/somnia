@@ -909,6 +909,14 @@ class SidecarServer:
         payload = self.ready_payload()
         payload["pending_interaction_count"] = len(self.service.pending_interactions())
         payload["open_session_count"] = len(self.service.list_session_summaries())
+        payload["active_turns"] = [
+            {
+                "turn_id": str(turn.turn_id),
+                "session_id": str(turn.session.id),
+            }
+            for turn in self._active_turns.values()
+            if not turn.done_event.is_set()
+        ]
         return payload
 
     def list_tool_logs(self, *, limit: int = 20) -> list[dict[str, Any]]:

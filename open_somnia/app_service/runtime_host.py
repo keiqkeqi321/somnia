@@ -142,6 +142,7 @@ class _ActiveTurn:
     loop_injection_lock: Lock = field(default_factory=Lock)
     pending_loop_injections: list[dict[str, Any]] = field(default_factory=list)
     ready_loop_injections: list[dict[str, Any]] = field(default_factory=list)
+    accepted_loop_injection_ids: set[str] = field(default_factory=set)
     last_context_usage: dict[str, Any] | None = None
 
 
@@ -247,11 +248,15 @@ class RuntimeHost:
             active_turn = self._active_turns.get(str(turn_id).strip())
             if active_turn is None or active_turn.done_event.is_set():
                 return False
-        injection = {
-            "id": str(injection_id or uuid.uuid4().hex[:8]).strip(),
-            "user_input": _clone_value(user_input),
-        }
+        normalized_injection_id = str(injection_id or uuid.uuid4().hex[:8]).strip()
         with active_turn.loop_injection_lock:
+            if normalized_injection_id in active_turn.accepted_loop_injection_ids:
+                return True
+            active_turn.accepted_loop_injection_ids.add(normalized_injection_id)
+            injection = {
+                "id": normalized_injection_id,
+                "user_input": _clone_value(user_input),
+            }
             active_turn.pending_loop_injections.append(injection)
         return True
 

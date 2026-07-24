@@ -73,6 +73,19 @@ class LocalSidecarBridge:
                 "/turns",
                 {"session_id": session_id, "user_input": params["user_input"]},
             )
+        if method == "turn.interrupt":
+            turn_id = _required_text(params, "turn_id")
+            return self._request("POST", f"/turns/{quote(turn_id, safe='')}/interrupt", {})
+        if method == "turn.inject":
+            turn_id = _required_text(params, "turn_id")
+            injection_id = _required_text(params, "injection_id")
+            if "user_input" not in params:
+                raise ValueError("user_input is required.")
+            return self._request(
+                "POST",
+                f"/turns/{quote(turn_id, safe='')}/loop-injections",
+                {"injection_id": injection_id, "user_input": params["user_input"]},
+            )
         if method == "stream.snapshot":
             sessions = self._request("GET", "/sessions", None)
             runtime = self._request("GET", "/runtime/status", None)

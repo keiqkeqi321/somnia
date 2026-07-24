@@ -700,6 +700,7 @@ class AppServiceTests(unittest.TestCase):
             self._collect_events_until(handle, lambda event: event.type == "turn_started")
 
             self.assertTrue(service.queue_loop_injection(handle.turn_id, "queued follow-up", injection_id="inject-1"))
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "queued follow-up", injection_id="inject-1"))
 
             result = handle.wait(timeout=2.0)
             self.assertIsNotNone(result)

@@ -118,6 +118,14 @@ export class RemoteSomniaConnection implements SomniaConnection {
     return this.sendRequest<{ data_url: string }>("workspace.image", { path }).then((result) => result.data_url);
   }
 
+  interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {
+    return this.sendRequest("turn.interrupt", { turn_id: turnId });
+  }
+
+  queueLoopInjection(turnId: string, injectionId: string, userInput: string | Record<string, unknown>): Promise<{ turn_id: string; injection_id: string; queued: boolean }> {
+    return this.sendRequest("turn.inject", { turn_id: turnId, injection_id: injectionId, user_input: userInput });
+  }
+
   subscribe(listener: SomniaConnectionListener): () => void {
     this.listeners.add(listener);
     if (!this.socket) {

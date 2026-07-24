@@ -25,6 +25,12 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await page.getByPlaceholder("Ask Somnia").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.locator(".remote-message-streaming p")).toHaveText("Hello ");
+  await page.getByPlaceholder("Ask Somnia").fill("follow up");
+  await page.getByRole("button", { name: "Queue" }).click();
+  const queuedPrompts = page.getByLabel("Queued prompts");
+  await expect(queuedPrompts).toContainText("follow up");
+  await queuedPrompts.getByRole("button", { name: "Inject next loop" }).click();
+  await expect(queuedPrompts).toContainText("Waiting for next loop");
   const completedMessage = page.locator(".remote-message-assistant:not(.remote-message-streaming)");
   await expect(completedMessage).toContainText("Hello remote");
   await expect(completedMessage.getByRole("heading", { name: "Rich output" })).toBeVisible();

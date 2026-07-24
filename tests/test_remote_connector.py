@@ -189,6 +189,17 @@ class RemoteConnectorTests(unittest.TestCase):
                 {"turn_id": "turn-1", "session_id": "session-1", "accepted_input": "hello"},
             )
             self.assertEqual(
+                bridge.execute("turn.interrupt", {"turn_id": "turn-1"}),
+                {"turn_id": "turn-1", "interrupted": True},
+            )
+            self.assertEqual(
+                bridge.execute(
+                    "turn.inject",
+                    {"turn_id": "turn-1", "injection_id": "inject-1", "user_input": "continue"},
+                ),
+                {"turn_id": "turn-1", "injection_id": "inject-1", "queued": True},
+            )
+            self.assertEqual(
                 bridge.execute("session.delete", {"session_id": "session-1"}),
                 {"session_id": "session-1", "deleted": True},
             )
@@ -236,6 +247,12 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
                 },
                 status=202,
             )
+            return
+        if self.path == "/turns/turn-1/interrupt":
+            self._send({"turn_id": "turn-1", "interrupted": True})
+            return
+        if self.path == "/turns/turn-1/loop-injections":
+            self._send({"turn_id": "turn-1", "injection_id": body.get("injection_id"), "queued": True}, status=202)
             return
         self._send({"error": "not found"}, status=404)
 
