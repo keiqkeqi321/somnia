@@ -64,6 +64,12 @@ class LocalSidecarBridge:
         if method == "session.delete":
             session_id = _required_text(params, "session_id")
             return self._request("DELETE", f"/sessions/{quote(session_id, safe='')}", None)
+        if method == "session.compact":
+            session_id = _required_text(params, "session_id")
+            return self._request("POST", f"/sessions/{quote(session_id, safe='')}/compact", {})
+        if method == "session.janitor":
+            session_id = _required_text(params, "session_id")
+            return self._request("POST", f"/sessions/{quote(session_id, safe='')}/janitor", {})
         if method == "turn.start":
             session_id = _required_text(params, "session_id")
             if "user_input" not in params:
@@ -117,6 +123,23 @@ class LocalSidecarBridge:
         if method == "task.list":
             session_id = _required_text(params, "session_id")
             return self._request("GET", f"/tasks?session_id={quote(session_id, safe='')}", None)
+        if method == "workspace.paths":
+            query = str(params.get("query", ""))
+            limit = params.get("limit", 30)
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 100:
+                raise ValueError("limit must be an integer between 1 and 100.")
+            return self._request("GET", f"/workspace/paths?q={quote(query, safe='')}&limit={limit}", None)
+        if method == "workspace.image.stage":
+            name = str(params.get("name", "")).strip()
+            media_type = str(params.get("media_type", "")).strip()
+            data_url = str(params.get("data_url", "")).strip()
+            if not data_url:
+                raise ValueError("data_url is required.")
+            return self._request(
+                "POST",
+                "/workspace/images",
+                {"name": name, "media_type": media_type, "data_url": data_url},
+            )
         if method == "workspace.image":
             path = _required_text(params, "path")
             request = urllib.request.Request(

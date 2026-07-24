@@ -203,12 +203,31 @@ class RemoteConnectorTests(unittest.TestCase):
                 bridge.execute("session.delete", {"session_id": "session-1"}),
                 {"session_id": "session-1", "deleted": True},
             )
+            self.assertEqual(
+                bridge.execute("session.compact", {"session_id": "session-1"}),
+                {"message": "Context compacted.", "session": {"id": "session-1", "messages": []}},
+            )
+            self.assertEqual(
+                bridge.execute("session.janitor", {"session_id": "session-1"}),
+                {"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}},
+            )
             self.assertEqual(bridge.execute("tool_log.list", {"limit": 5}), {"tool_logs": [{"id": "log-1"}]})
             self.assertEqual(bridge.execute("tool_log.get", {"log_id": "log-1"}), {"id": "log-1", "rendered": "done"})
             self.assertEqual(bridge.execute("thinking_log.get", {"path": "safe/log.jsonl"}), {"path": "safe/log.jsonl", "text": "reasoning"})
             self.assertEqual(bridge.execute("team.members", {"session_id": "session-1"}), {"members": [{"name": "Scout"}]})
             self.assertEqual(bridge.execute("team.log", {"name": "Scout", "session_id": "session-1"}), {"name": "Scout", "rendered": "working"})
             self.assertEqual(bridge.execute("task.list", {"session_id": "session-1"}), {"tasks": [{"id": 1, "subject": "Ship"}]})
+            self.assertEqual(
+                bridge.execute("workspace.paths", {"query": "src", "limit": 30}),
+                {"paths": [{"path": "src", "basename": "src", "kind": "dir"}]},
+            )
+            self.assertEqual(
+                bridge.execute(
+                    "workspace.image.stage",
+                    {"name": "paste.png", "media_type": "image/png", "data_url": "data:image/png;base64,cG5n"},
+                ),
+                {"path": ".open_somnia/clipboard-images/paste.png", "absolute_path": "C:/workspace/paste.png", "media_type": "image/png"},
+            )
             self.assertEqual(bridge.execute("workspace.image", {"path": "safe/pixel.png"})["data_url"], "data:image/png;base64,cG5n")
         finally:
             server.shutdown()
@@ -254,6 +273,15 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         if self.path == "/turns/turn-1/loop-injections":
             self._send({"turn_id": "turn-1", "injection_id": body.get("injection_id"), "queued": True}, status=202)
             return
+        if self.path == "/sessions/session-1/compact":
+            self._send({"message": "Context compacted.", "session": {"id": "session-1", "messages": []}})
+            return
+        if self.path == "/sessions/session-1/janitor":
+            self._send({"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}})
+            return
+        if self.path == "/workspace/images":
+            self._send({"path": ".open_somnia/clipboard-images/paste.png", "absolute_path": "C:/workspace/paste.png", "media_type": body.get("media_type")})
+            return
         self._send({"error": "not found"}, status=404)
 
     def do_GET(self) -> None:
@@ -282,6 +310,9 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/tasks?session_id=session-1":
             self._send({"tasks": [{"id": 1, "subject": "Ship"}]})
+            return
+        if self.path == "/workspace/paths?q=src&limit=30":
+            self._send({"paths": [{"path": "src", "basename": "src", "kind": "dir"}]})
             return
         if self.path == "/workspace/images?path=safe%2Fpixel.png":
             self._send_bytes(b"png", "image/png")

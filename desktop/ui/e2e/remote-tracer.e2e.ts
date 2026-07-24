@@ -22,7 +22,21 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await page.getByRole("button", { name: "New" }).click();
   await expect(page.locator(".remote-notice")).toContainText("is ready");
 
-  await page.getByPlaceholder("Ask Somnia").fill("hello");
+  const composer = page.getByPlaceholder("Ask Somnia");
+  await composer.fill("/co");
+  await expect(page.getByRole("listbox", { name: "Slash commands" })).toContainText("/compact");
+  await page.getByRole("listbox", { name: "Slash commands" }).getByRole("button", { name: "/compact" }).click();
+  await expect(composer).toHaveValue("/compact ");
+  await composer.fill("@");
+  await expect(page.getByRole("listbox", { name: "Project paths" })).toBeVisible();
+  await composer.fill("line one");
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue("line one\n");
+  await page.locator('input[type="file"]').setInputFiles({ name: "paste.png", mimeType: "image/png", buffer: Buffer.from("not-a-real-image") });
+  await expect(page.locator(".remote-image-previews img")).toHaveCount(1);
+  await page.getByRole("button", { name: "Remove paste.png" }).click();
+
+  await composer.fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.locator(".remote-message-streaming p")).toHaveText("Hello ");
   await page.getByPlaceholder("Ask Somnia").fill("follow up");

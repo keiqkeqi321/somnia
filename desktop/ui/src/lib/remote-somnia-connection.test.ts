@@ -30,8 +30,16 @@ class FakeRelaySocket {
       : request.method === "session.list"
         ? { sessions: [loadedSession] }
         : request.method === "session.delete"
-          ? { session_id: loadedSession.id, deleted: true }
-          : loadedSession;
+        ? { session_id: loadedSession.id, deleted: true }
+        : request.method === "session.compact"
+          ? { message: "Context compacted.", session: loadedSession }
+          : request.method === "session.janitor"
+            ? { message: "Janitor complete.", session: loadedSession }
+            : request.method === "workspace.paths"
+              ? { paths: [{ path: "src", basename: "src", kind: "dir" }] }
+              : request.method === "workspace.image.stage"
+                ? { path: ".open_somnia/clipboard-images/paste.png", absolute_path: "C:/workspace/paste.png", media_type: "image/png" }
+        : loadedSession;
     this.emit({ kind: "response", request_id: request.request_id, ok: true, result });
   }
 
@@ -63,6 +71,18 @@ function createHarness() {
 describeSomniaConnectionContract("Remote", createHarness, loadedSession);
 
 describe("Remote Somnia Connection", () => {
+  it("maps composer maintenance, path, and image operations to remote requests", async () => {
+    const { connection, openStream } = createHarness();
+    connection.subscribe(() => undefined);
+    openStream();
+
+    await expect(connection.compactSession("session-1")).resolves.toMatchObject({ message: "Context compacted." });
+    await expect(connection.janitorSession("session-1")).resolves.toMatchObject({ message: "Janitor complete." });
+    await expect(connection.listWorkspacePaths("src", 30)).resolves.toEqual([{ path: "src", basename: "src", kind: "dir" }]);
+    await expect(connection.stageInlineImage({ name: "paste.png", mediaType: "image/png", dataUrl: "data:image/png;base64,cG5n" })).resolves.toMatchObject({ media_type: "image/png" });
+    connection.close();
+  });
+
   it("buffers reordered events, ignores duplicates, and acknowledges the contiguous prefix", () => {
     const socket = new RecordingRelaySocket();
     const connection = new RemoteSomniaConnection({

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import type { AgentSession, ConversationRuntimeItem, TaskGraphItem, TeamMemberActivity, ToolLogIndexEntry } from "./types";
+import type { AgentSession, ConversationRuntimeItem, TaskGraphItem, TeamMemberActivity, ToolLogIndexEntry, WorkspacePathSuggestion } from "./types";
 import { createConversationState, transitionConversationEvent, type ConversationState } from "./lib/conversation-state";
 import { buildConversationRows, stringifyToolValue } from "./lib/messages";
 import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
@@ -13,8 +14,12 @@ const defaults = readConnectionDefaults();
 type RemoteQueuedPrompt = {
   id: string;
   prompt: string;
+  images: RemotePendingImage[];
   injectionRequested: boolean;
 };
+
+const REMOTE_COMMANDS = ["/init", "/scan", "/symbols", "/image", "/paste-image", "/model", "/vision", "/reasoning", "/providers", "/hooks", "/undo", "/checkpoint", "/rollback", "/compact", "/janitor", "/skills", "/tasks", "/team", "/mcp", "/bg", "/help", "/exit"];
+type RemotePendingImage = { id: string; name: string; mediaType: string; dataUrl: string };
 
 export default function RemoteTracerApp() {
   const access = useRemoteAccess(defaults.relayUrl);
@@ -24,6 +29,15 @@ export default function RemoteTracerApp() {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState("");
+  const [pendingImages, setPendingImages] = useState<RemotePendingImage[]>([]);
+  const [commandPickerOpen, setCommandPickerOpen] = useState(false);
+  const [pathPickerOpen, setPathPickerOpen] = useState(false);
+  const [pathSuggestions, setPathSuggestions] = useState<WorkspacePathSuggestion[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+  const [composerCursor, setComposerCursor] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [queuedPrompts, setQueuedPrompts] = useState<RemoteQueuedPrompt[]>([]);
   const [progress, setProgress] = useState<ConversationState | null>(null);
@@ -36,6 +50,46 @@ export default function RemoteTracerApp() {
   const conversationRef = useRef<ConversationState | null>(null);
 
   const busy = access.busy || conversationBusy;
+
+  useEffect(() => {
+    setHistory(readRemotePromptHistory(access.deviceId, projectId));
+  }, [access.deviceId, projectId]);
+
+  useEffect(() => {
+    setDraft(readRemoteDraft(access.deviceId, projectId, session?.id ?? ""));
+    setHistoryCursor(null);
+    setPendingImages([]);
+  }, [access.deviceId, projectId, session?.id]);
+
+  useEffect(() => {
+    writeRemoteDraft(access.deviceId, projectId, session?.id ?? "", draft);
+  }, [access.deviceId, projectId, session?.id, draft]);
+
+  useEffect(() => {
+    const trimmed = draft.trimStart();
+    const commandOpen = /^\/[^\s]*$/.test(trimmed);
+    setCommandPickerOpen(commandOpen);
+    if (!commandOpen) setSelectedSuggestionIndex(0);
+  }, [draft]);
+
+  useEffect(() => {
+    const mention = currentRemotePathMention(draft, composerCursor);
+    const connection = connectionRef.current;
+    if (!mention || !connection || connectionState !== "connected") {
+      setPathPickerOpen(false);
+      setPathSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    void connection.listWorkspacePaths(mention.query, 30).then((paths) => {
+      if (cancelled) return;
+      setPathSuggestions(paths);
+      setPathPickerOpen(paths.length > 0);
+      setCommandPickerOpen(false);
+      setSelectedSuggestionIndex(0);
+    }).catch(() => { if (!cancelled) setPathPickerOpen(false); });
+    return () => { cancelled = true; };
+  }, [draft, composerCursor, connectionState]);
 
   async function revokeSelectedDevice() {
     if (await access.revokeSelectedDevice()) {
@@ -213,25 +267,104 @@ export default function RemoteTracerApp() {
   async function sendPrompt() {
     const connection = connectionRef.current;
     const prompt = draft.trim();
-    if (!connection || !session || !prompt) return;
+    if (!connection || !session || (!prompt && pendingImages.length === 0)) return;
+    const images = pendingImages;
+    if (images.length === 0 && (prompt === "/compact" || prompt === "/janitor")) {
+      setCommandPickerOpen(false);
+      setConversationBusy(true);
+      try {
+        const result = prompt === "/compact" ? await connection.compactSession(session.id) : await connection.janitorSession(session.id);
+        setSession(result.session);
+        setSessions((current) => current.map((candidate) => candidate.id === result.session.id ? result.session : candidate));
+        setDraft("");
+        access.setNotice(result.message);
+      } catch (error) { access.setNotice(formatError(error)); }
+      finally { setConversationBusy(false); }
+      rememberRemotePrompt(access.deviceId, projectId, prompt, setHistory);
+      return;
+    }
     if (progress?.activeTurnId) {
-      setQueuedPrompts((current) => [...current, { id: createRequestId("queue"), prompt, injectionRequested: false }]);
+      setQueuedPrompts((current) => [...current, { id: createRequestId("queue"), prompt, images, injectionRequested: false }]);
       setDraft("");
+      setPendingImages([]);
+      rememberRemotePrompt(access.deviceId, projectId, prompt, setHistory);
       access.setNotice("Prompt queued for this active Session.");
       return;
     }
     if (busy) return;
     setConversationBusy(true);
-    setDraft("");
     setPendingPrompt(prompt);
     setProgress(conversationRef.current);
     try {
-      await connection.execute({ type: "turn.start", sessionId: session.id, userInput: prompt });
+      await connection.execute({ type: "turn.start", sessionId: session.id, userInput: await buildRemotePromptPayload(connection, prompt, images) });
+      setDraft("");
+      setPendingImages([]);
+      rememberRemotePrompt(access.deviceId, projectId, prompt, setHistory);
     } catch (error) {
       setConversationBusy(false);
       setPendingPrompt("");
       access.setNotice(formatError(error));
     }
+  }
+
+  function chooseCommand(command: string) {
+    setDraft(`${command} `);
+    setCommandPickerOpen(false);
+    setPathPickerOpen(false);
+  }
+
+  function choosePath(path: string) {
+    const mention = currentRemotePathMention(draft, composerCursor);
+    if (!mention) return;
+    const next = `${draft.slice(0, mention.queryStart)}${path}${draft.slice(mention.end)}`;
+    setDraft(next);
+    setComposerCursor(mention.queryStart + path.length);
+    setPathPickerOpen(false);
+  }
+
+  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    const suggestions = pathPickerOpen ? pathSuggestions.map((item) => item.path) : REMOTE_COMMANDS.filter((item) => item.startsWith(draft.trimStart()));
+    if ((pathPickerOpen || commandPickerOpen) && suggestions.length > 0) {
+      if (event.key === "ArrowDown") { event.preventDefault(); setSelectedSuggestionIndex((current) => (current + 1) % suggestions.length); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setSelectedSuggestionIndex((current) => (current - 1 + suggestions.length) % suggestions.length); return; }
+      if (event.key === "Escape") { event.preventDefault(); setCommandPickerOpen(false); setPathPickerOpen(false); return; }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        if (pathPickerOpen) choosePath(suggestions[selectedSuggestionIndex]);
+        else chooseCommand(suggestions[selectedSuggestionIndex]);
+        return;
+      }
+    }
+    if (event.key === "ArrowUp" && !draft && history.length > 0) {
+      event.preventDefault();
+      const next = historyCursor === null ? history.length - 1 : Math.max(0, historyCursor - 1);
+      setHistoryCursor(next); setDraft(history[next]); return;
+    }
+    if (event.key === "ArrowDown" && historyCursor !== null) {
+      event.preventDefault();
+      const next = historyCursor + 1;
+      if (next >= history.length) { setHistoryCursor(null); setDraft(""); } else { setHistoryCursor(next); setDraft(history[next]); }
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); }
+  }
+
+  async function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) return;
+    event.preventDefault();
+    const images = await Promise.all(files.map(readRemoteImage));
+    setPendingImages((current) => [...current, ...images].slice(-8));
+    if (!draft.trim()) setDraft("Look at this image.");
+  }
+
+  async function handleImageFiles(files: FileList | null) {
+    const selected = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (selected.length === 0) return;
+    const images = await Promise.all(selected.map(readRemoteImage));
+    setPendingImages((current) => [...current, ...images].slice(-8));
+    if (!draft.trim()) setDraft("Look at this image.");
   }
 
   async function startNextQueuedPrompt(sessionId: string, completedSession: AgentSession | null) {
@@ -245,7 +378,7 @@ export default function RemoteTracerApp() {
       await connection.execute({
         type: "turn.start",
         sessionId,
-        userInput: next.prompt,
+        userInput: await buildRemotePromptPayload(connection, next.prompt, next.images),
       });
       if (completedSession) setSession(completedSession);
       access.setNotice("Queued prompt started.");
@@ -263,7 +396,7 @@ export default function RemoteTracerApp() {
     if (!connection || !turnId || prompt.injectionRequested) return;
     setQueuedPrompts((current) => current.map((candidate) => candidate.id === prompt.id ? { ...candidate, injectionRequested: true } : candidate));
     try {
-      const result = await connection.queueLoopInjection(turnId, prompt.id, prompt.prompt);
+      const result = await connection.queueLoopInjection(turnId, prompt.id, await buildRemotePromptPayload(connection, prompt.prompt, prompt.images));
       if (!result.queued) throw new Error("The active Turn rejected this injection. It may have finished already.");
       access.setNotice("Queued prompt will be injected on the next agent loop.");
     } catch (error) {
@@ -468,8 +601,15 @@ export default function RemoteTracerApp() {
             {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
           </aside> : null}
           <div className="remote-composer">
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Somnia" disabled={!session || !connected || access.busy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); } }} />
-            <button type="button" onClick={() => void sendPrompt()} disabled={!session || !draft.trim() || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
+            <div className="remote-composer-input">
+              {pendingImages.length ? <div className="remote-image-previews" aria-label="Pending images">{pendingImages.map((image) => <span key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}>×</button></span>)}</div> : null}
+              {commandPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Slash commands">{REMOTE_COMMANDS.filter((command) => command.startsWith(draft.trimStart())).map((command, index) => <button type="button" key={command} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(command)}>{command}</button>)}</div> : null}
+              {pathPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Project paths">{pathSuggestions.map((item, index) => <button type="button" key={item.path} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => choosePath(item.path)}><strong>{item.path}</strong><small>{item.kind}</small></button>)}</div> : null}
+              <textarea value={draft} onChange={(event) => { setDraft(event.target.value); setComposerCursor(event.target.selectionStart); }} onSelect={(event) => setComposerCursor(event.currentTarget.selectionStart)} onPaste={(event) => void handleComposerPaste(event)} placeholder="Ask Somnia" disabled={!session || access.busy} onKeyDown={handleComposerKeyDown} />
+            </div>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => void handleImageFiles(event.target.files)} />
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!session || !connected || access.busy} aria-label="Attach image">＋</button>
+            <button type="button" onClick={() => void sendPrompt()} disabled={!session || !connected || (!draft.trim() && pendingImages.length === 0) || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
             {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
           </div>
         </section>
@@ -485,6 +625,70 @@ function RemoteHeader({ state, deviceId, projectId }: { state: string; deviceId:
 function readConnectionDefaults() {
   const params = new URLSearchParams(window.location.search);
   return { relayUrl: params.get("relay") ?? "ws://127.0.0.1:8787", projectId: params.get("project") ?? "default-project" };
+}
+
+function currentRemotePathMention(value: string, cursor: number): { query: string; queryStart: number; end: number } | null {
+  const before = value.slice(0, Math.max(0, Math.min(cursor, value.length)));
+  const match = /(^|\s)@([^\s]*)$/.exec(before);
+  if (!match) return null;
+  const query = match[2] ?? "";
+  return { query, queryStart: before.length - query.length, end: before.length };
+}
+
+async function buildRemotePromptPayload(connection: RemoteSomniaConnection, prompt: string, images: RemotePendingImage[]): Promise<string | Record<string, unknown>> {
+  if (images.length === 0) return prompt;
+  const staged = await Promise.all(images.map((image) => connection.stageInlineImage({ name: image.name, mediaType: image.mediaType, dataUrl: image.dataUrl })));
+  return {
+    role: "user",
+    content: [
+      ...(prompt.trim() ? [{ type: "text", text: prompt.trim() }] : []),
+      ...staged.map((image) => ({ type: "input_image", path: image.path, absolute_path: image.absolute_path, media_type: image.media_type })),
+    ],
+  };
+}
+
+function readRemoteImage(file: File): Promise<RemotePendingImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ id: createRequestId("image"), name: file.name || "pasted-image", mediaType: file.type, dataUrl: String(reader.result ?? "") });
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function remoteHistoryKey(deviceId: string, projectId: string): string {
+  return `somnia.remote.prompt-history:${deviceId}:${projectId}`;
+}
+
+function remoteDraftKey(deviceId: string, projectId: string, sessionId: string): string {
+  return `somnia.remote.draft:${deviceId}:${projectId}:${sessionId}`;
+}
+
+function readRemotePromptHistory(deviceId: string, projectId: string): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(remoteHistoryKey(deviceId, projectId)) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(-100) : [];
+  } catch { return []; }
+}
+
+function rememberRemotePrompt(deviceId: string, projectId: string, prompt: string, setHistory: (value: string[]) => void): void {
+  const normalized = prompt.trim();
+  if (!normalized) return;
+  const next = [...readRemotePromptHistory(deviceId, projectId).filter((item) => item !== normalized), normalized].slice(-100);
+  localStorage.setItem(remoteHistoryKey(deviceId, projectId), JSON.stringify(next));
+  setHistory(next);
+}
+
+function readRemoteDraft(deviceId: string, projectId: string, sessionId: string): string {
+  if (!sessionId) return "";
+  return localStorage.getItem(remoteDraftKey(deviceId, projectId, sessionId)) ?? "";
+}
+
+function writeRemoteDraft(deviceId: string, projectId: string, sessionId: string, draft: string): void {
+  if (!sessionId) return;
+  const key = remoteDraftKey(deviceId, projectId, sessionId);
+  if (draft) localStorage.setItem(key, draft);
+  else localStorage.removeItem(key);
 }
 
 function connectionStateMessage(state: string): string {

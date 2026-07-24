@@ -1,4 +1,4 @@
-import type { AgentSession, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse } from "../types";
+import type { AgentSession, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
 import type {
   SessionCreateCommand,
   SessionDeleteCommand,
@@ -116,6 +116,26 @@ export class RemoteSomniaConnection implements SomniaConnection {
 
   getWorkspaceImage(path: string): Promise<string> {
     return this.sendRequest<{ data_url: string }>("workspace.image", { path }).then((result) => result.data_url);
+  }
+
+  compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
+    return this.sendRequest<{ message: string; session: AgentSession }>("session.compact", { session_id: sessionId });
+  }
+
+  janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
+    return this.sendRequest<{ message: string; session: AgentSession }>("session.janitor", { session_id: sessionId });
+  }
+
+  listWorkspacePaths(query = "", limit = 30): Promise<WorkspacePathSuggestion[]> {
+    return this.sendRequest<{ paths: WorkspacePathSuggestion[] }>("workspace.paths", { query, limit }).then((result) => result.paths);
+  }
+
+  stageInlineImage(image: { name: string; mediaType: string; dataUrl: string }): Promise<{ path: string; absolute_path: string; media_type: string }> {
+    return this.sendRequest<{ path: string; absolute_path: string; media_type: string }>("workspace.image.stage", {
+      name: image.name,
+      media_type: image.mediaType,
+      data_url: image.dataUrl,
+    });
   }
 
   interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {
