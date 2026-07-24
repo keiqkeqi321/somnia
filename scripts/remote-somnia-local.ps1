@@ -32,13 +32,25 @@ Write-Host "Using Python: $python" -ForegroundColor DarkGray
 function Clear-OwnedListener([int]$Port, [string]$ExpectedCommand) {
     $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
     foreach ($listener in $listeners) {
-        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
-        if ($process.CommandLine -notmatch $ExpectedCommand) {
-            throw "Port $Port is already used by $($process.Name) (PID $($process.ProcessId))."
+        $processId = [int]$listener.OwningProcess
+        if ($processId -le 0) {
+            continue
+        }
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if (-not $process) {
+            # The TCP table can briefly outlive a process that just exited.
+            continue
+        }
+        $commandLine = [string]$process.CommandLine
+        if (-not $commandLine) {
+            throw "Port $Port is already used by PID $processId, but its command line could not be inspected."
+        }
+        if ($commandLine -notmatch $ExpectedCommand) {
+            throw "Port $Port is already used by $($process.Name) (PID $processId)."
         }
         Write-Host "Stopping the previous Somnia process on port $Port..." -ForegroundColor DarkGray
-        Stop-Process -Id $process.ProcessId -Force
-        Wait-Process -Id $process.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+        Stop-Process -Id $processId -Force
+        Wait-Process -Id $processId -Timeout 5 -ErrorAction SilentlyContinue
     }
 }
 
