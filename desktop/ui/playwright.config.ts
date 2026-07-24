@@ -11,12 +11,15 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   projects: [
-    { name: "desktop", use: { viewport: { width: 1280, height: 800 } } },
-    { name: "mobile", use: { viewport: { width: 390, height: 844 } } },
+    { name: "phone", use: { viewport: { width: 390, height: 844 } } },
+    { name: "tablet", use: { viewport: { width: 768, height: 1024 } } },
+    { name: "laptop", use: { viewport: { width: 1280, height: 800 } } },
+    { name: "wide-desktop", use: { viewport: { width: 1920, height: 1080 } } },
   ],
   use: {
     baseURL: `http://127.0.0.1:${uiPort}`,
     headless: true,
+    screenshot: "on",
     ...(requestedChannel ? { channel: requestedChannel } : {}),
   },
   webServer: [

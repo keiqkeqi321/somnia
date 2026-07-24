@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("hosted browser streams a real Runtime turn and renders the reloaded Session", async ({ page }) => {
+test("hosted browser streams a real Runtime turn and renders the reloaded Session", async ({ page }, testInfo) => {
   await page.goto(
     "/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787&project=e2e-project",
   );
@@ -21,8 +21,19 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await expect(page.locator(".remote-status")).toHaveText("connected");
   await expect(page.getByLabel("Remote controls")).toBeVisible();
   await expect(page.getByLabel("Remote controls")).toContainText("Yolo and sensitive settings require confirmation on the computer.");
+  if (testInfo.project.name === "phone") {
+    await page.getByRole("button", { name: "Sessions" }).click();
+  }
   await page.getByRole("button", { name: "New" }).click();
   await expect(page.locator(".remote-notice")).toContainText("is ready");
+  if (testInfo.project.name === "phone") {
+    await expect(page.getByRole("button", { name: "Sessions" })).toBeVisible();
+    await expect(page.getByLabel("Session list")).not.toBeVisible();
+    await page.getByRole("button", { name: "Sessions" }).click();
+    await expect(page.getByLabel("Session list")).toBeVisible();
+    await page.getByRole("button", { name: "Sessions" }).click();
+    await expect(page.getByLabel("Session list")).not.toBeVisible();
+  }
 
   const composer = page.getByPlaceholder("Ask Somnia");
   await composer.fill("/co");
@@ -55,6 +66,9 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await expect(completedMessage.getByRole("img", { name: "inline pixel" })).toBeVisible();
   await expect(page.locator(".remote-message-streaming")).toHaveCount(0);
   await expect(page.getByLabel("Execution progress")).toBeVisible();
+  if (testInfo.project.name === "phone") {
+    await page.getByRole("button", { name: "Sessions" }).click();
+  }
   await page.getByRole("button", { name: "Archive" }).first().click();
   await expect(page.getByRole("button", { name: "Restore archived" })).toBeVisible();
   await page.getByRole("button", { name: "Restore archived" }).click();

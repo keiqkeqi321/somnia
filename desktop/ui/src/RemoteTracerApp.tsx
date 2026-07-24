@@ -54,6 +54,7 @@ export default function RemoteTracerApp() {
   const [selectedVisionModel, setSelectedVisionModel] = useState("");
   const [selectedReasoning, setSelectedReasoning] = useState("auto");
   const [controlBusy, setControlBusy] = useState(false);
+  const [mobileSessionOpen, setMobileSessionOpen] = useState(false);
   const [conversationBusy, setConversationBusy] = useState(false);
   const connectionRef = useRef<RemoteSomniaConnection | null>(null);
   const conversationRef = useRef<ConversationState | null>(null);
@@ -118,7 +119,7 @@ export default function RemoteTracerApp() {
         setSelectedModel((current) => current || String(status.model ?? ""));
         setSelectedVisionModel(String(status.vision_model ?? ""));
         setSelectedReasoning(String(status.reasoning_level ?? "auto"));
-        const nextModels = await connection.listModels(provider || undefined);
+        const nextModels = provider ? await connection.listModels(provider).catch(() => []) : [];
         if (!cancelled) setModels(nextModels);
       } catch (error) {
         if (!cancelled) access.setNotice(`Remote controls unavailable: ${formatError(error)}`);
@@ -259,6 +260,7 @@ export default function RemoteTracerApp() {
       conversationRef.current = createConversationState(created);
       setProgress(conversationRef.current);
       setSession(created);
+      setMobileSessionOpen(false);
       setSessions((current) => [created, ...current]);
       access.setNotice(`Session ${created.id} is ready.`);
     } catch (error) {
@@ -274,6 +276,7 @@ export default function RemoteTracerApp() {
     try {
       const loaded = await connection.query({ type: "session.load", sessionId });
       setSession(loaded);
+      setMobileSessionOpen(false);
       conversationRef.current = createConversationState(loaded);
       setProgress(conversationRef.current);
       setQueuedPrompts([]);
@@ -645,7 +648,8 @@ export default function RemoteTracerApp() {
         {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button></div>)}
       </section> : null}
       <section className="remote-workspace">
-        <aside className="remote-session-pane">
+        <div className="remote-mobile-toolbar"><button type="button" aria-expanded={mobileSessionOpen} aria-controls="remote-session-list" onClick={() => setMobileSessionOpen((current) => !current)}>Sessions</button><span>{session?.preview ?? session?.id ?? "No Session selected"}</span></div>
+        <aside id="remote-session-list" aria-label="Session list" className={`remote-session-pane ${mobileSessionOpen ? "remote-session-pane-open" : ""}`}>
           <div className="remote-pane-heading"><span>Session</span><button type="button" onClick={() => void createSession()} disabled={!connected || busy}>New</button></div>
           {sessions.filter((candidate) => !archivedSessionIds.has(candidate.id)).map((candidate) => <div className={`remote-session-row ${session?.id === candidate.id ? "remote-session-row-selected" : ""}`} key={candidate.id}><button type="button" onClick={() => void selectSession(candidate.id)}><strong>{candidate.preview ?? candidate.id}</strong><span>{candidate.messages.length} messages</span></button><button type="button" onClick={() => setArchived(candidate.id)}>Archive</button><button type="button" onClick={() => void deleteSession(candidate.id)}>Delete</button></div>)}
           {Array.from(archivedSessionIds).length ? <button type="button" onClick={restoreArchived}>Restore archived</button> : null}
