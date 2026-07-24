@@ -42,21 +42,37 @@ class _Peer:
     account_id: str
     access_token: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    send_timeout_seconds: float = 2.0
 
     async def send(self, message: dict[str, Any]) -> None:
+        if self.send_lock.locked():
+            raise TimeoutError("Client send queue is full.")
         async with self.send_lock:
-            await self.socket.send_json(message)
+            await asyncio.wait_for(
+                self.socket.send_json(message),
+                timeout=self.send_timeout_seconds,
+            )
 
 
 class RelayHub:
     """Routes authenticated live frames without retaining Somnia content."""
 
-    def __init__(self, auth: RemoteAuth, *, browser_origins: set[str]) -> None:
+    def __init__(
+        self,
+        auth: RemoteAuth,
+        *,
+        browser_origins: set[str],
+        client_send_timeout_seconds: float = 2.0,
+    ) -> None:
+        if client_send_timeout_seconds <= 0:
+            raise ValueError("Relay client send timeout must be positive.")
         self.auth = auth
         self._browser_origins = browser_origins
+        self._client_send_timeout_seconds = client_send_timeout_seconds
         self._lock = asyncio.Lock()
         self._connectors: dict[str, _Peer] = {}
         self._clients: dict[str, dict[str, _Peer]] = {}
+        self._delivery_tasks: set[asyncio.Task[None]] = set()
 
     async def serve_connector(self, device_id: str, socket: WebSocket) -> None:
         await socket.accept()
@@ -78,7 +94,11 @@ class RelayHub:
             await socket.close(code=4403, reason="Device authentication failed.")
             return
 
-        peer = _Peer(socket=socket, account_id=device.account_id)
+        peer = _Peer(
+            socket=socket,
+            account_id=device.account_id,
+            send_timeout_seconds=self._client_send_timeout_seconds,
+        )
         previous: _Peer | None = None
         async with self._lock:
             previous = self._connectors.get(device_id)
@@ -118,7 +138,12 @@ class RelayHub:
             return
 
         client_id = uuid.uuid4().hex
-        peer = _Peer(socket=socket, account_id=account.id, access_token=access_token)
+        peer = _Peer(
+            socket=socket,
+            account_id=account.id,
+            access_token=access_token,
+            send_timeout_seconds=self._client_send_timeout_seconds,
+        )
         async with self._lock:
             self._clients.setdefault(device_id, {})[client_id] = peer
         try:
@@ -180,7 +205,7 @@ class RelayHub:
             return
         try:
             await connector.send(message)
-        except (RuntimeError, WebSocketDisconnect):
+        except (TimeoutError, asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
             await client.send(
                 {
                     "kind": "response",
@@ -200,20 +225,41 @@ class RelayHub:
             if self.auth.resolve_access(client.access_token) is None:
                 await self._disconnect_expired_client(device_id, client)
                 continue
-            try:
-                await client.send(message)
-            except (RuntimeError, WebSocketDisconnect):
-                continue
+            task = asyncio.create_task(self._deliver_to_client(device_id, client, message))
+            self._delivery_tasks.add(task)
+            task.add_done_callback(self._delivery_tasks.discard)
 
-    async def _disconnect_expired_client(self, device_id: str, client: _Peer) -> None:
+    async def _deliver_to_client(self, device_id: str, client: _Peer, message: dict[str, Any]) -> None:
+        try:
+            await client.send(message)
+        except (TimeoutError, asyncio.TimeoutError):
+            await self._disconnect_slow_client(device_id, client)
+        except (RuntimeError, WebSocketDisconnect):
+            await self._remove_client(device_id, client)
+
+    async def _disconnect_slow_client(self, device_id: str, client: _Peer) -> None:
+        await self._remove_client(device_id, client)
+        try:
+            await asyncio.wait_for(
+                client.socket.close(code=4008, reason="Client too slow; resync required."),
+                timeout=self._client_send_timeout_seconds,
+            )
+        except (RuntimeError, WebSocketDisconnect, asyncio.TimeoutError):
+            pass
+
+    async def _remove_client(self, device_id: str, client: _Peer) -> None:
         async with self._lock:
             clients = self._clients.get(device_id)
-            if clients is not None:
-                stale_ids = [client_id for client_id, peer in clients.items() if peer is client]
-                for client_id in stale_ids:
-                    clients.pop(client_id, None)
-                if not clients:
-                    self._clients.pop(device_id, None)
+            if clients is None:
+                return
+            stale_ids = [client_id for client_id, peer in clients.items() if peer is client]
+            for client_id in stale_ids:
+                clients.pop(client_id, None)
+            if not clients:
+                self._clients.pop(device_id, None)
+
+    async def _disconnect_expired_client(self, device_id: str, client: _Peer) -> None:
+        await self._remove_client(device_id, client)
         try:
             await client.socket.close(code=4401, reason="Browser authentication expired.")
         except RuntimeError:
@@ -233,6 +279,7 @@ def create_relay_app(
     secure_cookies: bool = False,
     allowed_origins: list[str] | None = None,
     database_url: str | None = None,
+    client_send_timeout_seconds: float = 2.0,
 ) -> Starlette:
     configured = administrators
     if configured is None:
@@ -254,7 +301,11 @@ def create_relay_app(
         login_attempt_limit=login_attempt_limit,
         metadata_store=metadata_store,
     )
-    hub = RelayHub(auth, browser_origins=browser_origins)
+    hub = RelayHub(
+        auth,
+        browser_origins=browser_origins,
+        client_send_timeout_seconds=client_send_timeout_seconds,
+    )
 
     async def health_endpoint(request: Request) -> JSONResponse:
         del request

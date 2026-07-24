@@ -4,11 +4,17 @@
 
 **Blocked by:** 02 — Deliver the remote session tracer.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Every stream has an epoch and monotonically increasing event sequence.
-- [ ] Browsers acknowledge the highest contiguous event they have applied.
-- [ ] A reconnect replays available events and otherwise performs an explicit snapshot resync.
-- [ ] Retried mutating commands with the same request identity execute only once.
-- [ ] Missing, duplicate, delayed, and reordered frames are covered by fault tests.
-- [ ] Slow clients are disconnected for resync without blocking Runtime output.
+- [x] Every stream has an epoch and monotonically increasing event sequence.
+- [x] Browsers acknowledge the highest contiguous event they have applied.
+- [x] A reconnect replays available events and otherwise performs an explicit snapshot resync.
+- [x] Retried mutating commands with the same request identity execute only once.
+- [x] Missing, duplicate, delayed, and reordered frames are covered by fault tests.
+- [x] Slow clients are disconnected for resync without blocking Runtime output.
+
+## Verification
+
+- Python remote protocol, Relay, and tracer tests pass.
+- Browser tests pass: 9 tests; TypeScript typecheck and production build pass.
+- Full Python suite: the existing `mypackage` import failure, `kimi-coding-plan` preset mismatch, and intermittent Windows Hook temp-directory cleanup race remain outside this issue.

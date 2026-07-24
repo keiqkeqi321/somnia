@@ -20,13 +20,25 @@ interface RemoteSocket {
 interface PendingRequest {
   resolve(value: unknown): void;
   reject(reason: Error): void;
+  message: string;
 }
+
+interface SequencedEvent {
+  kind: "event";
+  project_id: string;
+  stream_epoch: string;
+  sequence: number;
+  event: SidecarEvent;
+}
+
+const PROTOCOL_VERSION = 1;
 
 export interface RemoteSomniaConnectionOptions {
   relayUrl: string;
   deviceId: string;
   projectId: string;
   socketFactory?: (url: string) => RemoteSocket;
+  reconnectDelayMs?: number;
 }
 
 export class RemoteSomniaConnection implements SomniaConnection {
@@ -36,15 +48,24 @@ export class RemoteSomniaConnection implements SomniaConnection {
   private readonly socketFactory: (url: string) => RemoteSocket;
   private readonly listeners = new Set<SomniaConnectionListener>();
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly reconnectDelayMs: number;
+  private readonly bufferedEvents = new Map<number, SequencedEvent>();
   private socket: RemoteSocket | null = null;
   private state: SomniaConnectionState = "disconnected";
   private requestSequence = 0;
+  private streamEpoch: string | null = null;
+  private lastAppliedSequence = 0;
+  private lastAcknowledgedSequence = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private explicitlyClosed = false;
+  private resumeInFlight = false;
 
   constructor(options: RemoteSomniaConnectionOptions) {
     this.relayUrl = normalizeRelayUrl(options.relayUrl);
     this.deviceId = required(options.deviceId, "deviceId");
     this.projectId = required(options.projectId, "projectId");
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
+    this.reconnectDelayMs = Math.max(0, options.reconnectDelayMs ?? 1000);
   }
 
   query(query: SessionLoadQuery): Promise<AgentSession> {
@@ -73,6 +94,11 @@ export class RemoteSomniaConnection implements SomniaConnection {
   }
 
   close(): void {
+    this.explicitlyClosed = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const socket = this.socket;
     this.socket = null;
     socket?.close();
@@ -82,18 +108,25 @@ export class RemoteSomniaConnection implements SomniaConnection {
   }
 
   private open(): void {
+    if (this.socket || this.explicitlyClosed || this.listeners.size === 0) {
+      return;
+    }
     this.setState("connecting");
     const url = `${this.relayUrl}/ws/client/${encodeURIComponent(this.deviceId)}`;
     const socket = this.socketFactory(url);
     this.socket = socket;
-    socket.onopen = () => this.setState("connected");
+    socket.onopen = () => {
+      if (this.socket !== socket) return;
+      this.setState("connected");
+      this.sendStreamResume();
+      this.resendPending();
+    };
     socket.onerror = () => this.setState("error", "Relay connection failed.");
     socket.onclose = () => {
-      if (this.socket === socket) {
-        this.socket = null;
-      }
+      if (this.socket !== socket) return;
+      this.socket = null;
       this.setState("disconnected");
-      this.rejectPending("Relay connection closed.");
+      this.scheduleReconnect();
     };
     socket.onmessage = (messageEvent) => this.handleMessage(String(messageEvent.data));
   }
@@ -124,10 +157,95 @@ export class RemoteSomniaConnection implements SomniaConnection {
       }
       return;
     }
+    if (message.kind === "stream_replay") {
+      this.handleReplay(message);
+      return;
+    }
+    if (message.kind === "stream_snapshot") {
+      this.handleSnapshot(message);
+      return;
+    }
+    if (message.kind === "snapshot_required") {
+      this.resumeInFlight = false;
+      this.notify({ kind: "protocol_error", error: String(message.reason ?? "A snapshot resync is required.") });
+      return;
+    }
     if (message.kind !== "event" || message.project_id !== this.projectId || !isSidecarEvent(message.event)) {
       return;
     }
     const event = message.event;
+    if (hasSequence(message)) {
+      this.handleSequencedEvent(message as unknown as SequencedEvent);
+      return;
+    }
+    this.publishEvent(event);
+  }
+
+  private handleReplay(message: Record<string, unknown>): void {
+    if (message.project_id !== this.projectId || typeof message.stream_epoch !== "string" || !Array.isArray(message.events)) {
+      this.notify({ kind: "protocol_error", error: "Ignored malformed stream replay." });
+      return;
+    }
+    this.resumeInFlight = false;
+    if (this.streamEpoch !== null && this.streamEpoch !== message.stream_epoch) {
+      this.requestSnapshotResume();
+      return;
+    }
+    this.streamEpoch = message.stream_epoch;
+    for (const value of message.events) {
+      if (isSequencedEvent(value)) this.handleSequencedEvent(value);
+    }
+  }
+
+  private handleSnapshot(message: Record<string, unknown>): void {
+    if (message.project_id !== this.projectId || typeof message.stream_epoch !== "string" || !isRecord(message.snapshot)) {
+      this.notify({ kind: "protocol_error", error: "Ignored malformed stream snapshot." });
+      return;
+    }
+    const sequence = integerOrNull(message.sequence);
+    if (sequence === null || sequence < 0) {
+      this.notify({ kind: "protocol_error", error: "Ignored stream snapshot without a valid sequence." });
+      return;
+    }
+    if (this.streamEpoch === message.stream_epoch && sequence <= this.lastAppliedSequence) {
+      this.resumeInFlight = false;
+      return;
+    }
+    this.resumeInFlight = false;
+    if (this.streamEpoch !== message.stream_epoch) {
+      this.lastAcknowledgedSequence = 0;
+    }
+    this.streamEpoch = message.stream_epoch;
+    this.bufferedEvents.clear();
+    this.lastAppliedSequence = sequence;
+    this.notify({ kind: "snapshot", snapshot: message.snapshot });
+    this.sendStreamAck();
+  }
+
+  private handleSequencedEvent(message: SequencedEvent): void {
+    if (message.project_id !== this.projectId || message.stream_epoch.trim() === "") return;
+    if (this.streamEpoch !== null && this.streamEpoch !== message.stream_epoch) {
+      this.requestSnapshotResume();
+      return;
+    }
+    this.streamEpoch = message.stream_epoch;
+    if (message.sequence <= this.lastAppliedSequence) return;
+    if (!this.bufferedEvents.has(message.sequence)) {
+      this.bufferedEvents.set(message.sequence, message);
+    }
+    let applied = false;
+    while (this.bufferedEvents.has(this.lastAppliedSequence + 1)) {
+      const next = this.bufferedEvents.get(this.lastAppliedSequence + 1)!;
+      this.bufferedEvents.delete(next.sequence);
+      this.lastAppliedSequence = next.sequence;
+      this.publishEvent(next.event);
+      applied = true;
+    }
+    if (applied) this.sendStreamAck();
+    if (this.bufferedEvents.size > 0) this.requestResumeIfNeeded();
+  }
+
+  private publishEvent(event: SidecarEvent): void {
     if (event.type === "turn_result" && event.session_id) {
       void this.publishAuthoritativeCompletion(event);
       return;
@@ -149,22 +267,93 @@ export class RemoteSomniaConnection implements SomniaConnection {
     if (!socket || this.state !== "connected") {
       return Promise.reject(new Error("Remote Somnia connection is not connected."));
     }
-    const requestId = `web-${Date.now().toString(36)}-${++this.requestSequence}`;
+    const requestId = `web-${Date.now().toString(36)}-${uniqueRequestSuffix()}-${++this.requestSequence}`;
+    const message = JSON.stringify({
+      kind: "request",
+      protocol_version: PROTOCOL_VERSION,
+      device_id: this.deviceId,
+      project_id: this.projectId,
+      request_id: requestId,
+      method,
+      params,
+    });
     return new Promise<T>((resolve, reject) => {
       this.pending.set(requestId, {
         resolve: (value) => resolve(value as T),
         reject,
+        message,
       });
-      socket.send(
-        JSON.stringify({
-          kind: "request",
-          request_id: requestId,
-          project_id: this.projectId,
-          method,
-          params,
-        }),
-      );
+      try {
+        socket.send(message);
+      } catch (error) {
+        this.notify({ kind: "protocol_error", error: `Remote request will retry after reconnect: ${formatError(error)}` });
+      }
     });
+  }
+
+  private sendStreamResume(): void {
+    if (!this.socket || this.state !== "connected") return;
+    this.resumeInFlight = true;
+    try {
+      this.socket.send(JSON.stringify({
+        kind: "stream_resume",
+        protocol_version: PROTOCOL_VERSION,
+        device_id: this.deviceId,
+        project_id: this.projectId,
+        stream_epoch: this.streamEpoch,
+        after_sequence: this.lastAppliedSequence,
+      }));
+    } catch (error) {
+      this.notify({ kind: "protocol_error", error: `Unable to request stream recovery: ${formatError(error)}` });
+    }
+  }
+
+  private sendStreamAck(): void {
+    if (!this.socket || this.streamEpoch === null || this.lastAppliedSequence <= this.lastAcknowledgedSequence) return;
+    this.lastAcknowledgedSequence = this.lastAppliedSequence;
+    try {
+      this.socket.send(JSON.stringify({
+        kind: "stream_ack",
+        protocol_version: PROTOCOL_VERSION,
+        device_id: this.deviceId,
+        project_id: this.projectId,
+        stream_epoch: this.streamEpoch,
+        sequence: this.lastAcknowledgedSequence,
+      }));
+    } catch (error) {
+      this.notify({ kind: "protocol_error", error: `Unable to acknowledge stream progress: ${formatError(error)}` });
+    }
+  }
+
+  private requestResumeIfNeeded(): void {
+    if (!this.resumeInFlight) this.sendStreamResume();
+  }
+
+  private requestSnapshotResume(): void {
+    this.streamEpoch = null;
+    this.lastAppliedSequence = 0;
+    this.lastAcknowledgedSequence = 0;
+    this.bufferedEvents.clear();
+    this.sendStreamResume();
+  }
+
+  private resendPending(): void {
+    if (!this.socket || this.state !== "connected") return;
+    for (const request of this.pending.values()) {
+      try {
+        this.socket.send(request.message);
+      } catch {
+        break;
+      }
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.explicitlyClosed || this.listeners.size === 0 || this.reconnectTimer !== null) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.open();
+    }, this.reconnectDelayMs);
   }
 
   private setState(state: SomniaConnectionState, error?: string): void {
@@ -210,6 +399,28 @@ function isSidecarEvent(value: unknown): value is SidecarEvent {
   return typeof event.type === "string" && Boolean(event.payload) && typeof event.payload === "object";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function integerOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function hasSequence(value: Record<string, unknown>): boolean {
+  return typeof value.stream_epoch === "string" && integerOrNull(value.sequence) !== null;
+}
+
+function isSequencedEvent(value: unknown): value is SequencedEvent {
+  if (!isRecord(value) || value.kind !== "event" || value.project_id === undefined) return false;
+  return (
+    typeof value.project_id === "string" &&
+    typeof value.stream_epoch === "string" &&
+    integerOrNull(value.sequence) !== null &&
+    isSidecarEvent(value.event)
+  );
+}
+
 function required(value: string, name: string): string {
   const normalized = String(value ?? "").trim();
   if (!normalized) {
@@ -220,4 +431,8 @@ function required(value: string, name: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function uniqueRequestSuffix(): string {
+  return globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 }

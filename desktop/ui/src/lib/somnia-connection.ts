@@ -5,6 +5,7 @@ export type SomniaConnectionState = "connecting" | "connected" | "disconnected" 
 export type SomniaConnectionNotification =
   | { kind: "state"; state: SomniaConnectionState; error?: string }
   | { kind: "event"; event: SidecarEvent }
+  | { kind: "snapshot"; snapshot: Record<string, unknown> }
   | { kind: "protocol_error"; error: string };
 
 export type SomniaConnectionListener = (notification: SomniaConnectionNotification) => void;

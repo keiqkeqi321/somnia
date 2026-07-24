@@ -76,6 +76,27 @@ export default function RemoteTracerApp() {
       access.setNotice(notification.error);
       return;
     }
+    if (notification.kind === "snapshot") {
+      const sessions = notification.snapshot.sessions;
+      const runtime = notification.snapshot.runtime;
+      const runtimeStatus = runtime && typeof runtime === "object"
+        ? String((runtime as { status?: unknown }).status ?? "unknown")
+        : "unknown";
+      const currentSessionId = conversationRef.current?.session?.id ?? session?.id;
+      if (Array.isArray(sessions) && currentSessionId) {
+        const knownSession = sessions.find((candidate) => (
+          candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === currentSessionId
+        ));
+        if (knownSession && connectionRef.current) {
+          void connectionRef.current.query({ type: "session.load", sessionId: currentSessionId }).then((recovered) => {
+            setSession(recovered);
+            conversationRef.current = createConversationState(recovered);
+          }).catch((error) => access.setNotice(formatError(error)));
+        }
+      }
+      access.setNotice(`Remote stream resynchronized from the Device (Runtime ${runtimeStatus}).`);
+      return;
+    }
     const event = notification.event;
     if (!event.session_id) return;
     const previous = conversationRef.current ?? createConversationState(event.session_id);

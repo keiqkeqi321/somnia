@@ -10,11 +10,86 @@ import unittest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from open_somnia.remote.auth import device_challenge_payload
-from open_somnia.remote.connector import LocalSidecarBridge
+from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, pair_device
 
 
 class RemoteConnectorTests(unittest.TestCase):
+    def test_events_are_ordered_and_replayed_within_the_bounded_stream_window(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=2)
+            first = connector.publish_sidecar_event({"type": "first", "payload": {}})
+            connector.publish_sidecar_event({"type": "second", "payload": {}})
+            connector.publish_sidecar_event({"type": "third", "payload": {}})
+
+            sent: list[dict] = []
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": first["stream_epoch"],
+                        "after_sequence": 1,
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_replay")
+            self.assertEqual([event["sequence"] for event in sent[0]["events"]], [2, 3])
+
+    def test_replay_window_miss_returns_an_authoritative_snapshot(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=1)
+            connector.publish_sidecar_event({"type": "only", "payload": {}})
+            sent: list[dict] = []
+
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": "old-epoch",
+                        "after_sequence": 0,
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_snapshot")
+            self.assertEqual(sent[0]["snapshot"], {"sessions": [{"id": "session-1"}], "runtime": {"status": "ready"}})
+
+    def test_retried_request_id_returns_the_original_result_without_reexecuting(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            sidecar = CountingSidecar()
+            connector = RemoteConnector(
+                "wss://relay.example.com",
+                identity=identity,
+                project_id="project-1",
+                sidecar=sidecar,
+            )
+            request = json.dumps(
+                {
+                    "kind": "request",
+                    "request_id": "same-request",
+                    "project_id": "project-1",
+                    "method": "turn.start",
+                    "params": {"session_id": "session-1", "user_input": "hello"},
+                }
+            )
+            responses: list[dict] = []
+            connector.handle_relay_message(request, responses.append)
+            connector.handle_relay_message(request, responses.append)
+
+            self.assertEqual(sidecar.turn_calls, 1)
+            self.assertEqual(responses[0], responses[1])
+
     def test_device_identity_is_generated_paired_and_reloaded_from_local_storage(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "device-identity.json"
@@ -149,6 +224,30 @@ class _PairingStubHandler(_SidecarStubHandler):
             self._send({"error": "invalid pairing claim"}, status=400)
             return
         self._send({"device_id": "paired-device", "name": "Laptop"}, status=201)
+
+
+class CountingSidecar:
+    def __init__(self) -> None:
+        self.turn_calls = 0
+
+    def execute(self, method: str, params: dict) -> dict:
+        if method == "turn.start":
+            self.turn_calls += 1
+            return {"turn_id": "turn-1", "session_id": params["session_id"]}
+        if method == "stream.snapshot":
+            return {"sessions": [{"id": "session-1"}], "runtime": {"status": "ready"}}
+        raise AssertionError(method)
+
+
+class RemoteConnectorForTest(RemoteConnector):
+    def __init__(self, identity: DeviceIdentity, *, replay_limit: int) -> None:
+        super().__init__(
+            "wss://relay.example.com",
+            identity=identity,
+            project_id="project-1",
+            sidecar=CountingSidecar(),
+            replay_limit=replay_limit,
+        )
 
 
 if __name__ == "__main__":

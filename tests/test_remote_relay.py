@@ -1,14 +1,44 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 import unittest
 
 from starlette.testclient import TestClient
 
-from open_somnia.remote.relay import create_relay_app
+from open_somnia.remote.relay import RelayHub, _Peer, create_relay_app
 from tests.remote_auth_support import BROWSER_ORIGIN, authenticate_connector, login, pair_device
 
 
 class RemoteRelayTests(unittest.TestCase):
+    def test_slow_browser_is_disconnected_for_resync_without_blocking_connector_delivery(self) -> None:
+        async def scenario() -> tuple[dict, dict]:
+            app = create_relay_app(administrators={"admin": "admin-password"}, client_send_timeout_seconds=0.01)
+            hub: RelayHub = app.state.relay_hub
+            account = app.state.remote_auth.authenticate_password("admin", "admin-password", source="test")
+            tokens = app.state.remote_auth.issue_browser_tokens(account.id)
+            slow_socket = _SlowSocket()
+            slow_peer = _Peer(
+                socket=slow_socket,
+                account_id=account.id,
+                access_token=tokens.access_token,
+                send_timeout_seconds=0.01,
+            )
+            hub._clients["device-1"] = {"slow": slow_peer}
+            hub._connectors["device-1"] = _Peer(
+                socket=SimpleNamespace(),
+                account_id=account.id,
+                send_timeout_seconds=0.01,
+            )
+
+            await hub._broadcast_to_clients("device-1", {"kind": "event", "payload": "transient"})
+            await asyncio.sleep(0.03)
+            return slow_socket.closed, hub._clients.get("device-1", {})
+
+        closed, clients = asyncio.run(scenario())
+        self.assertEqual(closed, {"code": 4008, "reason": "Client too slow; resync required."})
+        self.assertEqual(clients, {})
+
     def test_health_endpoint_reports_ready_without_storing_state(self) -> None:
         with TestClient(create_relay_app()) as client:
             response = client.get("/health")
@@ -85,6 +115,19 @@ class RemoteRelayTests(unittest.TestCase):
                         "error": "Device is offline.",
                     },
                 )
+
+
+class _SlowSocket:
+    def __init__(self) -> None:
+        self._never = asyncio.Event()
+        self.closed: dict = {}
+
+    async def send_json(self, message: dict) -> None:
+        del message
+        await self._never.wait()
+
+    async def close(self, *, code: int, reason: str) -> None:
+        self.closed = {"code": code, "reason": reason}
 
 
 if __name__ == "__main__":

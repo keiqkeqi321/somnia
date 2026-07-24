@@ -1014,6 +1014,9 @@ function App() {
         setBannerMessage(notification.error);
         return;
       }
+      if (notification.kind === "snapshot") {
+        return;
+      }
       setConnectionState(notification.state);
       if (notification.state === "disconnected" && clientRef.current === client) {
         setBannerMessage("Sidecar event stream disconnected.");
