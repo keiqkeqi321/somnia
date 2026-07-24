@@ -1,4 +1,4 @@
-import type { AgentSession, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { AgentSession, InteractionRequestState, ModelDescriptor, ProviderDescriptor, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
 import type {
   SessionCreateCommand,
   SessionDeleteCommand,
@@ -136,6 +136,38 @@ export class RemoteSomniaConnection implements SomniaConnection {
       media_type: image.mediaType,
       data_url: image.dataUrl,
     });
+  }
+
+  getRuntimeStatus(): Promise<Record<string, unknown>> {
+    return this.sendRequest("runtime.status", {});
+  }
+
+  listProviders(): Promise<ProviderDescriptor[]> {
+    return this.sendRequest<{ providers: ProviderDescriptor[] }>("provider.list", {}).then((result) => result.providers);
+  }
+
+  listModels(provider?: string): Promise<ModelDescriptor[]> {
+    return this.sendRequest<{ models: ModelDescriptor[] }>("model.list", provider ? { provider } : {}).then((result) => result.models);
+  }
+
+  switchProviderModel(provider: string, model: string): Promise<Record<string, unknown>> {
+    return this.sendRequest("provider.switch", { provider, model });
+  }
+
+  setVisionModel(provider: string | null, model: string | null): Promise<Record<string, unknown>> {
+    return this.sendRequest("vision.set", { provider: provider ?? "", model: model ?? "" });
+  }
+
+  setReasoningLevel(level: string | null): Promise<Record<string, unknown>> {
+    return this.sendRequest("reasoning.set", { level: level ?? "auto" });
+  }
+
+  listInteractions(): Promise<InteractionRequestState[]> {
+    return this.sendRequest<{ interactions: InteractionRequestState[] }>("interaction.list", {}).then((result) => result.interactions);
+  }
+
+  setExecutionMode(mode: "shortcuts" | "plan" | "accept_edits"): Promise<Record<string, unknown>> {
+    return this.sendRequest("execution.mode", { mode });
   }
 
   interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {

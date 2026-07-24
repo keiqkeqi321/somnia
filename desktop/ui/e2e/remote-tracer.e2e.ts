@@ -19,6 +19,8 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
 
   await page.getByRole("button", { name: "Connect" }).click();
   await expect(page.locator(".remote-status")).toHaveText("connected");
+  await expect(page.getByLabel("Remote controls")).toBeVisible();
+  await expect(page.getByLabel("Remote controls")).toContainText("Yolo and sensitive settings require confirmation on the computer.");
   await page.getByRole("button", { name: "New" }).click();
   await expect(page.locator(".remote-notice")).toContainText("is ready");
 

@@ -39,6 +39,16 @@ class FakeRelaySocket {
               ? { paths: [{ path: "src", basename: "src", kind: "dir" }] }
               : request.method === "workspace.image.stage"
                 ? { path: ".open_somnia/clipboard-images/paste.png", absolute_path: "C:/workspace/paste.png", media_type: "image/png" }
+                : request.method === "runtime.status"
+                  ? { status: "ready", provider: "openai", model: "gpt-test" }
+                  : request.method === "provider.list"
+                    ? { providers: [{ name: "openai", provider_type: "openai", default_model: "gpt-test", models: ["gpt-test"], is_active: true }] }
+                    : request.method === "model.list"
+                      ? { models: [{ provider_name: "openai", name: "gpt-test", is_default: true, is_active: true, is_vision: false }] }
+                      : request.method === "interaction.list"
+                        ? { interactions: [] }
+                        : request.method === "execution.mode"
+                          ? { message: "Execution mode set.", execution_mode: "plan" }
         : loadedSession;
     this.emit({ kind: "response", request_id: request.request_id, ok: true, result });
   }
@@ -80,6 +90,22 @@ describe("Remote Somnia Connection", () => {
     await expect(connection.janitorSession("session-1")).resolves.toMatchObject({ message: "Janitor complete." });
     await expect(connection.listWorkspacePaths("src", 30)).resolves.toEqual([{ path: "src", basename: "src", kind: "dir" }]);
     await expect(connection.stageInlineImage({ name: "paste.png", mediaType: "image/png", dataUrl: "data:image/png;base64,cG5n" })).resolves.toMatchObject({ media_type: "image/png" });
+    connection.close();
+  });
+
+  it("exposes approved model controls and interaction observation", async () => {
+    const { connection, openStream } = createHarness();
+    connection.subscribe(() => undefined);
+    openStream();
+
+    await expect(connection.getRuntimeStatus()).resolves.toMatchObject({ status: "ready" });
+    await expect(connection.listProviders()).resolves.toHaveLength(1);
+    await expect(connection.listModels("openai")).resolves.toHaveLength(1);
+    await expect(connection.switchProviderModel("openai", "gpt-test")).resolves.toBeDefined();
+    await expect(connection.setVisionModel("openai", "vision-test")).resolves.toBeDefined();
+    await expect(connection.setReasoningLevel("high")).resolves.toBeDefined();
+    await expect(connection.listInteractions()).resolves.toEqual([]);
+    await expect(connection.setExecutionMode("plan")).resolves.toMatchObject({ execution_mode: "plan" });
     connection.close();
   });
 

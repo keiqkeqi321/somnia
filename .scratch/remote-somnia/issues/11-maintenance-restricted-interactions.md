@@ -4,11 +4,18 @@
 
 **Blocked by:** 07 — Match the Desktop Session lifecycle; 09 — Match active Turn control.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Compact and janitor operations expose Desktop-equivalent status and results.
-- [ ] Provider, model, vision model, and reasoning controls follow the approved remote policy.
-- [ ] Pending authorization and mode-switch interactions are visible in the correct Session.
-- [ ] The Web interface clearly identifies actions awaiting confirmation on the computer.
-- [ ] Remote attempts to persist permissions, change sensitive configuration, or enable Yolo are denied.
-- [ ] Policy enforcement is tested at the Connector rather than trusted to browser presentation.
+- [x] Compact and janitor operations expose Desktop-equivalent status and results.
+- [x] Provider, model, vision model, and reasoning controls follow the approved remote policy.
+- [x] Pending authorization and mode-switch interactions are visible in the correct Session.
+- [x] The Web interface clearly identifies actions awaiting confirmation on the computer.
+- [x] Remote attempts to persist permissions, change sensitive configuration, or enable Yolo are denied.
+- [x] Policy enforcement is tested at the Connector rather than trusted to browser presentation.
+
+## Verification
+
+- `python -m unittest tests.test_remote_connector`
+- `npm run typecheck`
+- `npm test -- --run`
+- `npm run test:e2e -- e2e/remote-tracer.e2e.ts` (desktop and mobile)

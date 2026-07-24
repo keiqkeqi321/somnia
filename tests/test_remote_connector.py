@@ -229,6 +229,27 @@ class RemoteConnectorTests(unittest.TestCase):
                 {"path": ".open_somnia/clipboard-images/paste.png", "absolute_path": "C:/workspace/paste.png", "media_type": "image/png"},
             )
             self.assertEqual(bridge.execute("workspace.image", {"path": "safe/pixel.png"})["data_url"], "data:image/png;base64,cG5n")
+            self.assertEqual(bridge.execute("provider.list", {}), {"providers": [{"name": "openai", "models": ["gpt-test"]}]})
+            self.assertEqual(bridge.execute("runtime.status", {}), {"status": "ready", "provider": "openai", "model": "gpt-test"})
+            self.assertEqual(bridge.execute("model.list", {"provider": "openai"}), {"models": [{"id": "gpt-test", "provider": "openai"}]})
+            self.assertEqual(
+                bridge.execute("provider.switch", {"provider": "openai", "model": "gpt-test"}),
+                {"message": "Provider switched.", "provider": "openai", "model": "gpt-test"},
+            )
+            self.assertEqual(
+                bridge.execute("vision.set", {"provider": "openai", "model": "vision-test"}),
+                {"message": "Vision model updated.", "vision_provider": "openai", "vision_model": "vision-test"},
+            )
+            self.assertEqual(
+                bridge.execute("reasoning.set", {"level": "high"}),
+                {"message": "Reasoning level updated.", "reasoning_level": "high"},
+            )
+            self.assertEqual(bridge.execute("interaction.list", {}), {"interactions": [{"id": "interaction-1", "session_id": "session-1", "kind": "authorization"}]})
+            self.assertEqual(bridge.execute("execution.mode", {"mode": "plan"}), {"message": "Execution mode set.", "execution_mode": "plan"})
+            with self.assertRaisesRegex(ValueError, "Yolo.*remote"):
+                bridge.execute("execution.mode", {"mode": "yolo"})
+            with self.assertRaisesRegex(ValueError, "Unsupported remote method"):
+                bridge.execute("permission.persist", {"scope": "workspace"})
         finally:
             server.shutdown()
             server.server_close()
@@ -282,6 +303,18 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         if self.path == "/workspace/images":
             self._send({"path": ".open_somnia/clipboard-images/paste.png", "absolute_path": "C:/workspace/paste.png", "media_type": body.get("media_type")})
             return
+        if self.path == "/providers/switch":
+            self._send({"message": "Provider switched.", "provider": body.get("provider_name"), "model": body.get("model")})
+            return
+        if self.path == "/vision-model":
+            self._send({"message": "Vision model updated.", "vision_provider": body.get("vision_provider"), "vision_model": body.get("vision_model")})
+            return
+        if self.path == "/reasoning":
+            self._send({"message": "Reasoning level updated.", "reasoning_level": body.get("reasoning_level")})
+            return
+        if self.path == "/execution-mode":
+            self._send({"message": "Execution mode set.", "execution_mode": body.get("mode")})
+            return
         self._send({"error": "not found"}, status=404)
 
     def do_GET(self) -> None:
@@ -313,6 +346,18 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/workspace/paths?q=src&limit=30":
             self._send({"paths": [{"path": "src", "basename": "src", "kind": "dir"}]})
+            return
+        if self.path == "/providers":
+            self._send({"providers": [{"name": "openai", "models": ["gpt-test"]}]})
+            return
+        if self.path == "/runtime/status":
+            self._send({"status": "ready", "provider": "openai", "model": "gpt-test"})
+            return
+        if self.path == "/models?provider=openai":
+            self._send({"models": [{"id": "gpt-test", "provider": "openai"}]})
+            return
+        if self.path == "/interactions":
+            self._send({"interactions": [{"id": "interaction-1", "session_id": "session-1", "kind": "authorization"}]})
             return
         if self.path == "/workspace/images?path=safe%2Fpixel.png":
             self._send_bytes(b"png", "image/png")

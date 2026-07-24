@@ -123,6 +123,36 @@ class LocalSidecarBridge:
         if method == "task.list":
             session_id = _required_text(params, "session_id")
             return self._request("GET", f"/tasks?session_id={quote(session_id, safe='')}", None)
+        if method == "provider.list":
+            return self._request("GET", "/providers", None)
+        if method == "runtime.status":
+            return self._request("GET", "/runtime/status", None)
+        if method == "model.list":
+            provider = str(params.get("provider", "")).strip()
+            path = "/models" if not provider else f"/models?provider={quote(provider, safe='')}"
+            return self._request("GET", path, None)
+        if method == "provider.switch":
+            provider = _required_text(params, "provider")
+            model = _required_text(params, "model")
+            return self._request("POST", "/providers/switch", {"provider_name": provider, "model": model})
+        if method == "vision.set":
+            provider = str(params.get("provider", "")).strip()
+            model = str(params.get("model", "")).strip()
+            return self._request("POST", "/vision-model", {"scope": "project", "vision_provider": provider, "vision_model": model})
+        if method == "reasoning.set":
+            level = str(params.get("level", "")).strip()
+            if not level:
+                raise ValueError("level is required.")
+            return self._request("POST", "/reasoning", {"reasoning_level": level})
+        if method == "interaction.list":
+            return self._request("GET", "/interactions", None)
+        if method == "execution.mode":
+            mode = _required_text(params, "mode").lower()
+            if mode == "yolo":
+                raise ValueError("Yolo cannot be enabled remotely; confirm on the computer.")
+            if mode not in {"shortcuts", "plan", "accept_edits"}:
+                raise ValueError("Unsupported remote execution mode.")
+            return self._request("POST", "/execution-mode", {"mode": mode})
         if method == "workspace.paths":
             query = str(params.get("query", ""))
             limit = params.get("limit", 30)

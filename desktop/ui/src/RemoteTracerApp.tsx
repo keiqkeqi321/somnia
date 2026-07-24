@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import type { AgentSession, ConversationRuntimeItem, TaskGraphItem, TeamMemberActivity, ToolLogIndexEntry, WorkspacePathSuggestion } from "./types";
+import type { AgentSession, ConversationRuntimeItem, InteractionRequestState, ModelDescriptor, ProviderDescriptor, TaskGraphItem, TeamMemberActivity, ToolLogIndexEntry, WorkspacePathSuggestion } from "./types";
 import { createConversationState, transitionConversationEvent, type ConversationState } from "./lib/conversation-state";
 import { buildConversationRows, stringifyToolValue } from "./lib/messages";
 import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
@@ -45,6 +45,15 @@ export default function RemoteTracerApp() {
   const [tasks, setTasks] = useState<TaskGraphItem[]>([]);
   const [toolLogs, setToolLogs] = useState<ToolLogIndexEntry[]>([]);
   const [diagnosticDetail, setDiagnosticDetail] = useState("");
+  const [remoteStatus, setRemoteStatus] = useState<Record<string, unknown>>({});
+  const [providers, setProviders] = useState<ProviderDescriptor[]>([]);
+  const [models, setModels] = useState<ModelDescriptor[]>([]);
+  const [interactions, setInteractions] = useState<InteractionRequestState[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [selectedVisionModel, setSelectedVisionModel] = useState("");
+  const [selectedReasoning, setSelectedReasoning] = useState("auto");
+  const [controlBusy, setControlBusy] = useState(false);
   const [conversationBusy, setConversationBusy] = useState(false);
   const connectionRef = useRef<RemoteSomniaConnection | null>(null);
   const conversationRef = useRef<ConversationState | null>(null);
@@ -90,6 +99,35 @@ export default function RemoteTracerApp() {
     }).catch(() => { if (!cancelled) setPathPickerOpen(false); });
     return () => { cancelled = true; };
   }, [draft, composerCursor, connectionState]);
+
+  useEffect(() => {
+    const connection = connectionRef.current;
+    if (!connection || connectionState !== "connected") return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const [status, nextProviders, nextInteractions] = await Promise.all([
+          connection.getRuntimeStatus(), connection.listProviders(), connection.listInteractions(),
+        ]);
+        if (cancelled) return;
+        setRemoteStatus(status);
+        setProviders(nextProviders);
+        setInteractions(nextInteractions);
+        const provider = String(status.provider ?? nextProviders.find((item) => item.is_active)?.name ?? nextProviders[0]?.name ?? "");
+        setSelectedProvider((current) => current || provider);
+        setSelectedModel((current) => current || String(status.model ?? ""));
+        setSelectedVisionModel(String(status.vision_model ?? ""));
+        setSelectedReasoning(String(status.reasoning_level ?? "auto"));
+        const nextModels = await connection.listModels(provider || undefined);
+        if (!cancelled) setModels(nextModels);
+      } catch (error) {
+        if (!cancelled) access.setNotice(`Remote controls unavailable: ${formatError(error)}`);
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void connection.listInteractions().then((next) => { if (!cancelled) setInteractions(next); }).catch(() => undefined), 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [connectionState]);
 
   async function revokeSelectedDevice() {
     if (await access.revokeSelectedDevice()) {
@@ -262,6 +300,29 @@ export default function RemoteTracerApp() {
         conversationRef.current = null;
       }
     } catch (error) { access.setNotice(formatError(error)); }
+  }
+
+  async function selectRemoteProvider(provider: string) {
+    setSelectedProvider(provider);
+    setSelectedModel("");
+    const connection = connectionRef.current;
+    if (!connection || !provider) return;
+    try {
+      const nextModels = await connection.listModels(provider);
+      setModels(nextModels);
+      setSelectedModel(nextModels.find((model) => model.is_active)?.name ?? nextModels[0]?.name ?? "");
+    } catch (error) { access.setNotice(formatError(error)); }
+  }
+
+  async function applyRemoteControl(action: () => Promise<Record<string, unknown>>) {
+    if (controlBusy) return;
+    setControlBusy(true);
+    try {
+      const result = await action();
+      setRemoteStatus((current) => ({ ...current, ...result }));
+      access.setNotice(String(result.message ?? "Remote control updated."));
+    } catch (error) { access.setNotice(formatError(error)); }
+    finally { setControlBusy(false); }
   }
 
   async function sendPrompt() {
@@ -568,6 +629,17 @@ export default function RemoteTracerApp() {
         {access.pairingCode ? <output className="remote-pairing-code">{access.pairingCode}</output> : null}
       </section>
       <div className="remote-notice" role="status">{access.notice}</div>
+      {connected ? <section className="remote-controls" aria-label="Remote controls">
+        <div className="remote-control-group"><label>Provider<select value={selectedProvider} onChange={(event) => void selectRemoteProvider(event.target.value)} disabled={controlBusy}><option value="">Select provider</option>{providers.map((provider) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label>
+          <label>Model<select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} disabled={controlBusy || !selectedProvider}><option value="">Select model</option>{models.map((model) => <option key={`${model.provider_name}:${model.name}`} value={model.name}>{model.name}</option>)}</select></label>
+          <button type="button" onClick={() => void applyRemoteControl(() => connectionRef.current!.switchProviderModel(selectedProvider, selectedModel))} disabled={controlBusy || !selectedProvider || !selectedModel}>Apply model</button></div>
+        <div className="remote-control-group"><label>Vision<select value={selectedVisionModel} onChange={(event) => setSelectedVisionModel(event.target.value)} disabled={controlBusy}><option value="">None</option>{models.filter((model) => model.is_vision).map((model) => <option key={`vision:${model.name}`} value={model.name}>{model.name}</option>)}</select></label>
+          <button type="button" onClick={() => void applyRemoteControl(() => connectionRef.current!.setVisionModel(selectedVisionModel ? selectedProvider : null, selectedVisionModel || null))} disabled={controlBusy}>Apply vision</button>
+          <label>Reasoning<select value={selectedReasoning} onChange={(event) => setSelectedReasoning(event.target.value)} disabled={controlBusy}><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+          <button type="button" onClick={() => void applyRemoteControl(() => connectionRef.current!.setReasoningLevel(selectedReasoning === "auto" ? null : selectedReasoning))} disabled={controlBusy}>Apply reasoning</button></div>
+        <div className="remote-control-group"><span>Mode: {String(remoteStatus.execution_mode_title ?? remoteStatus.execution_mode ?? "unknown")}</span>{(["shortcuts", "plan", "accept_edits"] as const).map((mode) => <button type="button" key={mode} onClick={() => void applyRemoteControl(() => connectionRef.current!.setExecutionMode(mode))} disabled={controlBusy}>{mode}</button>)}<span className="remote-local-confirmation">Yolo and sensitive settings require confirmation on the computer.</span></div>
+      </section> : null}
+      {session && interactions.filter((interaction) => interaction.session_id === session.id).length ? <section className="remote-interactions" aria-label="Waiting for local confirmation"><strong>Waiting for confirmation on the computer</strong>{interactions.filter((interaction) => interaction.session_id === session.id).map((interaction) => <div key={interaction.id}><span>{interaction.kind}</span><p>{String(interaction.payload.reason ?? "A local decision is required before this Turn can continue.")}</p></div>)}</section> : null}
       {queuedPrompts.length ? <section className="remote-queue" aria-label="Queued prompts">
         <strong>Queued prompts ({queuedPrompts.length})</strong>
         {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button></div>)}
