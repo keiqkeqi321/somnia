@@ -90,6 +90,27 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(sidecar.turn_calls, 1)
             self.assertEqual(responses[0], responses[1])
 
+    def test_connector_routes_each_registered_project_to_its_own_sidecar(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            first = CountingSidecar()
+            second = CountingSidecar()
+            connector = RemoteConnector(
+                "wss://relay.example.com",
+                identity=identity,
+                project_id="project-1",
+                sidecar=first,
+                sidecars={"project-2": second},
+            )
+            sent: list[dict] = []
+            connector.handle_relay_message(json.dumps({"kind": "request", "request_id": "one", "project_id": "project-1", "method": "turn.start", "params": {"session_id": "one", "user_input": "hello"}}), sent.append)
+            connector.handle_relay_message(json.dumps({"kind": "request", "request_id": "two", "project_id": "project-2", "method": "turn.start", "params": {"session_id": "two", "user_input": "hello"}}), sent.append)
+
+            self.assertEqual(first.turn_calls, 1)
+            self.assertEqual(second.turn_calls, 1)
+            self.assertEqual([response["project_id"] for response in sent], ["project-1", "project-2"])
+
     def test_device_identity_is_generated_paired_and_reloaded_from_local_storage(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "device-identity.json"

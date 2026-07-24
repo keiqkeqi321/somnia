@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
     fs::{self, OpenOptions},
@@ -61,6 +61,9 @@ impl ManagedSidecar {
     ) -> Result<ManagedSidecarConnection, String> {
         let workspace_root = resolve_workspace_root(app, workspace_path)?;
         let workspace_key = workspace_key(&workspace_root)?;
+        if let Some(connection) = discover_connector_runtime(&workspace_root)? {
+            return Ok(connection);
+        }
         let mut states = self.lock()?;
         let state = states.entry(workspace_key.clone()).or_default();
         if let Some(connection) = refresh_existing_connection(state)? {
@@ -296,6 +299,69 @@ fn build_connection(port: u16, workspace_root: &PathBuf) -> ManagedSidecarConnec
         ws_url: format!("ws://{SIDECAR_HOST}:{port}/ws"),
         workspace_root: workspace_root.display().to_string(),
     }
+}
+
+#[derive(Deserialize)]
+struct RuntimeConnectionRegistry {
+    connections: Vec<ConnectorRuntimeConnection>,
+}
+
+#[derive(Deserialize)]
+struct ConnectorRuntimeConnection {
+    workspace_root: String,
+    base_url: String,
+    ws_url: String,
+}
+
+fn discover_connector_runtime(workspace_root: &PathBuf) -> Result<Option<ManagedSidecarConnection>, String> {
+    let Some(home) = user_home_dir() else {
+        return Ok(None);
+    };
+    let path = home
+        .join(".open_somnia")
+        .join("remote")
+        .join("runtime-connections.json");
+    let Ok(contents) = fs::read_to_string(path) else {
+        return Ok(None);
+    };
+    let Ok(registry) = serde_json::from_str::<RuntimeConnectionRegistry>(&contents) else {
+        return Ok(None);
+    };
+    let expected = workspace_key(workspace_root)?;
+    for candidate in registry.connections {
+        let candidate_root = PathBuf::from(candidate.workspace_root);
+        let Ok(candidate_key) = workspace_key(&candidate_root) else {
+            continue;
+        };
+        if candidate_key != expected {
+            continue;
+        }
+        let Some(port) = loopback_port(&candidate.base_url) else {
+            continue;
+        };
+        if sidecar_is_ready(port) {
+            return Ok(Some(ManagedSidecarConnection {
+                base_url: candidate.base_url,
+                ws_url: candidate.ws_url,
+                workspace_root: expected,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn loopback_port(base_url: &str) -> Option<u16> {
+    let address = base_url.strip_prefix("http://127.0.0.1:")?;
+    if address.contains('/') || address.is_empty() {
+        return None;
+    }
+    address.parse().ok()
 }
 
 fn pick_available_port() -> Result<u16, String> {

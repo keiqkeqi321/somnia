@@ -11,6 +11,7 @@ import uvicorn
 from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, default_identity_path, pair_device
 from open_somnia.remote.relay import create_relay_app
+from open_somnia.remote.runtime_manager import ProjectRegistry, ProjectRuntimeManager, default_registry_path
 
 
 def relay_main() -> int:
@@ -52,10 +53,24 @@ def connector_main() -> int:
     pair_parser.add_argument("--code", required=True)
     pair_parser.add_argument("--identity", type=Path, default=default_identity_path())
 
+    register_parser = subparsers.add_parser("register", help="Register a local Project for Connector-managed Runtime ownership.")
+    register_parser.add_argument("--project", required=True, help="Stable local Project identifier.")
+    register_parser.add_argument("--path", type=Path, required=True, help="Existing local Project folder.")
+    register_parser.add_argument("--name", help="Local display name; defaults to the folder name.")
+    register_parser.add_argument("--registry", type=Path, default=default_registry_path())
+
+    list_parser = subparsers.add_parser("list-projects", help="List locally registered Projects.")
+    list_parser.add_argument("--registry", type=Path, default=default_registry_path())
+
+    unregister_parser = subparsers.add_parser("unregister", help="Remove a local Project registration.")
+    unregister_parser.add_argument("--project", required=True)
+    unregister_parser.add_argument("--registry", type=Path, default=default_registry_path())
+
     run_parser = subparsers.add_parser("run", help="Connect the paired Device to its Relay.")
     run_parser.add_argument("--relay", help="Relay WebSocket origin; defaults to the paired Relay.")
-    run_parser.add_argument("--project", default="default-project")
-    run_parser.add_argument("--sidecar", default="http://127.0.0.1:8765")
+    run_parser.add_argument("--project", action="append", help="Registered Project to expose; repeat to expose multiple Projects.")
+    run_parser.add_argument("--sidecar", help="Use an already-running loopback Sidecar (legacy direct workflow).")
+    run_parser.add_argument("--registry", type=Path, default=default_registry_path())
     run_parser.add_argument("--identity", type=Path, default=default_identity_path())
     args = parser.parse_args()
 
@@ -65,18 +80,50 @@ def connector_main() -> int:
         print(f"Paired Device {result.device_name} ({result.device_id}).")
         return 0
 
+    if args.command == "register":
+        registration = ProjectRegistry(args.registry).register(args.project, args.path, name=args.name)
+        print(f"Registered Project {registration.name} ({registration.project_id}).")
+        return 0
+
+    if args.command == "list-projects":
+        for registration in ProjectRegistry(args.registry).list():
+            print(f"{registration.project_id}\t{registration.name}")
+        return 0
+
+    if args.command == "unregister":
+        if not ProjectRegistry(args.registry).unregister(args.project):
+            parser.error(f"Project is not registered: {args.project}")
+        print(f"Unregistered Project {args.project}.")
+        return 0
+
     identity = DeviceIdentity.load(args.identity)
     relay_url = str(args.relay or _websocket_origin(identity.relay_url))
+    project_ids = args.project or ["default-project"]
+    manager: ProjectRuntimeManager | None = None
+    if args.sidecar:
+        if len(project_ids) != 1:
+            parser.error("--sidecar supports exactly one --project; omit --sidecar for managed Projects.")
+        sidecar = LocalSidecarBridge(args.sidecar)
+        sidecars: dict[str, LocalSidecarBridge] | None = None
+    else:
+        manager = ProjectRuntimeManager(ProjectRegistry(args.registry))
+        bridges = manager.bridges(project_ids)
+        sidecar = bridges[project_ids[0]]
+        sidecars = {project_id: bridge for project_id, bridge in bridges.items() if project_id != project_ids[0]}
     connector = RemoteConnector(
         relay_url,
         identity=identity,
-        project_id=args.project,
-        sidecar=LocalSidecarBridge(args.sidecar),
+        project_id=project_ids[0],
+        sidecar=sidecar,
+        sidecars=sidecars,
     )
     try:
         connector.run()
     except KeyboardInterrupt:
         return 130
+    finally:
+        if manager is not None:
+            manager.stop_all()
     return 0
 
 
