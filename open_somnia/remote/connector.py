@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from collections import OrderedDict, deque
 from contextlib import ExitStack
@@ -79,6 +80,45 @@ class LocalSidecarBridge:
                 "sessions": sessions.get("sessions", []),
                 "runtime": runtime,
             }
+        if method == "tool_log.list":
+            limit = params.get("limit", 24)
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 100:
+                raise ValueError("limit must be an integer between 1 and 100.")
+            return self._request("GET", f"/tool-logs?limit={limit}", None)
+        if method == "tool_log.get":
+            log_id = _required_text(params, "log_id")
+            payload = self._request("GET", f"/tool-logs/{quote(log_id, safe='')}", None)
+            return _required_mapping(payload, "tool_log")
+        if method == "thinking_log.get":
+            path = _required_text(params, "path")
+            payload = self._request("GET", f"/thinking-log?path={quote(path, safe='')}", None)
+            return _required_mapping(payload, "thinking_log")
+        if method == "team.members":
+            session_id = _required_text(params, "session_id")
+            return self._request("GET", f"/team/active?session_id={quote(session_id, safe='')}", None)
+        if method == "team.log":
+            name = _required_text(params, "name")
+            session_id = _required_text(params, "session_id")
+            payload = self._request("GET", f"/team/log?name={quote(name, safe='')}&session_id={quote(session_id, safe='')}", None)
+            return _required_mapping(payload, "team_log")
+        if method == "task.list":
+            session_id = _required_text(params, "session_id")
+            return self._request("GET", f"/tasks?session_id={quote(session_id, safe='')}", None)
+        if method == "workspace.image":
+            path = _required_text(params, "path")
+            request = urllib.request.Request(
+                f"{self.base_url}/workspace/images?path={quote(path, safe='')}",
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=30.0) as response:
+                data = response.read(10 * 1024 * 1024 + 1)
+                media_type = str(response.headers.get_content_type())
+            if len(data) > 10 * 1024 * 1024:
+                raise ValueError("Workspace image exceeds the 10 MB remote limit.")
+            if not media_type.startswith("image/"):
+                raise RuntimeError("Sidecar workspace image response was not an image.")
+            encoded = base64.b64encode(data).decode("ascii")
+            return {"data_url": f"data:{media_type};base64,{encoded}"}
         raise ValueError(f"Unsupported remote method: {method}")
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:

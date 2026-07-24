@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { AgentSession } from "./types";
+import type { AgentSession, ConversationRuntimeItem, TaskGraphItem, TeamMemberActivity, ToolLogIndexEntry } from "./types";
 import { createConversationState, transitionConversationEvent, type ConversationState } from "./lib/conversation-state";
-import { extractTextContent } from "./lib/messages";
+import { buildConversationRows, stringifyToolValue } from "./lib/messages";
 import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
 import type { SomniaConnectionNotification } from "./lib/somnia-connection";
 import { useRemoteAccess } from "./lib/use-remote-access";
+import { RemoteConversationRow } from "./RemoteRichContent";
 
 const defaults = readConnectionDefaults();
 
@@ -18,7 +19,11 @@ export default function RemoteTracerApp() {
   const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
-  const [streamingText, setStreamingText] = useState("");
+  const [progress, setProgress] = useState<ConversationState | null>(null);
+  const [teamMembers, setTeamMembers] = useState<TeamMemberActivity[]>([]);
+  const [tasks, setTasks] = useState<TaskGraphItem[]>([]);
+  const [toolLogs, setToolLogs] = useState<ToolLogIndexEntry[]>([]);
+  const [diagnosticDetail, setDiagnosticDetail] = useState("");
   const [conversationBusy, setConversationBusy] = useState(false);
   const connectionRef = useRef<RemoteSomniaConnection | null>(null);
   const conversationRef = useRef<ConversationState | null>(null);
@@ -32,6 +37,8 @@ export default function RemoteTracerApp() {
       conversationRef.current = null;
       setSession(null);
       setSessions([]);
+      setProgress(null);
+      clearExecutionDetails();
       setConnectionState("disconnected");
     }
   }
@@ -42,6 +49,8 @@ export default function RemoteTracerApp() {
     connectionRef.current = null;
     conversationRef.current = null;
     setSession(null);
+    setProgress(null);
+    clearExecutionDetails();
     setConnectionState("disconnected");
   }
 
@@ -54,7 +63,8 @@ export default function RemoteTracerApp() {
       setSession(null);
       setSessions([]);
       setPendingPrompt("");
-      setStreamingText("");
+      setProgress(null);
+      clearExecutionDetails();
       conversationRef.current = null;
       const connection = new RemoteSomniaConnection({
         relayUrl: access.relayUrl,
@@ -97,7 +107,10 @@ export default function RemoteTracerApp() {
         if (knownSession && connectionRef.current) {
           void connectionRef.current.query({ type: "session.load", sessionId: currentSessionId }).then((recovered) => {
             setSession(recovered);
-            conversationRef.current = createConversationState(recovered);
+            const recoveredState = createConversationState(recovered);
+            conversationRef.current = recoveredState;
+            setProgress(recoveredState);
+            void refreshExecutionDetails(recovered.id);
           }).catch((error) => access.setNotice(formatError(error)));
         }
       }
@@ -109,15 +122,15 @@ export default function RemoteTracerApp() {
     const previous = conversationRef.current ?? createConversationState(event.session_id);
     const transition = transitionConversationEvent(previous, event);
     conversationRef.current = transition.state;
+    setProgress(transition.state);
     if (transition.effect.type === "turn_started") {
-      setStreamingText("");
-    } else if (transition.effect.type === "assistant_delta") {
-      setStreamingText(transition.state.assistantText);
     } else if (transition.effect.type === "turn_completed") {
       if (transition.state.session) setSession(transition.state.session);
       setPendingPrompt("");
-      setStreamingText("");
       setConversationBusy(false);
+      void refreshExecutionDetails(event.session_id);
+    } else if (event.type === "tool_finished" || event.type === "subagent_activity") {
+      void refreshExecutionDetails(event.session_id);
     }
   }
 
@@ -128,6 +141,7 @@ export default function RemoteTracerApp() {
     try {
       const created = await connection.execute({ type: "session.create" });
       conversationRef.current = createConversationState(created);
+      setProgress(conversationRef.current);
       setSession(created);
       setSessions((current) => [created, ...current]);
       access.setNotice(`Session ${created.id} is ready.`);
@@ -145,6 +159,9 @@ export default function RemoteTracerApp() {
       const loaded = await connection.query({ type: "session.load", sessionId });
       setSession(loaded);
       conversationRef.current = createConversationState(loaded);
+      setProgress(conversationRef.current);
+      clearExecutionDetails();
+      await refreshExecutionDetails(sessionId);
     } catch (error) {
       access.setNotice(formatError(error));
     }
@@ -158,7 +175,12 @@ export default function RemoteTracerApp() {
       if (!result.deleted) throw new Error("Session was already deleted.");
       setSessions((current) => current.filter((candidate) => candidate.id !== sessionId));
       setArchivedSessionIds((current) => { const next = new Set(current); next.delete(sessionId); return next; });
-      if (session?.id === sessionId) { setSession(null); conversationRef.current = null; }
+      if (session?.id === sessionId) {
+        setSession(null);
+        setProgress(null);
+        clearExecutionDetails();
+        conversationRef.current = null;
+      }
     } catch (error) { access.setNotice(formatError(error)); }
   }
 
@@ -169,7 +191,7 @@ export default function RemoteTracerApp() {
     setConversationBusy(true);
     setDraft("");
     setPendingPrompt(prompt);
-    setStreamingText("");
+    setProgress(conversationRef.current);
     try {
       await connection.execute({ type: "turn.start", sessionId: session.id, userInput: prompt });
     } catch (error) {
@@ -198,6 +220,15 @@ export default function RemoteTracerApp() {
     }
   }, [access.deviceId, projectId]);
 
+  useEffect(() => {
+    const sessionId = session?.id;
+    if (!connected || !sessionId || !progress?.activeTurnId) return;
+    const interval = window.setInterval(() => void refreshExecutionDetails(sessionId), 1500);
+    return () => window.clearInterval(interval);
+    // Refresh the Device-owned team/task state while a Turn is active.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, progress?.activeTurnId, session?.id]);
+
   function setArchived(sessionId: string) {
     setArchivedSessionIds((current) => {
       const next = new Set(current).add(sessionId);
@@ -217,11 +248,63 @@ export default function RemoteTracerApp() {
     conversationRef.current = null;
     setSession(null);
     setPendingPrompt("");
-    setStreamingText("");
+    setProgress(null);
+    clearExecutionDetails();
     setConnectionState("disconnected");
     access.setDeviceId(deviceId);
     setProjectId(nextProjectId);
   }
+
+  function clearExecutionDetails() {
+    setTeamMembers([]);
+    setTasks([]);
+    setToolLogs([]);
+    setDiagnosticDetail("");
+  }
+
+  async function refreshExecutionDetails(sessionId: string) {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      const [members, nextTasks, logs] = await Promise.all([
+        connection.listTeamMembers(sessionId), connection.listTasks(sessionId), connection.listToolLogs(24),
+      ]);
+      if (conversationRef.current?.sessionId !== sessionId) return;
+      setTeamMembers(members);
+      setTasks(nextTasks);
+      setToolLogs(logs);
+    } catch (error) {
+      access.setNotice(`Execution details unavailable: ${formatError(error)}`);
+    }
+  }
+
+  async function showToolLog(logId: string) {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try { const detail = await connection.getToolLog(logId); setDiagnosticDetail(detail.rendered || stringifyToolValue(detail)); }
+    catch (error) { access.setNotice(formatError(error)); }
+  }
+
+  async function showThinkingLog(path: string) {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try { const detail = await connection.getThinkingLog(path); setDiagnosticDetail(detail.text); }
+    catch (error) { access.setNotice(formatError(error)); }
+  }
+
+  async function showTeamLog(name: string) {
+    const connection = connectionRef.current;
+    if (!connection || !session) return;
+    try { const detail = await connection.getTeamLog(name, session.id); setDiagnosticDetail(detail.rendered); }
+    catch (error) { access.setNotice(formatError(error)); }
+  }
+
+  const runtimeItems: ConversationRuntimeItem[] = progress ? [
+    ...(progress.thinking ? [{ id: `thinking-${progress.activeTurnId ?? "active"}`, type: "thinking_log" as const, thinkingLog: { turnId: progress.activeTurnId, path: progress.thinking.path, text: progress.thinking.text, status: progress.thinking.status }, isStreaming: progress.thinking.status === "running" }] : []),
+    ...progress.tools.map((tool) => ({ id: `tool-${tool.id}`, type: "tool_call" as const, toolCall: { ...tool, input: stringifyToolValue(tool.input), output: stringifyToolValue(tool.output), contentBlocks: tool.contentBlocks as never[] } })),
+    ...(progress.assistantText ? [{ id: `assistant-${progress.activeTurnId ?? "active"}`, type: "assistant_text" as const, text: progress.assistantText, isStreaming: true }] : []),
+  ] : [];
+  const conversationRows = buildConversationRows(session, runtimeItems, pendingPrompt ? { id: "remote-pending", sessionId: session?.id ?? null, userText: pendingPrompt, placeholderText: "Working…" } : null, progress?.activeTurnId ? session?.messages.length ?? 0 : null);
   if (!access.authenticated) {
     return (
       <main className="remote-shell remote-shell-login">
@@ -276,11 +359,24 @@ export default function RemoteTracerApp() {
         </aside>
         <section className="remote-conversation" aria-label="Conversation">
           <div className="remote-messages">
-            {session?.messages.map((message, index) => <article className={`remote-message remote-message-${message.role}`} key={`${message.role}-${index}`}><span>{message.role}</span><p>{extractTextContent(message.content)}</p></article>)}
-            {pendingPrompt ? <article className="remote-message remote-message-user remote-message-pending"><span>user</span><p>{pendingPrompt}</p></article> : null}
-            {streamingText ? <article className="remote-message remote-message-assistant remote-message-streaming"><span>assistant</span><p>{streamingText}</p></article> : null}
+            {conversationRows.map((row) => <RemoteConversationRow key={row.id} row={row} resolveImage={(path) => {
+              const connection = connectionRef.current;
+              return connection ? connection.getWorkspaceImage(path) : Promise.reject(new Error("Remote Device is offline."));
+            }} />)}
             {!session ? <p className="remote-conversation-empty">Create a Session to begin.</p> : null}
           </div>
+          {session ? <aside className="remote-progress" aria-label="Execution progress">
+            <details open><summary>Progress</summary>
+              {progress?.thinking ? <button type="button" onClick={() => progress.thinking?.path && void showThinkingLog(progress.thinking.path)} disabled={!progress.thinking.path}>Thinking · {progress.thinking.status}</button> : null}
+              {progress?.tools.map((tool) => <button type="button" key={tool.id} onClick={() => tool.logId && void showToolLog(tool.logId)} disabled={!tool.logId}>{tool.name} · {tool.status}</button>)}
+              {progress?.todoItems.map((item, index) => <div key={index}>Todo · {activitySummary(item as Record<string, unknown>)}</div>)}
+              {progress?.contextUsage ? <div>Context · {activitySummary(progress.contextUsage)}</div> : null}
+            </details>
+            <details><summary>Workers ({teamMembers.length + (progress?.subagents.length ?? 0)})</summary>{teamMembers.map((member) => <button type="button" key={member.name} onClick={() => void showTeamLog(member.name)}>{member.name} · {member.status ?? member.activity ?? "active"}</button>)}{progress?.subagents.map((worker, index) => <div key={index}>{activitySummary(worker)}</div>)}</details>
+            <details><summary>Tasks ({tasks.length})</summary>{tasks.map((task) => <div key={task.id}>#{task.id} {task.subject ?? task.description} · {task.status}</div>)}</details>
+            <details><summary>Tool logs ({toolLogs.length})</summary>{toolLogs.map((log) => <button type="button" key={log.id} onClick={() => void showToolLog(log.id)}>{log.tool_name} · {log.actor}</button>)}</details>
+            {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
+          </aside> : null}
           <div className="remote-composer">
             <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask Somnia" disabled={!session || !connected || busy} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendPrompt(); } }} />
             <button type="button" onClick={() => void sendPrompt()} disabled={!session || !draft.trim() || busy}>Send</button>
@@ -313,4 +409,8 @@ function formatError(error: unknown): string {
 
 function archiveStorageKey(deviceId: string, projectId: string): string {
   return `somnia.remote.archived-sessions:${deviceId}:${projectId}`;
+}
+
+function activitySummary(payload: Record<string, unknown>): string {
+  return String(payload.content ?? payload.subject ?? payload.tool_name ?? payload.name ?? payload.message ?? payload.status ?? payload.used_tokens ?? "updated");
 }

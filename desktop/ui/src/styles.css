@@ -234,10 +234,13 @@ body {
   min-width: 0;
   min-height: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 280px);
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .remote-messages {
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 18px max(18px, calc((100% - 820px) / 2));
 }
@@ -254,11 +257,44 @@ body {
   line-height: 1.55;
 }
 
+.remote-markdown { min-width: 0; overflow-wrap: anywhere; line-height: 1.55; }
+.remote-markdown p { white-space: normal; }
+.remote-markdown img,
+.remote-content-image { display: block; max-width: min(100%, 680px); max-height: 480px; margin: 10px 0; border-radius: 6px; object-fit: contain; }
+.remote-markdown a { color: #8fb4ff; }
+.remote-markdown code { font-family: "Cascadia Code", "SFMono-Regular", monospace; }
+.remote-code,
+.remote-detail-card pre,
+.remote-progress pre { max-width: 100%; overflow: auto; padding: 10px; border: 1px solid #30363a; border-radius: 5px; background: #0d0f11; white-space: pre; overflow-wrap: normal; }
+.remote-code > span { display: block; margin-bottom: 6px; color: #8a949b; font-size: 11px; }
+.remote-detail-card { margin-top: 9px; border: 1px solid #30363a; border-radius: 5px; padding: 8px 10px; }
+.remote-detail-card summary { cursor: pointer; }
+.remote-image-reference { display: block; margin: 8px 0; color: #9aa3aa; font-size: 12px; }
+.remote-mermaid { max-width: 100%; margin: 12px 0; overflow: auto; border: 1px solid #30363a; border-radius: 6px; padding: 10px; }
+.remote-mermaid svg { display: block; max-width: 100%; height: auto; margin: auto; }
+
+.remote-progress {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  border-left: 1px solid #30363a;
+  background: #141719;
+  font-size: 12px;
+}
+.remote-progress details { margin-bottom: 8px; border-bottom: 1px solid #2b3034; padding-bottom: 8px; }
+.remote-progress summary { padding: 6px 0; cursor: pointer; font-weight: 600; }
+.remote-progress button,
+.remote-progress details > div { display: block; width: 100%; min-height: 0; margin: 4px 0; padding: 6px; text-align: left; overflow-wrap: anywhere; }
+
 .remote-message-user p { color: #c8e3d4; }
 .remote-message-streaming p { color: #f0f2f3; }
 .remote-message-pending { opacity: 0.72; }
 
 .remote-composer {
+  grid-column: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 76px;
   gap: 10px;
@@ -290,8 +326,10 @@ body {
   .remote-session-pane { padding: 8px 12px; border-right: 0; border-bottom: 1px solid #30363a; }
   .remote-pane-heading { margin-bottom: 7px; }
   .remote-session-row { padding: 7px 9px; }
-  .remote-messages { padding: 10px 14px; }
-  .remote-composer { grid-template-columns: minmax(0, 1fr) 64px; padding: 10px 12px; }
+  .remote-conversation { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto auto; }
+  .remote-messages { grid-column: 1; grid-row: 1; padding: 10px 14px; }
+  .remote-progress { grid-column: 1; grid-row: 2; max-height: 190px; border-left: 0; border-top: 1px solid #30363a; }
+  .remote-composer { grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr) 64px; padding: 10px 12px; }
 }
 
 button,

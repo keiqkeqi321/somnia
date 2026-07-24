@@ -25,8 +25,14 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await page.getByPlaceholder("Ask Somnia").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.locator(".remote-message-streaming p")).toHaveText("Hello ");
-  await expect(page.locator(".remote-message-assistant:not(.remote-message-streaming) p")).toHaveText("Hello remote");
+  const completedMessage = page.locator(".remote-message-assistant:not(.remote-message-streaming)");
+  await expect(completedMessage).toContainText("Hello remote");
+  await expect(completedMessage.getByRole("heading", { name: "Rich output" })).toBeVisible();
+  await expect(completedMessage.locator(".remote-code").first()).toContainText('print("remote")');
+  await expect(completedMessage.locator(".remote-mermaid svg")).toBeVisible();
+  await expect(completedMessage.getByRole("img", { name: "inline pixel" })).toBeVisible();
   await expect(page.locator(".remote-message-streaming")).toHaveCount(0);
+  await expect(page.getByLabel("Execution progress")).toBeVisible();
   await page.getByRole("button", { name: "Archive" }).first().click();
   await expect(page.getByRole("button", { name: "Restore archived" })).toBeVisible();
   await page.getByRole("button", { name: "Restore archived" }).click();

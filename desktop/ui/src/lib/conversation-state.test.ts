@@ -45,8 +45,8 @@ describe("conversation state", () => {
       final = transition.state;
     }
 
-    expect(initial).toEqual({ sessionId: session.id, session, activeTurnId: null, assistantText: "" });
-    expect(final).toEqual({
+    expect(initial).toMatchObject({ sessionId: session.id, session, activeTurnId: null, assistantText: "" });
+    expect(final).toMatchObject({
       sessionId: session.id,
       session: completedSession,
       activeTurnId: null,
@@ -58,5 +58,27 @@ describe("conversation state", () => {
       { type: "assistant_delta" },
       { type: "turn_completed" },
     ]);
+  });
+
+  it("reduces live execution progress from the same event fixture for every client", () => {
+    const events: SidecarEvent[] = [
+      { type: "turn_started", session_id: session.id, turn_id: "turn-1", payload: {} },
+      { type: "thinking_delta", session_id: session.id, turn_id: "turn-1", payload: { delta: "Inspecting " } },
+      { type: "thinking_delta", session_id: session.id, turn_id: "turn-1", payload: { delta: "files" } },
+      { type: "tool_started", session_id: session.id, turn_id: "turn-1", payload: { tool_call_id: "call-1", tool_name: "bash", tool_input: { command: "pwd" } } },
+      { type: "tool_finished", session_id: session.id, turn_id: "turn-1", payload: { tool_call_id: "call-1", tool_name: "bash", output: "ok", log_id: "log-1" } },
+      { type: "todo_updated", session_id: session.id, payload: { items: [{ content: "Ship", status: "in_progress" }] } },
+      { type: "context_usage_updated", session_id: session.id, payload: { context_window_usage: { used_tokens: 12, max_tokens: 100 } } },
+      { type: "subagent_activity", session_id: session.id, payload: { name: "Scout", status: "working", text: "Scanning" } },
+      { type: "thinking_finished", session_id: session.id, turn_id: "turn-1", payload: { path: ".open_somnia/thinking/turn-1.jsonl" } },
+    ];
+
+    const final = events.reduce((state, event) => transitionConversationEvent(state, event).state, createConversationState(session));
+
+    expect(final.thinking).toMatchObject({ text: "Inspecting files", status: "finished" });
+    expect(final.tools).toEqual([expect.objectContaining({ id: "call-1", name: "bash", status: "finished", logId: "log-1" })]);
+    expect(final.todoItems).toEqual([{ content: "Ship", status: "in_progress" }]);
+    expect(final.contextUsage).toEqual({ used_tokens: 12, max_tokens: 100 });
+    expect(final.subagents).toEqual([expect.objectContaining({ name: "Scout", status: "working", text: "Scanning" })]);
   });
 });

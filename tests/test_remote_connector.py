@@ -192,6 +192,13 @@ class RemoteConnectorTests(unittest.TestCase):
                 bridge.execute("session.delete", {"session_id": "session-1"}),
                 {"session_id": "session-1", "deleted": True},
             )
+            self.assertEqual(bridge.execute("tool_log.list", {"limit": 5}), {"tool_logs": [{"id": "log-1"}]})
+            self.assertEqual(bridge.execute("tool_log.get", {"log_id": "log-1"}), {"id": "log-1", "rendered": "done"})
+            self.assertEqual(bridge.execute("thinking_log.get", {"path": "safe/log.jsonl"}), {"path": "safe/log.jsonl", "text": "reasoning"})
+            self.assertEqual(bridge.execute("team.members", {"session_id": "session-1"}), {"members": [{"name": "Scout"}]})
+            self.assertEqual(bridge.execute("team.log", {"name": "Scout", "session_id": "session-1"}), {"name": "Scout", "rendered": "working"})
+            self.assertEqual(bridge.execute("task.list", {"session_id": "session-1"}), {"tasks": [{"id": 1, "subject": "Ship"}]})
+            self.assertEqual(bridge.execute("workspace.image", {"path": "safe/pixel.png"})["data_url"], "data:image/png;base64,cG5n")
         finally:
             server.shutdown()
             server.server_close()
@@ -241,6 +248,27 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
                 {"session": {"id": "session-1", "messages": [{"role": "assistant", "content": "done"}]}},
             )
             return
+        if self.path == "/tool-logs?limit=5":
+            self._send({"tool_logs": [{"id": "log-1"}]})
+            return
+        if self.path == "/tool-logs/log-1":
+            self._send({"tool_log": {"id": "log-1", "rendered": "done"}})
+            return
+        if self.path == "/thinking-log?path=safe%2Flog.jsonl":
+            self._send({"thinking_log": {"path": "safe/log.jsonl", "text": "reasoning"}})
+            return
+        if self.path == "/team/active?session_id=session-1":
+            self._send({"members": [{"name": "Scout"}]})
+            return
+        if self.path == "/team/log?name=Scout&session_id=session-1":
+            self._send({"team_log": {"name": "Scout", "rendered": "working"}})
+            return
+        if self.path == "/tasks?session_id=session-1":
+            self._send({"tasks": [{"id": 1, "subject": "Ship"}]})
+            return
+        if self.path == "/workspace/images?path=safe%2Fpixel.png":
+            self._send_bytes(b"png", "image/png")
+            return
         self._send({"error": "not found"}, status=404)
 
     def do_DELETE(self) -> None:
@@ -263,6 +291,13 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_bytes(self, payload: bytes, content_type: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
 
 class _PairingStubHandler(_SidecarStubHandler):

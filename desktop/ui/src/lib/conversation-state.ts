@@ -5,6 +5,21 @@ export interface ConversationState {
   session: AgentSession | null;
   activeTurnId: string | null;
   assistantText: string;
+  thinking: { text: string; status: "running" | "finished"; path: string | null } | null;
+  tools: ConversationProgressTool[];
+  todoItems: unknown[];
+  contextUsage: Record<string, unknown> | null;
+  subagents: Array<Record<string, unknown>>;
+}
+
+export interface ConversationProgressTool {
+  id: string;
+  name: string;
+  input: unknown;
+  output: unknown;
+  status: "running" | "finished";
+  logId: string | null;
+  contentBlocks: unknown[];
 }
 
 export type ConversationEffect =
@@ -19,11 +34,17 @@ export interface ConversationTransition {
 }
 
 export function createConversationState(session: AgentSession | string): ConversationState {
+  const loaded = typeof session === "string" ? null : session;
   return {
     sessionId: typeof session === "string" ? session : session.id,
     session: typeof session === "string" ? null : session,
     activeTurnId: null,
     assistantText: "",
+    thinking: null,
+    tools: [],
+    todoItems: Array.isArray(loaded?.todo_items) ? loaded.todo_items : [],
+    contextUsage: isRecord(loaded?.context_window_usage) ? loaded.context_window_usage : null,
+    subagents: [],
   };
 }
 
@@ -34,9 +55,80 @@ export function transitionConversationEvent(state: ConversationState, event: Sid
   if (event.type === "turn_started") {
     const turnId = event.turn_id ?? null;
     return {
-      state: { ...state, activeTurnId: turnId, assistantText: "" },
+      state: { ...state, activeTurnId: turnId, assistantText: "", thinking: null, tools: [], subagents: [] },
       effect: { type: "turn_started" },
     };
+  }
+  if (event.type === "thinking_delta") {
+    const delta = text(event.payload.delta ?? event.payload.text);
+    return delta ? changed(state, {
+      thinking: {
+        text: `${state.thinking?.text ?? ""}${delta}`,
+        status: "running",
+        path: state.thinking?.path ?? null,
+      },
+    }) : unchanged(state);
+  }
+  if (event.type === "thinking_finished") {
+    return changed(state, {
+      thinking: {
+        text: text(event.payload.text) || state.thinking?.text || "",
+        status: "finished",
+        path: text(event.payload.path) || state.thinking?.path || null,
+      },
+    });
+  }
+  if (event.type === "tool_started") {
+    const id = text(event.payload.tool_call_id) || `tool-${state.tools.length + 1}`;
+    const tool: ConversationProgressTool = {
+      id,
+      name: text(event.payload.tool_name) || "tool",
+      input: event.payload.tool_input ?? {},
+      output: null,
+      status: "running",
+      logId: null,
+      contentBlocks: [],
+    };
+    return changed(state, { tools: [...state.tools.filter((item) => item.id !== id), tool] });
+  }
+  if (event.type === "tool_finished") {
+    const explicitId = text(event.payload.tool_call_id);
+    const name = text(event.payload.tool_name) || "tool";
+    let index = explicitId ? state.tools.findIndex((item) => item.id === explicitId) : -1;
+    if (index < 0) {
+      for (let candidate = state.tools.length - 1; candidate >= 0; candidate -= 1) {
+        if (state.tools[candidate].name === name && state.tools[candidate].status === "running") {
+          index = candidate;
+          break;
+        }
+      }
+    }
+    const previous = index >= 0 ? state.tools[index] : null;
+    const finished: ConversationProgressTool = {
+      id: previous?.id ?? (explicitId || `tool-${state.tools.length + 1}`),
+      name,
+      input: event.payload.tool_input ?? previous?.input ?? {},
+      output: event.payload.output ?? null,
+      status: "finished",
+      logId: text(event.payload.log_id) || null,
+      contentBlocks: Array.isArray(event.payload.content_blocks) ? event.payload.content_blocks : [],
+    };
+    const tools = [...state.tools];
+    if (index >= 0) tools[index] = finished;
+    else tools.push(finished);
+    return changed(state, { tools });
+  }
+  if (event.type === "todo_updated" && Array.isArray(event.payload.items)) {
+    return changed(state, { todoItems: event.payload.items });
+  }
+  if (event.type === "context_usage_updated" && isRecord(event.payload.context_window_usage)) {
+    return changed(state, { contextUsage: event.payload.context_window_usage });
+  }
+  if (event.type === "subagent_activity") {
+    const name = text(event.payload.name ?? event.payload.actor) || "worker";
+    return changed(state, {
+      subagents: [...state.subagents.filter((item) => text(item.name ?? item.actor) !== name), { ...event.payload, name }],
+    });
   }
   if (event.type === "assistant_delta") {
     const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
@@ -50,7 +142,14 @@ export function transitionConversationEvent(state: ConversationState, event: Sid
   if (event.type === "turn_result") {
     const session = readSessionPayload(event.payload.session) ?? state.session;
     return {
-      state: { ...state, session, activeTurnId: null, assistantText: "" },
+      state: {
+        ...state,
+        session,
+        activeTurnId: null,
+        assistantText: "",
+        todoItems: Array.isArray(session?.todo_items) ? session.todo_items : state.todoItems,
+        contextUsage: isRecord(session?.context_window_usage) ? session.context_window_usage : state.contextUsage,
+      },
       effect: { type: "turn_completed" },
     };
   }
@@ -70,4 +169,16 @@ export function readSessionPayload(value: unknown): AgentSession | null {
 
 function unchanged(state: ConversationState): ConversationTransition {
   return { state, effect: { type: "none" } };
+}
+
+function changed(state: ConversationState, patch: Partial<ConversationState>): ConversationTransition {
+  return { state: { ...state, ...patch }, effect: { type: "none" } };
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

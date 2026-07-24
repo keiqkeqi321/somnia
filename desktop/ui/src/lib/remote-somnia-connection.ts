@@ -1,4 +1,4 @@
-import type { AgentSession, SidecarEvent, TurnStartResponse } from "../types";
+import type { AgentSession, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse } from "../types";
 import type {
   SessionCreateCommand,
   SessionDeleteCommand,
@@ -88,6 +88,34 @@ export class RemoteSomniaConnection implements SomniaConnection {
     }
     if (command.type === "session.delete") return this.sendRequest("session.delete", { session_id: command.sessionId });
     return this.sendRequest("turn.start", { session_id: command.sessionId, user_input: command.userInput });
+  }
+
+  listToolLogs(limit = 24): Promise<ToolLogIndexEntry[]> {
+    return this.sendRequest<{ tool_logs: ToolLogIndexEntry[] }>("tool_log.list", { limit }).then((result) => result.tool_logs);
+  }
+
+  getToolLog(logId: string): Promise<ToolLogDetail> {
+    return this.sendRequest("tool_log.get", { log_id: logId });
+  }
+
+  getThinkingLog(path: string): Promise<ThinkingLogDetail> {
+    return this.sendRequest("thinking_log.get", { path });
+  }
+
+  listTeamMembers(sessionId: string): Promise<TeamMemberActivity[]> {
+    return this.sendRequest<{ members: TeamMemberActivity[] }>("team.members", { session_id: sessionId }).then((result) => result.members);
+  }
+
+  getTeamLog(name: string, sessionId: string): Promise<TeamLogDetail> {
+    return this.sendRequest("team.log", { name, session_id: sessionId });
+  }
+
+  listTasks(sessionId: string): Promise<TaskGraphItem[]> {
+    return this.sendRequest<{ tasks: TaskGraphItem[] }>("task.list", { session_id: sessionId }).then((result) => result.tasks);
+  }
+
+  getWorkspaceImage(path: string): Promise<string> {
+    return this.sendRequest<{ data_url: string }>("workspace.image", { path }).then((result) => result.data_url);
   }
 
   subscribe(listener: SomniaConnectionListener): () => void {

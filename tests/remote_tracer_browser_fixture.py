@@ -103,13 +103,29 @@ def main() -> int:
 
 
 def _streaming_complete():
+    final_text = """Hello remote
+
+## Rich output
+
+```python
+print("remote")
+```
+
+```mermaid
+flowchart LR
+  Device --> Relay --> Web
+```
+
+![inline pixel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)
+"""
+
     def complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
         del system_prompt, messages, tools, should_interrupt
         if text_callback is not None:
             text_callback("Hello ")
             time.sleep(0.75)
-            text_callback("remote")
-        return AssistantTurn(stop_reason="end_turn", text_blocks=["Hello remote"])
+            text_callback(final_text.removeprefix("Hello "))
+        return AssistantTurn(stop_reason="end_turn", text_blocks=[final_text])
 
     return complete
 
