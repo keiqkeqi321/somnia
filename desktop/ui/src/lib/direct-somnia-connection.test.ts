@@ -34,8 +34,10 @@ describeSomniaConnectionContract(
   () => {
     const socket = new FakeEventSocket();
     const client = {
-      createSession: async () => loadedSession,
-      loadSession: async () => loadedSession,
+    createSession: async () => loadedSession,
+    listSessions: async () => [loadedSession],
+    loadSession: async () => loadedSession,
+    deleteSession: async (sessionId: string) => ({ session_id: sessionId, deleted: true }),
       startTurn: async () => ({ turn_id: "turn-1", session_id: loadedSession.id }),
       createEventSocket: () => socket,
     };

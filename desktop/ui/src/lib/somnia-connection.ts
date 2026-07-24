@@ -15,6 +15,10 @@ export interface SessionLoadQuery {
   sessionId: string;
 }
 
+export interface SessionListQuery {
+  type: "session.list";
+}
+
 export interface TurnStartCommand {
   type: "turn.start";
   sessionId: string;
@@ -25,9 +29,16 @@ export interface SessionCreateCommand {
   type: "session.create";
 }
 
+export interface SessionDeleteCommand {
+  type: "session.delete";
+  sessionId: string;
+}
+
 export interface SomniaConnection {
   query(query: SessionLoadQuery): Promise<AgentSession>;
+  query(query: SessionListQuery): Promise<AgentSession[]>;
   execute(command: SessionCreateCommand): Promise<AgentSession>;
+  execute(command: SessionDeleteCommand): Promise<{ session_id: string; deleted: boolean }>;
   execute(command: TurnStartCommand): Promise<TurnStartResponse>;
   subscribe(listener: SomniaConnectionListener): () => void;
   connectionState(): SomniaConnectionState;
@@ -44,7 +55,9 @@ interface SomniaEventSocket {
 
 export interface DirectSomniaClient {
   createSession(): Promise<AgentSession>;
+  listSessions(): Promise<AgentSession[]>;
   loadSession(sessionId: string): Promise<AgentSession>;
+  deleteSession(sessionId: string): Promise<{ session_id: string; deleted: boolean }>;
   startTurn(sessionId: string, userInput: string | Record<string, unknown>): Promise<TurnStartResponse>;
   createEventSocket(wsUrl?: string): SomniaEventSocket;
 }
@@ -59,16 +72,21 @@ export class DirectSomniaConnection implements SomniaConnection {
     private readonly wsUrl?: string,
   ) {}
 
-  query(query: SessionLoadQuery): Promise<AgentSession> {
+  query(query: SessionLoadQuery): Promise<AgentSession>;
+  query(query: SessionListQuery): Promise<AgentSession[]>;
+  query(query: SessionLoadQuery | SessionListQuery): Promise<AgentSession | AgentSession[]> {
+    if (query.type === "session.list") return this.client.listSessions();
     return this.client.loadSession(query.sessionId);
   }
 
   execute(command: SessionCreateCommand): Promise<AgentSession>;
+  execute(command: SessionDeleteCommand): Promise<{ session_id: string; deleted: boolean }>;
   execute(command: TurnStartCommand): Promise<TurnStartResponse>;
-  execute(command: SessionCreateCommand | TurnStartCommand): Promise<AgentSession | TurnStartResponse> {
+  execute(command: SessionCreateCommand | SessionDeleteCommand | TurnStartCommand): Promise<AgentSession | TurnStartResponse | { session_id: string; deleted: boolean }> {
     if (command.type === "session.create") {
       return this.client.createSession();
     }
+    if (command.type === "session.delete") return this.client.deleteSession(command.sessionId);
     return this.client.startTurn(command.sessionId, command.userInput);
   }
 

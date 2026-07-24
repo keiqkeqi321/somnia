@@ -179,6 +179,7 @@ class RemoteConnectorTests(unittest.TestCase):
             bridge = LocalSidecarBridge(f"http://127.0.0.1:{server.server_port}")
 
             self.assertEqual(bridge.execute("session.create", {}), {"id": "session-1", "messages": []})
+            self.assertEqual(bridge.execute("session.list", {}), {"sessions": [{"id": "session-1", "messages": []}]})
             self.assertEqual(
                 bridge.execute("session.load", {"session_id": "session-1"}),
                 {"id": "session-1", "messages": [{"role": "assistant", "content": "done"}]},
@@ -186,6 +187,10 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(
                 bridge.execute("turn.start", {"session_id": "session-1", "user_input": "hello"}),
                 {"turn_id": "turn-1", "session_id": "session-1", "accepted_input": "hello"},
+            )
+            self.assertEqual(
+                bridge.execute("session.delete", {"session_id": "session-1"}),
+                {"session_id": "session-1", "deleted": True},
             )
         finally:
             server.shutdown()
@@ -228,10 +233,19 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         self._send({"error": "not found"}, status=404)
 
     def do_GET(self) -> None:
+        if self.path == "/sessions":
+            self._send({"sessions": [{"id": "session-1", "messages": []}]})
+            return
         if self.path == "/sessions/session-1":
             self._send(
                 {"session": {"id": "session-1", "messages": [{"role": "assistant", "content": "done"}]}},
             )
+            return
+        self._send({"error": "not found"}, status=404)
+
+    def do_DELETE(self) -> None:
+        if self.path == "/sessions/session-1":
+            self._send({"session_id": "session-1", "deleted": True})
             return
         self._send({"error": "not found"}, status=404)
 

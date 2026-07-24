@@ -25,10 +25,13 @@ class FakeRelaySocket {
 
   send(rawMessage: string) {
     const request = JSON.parse(rawMessage) as { request_id: string; method: string };
-    const result =
-      request.method === "turn.start"
-        ? { turn_id: "turn-1", session_id: loadedSession.id }
-        : loadedSession;
+    const result = request.method === "turn.start"
+      ? { turn_id: "turn-1", session_id: loadedSession.id }
+      : request.method === "session.list"
+        ? { sessions: [loadedSession] }
+        : request.method === "session.delete"
+          ? { session_id: loadedSession.id, deleted: true }
+          : loadedSession;
     this.emit({ kind: "response", request_id: request.request_id, ok: true, result });
   }
 

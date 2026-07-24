@@ -1,6 +1,8 @@
 import type { AgentSession, SidecarEvent, TurnStartResponse } from "../types";
 import type {
   SessionCreateCommand,
+  SessionDeleteCommand,
+  SessionListQuery,
   SessionLoadQuery,
   SomniaConnection,
   SomniaConnectionListener,
@@ -68,16 +70,23 @@ export class RemoteSomniaConnection implements SomniaConnection {
     this.reconnectDelayMs = Math.max(0, options.reconnectDelayMs ?? 1000);
   }
 
-  query(query: SessionLoadQuery): Promise<AgentSession> {
+  query(query: SessionLoadQuery): Promise<AgentSession>;
+  query(query: SessionListQuery): Promise<AgentSession[]>;
+  query(query: SessionLoadQuery | SessionListQuery): Promise<AgentSession | AgentSession[]> {
+    if (query.type === "session.list") {
+      return this.sendRequest<{ sessions: AgentSession[] }>("session.list", {}).then((payload) => payload.sessions);
+    }
     return this.sendRequest("session.load", { session_id: query.sessionId });
   }
 
   execute(command: SessionCreateCommand): Promise<AgentSession>;
+  execute(command: SessionDeleteCommand): Promise<{ session_id: string; deleted: boolean }>;
   execute(command: TurnStartCommand): Promise<TurnStartResponse>;
-  execute(command: SessionCreateCommand | TurnStartCommand): Promise<AgentSession | TurnStartResponse> {
+  execute(command: SessionCreateCommand | SessionDeleteCommand | TurnStartCommand): Promise<AgentSession | TurnStartResponse | { session_id: string; deleted: boolean }> {
     if (command.type === "session.create") {
       return this.sendRequest("session.create", {});
     }
+    if (command.type === "session.delete") return this.sendRequest("session.delete", { session_id: command.sessionId });
     return this.sendRequest("turn.start", { session_id: command.sessionId, user_input: command.userInput });
   }
 

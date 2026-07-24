@@ -54,6 +54,15 @@ class LocalSidecarBridge:
             session_id = _required_text(params, "session_id")
             payload = self._request("GET", f"/sessions/{quote(session_id, safe='')}", None)
             return _required_mapping(payload, "session")
+        if method == "session.list":
+            payload = self._request("GET", "/sessions", None)
+            sessions = payload.get("sessions")
+            if not isinstance(sessions, list):
+                raise RuntimeError("Sidecar response did not include sessions.")
+            return {"sessions": sessions}
+        if method == "session.delete":
+            session_id = _required_text(params, "session_id")
+            return self._request("DELETE", f"/sessions/{quote(session_id, safe='')}", None)
         if method == "turn.start":
             session_id = _required_text(params, "session_id")
             if "user_input" not in params:

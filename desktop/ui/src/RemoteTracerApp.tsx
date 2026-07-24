@@ -14,6 +14,8 @@ export default function RemoteTracerApp() {
   const [projectId, setProjectId] = useState(defaults.projectId);
   const [connectionState, setConnectionState] = useState("disconnected");
   const [session, setSession] = useState<AgentSession | null>(null);
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [archivedSessionIds, setArchivedSessionIds] = useState<Set<string>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
   const [streamingText, setStreamingText] = useState("");
@@ -29,6 +31,7 @@ export default function RemoteTracerApp() {
       connectionRef.current = null;
       conversationRef.current = null;
       setSession(null);
+      setSessions([]);
       setConnectionState("disconnected");
     }
   }
@@ -49,6 +52,7 @@ export default function RemoteTracerApp() {
       if (!await access.verifyAccess()) return;
       connectionRef.current?.close();
       setSession(null);
+      setSessions([]);
       setPendingPrompt("");
       setStreamingText("");
       conversationRef.current = null;
@@ -70,6 +74,9 @@ export default function RemoteTracerApp() {
     if (notification.kind === "state") {
       setConnectionState(notification.state);
       access.setNotice(notification.error ?? connectionStateMessage(notification.state));
+      if (notification.state === "connected") {
+        void connectionRef.current?.query({ type: "session.list" }).then((loaded) => setSessions(loaded)).catch((error) => access.setNotice(formatError(error)));
+      }
       return;
     }
     if (notification.kind === "protocol_error") {
@@ -122,12 +129,37 @@ export default function RemoteTracerApp() {
       const created = await connection.execute({ type: "session.create" });
       conversationRef.current = createConversationState(created);
       setSession(created);
+      setSessions((current) => [created, ...current]);
       access.setNotice(`Session ${created.id} is ready.`);
     } catch (error) {
       access.setNotice(formatError(error));
     } finally {
       setConversationBusy(false);
     }
+  }
+
+  async function selectSession(sessionId: string) {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      const loaded = await connection.query({ type: "session.load", sessionId });
+      setSession(loaded);
+      conversationRef.current = createConversationState(loaded);
+    } catch (error) {
+      access.setNotice(formatError(error));
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    const connection = connectionRef.current;
+    if (!connection) return;
+    try {
+      const result = await connection.execute({ type: "session.delete", sessionId });
+      if (!result.deleted) throw new Error("Session was already deleted.");
+      setSessions((current) => current.filter((candidate) => candidate.id !== sessionId));
+      setArchivedSessionIds((current) => { const next = new Set(current); next.delete(sessionId); return next; });
+      if (session?.id === sessionId) { setSession(null); conversationRef.current = null; }
+    } catch (error) { access.setNotice(formatError(error)); }
   }
 
   async function sendPrompt() {
@@ -156,6 +188,28 @@ export default function RemoteTracerApp() {
       setProjectId(projects[0].project_id);
     }
   }, [projectId, projects]);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(archiveStorageKey(access.deviceId, projectId));
+    try {
+      setArchivedSessionIds(new Set(JSON.parse(raw ?? "[]") as string[]));
+    } catch {
+      setArchivedSessionIds(new Set());
+    }
+  }, [access.deviceId, projectId]);
+
+  function setArchived(sessionId: string) {
+    setArchivedSessionIds((current) => {
+      const next = new Set(current).add(sessionId);
+      localStorage.setItem(archiveStorageKey(access.deviceId, projectId), JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  function restoreArchived() {
+    localStorage.removeItem(archiveStorageKey(access.deviceId, projectId));
+    setArchivedSessionIds(new Set());
+  }
 
   function switchTarget(deviceId: string, nextProjectId: string) {
     connectionRef.current?.close();
@@ -216,7 +270,9 @@ export default function RemoteTracerApp() {
       <section className="remote-workspace">
         <aside className="remote-session-pane">
           <div className="remote-pane-heading"><span>Session</span><button type="button" onClick={() => void createSession()} disabled={!connected || busy}>New</button></div>
-          {session ? <button type="button" className="remote-session-row remote-session-row-selected"><strong>{session.id}</strong><span>{session.messages.length} messages</span></button> : <p className="remote-empty">No active Session</p>}
+          {sessions.filter((candidate) => !archivedSessionIds.has(candidate.id)).map((candidate) => <div className={`remote-session-row ${session?.id === candidate.id ? "remote-session-row-selected" : ""}`} key={candidate.id}><button type="button" onClick={() => void selectSession(candidate.id)}><strong>{candidate.preview ?? candidate.id}</strong><span>{candidate.messages.length} messages</span></button><button type="button" onClick={() => setArchived(candidate.id)}>Archive</button><button type="button" onClick={() => void deleteSession(candidate.id)}>Delete</button></div>)}
+          {Array.from(archivedSessionIds).length ? <button type="button" onClick={restoreArchived}>Restore archived</button> : null}
+          {!sessions.length ? <p className="remote-empty">No active Session</p> : null}
         </aside>
         <section className="remote-conversation" aria-label="Conversation">
           <div className="remote-messages">
@@ -253,4 +309,8 @@ function connectionStateMessage(state: string): string {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function archiveStorageKey(deviceId: string, projectId: string): string {
+  return `somnia.remote.archived-sessions:${deviceId}:${projectId}`;
 }

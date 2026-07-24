@@ -27,6 +27,10 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await expect(page.locator(".remote-message-streaming p")).toHaveText("Hello ");
   await expect(page.locator(".remote-message-assistant:not(.remote-message-streaming) p")).toHaveText("Hello remote");
   await expect(page.locator(".remote-message-streaming")).toHaveCount(0);
+  await page.getByRole("button", { name: "Archive" }).first().click();
+  await expect(page.getByRole("button", { name: "Restore archived" })).toBeVisible();
+  await page.getByRole("button", { name: "Restore archived" }).click();
+  await expect(page.getByRole("button", { name: "Archive" }).first()).toBeVisible();
   const overflowing = await page.evaluate(() => Array.from(document.querySelectorAll("body *"))
     .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
     .map((element) => ({

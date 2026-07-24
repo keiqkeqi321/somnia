@@ -23,7 +23,9 @@ export function describeSomniaConnectionContract(
       harness.openStream();
 
       await expect(connection.execute({ type: "session.create" })).resolves.toEqual(loadedSession);
+      await expect(connection.query({ type: "session.list" })).resolves.toEqual([loadedSession]);
       await expect(connection.query({ type: "session.load", sessionId: loadedSession.id })).resolves.toEqual(loadedSession);
+      await expect(connection.execute({ type: "session.delete", sessionId: loadedSession.id })).resolves.toEqual({ session_id: loadedSession.id, deleted: true });
       await expect(
         connection.execute({ type: "turn.start", sessionId: loadedSession.id, userInput: "Continue" }),
       ).resolves.toEqual({ turn_id: "turn-1", session_id: loadedSession.id });
