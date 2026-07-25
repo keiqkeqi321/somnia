@@ -64,10 +64,11 @@ def main() -> int:
 
     try:
         wait_ready("Relay", relay, f"http://127.0.0.1:{args.relay_port}/health")
-        wait_ready("Web preview", web, f"http://127.0.0.1:{args.web_port}/?remote=1")
+        wait_ready("Web preview", web, f"http://127.0.0.1:{args.web_port}/?remote=1&relay=http://127.0.0.1:{args.relay_port}")
         wait_ready("Sidecar", sidecar, f"http://127.0.0.1:{args.sidecar_port}/health")
 
-        web_url = f"http://127.0.0.1:{args.web_port}/?remote=1"
+        # The local preview server only serves static assets; route API/WSS calls to Relay explicitly.
+        web_url = f"http://127.0.0.1:{args.web_port}/?remote=1&relay=http://127.0.0.1:{args.relay_port}"
         webbrowser.open(web_url)
         print("\n1. Sign in at the opened Web page.")
         print("2. Create a Device pairing code.")
