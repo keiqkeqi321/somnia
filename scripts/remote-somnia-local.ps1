@@ -18,6 +18,7 @@ $Workspace = (Resolve-Path $Workspace).Path
 $dbDirectory = Join-Path $repo ".scratch\remote-somnia"
 $dbPath = (Resolve-Path $dbDirectory).Path.Replace("\", "/")
 $identityPath = Join-Path $HOME ".open_somnia\remote\device-identity.json"
+$registryPath = Join-Path $HOME ".open_somnia\remote\projects.json"
 $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
 if ($pyLauncher) {
     # Find the highest Python 3.x version >= 3.11
@@ -120,10 +121,19 @@ Clear-OwnedListener $WebPort "(preview_server\.py|http\.server)"
 Clear-OwnedListener $SidecarPort "desktop\.backend\.bootstrap"
 
 Write-Host "Starting the supervised local stack..." -ForegroundColor Cyan
+Write-Host "Registering local Project '$Project'..." -ForegroundColor DarkGray
+& $python -m open_somnia.remote.cli connector register `
+    --project $Project `
+    --path $Workspace `
+    --registry $registryPath
+if ($LASTEXITCODE -ne 0) { throw "Project registration failed." }
+
 & $python (Join-Path $PSScriptRoot "remote_somnia_supervisor.py") `
     --repo $repo `
     --workspace $Workspace `
     --project $Project `
+    --registry $registryPath `
+    --managed `
     --relay-port $RelayPort `
     --sidecar-port $SidecarPort `
     --web-port $WebPort `

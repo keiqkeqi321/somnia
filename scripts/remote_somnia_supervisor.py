@@ -18,6 +18,8 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--project", default="default-project")
+    parser.add_argument("--registry", type=Path)
+    parser.add_argument("--managed", action="store_true", help="Run Connector-owned managed Project Runtimes.")
     parser.add_argument("--relay-port", type=int, default=8787)
     parser.add_argument("--sidecar-port", type=int, default=18765)
     parser.add_argument("--web-port", type=int, default=4173)
@@ -46,28 +48,31 @@ def main() -> int:
         [sys.executable, "scripts/preview_server.py", "--host", "127.0.0.1", "--port", str(args.web_port)],
         repo / "desktop" / "ui",
     )
-    sidecar = start(
-        "sidecar",
-        [
-            sys.executable,
-            "-m",
-            "desktop.backend.bootstrap",
-            "--workspace",
-            str(args.workspace.resolve()),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(args.sidecar_port),
-            "--disable-mcp",
-            "--quiet",
-        ],
-        repo,
-    )
+    sidecar = None
+    if not args.managed:
+        sidecar = start(
+            "sidecar",
+            [
+                sys.executable,
+                "-m",
+                "desktop.backend.bootstrap",
+                "--workspace",
+                str(args.workspace.resolve()),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(args.sidecar_port),
+                "--disable-mcp",
+                "--quiet",
+            ],
+            repo,
+        )
 
     try:
         wait_ready("Relay", relay, f"http://127.0.0.1:{args.relay_port}/health")
         wait_ready("Web preview", web, f"http://127.0.0.1:{args.web_port}/?remote=1&relay=http://127.0.0.1:{args.relay_port}")
-        wait_ready("Sidecar", sidecar, f"http://127.0.0.1:{args.sidecar_port}/health")
+        if sidecar is not None:
+            wait_ready("Sidecar", sidecar, f"http://127.0.0.1:{args.sidecar_port}/health")
 
         # The local preview server only serves static assets; route API/WSS calls to Relay explicitly.
         web_url = f"http://127.0.0.1:{args.web_port}/?remote=1&relay=http://127.0.0.1:{args.relay_port}"
@@ -100,23 +105,22 @@ def main() -> int:
                 cwd=repo,
                 check=True,
             )
-        connector = start(
+        connector_command = [
+            sys.executable,
+            "-m",
+            "open_somnia.remote.cli",
             "connector",
-            [
-                sys.executable,
-                "-m",
-                "open_somnia.remote.cli",
-                "connector",
-                "run",
-                "--project",
-                args.project,
-                "--sidecar",
-                f"http://127.0.0.1:{args.sidecar_port}",
-                "--identity",
-                str(args.identity),
-            ],
-            repo,
-        )
+            "run",
+            "--identity",
+            str(args.identity),
+        ]
+        if args.managed:
+            if args.registry is None:
+                raise RuntimeError("Managed Connector mode requires --registry.")
+            connector_command.extend(("--registry", str(args.registry)))
+        else:
+            connector_command.extend(("--project", args.project, "--sidecar", f"http://127.0.0.1:{args.sidecar_port}"))
+        connector = start("connector", connector_command, repo)
         time.sleep(2)
         if connector.poll() is not None:
             raise RuntimeError("Connector exited during startup.")
@@ -124,7 +128,10 @@ def main() -> int:
         print("\nReady. Keep the Web page open; it will retain your login, select the paired Device, and connect automatically when the Connector is online.")
         print("Keep this window open. Press Ctrl+C to stop the entire local stack.")
         while True:
-            for name, process in (("Relay", relay), ("Web preview", web), ("Sidecar", sidecar), ("Connector", connector)):
+            processes_to_check = [("Relay", relay), ("Web preview", web), ("Connector", connector)]
+            if sidecar is not None:
+                processes_to_check.insert(2, ("Sidecar", sidecar))
+            for name, process in processes_to_check:
                 if process.poll() is not None:
                     raise RuntimeError(f"{name} exited unexpectedly.")
             time.sleep(1)
