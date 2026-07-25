@@ -89,6 +89,14 @@ export default function RemoteTracerApp() {
   }, [access.pairingCode, access.pairingExpiresAt]);
 
   useEffect(() => {
+    if (!access.authenticated) return;
+    const timer = window.setInterval(() => {
+      void access.refreshDevices().catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [access.authenticated]);
+
+  useEffect(() => {
     setDraft(readRemoteDraft(access.deviceId, projectId, session?.id ?? ""));
     setHistoryCursor(null);
     setPendingImages([]);
@@ -180,6 +188,9 @@ export default function RemoteTracerApp() {
   function handleConnectionNotification(notification: SomniaConnectionNotification) {
     if (notification.kind === "state") {
       setConnectionState(notification.state);
+      if (notification.state === "disconnected" || notification.state === "error") {
+        autoConnectTargetRef.current = "";
+      }
       access.setNotice(notification.error ?? connectionStateMessage(notification.state));
       if (notification.state === "connected") {
         void connectionRef.current?.query({ type: "session.list" }).then((loaded) => {
@@ -462,7 +473,7 @@ export default function RemoteTracerApp() {
   const projects = selectedDevice?.projects ?? [];
 
   useEffect(() => {
-    if (!access.authenticated || !access.pairingCode || selectedDevice?.status !== "online" || !projectId || connectionState !== "disconnected" || busy) return;
+    if (!access.authenticated || selectedDevice?.status !== "online" || !projectId || !["disconnected", "error"].includes(connectionState) || busy) return;
     const target = `${access.deviceId}:${projectId}`;
     if (autoConnectTargetRef.current === target) return;
     autoConnectTargetRef.current = target;
