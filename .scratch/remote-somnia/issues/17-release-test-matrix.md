@@ -2,7 +2,7 @@
 
 Blocked by: none
 
-Status: in_progress
+Status: completed
 
 ## Question
 
@@ -30,3 +30,20 @@ causes each, and what exact test matrix is required before release?
 - One Sidecar HTTP provider-switch test still times out even though the same
   Runtime operation succeeds directly; the HTTP response/lifecycle path
   remains unresolved.
+
+## Resolution
+
+The remaining provider-switch failure was response-read budget, not a Runtime
+or Python-version incompatibility. Provider construction and configuration
+persistence can exceed the old 2-second HTTP read timeout. Sidecar request
+reads now allow 5 seconds while connection establishment remains 2 seconds.
+The full Sidecar suite (15 tests) passes, as does the 310-test required
+regression set and the remote tracer/AppService/team/subagent groups.
+
+The release matrix still requires separate execution of the privacy harness,
+frontend Playwright matrix, restart/replay/revocation checks, and soak/load
+tests before production approval.
+
+## Comments
+
+- 2026-07-25: Baseline failures resolved; request timeout policy documented.

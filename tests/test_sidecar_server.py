@@ -116,7 +116,10 @@ class SidecarServerTests(unittest.TestCase):
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=2.0) as response:
+        # Provider switches include lazy client construction and config
+        # persistence; keep connection checks short but allow the response
+        # up to the Sidecar's normal request budget.
+        with urllib.request.urlopen(request, timeout=5.0) as response:
             body = response.read().decode("utf-8")
             return response.status, json.loads(body)
 
