@@ -8,6 +8,7 @@ import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
 import type { SomniaConnectionNotification } from "./lib/somnia-connection";
 import { useRemoteAccess } from "./lib/use-remote-access";
 import { RemoteConversationRow } from "./RemoteRichContent";
+import { deriveRemoteConnectionState, remoteConnectionCopy } from "./lib/remote-connection-state";
 
 const defaults = readConnectionDefaults();
 
@@ -563,7 +564,7 @@ export default function RemoteTracerApp() {
   if (!access.authenticated) {
     return (
       <main className="remote-shell remote-shell-login">
-        <RemoteHeader state={connectionState} deviceId="" projectId={projectId} />
+        <RemoteHeader state="unpaired" deviceStatus="offline" deviceId="" projectId={projectId} />
         <form className="remote-login" onSubmit={(event) => { event.preventDefault(); void access.signIn(); }}>
           <h1>Somnia Remote</h1>
           {!isSameOriginRelay(access.relayUrl) ? <label>Relay<input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} /></label> : null}
@@ -578,7 +579,12 @@ export default function RemoteTracerApp() {
 
   return (
     <main className="remote-shell">
-      <RemoteHeader state={connectionState} deviceId={access.deviceId} projectId={projectId} />
+      <RemoteHeader
+        state={deriveRemoteConnectionState({ transport: connectionState, deviceStatus: selectedDevice?.status, hasProject: Boolean(projectId) })}
+        deviceStatus={selectedDevice?.status ?? "offline"}
+        deviceId={access.deviceId}
+        projectId={projectId}
+      />
       <section className="remote-connection" aria-label="Remote connection">
         <label>Device
           <select aria-label="Device" value={access.deviceId} onChange={(event) => {
@@ -659,8 +665,9 @@ export default function RemoteTracerApp() {
   );
 }
 
-function RemoteHeader({ state, deviceId, projectId }: { state: string; deviceId: string; projectId: string }) {
-  return <header className="remote-header"><div><strong>Somnia Remote</strong><span className={`remote-status remote-status-${state}`}>{state}</span></div><span className="remote-project-label">{deviceId ? `${deviceId} / ${projectId}` : projectId}</span></header>;
+function RemoteHeader({ state, deviceStatus, deviceId, projectId }: { state: Parameters<typeof remoteConnectionCopy>[0]; deviceStatus: string; deviceId: string; projectId: string }) {
+  const copy = remoteConnectionCopy(state);
+  return <header className="remote-header"><div><strong>Somnia Remote</strong><span className={`remote-status remote-status-${state}`} title={copy.action}>{copy.label}</span></div><span className="remote-project-label">{deviceId ? `${deviceId} / ${projectId} (${deviceStatus})` : projectId}</span></header>;
 }
 
 function readConnectionDefaults() {
@@ -753,10 +760,10 @@ function writeRemoteDraft(deviceId: string, projectId: string, sessionId: string
 }
 
 function connectionStateMessage(state: string): string {
-  if (state === "connected") return "Relay connected.";
-  if (state === "connecting") return "Connecting to Relay...";
-  if (state === "error") return "Relay connection failed.";
-  return "Relay disconnected.";
+  if (state === "connected") return "Computer connection is ready.";
+  if (state === "connecting") return "Connecting to computer...";
+  if (state === "error") return "Computer connection failed. Your draft is kept locally.";
+  return "Computer disconnected. Your draft is kept locally.";
 }
 
 function formatError(error: unknown): string {
