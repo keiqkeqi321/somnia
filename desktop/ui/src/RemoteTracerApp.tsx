@@ -75,7 +75,9 @@ export default function RemoteTracerApp() {
         return;
       }
       void access.refreshDevices().then((devices) => {
-        const newlyPaired = devices.find((device) => device.name === access.pairingName || device.status === "online");
+        // Do not stop polling while the newly paired Device is still offline; an unrelated
+        // online Device must never trigger an automatic connection.
+        const newlyPaired = devices.find((device) => device.name === access.pairingName && device.status === "online");
         if (newlyPaired && Date.now() - startedAt > 500) {
           access.setDeviceId(newlyPaired.device_id);
           access.setNotice(`Device ${newlyPaired.name} is online and ready to connect.`);
