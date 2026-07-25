@@ -19,3 +19,12 @@ revoked credentials active?
 - A maintenance window, owner, go/no-go checklist, and abort thresholds are
   named.
 
+## Recommended baseline
+
+Use one Linux cloud host with Docker Compose for Web and Relay, Caddy as the
+public HTTPS/WSS edge, and managed PostgreSQL for allowed metadata. Keep the
+Connector outside the cloud on the controlled device. Store secrets in the
+host's secret mechanism or a `0600` environment file outside the repository;
+never pass them on the Docker command line. Rollback uses versioned images and
+an additive database migration policy, with Caddy routing switched only after
+health checks pass.

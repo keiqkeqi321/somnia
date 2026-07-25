@@ -35,3 +35,5 @@ the reverse proxy, TLS terminates there, and the proxy routes `/`, `/api/`, and
 ## Comments
 
 - 2026-07-25: Same-origin path design selected by the user.
+- 2026-07-25: Recommended deployment baseline is a Linux host with Docker
+  Compose and Caddy; Relay and Web remain private container services.

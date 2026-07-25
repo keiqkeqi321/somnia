@@ -28,8 +28,10 @@ topology.
 ## Not yet specified
 
 - Production hosting provider, certificate automation, and service manager are
-  not chosen.
-- The final observability vendor and retention controls are not chosen.
+  not chosen. Recommended baseline: a Linux cloud host with Docker Compose,
+  Caddy, and managed PostgreSQL.
+- The final observability vendor and retention controls are not chosen; start
+  with host/service logs with payload logging disabled.
 - The release owner and maintenance window are not assigned.
 
 ## Out of scope
