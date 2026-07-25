@@ -751,7 +751,12 @@ def _ensure_global_builtin_notify_hooks(*, config_path: Path | None = None) -> N
     base_lines = _strip_managed_hook_entries(_strip_builtin_hook_block(lines), managed_by=BUILTIN_NOTIFY_MANAGER)
     raw = _read_toml(config_path)
     existing_items = _builtin_notify_items(raw)
-    target_script = _install_builtin_notify_assets()
+    try:
+        target_script = _install_builtin_notify_assets()
+    except PermissionError:
+        # Notification hooks are optional; a read-only home must not make
+        # otherwise valid runtime or Sidecar configuration fail to load.
+        return
     desired_hooks = [
         existing_items.get(event, {"event": event, "enabled": True})
         for event in ("AssistantResponse", "UserChoiceRequested", "TurnFailed")

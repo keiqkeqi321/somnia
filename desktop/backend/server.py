@@ -714,11 +714,20 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "server name is required.")
         try:
             config_path = _persist_mcp_server_enabled(self.settings.workspace_root, normalized_name, bool(enabled))
-            self.reload_mcp_runtime()
+            registry = getattr(self.runtime, "mcp_registry", None)
+            set_server_enabled = getattr(registry, "set_server_enabled", None)
+            if callable(set_server_enabled):
+                server = set_server_enabled(normalized_name, bool(enabled), registry=self.runtime.registry)
+                self._mark_tool_registry_changed()
+            else:
+                self.reload_mcp_runtime()
+                server = next(
+                    (item for item in self.mcp_servers_payload()["servers"] if item.get("name") == normalized_name),
+                    None,
+                )
         except Exception as exc:
             action = "enable" if enabled else "disable"
             raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, f"MCP {action} failed for '{normalized_name}': {exc}") from exc
-        server = next((item for item in self.mcp_servers_payload()["servers"] if item.get("name") == normalized_name), None)
         if server is None:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"MCP server '{normalized_name}' was not found after updating {config_path}.")
         return {

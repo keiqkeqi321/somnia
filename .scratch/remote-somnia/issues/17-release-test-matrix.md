@@ -2,7 +2,7 @@
 
 Blocked by: none
 
-Status: ready-for-agent
+Status: in_progress
 
 ## Question
 
@@ -19,3 +19,14 @@ causes each, and what exact test matrix is required before release?
   tests have explicit commands and pass criteria.
 - The matrix is runnable in CI and in a pre-production environment.
 
+## Findings
+
+- The required CLI/process/REPL/runtime regression set passes 310 tests.
+- Remote tracer, AppService, teammate, and subagent suites pass.
+- Two Sidecar failures caused by read-only global builtin-notify hook assets
+  are fixed by making optional hook bootstrap permission-tolerant.
+- MCP enable/disable now uses the registry's public mutation seam and its
+  endpoint regression passes.
+- One Sidecar HTTP provider-switch test still times out even though the same
+  Runtime operation succeeds directly; the HTTP response/lifecycle path
+  remains unresolved.
