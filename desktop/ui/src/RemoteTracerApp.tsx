@@ -56,6 +56,15 @@ export default function RemoteTracerApp() {
   }, [access.deviceId, projectId]);
 
   useEffect(() => {
+    const currentDevice = access.devices.find((device) => device.device_id === access.deviceId);
+    if (!access.deviceId || !currentDevice) return;
+    const available = currentDevice.projects;
+    if (available.length > 0 && !available.some((project) => project.project_id === projectId)) {
+      setProjectId(available[0].project_id);
+    }
+  }, [access.deviceId, access.devices, projectId]);
+
+  useEffect(() => {
     if (!access.pairingCode || !access.pairingExpiresAt) return;
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
@@ -169,7 +178,12 @@ export default function RemoteTracerApp() {
       setConnectionState(notification.state);
       access.setNotice(notification.error ?? connectionStateMessage(notification.state));
       if (notification.state === "connected") {
-        void connectionRef.current?.query({ type: "session.list" }).then((loaded) => setSessions(loaded)).catch((error) => access.setNotice(formatError(error)));
+        void connectionRef.current?.query({ type: "session.list" }).then((loaded) => {
+          setSessions(loaded);
+          const savedSessionId = readRemoteLastSession(access.deviceId, projectId);
+          const saved = loaded.find((candidate) => candidate.id === savedSessionId);
+          if (saved) void selectSession(saved.id);
+        }).catch((error) => access.setNotice(formatError(error)));
       }
       return;
     }
@@ -241,6 +255,7 @@ export default function RemoteTracerApp() {
       conversationRef.current = createConversationState(created);
       setProgress(conversationRef.current);
       setSession(created);
+      rememberRemoteLastSession(access.deviceId, projectId, created.id);
       setSessions((current) => [created, ...current]);
       access.setNotice(`Session ${created.id} is ready.`);
     } catch (error) {
@@ -256,6 +271,7 @@ export default function RemoteTracerApp() {
     try {
       const loaded = await connection.query({ type: "session.load", sessionId });
       setSession(loaded);
+      rememberRemoteLastSession(access.deviceId, projectId, loaded.id);
       conversationRef.current = createConversationState(loaded);
       setProgress(conversationRef.current);
       setQueuedPrompts([]);
@@ -490,6 +506,7 @@ export default function RemoteTracerApp() {
     setConnectionState("disconnected");
     access.setDeviceId(deviceId);
     setProjectId(nextProjectId);
+    localStorage.setItem("somnia.remote.last-target", JSON.stringify({ deviceId, projectId: nextProjectId }));
   }
 
   function clearExecutionDetails() {
@@ -549,7 +566,7 @@ export default function RemoteTracerApp() {
         <RemoteHeader state={connectionState} deviceId="" projectId={projectId} />
         <form className="remote-login" onSubmit={(event) => { event.preventDefault(); void access.signIn(); }}>
           <h1>Somnia Remote</h1>
-          <label>Relay<input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} /></label>
+          {!isSameOriginRelay(access.relayUrl) ? <label>Relay<input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} /></label> : null}
           <label>Username<input value={access.username} onChange={(event) => access.setUsername(event.target.value)} autoComplete="username" /></label>
           <label>Password<input type="password" value={access.password} onChange={(event) => access.setPassword(event.target.value)} autoComplete="current-password" /></label>
           <button type="submit" disabled={busy || !access.username.trim() || !access.password}>Sign in</button>
@@ -648,7 +665,8 @@ function RemoteHeader({ state, deviceId, projectId }: { state: string; deviceId:
 
 function readConnectionDefaults() {
   const params = new URLSearchParams(window.location.search);
-  return { relayUrl: params.get("relay") ?? "ws://127.0.0.1:8787", projectId: params.get("project") ?? "default-project" };
+  const sameOrigin = window.location.protocol === "http:" || window.location.protocol === "https:";
+  return { relayUrl: params.get("relay") ?? (sameOrigin ? window.location.origin : "http://127.0.0.1:8787"), projectId: params.get("project") ?? "default-project" };
 }
 
 function currentRemotePathMention(value: string, cursor: number): { query: string; queryStart: number; end: number } | null {
@@ -686,6 +704,25 @@ function remoteHistoryKey(deviceId: string, projectId: string): string {
 
 function remoteDraftKey(deviceId: string, projectId: string, sessionId: string): string {
   return `somnia.remote.draft:${deviceId}:${projectId}:${sessionId}`;
+}
+
+function isSameOriginRelay(value: string): boolean {
+  try { return new URL(value).origin === window.location.origin; }
+  catch { return false; }
+}
+
+function remoteLastSessionKey(deviceId: string, projectId: string): string {
+  return `somnia.remote.last-session:${deviceId}:${projectId}`;
+}
+
+function readRemoteLastSession(deviceId: string, projectId: string): string {
+  if (!deviceId || !projectId) return "";
+  return localStorage.getItem(remoteLastSessionKey(deviceId, projectId)) ?? "";
+}
+
+function rememberRemoteLastSession(deviceId: string, projectId: string, sessionId: string): void {
+  if (!deviceId || !projectId || !sessionId) return;
+  localStorage.setItem(remoteLastSessionKey(deviceId, projectId), sessionId);
 }
 
 function readRemotePromptHistory(deviceId: string, projectId: string): string[] {

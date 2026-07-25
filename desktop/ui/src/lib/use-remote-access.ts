@@ -107,7 +107,14 @@ export function useRemoteAccess(initialRelayUrl: string) {
   }
 
   function selectFirstActiveDevice(availableDevices: RemoteDevice[]) {
-    setDeviceId(availableDevices.find((device) => !device.revoked_at)?.device_id ?? "");
+    let savedDeviceId = "";
+    try {
+      const saved = JSON.parse(localStorage.getItem("somnia.remote.last-target") ?? "null") as { deviceId?: unknown } | null;
+      savedDeviceId = typeof saved?.deviceId === "string" ? saved.deviceId : "";
+    } catch { /* Ignore malformed browser-local preferences. */ }
+    const selected = availableDevices.find((device) => device.device_id === savedDeviceId && !device.revoked_at)
+      ?? availableDevices.find((device) => !device.revoked_at);
+    setDeviceId(selected?.device_id ?? "");
   }
 
   return {
