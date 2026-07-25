@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 import webbrowser
 
+from open_somnia.remote.identity import DeviceIdentity
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local Remote Somnia test stack.")
@@ -70,29 +72,34 @@ def main() -> int:
         # The local preview server only serves static assets; route API/WSS calls to Relay explicitly.
         web_url = f"http://127.0.0.1:{args.web_port}/?remote=1&relay=http://127.0.0.1:{args.relay_port}"
         webbrowser.open(web_url)
-        print("\n1. Sign in at the opened Web page.")
-        print("2. Create a Device pairing code.")
-        pairing_code = input("Paste the pairing code here: ").strip()
-        if not pairing_code:
-            raise RuntimeError("A pairing code is required.")
+        relay_origin = f"http://127.0.0.1:{args.relay_port}"
+        identity = _load_paired_identity(args.identity)
+        if identity is not None and identity.relay_url.rstrip("/") == relay_origin:
+            print(f"\nReusing paired Device {identity.device_name} ({identity.device_id}); no new pairing code is required.")
+        else:
+            print("\n1. Sign in at the opened Web page.")
+            print("2. Create a Device pairing code.")
+            pairing_code = input("Paste the pairing code here: ").strip()
+            if not pairing_code:
+                raise RuntimeError("A pairing code is required.")
 
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "open_somnia.remote.cli",
-                "connector",
-                "pair",
-                "--relay",
-                f"http://127.0.0.1:{args.relay_port}",
-                "--code",
-                pairing_code,
-                "--identity",
-                str(args.identity),
-            ],
-            cwd=repo,
-            check=True,
-        )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "open_somnia.remote.cli",
+                    "connector",
+                    "pair",
+                    "--relay",
+                    relay_origin,
+                    "--code",
+                    pairing_code,
+                    "--identity",
+                    str(args.identity),
+                ],
+                cwd=repo,
+                check=True,
+            )
         connector = start(
             "connector",
             [
@@ -154,6 +161,14 @@ def wait_ready(name: str, process: subprocess.Popen, url: str, timeout: float = 
         except (OSError, urllib.error.URLError):
             time.sleep(0.2)
     raise RuntimeError(f"{name} did not become ready at {url}.")
+
+
+def _load_paired_identity(path: Path) -> DeviceIdentity | None:
+    try:
+        identity = DeviceIdentity.load(path)
+    except (OSError, ValueError):
+        return None
+    return identity if identity.is_paired else None
 
 
 def print_log_tails(processes: list[tuple[str, subprocess.Popen, object, object]], logs: Path) -> None:
