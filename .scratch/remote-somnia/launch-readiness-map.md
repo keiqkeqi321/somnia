@@ -23,6 +23,7 @@ topology.
 - [19 — Add persistent Relay secret injection and rotation](issues/19-relay-secret-rotation.md) — Inject the Relay secret from protected configuration; rotation/restart intentionally requires browser re-authentication without adding cloud session persistence.
 - [20 — Implement Relay secret configuration](issues/20-implement-relay-secret-config.md) — Production CLI validates `SOMNIA_RELAY_SECRET_KEY` as 32-byte URL-safe Base64; local development retains an ephemeral fallback.
 - [17 — Resolve baseline tests and define the release test matrix](issues/17-release-test-matrix.md) — Baseline Python and Sidecar suites pass; privacy, Playwright, restart/replay, and soak gates remain pre-release work.
+- [21 — Implement the privacy audit harness](issues/21-implement-privacy-audit.md) — Sentinel scanning and metadata-only reports are implemented; production path inventory remains to be supplied by deployment.
 - [16 — Define reproducible privacy evidence](issues/16-privacy-evidence.md) — Use a generated sentinel conversation and inspect every cloud-side persistence and observability location.
 
 ## Not yet specified
@@ -41,5 +42,4 @@ topology.
 
 ## Open decision tickets
 
-- 21 — Implement the privacy audit harness
 - 18 — Define release, rollback, and operational acceptance
