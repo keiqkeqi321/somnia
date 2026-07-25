@@ -25,6 +25,48 @@ class ConnectorCliTests(unittest.TestCase):
                 self.assertEqual(cli.connector_main(), 0)
             self.assertEqual(ProjectRegistry(registry_path).list()[0].project_id, "work")
 
+    def test_doctor_reports_ready_connector(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            registry_path = root / "projects.json"
+            ProjectRegistry(registry_path).register("work", project)
+            identity = _FakeIdentity()
+            identity.device_id = "device-1"
+            identity.relay_url = "https://relay.example.com"
+            with (
+                patch.object(cli.DeviceIdentity, "load", return_value=identity),
+                patch.object(cli, "_check_http_health"),
+                patch("sys.argv", ["somnia-connector", "doctor", "--identity", str(root / "identity.json"), "--registry", str(registry_path)]),
+            ):
+                self.assertEqual(cli.connector_main(), 0)
+
+    def test_install_autostart_writes_user_service_without_payloads(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            registry_path = root / "projects.json"
+            registry = ProjectRegistry(registry_path)
+            registry.register("first", first)
+            registry.register("second", second)
+            identity = _FakeIdentity()
+            identity.device_id = "device-1"
+            identity.relay_url = "https://relay.example.com"
+            output = root / "somnia-connector.service"
+            with (
+                patch.object(cli.DeviceIdentity, "load", return_value=identity),
+                patch("sys.argv", ["somnia-connector", "install-autostart", "--identity", str(root / "identity.json"), "--registry", str(registry_path), "--output", str(output)]),
+            ):
+                self.assertEqual(cli.connector_main(), 0)
+            service = output.read_text(encoding="utf-8")
+            self.assertIn("--project first", service)
+            self.assertIn("--project second", service)
+            self.assertNotIn("relay.example.com", service)
+
     def test_run_without_projects_starts_all_local_registrations(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -90,7 +132,12 @@ class RelaySecretConfigurationTests(unittest.TestCase):
 
 
 class _FakeIdentity:
+    device_id = ""
     relay_url = "https://relay.example.com"
+
+    @property
+    def is_paired(self) -> bool:
+        return bool(self.device_id and self.relay_url)
 
 
 class _FakeManager:
