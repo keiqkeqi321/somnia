@@ -68,11 +68,22 @@ The default Device identity is stored at
 and must remain on that computer. Revoking the Device in the Web interface
 disconnects it immediately and permanently rejects that key.
 
-For a hosted deployment, use a PostgreSQL URL such as
-`postgresql+psycopg://user:password@database/somnia` and pass the hosted Web
-origin with `somnia-relay --web-origin https://somnia.example.com`. HTTPS/WSS
-termination is required; when the Relay binds loopback behind a reverse proxy,
-also pass `--secure-cookies`.
+For the production deployment, use a PostgreSQL URL such as
+`postgresql+psycopg://user:password@database/somnia` and pass
+`somnia-relay --web-origin https://somnia.top --secure-cookies`. DNS and TLS
+for `somnia.top` must terminate at the reverse proxy, which forwards the Web
+application, HTTP API, and WSS traffic to loopback services.
+
+Set `SOMNIA_ENV=production` and inject a generated 32-byte URL-safe Base64
+`SOMNIA_RELAY_SECRET_KEY` through the service secret manager. For example:
+
+```powershell
+$bytes = [byte[]]::new(32)
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$env:SOMNIA_RELAY_SECRET_KEY = [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=')
+```
+
+Do not place the secret in command-line arguments, repository files, or logs.
 
 ## Automated checks
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+import base64
 
 from open_somnia.remote import cli
 from open_somnia.remote.runtime_manager import ProjectRegistry
@@ -33,6 +34,45 @@ class ConnectorCliTests(unittest.TestCase):
 
             self.assertEqual(manager.requested_projects, ["first", "second"])
             self.assertTrue(manager.stopped)
+
+
+class RelaySecretConfigurationTests(unittest.TestCase):
+    def test_loads_urlsafe_32_byte_secret(self) -> None:
+        secret = bytes(range(32))
+        encoded = base64.urlsafe_b64encode(secret).decode("ascii").rstrip("=")
+
+        self.assertEqual(cli.load_relay_secret_key(encoded, required=True), secret)
+
+    def test_local_mode_allows_missing_secret(self) -> None:
+        self.assertIsNone(cli.load_relay_secret_key(None, required=False))
+
+    def test_production_mode_rejects_missing_or_malformed_secret(self) -> None:
+        with self.assertRaises(ValueError):
+            cli.load_relay_secret_key(None, required=True)
+        with self.assertRaises(ValueError):
+            cli.load_relay_secret_key("not-a-32-byte-secret", required=True)
+
+    def test_production_relay_passes_configured_secret_to_app(self) -> None:
+        secret = bytes(range(32))
+        encoded = base64.urlsafe_b64encode(secret).decode("ascii")
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "SOMNIA_ADMIN_PASSWORD": "test-password",
+                    "SOMNIA_RELAY_DATABASE_URL": "sqlite://",
+                    "SOMNIA_ENV": "production",
+                    "SOMNIA_RELAY_SECRET_KEY": encoded,
+                },
+                clear=False,
+            ),
+            patch("sys.argv", ["somnia-relay"]),
+            patch.object(cli, "create_relay_app", return_value=object()) as create_app,
+            patch.object(cli.uvicorn, "run"),
+        ):
+            self.assertEqual(cli.relay_main(), 0)
+
+        self.assertEqual(create_app.call_args.kwargs["secret_key"], secret)
 
 
 class _FakeIdentity:

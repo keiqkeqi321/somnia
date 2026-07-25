@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 from pathlib import Path
 import sys
@@ -12,6 +13,23 @@ from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, default_identity_path, pair_device
 from open_somnia.remote.relay import create_relay_app
 from open_somnia.remote.runtime_manager import ProjectRegistry, ProjectRuntimeManager, default_registry_path
+
+
+def load_relay_secret_key(value: str | None, *, required: bool) -> bytes | None:
+    """Decode the Relay signing secret without exposing its value in errors."""
+    normalized = str(value or "").strip()
+    if not normalized:
+        if required:
+            raise ValueError("SOMNIA_RELAY_SECRET_KEY must be set in production.")
+        return None
+    try:
+        padded = normalized + ("=" * (-len(normalized) % 4))
+        decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+    except (ValueError, UnicodeEncodeError):
+        raise ValueError("SOMNIA_RELAY_SECRET_KEY must be URL-safe Base64.") from None
+    if len(decoded) != 32:
+        raise ValueError("SOMNIA_RELAY_SECRET_KEY must decode to 32 bytes.")
+    return decoded
 
 
 def relay_main() -> int:
@@ -30,12 +48,21 @@ def relay_main() -> int:
         parser.error("SOMNIA_ADMIN_PASSWORD must be set.")
     if not args.database_url:
         parser.error("SOMNIA_RELAY_DATABASE_URL or --database-url must be set.")
+    production = os.environ.get("SOMNIA_ENV", "").strip().lower() in {"prod", "production"}
+    try:
+        secret_key = load_relay_secret_key(
+            os.environ.get("SOMNIA_RELAY_SECRET_KEY"),
+            required=production,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     secure_cookies = args.secure_cookies or args.host not in {"127.0.0.1", "localhost", "::1"}
     uvicorn.run(
         create_relay_app(
             secure_cookies=secure_cookies,
             database_url=args.database_url,
             allowed_origins=args.web_origins,
+            secret_key=secret_key,
         ),
         host=args.host,
         port=args.port,
