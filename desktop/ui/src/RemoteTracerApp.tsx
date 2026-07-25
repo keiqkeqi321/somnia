@@ -49,6 +49,7 @@ export default function RemoteTracerApp() {
   const [conversationBusy, setConversationBusy] = useState(false);
   const connectionRef = useRef<RemoteSomniaConnection | null>(null);
   const conversationRef = useRef<ConversationState | null>(null);
+  const autoConnectTargetRef = useRef("");
 
   const busy = access.busy || conversationBusy;
 
@@ -457,6 +458,14 @@ export default function RemoteTracerApp() {
   const connected = connectionState === "connected";
   const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
   const projects = selectedDevice?.projects ?? [];
+
+  useEffect(() => {
+    if (!access.authenticated || !access.pairingCode || selectedDevice?.status !== "online" || !projectId || connectionState !== "disconnected" || busy) return;
+    const target = `${access.deviceId}:${projectId}`;
+    if (autoConnectTargetRef.current === target) return;
+    autoConnectTargetRef.current = target;
+    void connect().catch(() => { autoConnectTargetRef.current = ""; });
+  }, [access.authenticated, access.deviceId, access.pairingCode, selectedDevice?.status, projectId, connectionState, busy]);
 
   useEffect(() => {
     if (projects.length > 0 && !projects.some((project) => project.project_id === projectId)) {

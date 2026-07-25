@@ -114,7 +114,7 @@ def main() -> int:
         if connector.poll() is not None:
             raise RuntimeError("Connector exited during startup.")
 
-        print("\nReady. Sign in again, select the newly paired Device, and Connect.")
+        print("\nReady. Keep the Web page open; it will retain your login, select the paired Device, and connect automatically when the Connector is online.")
         print("Keep this window open. Press Ctrl+C to stop the entire local stack.")
         while True:
             for name, process in (("Relay", relay), ("Web preview", web), ("Sidecar", sidecar), ("Connector", connector)):
