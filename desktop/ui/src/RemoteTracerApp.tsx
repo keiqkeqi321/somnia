@@ -617,7 +617,7 @@ export default function RemoteTracerApp() {
       <div className="remote-notice" role="status">{access.notice}</div>
       {queuedPrompts.length ? <section className="remote-queue" aria-label="Queued prompts">
         <strong>Queued prompts ({queuedPrompts.length})</strong>
-        {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button></div>)}
+        {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button><button type="button" onClick={() => setQueuedPrompts((current) => current.filter((item) => item.id !== prompt.id))} aria-label={`Remove queued prompt ${prompt.id}`}>Remove</button></div>)}
       </section> : null}
       <section className="remote-workspace">
         <aside className="remote-session-pane">
@@ -648,6 +648,10 @@ export default function RemoteTracerApp() {
             {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
           </aside> : null}
           <div className="remote-composer">
+            <div className="remote-composer-context" aria-label="Message target">
+              Sending to <strong>{selectedDevice?.name ?? "No computer"}</strong> / <strong>{projects.find((project) => project.project_id === projectId)?.name ?? projectId}</strong>
+              {connectionState !== "connected" ? <span>Draft is kept locally until the computer is connected.</span> : null}
+            </div>
             <div className="remote-composer-input">
               {pendingImages.length ? <div className="remote-image-previews" aria-label="Pending images">{pendingImages.map((image) => <span key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}>×</button></span>)}</div> : null}
               {commandPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Slash commands">{REMOTE_COMMANDS.filter((command) => command.startsWith(draft.trimStart())).map((command, index) => <button type="button" key={command} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(command)}>{command}</button>)}</div> : null}
