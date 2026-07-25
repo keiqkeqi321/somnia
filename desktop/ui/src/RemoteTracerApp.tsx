@@ -612,13 +612,13 @@ export default function RemoteTracerApp() {
           <select aria-label="Device" value={access.deviceId} onChange={(event) => {
             const device = access.devices.find((candidate) => candidate.device_id === event.target.value);
             switchTarget(event.target.value, device?.projects[0]?.project_id ?? "");
-          }} disabled={connected}>
+          }} disabled={busy || Boolean(progress?.activeTurnId)}>
             <option value="">Select Device</option>
             {access.devices.filter((device) => !device.revoked_at).map((device) => <option key={device.device_id} value={device.device_id}>{device.name} ({device.status})</option>)}
           </select>
         </label>
         <label>Project
-          <select aria-label="Project" value={projectId} onChange={(event) => switchTarget(access.deviceId, event.target.value)} disabled={connected || projects.length === 0}>
+          <select aria-label="Project" value={projectId} onChange={(event) => switchTarget(access.deviceId, event.target.value)} disabled={busy || Boolean(progress?.activeTurnId) || projects.length === 0}>
             <option value="">Select Project</option>
             {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
           </select>
