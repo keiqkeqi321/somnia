@@ -20,9 +20,30 @@ $dbPath = (Resolve-Path $dbDirectory).Path.Replace("\", "/")
 $identityPath = Join-Path $HOME ".open_somnia\remote\device-identity.json"
 $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
 if ($pyLauncher) {
-    $python = (& $pyLauncher.Source -3 -c "import sys; print(sys.executable)").Trim()
+    # Find the highest Python 3.x version >= 3.11
+    # py -0 writes a header to stderr; temporarily relax ErrorAction to avoid termination
+    $prevEA = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $pyVersions = & $pyLauncher.Source -0 2>&1 | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -match '^\s*-?(\d+\.\d+(?:\.\d+)?)\s*' }
+    $ErrorActionPreference = $prevEA
+    $bestVersion = $null
+    foreach ($v in $pyVersions) {
+        if ($v -match '^\s*-?(\d+\.\d+(?:\.\d+)?)\s*') {
+            $verNum = [Version]($matches[1])
+            if ($verNum -ge [Version]'3.11' -and ($null -eq $bestVersion -or $verNum -gt $bestVersion)) {
+                $bestVersion = $verNum
+            }
+        }
+    }
+    if ($bestVersion) {
+        $pyArg = "-$bestVersion"
+    } else {
+        $pyArg = "-3"
+        Write-Host "Warning: No Python >= 3.11 found via py launcher; falling back to py -3" -ForegroundColor Yellow
+    }
+    $python = (& $pyLauncher.Source $pyArg -c "import sys; print(sys.executable)").Trim()
     if ($LASTEXITCODE -ne 0 -or -not $python) {
-        throw "Unable to resolve the system Python through py -3."
+        throw "Unable to resolve a Python >= 3.11 through py launcher."
     }
 } else {
     $python = (Get-Command python -ErrorAction Stop).Source

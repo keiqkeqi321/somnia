@@ -7,6 +7,26 @@ from pathlib import Path
 
 
 class PreviewHandler(SimpleHTTPRequestHandler):
+    WEB_MIME_TYPES = {
+        ".css": "text/css",
+        ".html": "text/html",
+        ".ico": "image/x-icon",
+        ".js": "text/javascript",
+        ".json": "application/json",
+        ".mjs": "text/javascript",
+        ".wasm": "application/wasm",
+    }
+
+    def guess_type(self, path: str) -> str:
+        content_type = self.WEB_MIME_TYPES.get(Path(path).suffix.lower())
+        if content_type is not None:
+            return content_type
+        return super().guess_type(path)
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, format: str, *args) -> None:
         del format, args
 

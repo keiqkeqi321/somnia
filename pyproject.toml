@@ -40,6 +40,11 @@ dependencies = [
     "websockets>=14,<16",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=9,<10",
+]
+
 [project.urls]
 Homepage = "https://github.com/your-org/somnia"
 Repository = "https://github.com/your-org/somnia"

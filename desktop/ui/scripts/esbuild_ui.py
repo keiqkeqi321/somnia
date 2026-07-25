@@ -11,6 +11,7 @@ DIST_DIR = ROOT / "dist"
 ASSET_DIR = DIST_DIR / "assets"
 SOURCE_HTML = ROOT / "index.html"
 ENTRYPOINT = ROOT / "src" / "main.tsx"
+APP_ICON = ROOT / "src-tauri" / "icons" / "32x32.png"
 
 
 def resolve_esbuild_binary() -> Path:
@@ -36,6 +37,7 @@ def write_dist_html() -> None:
         raise RuntimeError(f"Expected to find {source_tag!r} in {SOURCE_HTML}.")
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     (DIST_DIR / "index.html").write_text(source.replace(source_tag, replacement), encoding="utf-8")
+    shutil.copyfile(APP_ICON, DIST_DIR / "favicon.png")
 
 
 def base_build_args() -> list[str]:
