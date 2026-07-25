@@ -11,6 +11,20 @@ from open_somnia.remote.runtime_manager import ProjectRegistry
 
 
 class ConnectorCliTests(unittest.TestCase):
+    def test_setup_pairs_and_registers_project(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            registry_path = root / "projects.json"
+            with (
+                patch.object(cli.DeviceIdentity, "load_or_create", return_value=_FakeIdentity()),
+                patch.object(cli, "pair_device", return_value=type("Pairing", (), {"device_name": "Laptop", "device_id": "device-1"})()),
+                patch("sys.argv", ["somnia-connector", "setup", "--relay", "https://relay.example.com", "--code", "ABC", "--project", "work", "--path", str(project), "--registry", str(registry_path)]),
+            ):
+                self.assertEqual(cli.connector_main(), 0)
+            self.assertEqual(ProjectRegistry(registry_path).list()[0].project_id, "work")
+
     def test_run_without_projects_starts_all_local_registrations(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

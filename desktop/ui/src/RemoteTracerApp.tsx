@@ -56,6 +56,26 @@ export default function RemoteTracerApp() {
   }, [access.deviceId, projectId]);
 
   useEffect(() => {
+    if (!access.pairingCode || !access.pairingExpiresAt) return;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() / 1000 >= access.pairingExpiresAt!) {
+        window.clearInterval(timer);
+        return;
+      }
+      void access.refreshDevices().then((devices) => {
+        const newlyPaired = devices.find((device) => device.name === access.pairingName || device.status === "online");
+        if (newlyPaired && Date.now() - startedAt > 500) {
+          access.setDeviceId(newlyPaired.device_id);
+          access.setNotice(`Device ${newlyPaired.name} is online and ready to connect.`);
+          window.clearInterval(timer);
+        }
+      }).catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [access.pairingCode, access.pairingExpiresAt]);
+
+  useEffect(() => {
     setDraft(readRemoteDraft(access.deviceId, projectId, session?.id ?? ""));
     setHistoryCursor(null);
     setPendingImages([]);
@@ -565,7 +585,11 @@ export default function RemoteTracerApp() {
       <section className="remote-pairing" aria-label="Device pairing">
         <label>New Device name<input value={access.pairingName} onChange={(event) => access.setPairingName(event.target.value)} /></label>
         <button type="button" onClick={() => void access.createPairing()} disabled={!access.pairingName.trim() || busy}>Create pairing code</button>
-        {access.pairingCode ? <output className="remote-pairing-code">{access.pairingCode}</output> : null}
+        {access.pairingCode ? <>
+          <output className="remote-pairing-code" aria-label="Pairing code">{access.pairingCode}</output>
+          <button type="button" onClick={() => void navigator.clipboard?.writeText(new URL(`somnia://pair?relay=${encodeURIComponent(access.relayUrl)}&code=${encodeURIComponent(access.pairingCode)}`).toString())}>Copy pairing link</button>
+          <small>Run <code>somnia-connector setup --relay {access.relayUrl} --code {access.pairingCode}</code> on the computer. This code expires at {new Date(access.pairingExpiresAt! * 1000).toLocaleTimeString()}.</small>
+        </> : null}
       </section>
       <div className="remote-notice" role="status">{access.notice}</div>
       {queuedPrompts.length ? <section className="remote-queue" aria-label="Queued prompts">

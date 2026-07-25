@@ -80,6 +80,18 @@ def connector_main() -> int:
     pair_parser.add_argument("--code", required=True)
     pair_parser.add_argument("--identity", type=Path, default=default_identity_path())
 
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Pair this computer and optionally register a local Project in one guided step.",
+    )
+    setup_parser.add_argument("--relay", required=True, help="Relay HTTP(S) origin.")
+    setup_parser.add_argument("--code", required=True)
+    setup_parser.add_argument("--identity", type=Path, default=default_identity_path())
+    setup_parser.add_argument("--project", help="Stable local Project identifier to register after pairing.")
+    setup_parser.add_argument("--path", type=Path, help="Existing local Project folder.")
+    setup_parser.add_argument("--name", help="Local Project display name.")
+    setup_parser.add_argument("--registry", type=Path, default=default_registry_path())
+
     register_parser = subparsers.add_parser("register", help="Register a local Project for Connector-managed Runtime ownership.")
     register_parser.add_argument("--project", required=True, help="Stable local Project identifier.")
     register_parser.add_argument("--path", type=Path, required=True, help="Existing local Project folder.")
@@ -101,10 +113,17 @@ def connector_main() -> int:
     run_parser.add_argument("--identity", type=Path, default=default_identity_path())
     args = parser.parse_args()
 
-    if args.command == "pair":
+    if args.command in {"pair", "setup"}:
         identity = DeviceIdentity.load_or_create(args.identity)
         result = pair_device(identity, relay_url=args.relay, code=args.code)
         print(f"Paired Device {result.device_name} ({result.device_id}).")
+        if args.command == "setup":
+            if bool(args.project) != bool(args.path):
+                parser.error("setup requires --project and --path together when registering a Project.")
+            if args.project and args.path:
+                registration = ProjectRegistry(args.registry).register(args.project, args.path, name=args.name)
+                print(f"Registered Project {registration.name} ({registration.project_id}).")
+            print("Setup complete. Start the Connector with 'somnia-connector run'.")
         return 0
 
     if args.command == "register":

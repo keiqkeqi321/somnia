@@ -49,6 +49,13 @@ export class RemoteRelayClient {
     }, true) as Promise<PairingGrant>;
   }
 
+  pairingLink(grant: PairingGrant): string {
+    const url = new URL("somnia://pair");
+    url.searchParams.set("relay", this.baseUrl);
+    url.searchParams.set("code", grant.code);
+    return url.toString();
+  }
+
   async revokeDevice(deviceId: string): Promise<void> {
     await this.request(`/api/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" }, true);
   }

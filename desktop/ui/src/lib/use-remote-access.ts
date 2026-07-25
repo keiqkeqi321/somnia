@@ -11,6 +11,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
   const [deviceId, setDeviceId] = useState("");
   const [pairingName, setPairingName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
+  const [pairingExpiresAt, setPairingExpiresAt] = useState<number | null>(null);
   const [notice, setNotice] = useState("Sign in to Somnia Remote.");
   const [busy, setBusy] = useState(false);
   const clientRef = useRef<RemoteRelayClient | null>(null);
@@ -42,13 +43,21 @@ export function useRemoteAccess(initialRelayUrl: string) {
     try {
       const pairing = await client.createPairing(name);
       setPairingCode(pairing.code);
-      setPairingName("");
+      setPairingExpiresAt(pairing.expires_at);
       setNotice(`Pairing code expires at ${new Date(pairing.expires_at * 1000).toLocaleTimeString()}.`);
     } catch (error) {
       setNotice(formatError(error));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function refreshDevices(): Promise<RemoteDevice[]> {
+    const client = clientRef.current;
+    if (!client) return [];
+    const availableDevices = await client.listDevices();
+    setDevices(availableDevices);
+    return availableDevices;
   }
 
   async function revokeSelectedDevice(): Promise<boolean> {
@@ -82,6 +91,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       setDevices([]);
       setDeviceId("");
       setPairingCode("");
+      setPairingExpiresAt(null);
       setBusy(false);
     }
   }
@@ -108,10 +118,12 @@ export function useRemoteAccess(initialRelayUrl: string) {
     devices,
     notice,
     pairingCode,
+    pairingExpiresAt,
     pairingName,
     password,
     relayUrl,
     revokeSelectedDevice,
+    refreshDevices,
     setDeviceId,
     setNotice,
     setPairingName,
