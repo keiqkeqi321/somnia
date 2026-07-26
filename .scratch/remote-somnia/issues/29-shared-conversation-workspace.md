@@ -4,7 +4,7 @@
 
 **Blocked by:** 27, 28
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 ## Scope
 
@@ -19,3 +19,10 @@
 - Session create/load/archive/delete and active-turn presentation behave identically.
 - Mobile layout uses the same component tree with responsive shell differences only.
 - Shared component tests cover empty, streaming, completed, interrupted, and resynchronized states.
+
+## Progress
+
+- [x] Shared `ConversationWorkspace` frame introduced and Remote migrated (`093c518`).
+- [ ] Desktop workspace container migrated while preserving resize refs and context panel.
+- [ ] SessionSidebar, ConversationPanel, ProgressPanel, and ContextPanel extracted.
+- [ ] Shared event/render fixtures cover Desktop and Remote.
