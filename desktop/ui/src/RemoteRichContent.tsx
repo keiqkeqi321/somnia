@@ -1,18 +1,20 @@
 import { useEffect, useId, useState } from "react";
 
 import type { ConversationImageReferenceBlock, ConversationRow, ConversationRowPart } from "./types";
-import ConversationMessageRow from "./components/ConversationMessageRow";
+import ConversationMessageContent from "./components/ConversationMessageContent";
 import ConversationMarkdown from "./components/ConversationMarkdown";
 
 type ImageResolver = (path: string) => Promise<string>;
 
 export function RemoteConversationRow({ row, resolveImage }: { row: ConversationRow; resolveImage?: ImageResolver }) {
-  const parts = row.parts ?? (row.text ? [{ id: `${row.id}-text`, type: "text" as const, text: row.text }] : []);
   return (
-    <ConversationMessageRow row={row} showRole className={`remote-message remote-message-${row.role}${row.isStreaming ? " remote-message-streaming" : ""}`}>
-      {parts.map((part) => <RemotePart key={part.id} part={part} resolveImage={resolveImage} />)}
-      {row.images?.map((image, index) => <RemoteImage key={`${row.id}-image-${index}`} image={image} resolveImage={resolveImage} />)}
-    </ConversationMessageRow>
+    <ConversationMessageContent
+      row={row}
+      showRole
+      className={`remote-message remote-message-${row.role}${row.isStreaming ? " remote-message-streaming" : ""}`}
+      renderPart={(part) => <RemotePart key={part.id} part={part} resolveImage={resolveImage} />}
+      renderImages={(images) => images.map((image, index) => <RemoteImage key={`${row.id}-image-${index}`} image={image} resolveImage={resolveImage} />)}
+    />
   );
 }
 

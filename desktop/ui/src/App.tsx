@@ -43,7 +43,7 @@ import SessionSidebar from "./components/SessionSidebar";
 import ContextPanel from "./components/ContextPanel";
 import ProgressPanel from "./components/ProgressPanel";
 import ConversationMessageList from "./components/ConversationMessageList";
-import ConversationMessageRow from "./components/ConversationMessageRow";
+import ConversationMessageContent from "./components/ConversationMessageContent";
 import ConversationMarkdown from "./components/ConversationMarkdown";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
@@ -3728,29 +3728,28 @@ function App() {
                 </div>
               ) : (
                 conversationRows.map((row) => (
-                  <ConversationMessageRow key={row.id} row={row} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
-                    {row.parts?.length ? (
-                      row.parts.map((part) =>
-                        part.type === "text" ? (
-                          <MarkdownMessage key={part.id} text={part.text} />
-                        ) : part.type === "thinking_log" ? (
-                          <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
-                        ) : (
-                          <div key={part.id} className="tool-call-stack">
-                            <ToolCallWithImages
-                              toolCall={part.toolCall}
-                              baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
-                              onPreviewImage={setToolImagePreview}
-                            />
-                          </div>
-                        ),
+                  <ConversationMessageContent
+                    key={row.id}
+                    row={row}
+                    className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}
+                    renderPart={(part) =>
+                      part.type === "text" ? (
+                        <MarkdownMessage key={part.id} text={part.text} />
+                      ) : part.type === "thinking_log" ? (
+                        <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
+                      ) : (
+                        <div key={part.id} className="tool-call-stack">
+                          <ToolCallWithImages
+                            toolCall={part.toolCall}
+                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                            onPreviewImage={setToolImagePreview}
+                          />
+                        </div>
                       )
-                    ) : row.text ? (
-                      <MarkdownMessage text={row.text} />
-                    ) : null}
-                    {row.images?.length ? (
+                    }
+                    renderImages={(images) => (
                       <div className="user-image-list">
-                        {row.images.map((image, index) => (
+                        {images.map((image, index) => (
                           <UserImagePreview
                             key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
                             image={image}
@@ -3760,34 +3759,38 @@ function App() {
                           />
                         ))}
                       </div>
-                    ) : null}
-                    {row.isLoading ? (
+                    )}
+                    loading={
                       <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
                         <span />
                         <span />
                         <span />
                       </span>
-                    ) : null}
-                    {!row.parts?.length && row.toolCalls?.length ? (
-                      <div className="tool-call-stack">
-                        {row.toolCalls.map((toolCall) => (
-                          <ToolCallWithImages
-                            key={toolCall.id}
-                            toolCall={toolCall}
-                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
-                            onPreviewImage={setToolImagePreview}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                    {row.id === latestStreamingAssistantRowId ? (
-                      <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
-                        <span aria-hidden="true" />
-                        <span aria-hidden="true" />
-                        <span aria-hidden="true" />
-                      </span>
-                    ) : null}
-                  </ConversationMessageRow>
+                    }
+                    footer={
+                      <>
+                        {!row.parts?.length && row.toolCalls?.length ? (
+                          <div className="tool-call-stack">
+                            {row.toolCalls.map((toolCall) => (
+                              <ToolCallWithImages
+                                key={toolCall.id}
+                                toolCall={toolCall}
+                                baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                                onPreviewImage={setToolImagePreview}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                        {row.id === latestStreamingAssistantRowId ? (
+                          <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
+                            <span aria-hidden="true" />
+                            <span aria-hidden="true" />
+                            <span aria-hidden="true" />
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                  />
                 ))
               )}
               {!selectedWorkerActive && activeQueuedPrompts.length > 0 ? (

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import type { ConversationRow } from "../types";
 import ContextPanel from "./ContextPanel";
+import ConversationMessageContent from "./ConversationMessageContent";
 import ConversationMessageList from "./ConversationMessageList";
-import ConversationMessageRow from "./ConversationMessageRow";
 import ConversationPanel from "./ConversationPanel";
 import ConversationWorkspace from "./ConversationWorkspace";
 import ProgressPanel from "./ProgressPanel";
@@ -27,7 +27,7 @@ function renderConversation(fixture: RenderFixture): string {
     <ConversationWorkspace className="fixture-workspace">
       <ConversationPanel className="fixture-panel" ariaLabel="Conversation">
         <ConversationMessageList className="fixture-list">
-          {fixture.rows.map((row) => <ConversationMessageRow key={row.id} row={row}>{row.text}</ConversationMessageRow>)}
+          {fixture.rows.map((row) => <ConversationMessageContent key={row.id} row={row} renderPart={(part) => part.type === "text" ? part.text : null} />)}
         </ConversationMessageList>
         <ProgressPanel className="fixture-progress" ariaLabel="Execution progress">Progress</ProgressPanel>
         <ContextPanel className="fixture-context" ariaLabel="Session context">Context</ContextPanel>
