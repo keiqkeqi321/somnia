@@ -43,7 +43,7 @@ body {
   max-height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 52px auto auto 32px auto minmax(0, 1fr);
+  grid-template-rows: 52px auto auto auto minmax(0, 1fr);
   background: #101214;
   color: #edf0f2;
   overflow: hidden;
@@ -405,7 +405,7 @@ body {
 .remote-interrupt-button { border-color: #8b4d4d !important; background: #432629 !important; }
 
 @media (max-width: 700px) {
-  .remote-shell { grid-template-rows: 48px auto auto auto auto minmax(0, 1fr); }
+  .remote-shell { grid-template-rows: 48px auto auto auto minmax(0, 1fr); }
   .remote-shell-login { grid-template-rows: 48px minmax(0, 1fr); }
   .remote-header { padding: 0 12px; }
   .remote-project-label { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
