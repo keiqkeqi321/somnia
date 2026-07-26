@@ -10,6 +10,7 @@ import { useRemoteAccess } from "./lib/use-remote-access";
 import { RemoteConversationRow } from "./RemoteRichContent";
 import { deriveRemoteConnectionState, remoteConnectionCopy } from "./lib/remote-connection-state";
 import ConversationComposer from "./components/ConversationComposer";
+import ConversationWorkspace from "./components/ConversationWorkspace";
 
 const defaults = readConnectionDefaults();
 
@@ -645,7 +646,7 @@ export default function RemoteTracerApp() {
         <strong>Queued prompts ({queuedPrompts.length})</strong>
         {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button><button type="button" onClick={() => setQueuedPrompts((current) => current.filter((item) => item.id !== prompt.id))} aria-label={`Remove queued prompt ${prompt.id}`}>Remove</button></div>)}
       </section> : null}
-      <section className="remote-workspace">
+      <ConversationWorkspace className="remote-workspace">
         <aside className="remote-session-pane">
           <div className="remote-pane-heading"><span>Session</span><button type="button" onClick={() => void createSession()} disabled={!connected || busy}>New</button></div>
           {sessions.filter((candidate) => !archivedSessionIds.has(candidate.id)).map((candidate) => <div className={`remote-session-row ${session?.id === candidate.id ? "remote-session-row-selected" : ""}`} key={candidate.id}><button type="button" onClick={() => void selectSession(candidate.id)}><strong>{candidate.preview ?? candidate.id}</strong><span>{candidate.messages.length} messages</span></button><button type="button" onClick={() => setArchived(candidate.id)}>Archive</button><button type="button" onClick={() => void deleteSession(candidate.id)}>Delete</button></div>)}
@@ -690,7 +691,7 @@ export default function RemoteTracerApp() {
             {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
           </ConversationComposer>
         </section>
-      </section>
+      </ConversationWorkspace>
     </main>
   );
 }
