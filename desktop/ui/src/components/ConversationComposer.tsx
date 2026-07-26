@@ -4,7 +4,7 @@ export type ConversationComposerProps = {
   value?: string;
   onChange?: (value: string, cursor: number) => void;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  onKeyUp?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKeyUp?: (cursor: number) => void;
   onSelect?: (cursor: number) => void;
   onClick?: (cursor: number) => void;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
@@ -54,7 +54,7 @@ export default function ConversationComposer({
           value={value ?? ""}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onChange?.(event.target.value, event.target.selectionStart)}
           onKeyDown={(event) => onKeyDown?.(event)}
-          onKeyUp={(event) => onKeyUp?.(event)}
+          onKeyUp={(event) => onKeyUp?.(event.currentTarget.selectionStart)}
           onSelect={(event) => onSelect?.(event.currentTarget.selectionStart)}
           onClick={(event) => onClick?.(event.currentTarget.selectionStart)}
           onPaste={onPaste}

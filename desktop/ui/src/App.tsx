@@ -3811,21 +3811,19 @@ function App() {
           </ConversationMessageList>
 
           {!selectedWorkerActive ? (
-          <ConversationComposer className="composer">
-            <textarea
-              ref={composerTextareaRef}
-              value={draft}
-              onChange={(event) => handleComposerChange(event.target.value, event.target.selectionStart)}
-              onKeyDown={handleComposerKeyDown}
-              onKeyUp={(event) => setComposerCursor(event.currentTarget.selectionStart)}
-              onSelect={(event) => setComposerCursor(event.currentTarget.selectionStart)}
-              onClick={(event) => setComposerCursor(event.currentTarget.selectionStart)}
-              onPaste={(event) => void handleComposerPaste(event)}
-              placeholder={t("composer.placeholder")}
-              disabled={busyAction !== null}
-              rows={1}
-            />
-            {pendingImages.length > 0 ? (
+          <ConversationComposer
+            className="composer"
+            value={draft}
+            textareaRef={composerTextareaRef}
+            onChange={handleComposerChange}
+            onKeyDown={handleComposerKeyDown}
+            onKeyUp={setComposerCursor}
+            onSelect={setComposerCursor}
+            onClick={setComposerCursor}
+            onPaste={(event) => void handleComposerPaste(event)}
+            placeholder={t("composer.placeholder")}
+            disabled={busyAction !== null}
+            attachments={<>            {pendingImages.length > 0 ? (
               <div className="pending-attachments">
                 {pendingImages.map((image) => (
                   <button
@@ -3841,7 +3839,8 @@ function App() {
                 ))}
               </div>
             ) : null}
-            {commandPickerOpen && commandSuggestions.length > 0 ? (
+</>}
+            suggestions={<>            {commandPickerOpen && commandSuggestions.length > 0 ? (
               <div className="command-picker">
                 {commandSuggestions.map((item, index) => (
                   <button
@@ -3875,7 +3874,8 @@ function App() {
                 ))}
               </div>
             ) : null}
-            <div className="composer-actions">
+</>}
+            actions={<>            <div className="composer-actions">
               <input
                 ref={fileInputRef}
                 className="file-input"
@@ -4086,7 +4086,8 @@ function App() {
                 ) : null}
               </div>
             </div>
-          </ConversationComposer>
+</>}
+          />
           ) : null}
         </ConversationPanel>
 
