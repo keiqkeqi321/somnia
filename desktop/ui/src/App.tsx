@@ -43,6 +43,7 @@ import SessionSidebar from "./components/SessionSidebar";
 import ContextPanel from "./components/ContextPanel";
 import ProgressPanel from "./components/ProgressPanel";
 import ConversationMessageList from "./components/ConversationMessageList";
+import ConversationMessageRow from "./components/ConversationMessageRow";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3726,7 +3727,7 @@ function App() {
                 </div>
               ) : (
                 conversationRows.map((row) => (
-                  <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
+                  <ConversationMessageRow key={row.id} row={row} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
                     {row.parts?.length ? (
                       row.parts.map((part) =>
                         part.type === "text" ? (
@@ -3785,7 +3786,7 @@ function App() {
                         <span aria-hidden="true" />
                       </span>
                     ) : null}
-                  </article>
+                  </ConversationMessageRow>
                 ))
               )}
               {!selectedWorkerActive && activeQueuedPrompts.length > 0 ? (
