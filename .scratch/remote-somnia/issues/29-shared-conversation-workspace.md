@@ -31,4 +31,6 @@
 - [x] Desktop execution activity migrated to the shared ProgressPanel (`7e9e071`).
 - [x] ContextPanel boundary extracted for Desktop (`888ad38`).
 - [x] Remote diagnostics/context content migrated to the shared ContextPanel (`0227f1d`).
+- [x] Conversation message stream boundary shared by Desktop and Remote (`7c9b55b`).
+- [ ] Rich message row rendering unified.
 - [ ] Shared event/render fixtures cover Desktop and Remote.
