@@ -41,6 +41,7 @@ import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
 import ContextPanel from "./components/ContextPanel";
+import ProgressPanel from "./components/ProgressPanel";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -4134,8 +4135,9 @@ function App() {
                     <span>Current mode</span>
                     <strong>{status?.execution_mode_title ?? "unknown"}</strong>
                   </div>
-                  <TaskGraphPanel tasks={activeTaskItems} onOpenPanel={() => setTaskGraphPanelOpen(true)} />
-                  {activeSubagentItems.length > 0 || activeTeamItems.length > 0 ? (
+                  <ProgressPanel as="div" className="context-progress-panel" ariaLabel={t("activity.executionActivity")}>
+                    <TaskGraphPanel tasks={activeTaskItems} onOpenPanel={() => setTaskGraphPanelOpen(true)} />
+                    {activeSubagentItems.length > 0 || activeTeamItems.length > 0 ? (
                     <ExecutionActivityPanel
                       subagents={activeSubagentItems}
                       teamMembers={activeTeamItems}
@@ -4151,7 +4153,8 @@ function App() {
                         });
                       }}
                     />
-                  ) : null}
+                    ) : null}
+                  </ProgressPanel>
                   <div className="context-block">
                     <h3>Preview</h3>
                     <p>{buildSessionPreview(currentSession)}</p>
