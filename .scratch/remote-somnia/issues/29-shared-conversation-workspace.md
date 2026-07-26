@@ -26,6 +26,6 @@
 - [x] Desktop workspace container migrated while preserving resize refs and context panel (`35becc8`).
 - [x] ConversationPanel boundary extracted for Desktop and Remote (`8440815`).
 - [x] SessionSidebar boundary extracted for Remote (`5efeb10`).
-- [ ] Desktop session navigation migrated to the shared boundary.
+- [x] Desktop session navigation migrated to the shared boundary (`9163cf3`).
 - [ ] ProgressPanel and ContextPanel extracted.
 - [ ] Shared event/render fixtures cover Desktop and Remote.
