@@ -4,7 +4,7 @@
 
 **Blocked by:** 27
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 ## Scope
 
@@ -19,3 +19,11 @@
 - Provider/model controls remain Desktop-only; target context and reconnect status remain Remote-only.
 - Slash command, path mention, image attachment, queue, interrupt, and keyboard tests pass for both clients.
 - No duplicate Composer JSX remains in `App.tsx` and `RemoteTracerApp.tsx`.
+
+## Progress
+
+- [x] Shared `ConversationComposer` frame introduced.
+- [x] Desktop Composer migrated to the shared frame (`b99b270`).
+- [x] Remote Composer migrated to the shared frame (`5c7b506`).
+- [ ] Move Desktop/Remote controls fully into typed slots and remove children-mode compatibility.
+- [ ] Align shared responsive Composer styling and browser screenshots.
