@@ -6,7 +6,7 @@ export type ConversationComposerProps = {
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSelect?: (cursor: number) => void;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
-  placeholder: string;
+  placeholder?: string;
   disabled?: boolean;
   textareaRef?: RefObject<HTMLTextAreaElement>;
   context?: ReactNode;
@@ -16,6 +16,7 @@ export type ConversationComposerProps = {
   actions?: ReactNode;
   fileInput?: ReactNode;
   children?: ReactNode;
+  className?: string;
 };
 
 /** Shared composer frame; Desktop and Remote provide their own controls as slots. */
@@ -35,12 +36,13 @@ export default function ConversationComposer({
   actions,
   fileInput,
   children,
+  className,
 }: ConversationComposerProps) {
   if (children) {
-    return <div className="conversation-composer">{children}</div>;
+    return <div className={["conversation-composer", className].filter(Boolean).join(" ")}>{children}</div>;
   }
   return (
-    <div className="conversation-composer">
+    <div className={["conversation-composer", className].filter(Boolean).join(" ")}>
       {context ? <div className="conversation-composer-context">{context}</div> : null}
       <div className="conversation-composer-input">
         <textarea
@@ -50,7 +52,7 @@ export default function ConversationComposer({
           onKeyDown={(event) => onKeyDown?.(event)}
           onSelect={(event) => onSelect?.(event.currentTarget.selectionStart)}
           onPaste={onPaste}
-          placeholder={placeholder}
+          placeholder={placeholder ?? ""}
           disabled={disabled}
           rows={1}
         />

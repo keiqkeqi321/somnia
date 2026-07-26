@@ -36,6 +36,7 @@ import {
   stringifyToolValue,
 } from "./lib/messages";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
+import ConversationComposer from "./components/ConversationComposer";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3801,7 +3802,7 @@ function App() {
           </div>
 
           {!selectedWorkerActive ? (
-          <div className="composer">
+          <ConversationComposer className="composer">
             <textarea
               ref={composerTextareaRef}
               value={draft}
@@ -4076,7 +4077,7 @@ function App() {
                 ) : null}
               </div>
             </div>
-          </div>
+          </ConversationComposer>
           ) : null}
         </section>
 
