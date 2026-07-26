@@ -23,6 +23,6 @@
 ## Progress
 
 - [x] Shared `ConversationWorkspace` frame introduced and Remote migrated (`093c518`).
-- [ ] Desktop workspace container migrated while preserving resize refs and context panel.
+- [x] Desktop workspace container migrated while preserving resize refs and context panel (`35becc8`).
 - [ ] SessionSidebar, ConversationPanel, ProgressPanel, and ContextPanel extracted.
 - [ ] Shared event/render fixtures cover Desktop and Remote.
