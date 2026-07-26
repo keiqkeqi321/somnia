@@ -38,6 +38,7 @@ import {
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import ConversationComposer from "./components/ConversationComposer";
 import ConversationWorkspace from "./components/ConversationWorkspace";
+import ConversationPanel from "./components/ConversationPanel";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3663,7 +3664,7 @@ function App() {
           onPointerDown={(event) => beginLayoutDrag("sidebar", event)}
         />
 
-        <section className="panel conversation-panel">
+        <ConversationPanel className="panel conversation-panel">
           <div className="panel-header conversation-header">
             <div className="conversation-heading">
               <h2 title={conversationPreview || selectedSessionId || "New conversation"}>{conversationTitle}</h2>
@@ -4081,7 +4082,7 @@ function App() {
             </div>
           </ConversationComposer>
           ) : null}
-        </section>
+        </ConversationPanel>
 
         {taskGraphPanelOpen ? (
           <TaskGraphWorkspacePanel tasks={activeTaskItems} onClose={() => setTaskGraphPanelOpen(false)} />

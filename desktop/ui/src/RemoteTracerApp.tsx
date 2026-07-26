@@ -11,6 +11,7 @@ import { RemoteConversationRow } from "./RemoteRichContent";
 import { deriveRemoteConnectionState, remoteConnectionCopy } from "./lib/remote-connection-state";
 import ConversationComposer from "./components/ConversationComposer";
 import ConversationWorkspace from "./components/ConversationWorkspace";
+import ConversationPanel from "./components/ConversationPanel";
 
 const defaults = readConnectionDefaults();
 
@@ -653,7 +654,7 @@ export default function RemoteTracerApp() {
           {Array.from(archivedSessionIds).length ? <button type="button" onClick={restoreArchived}>Restore archived</button> : null}
           {!sessions.length ? <p className="remote-empty">No active Session</p> : null}
         </aside>
-        <section className="remote-conversation" aria-label="Conversation">
+        <ConversationPanel className="remote-conversation" ariaLabel="Conversation">
           <div className="remote-messages">
             {conversationRows.map((row) => <RemoteConversationRow key={row.id} row={row} resolveImage={(path) => {
               const connection = connectionRef.current;
@@ -690,7 +691,7 @@ export default function RemoteTracerApp() {
             <button type="button" onClick={() => void sendPrompt()} disabled={!session || !connected || (!draft.trim() && pendingImages.length === 0) || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
             {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
           </ConversationComposer>
-        </section>
+        </ConversationPanel>
       </ConversationWorkspace>
     </main>
   );
