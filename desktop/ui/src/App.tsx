@@ -37,6 +37,7 @@ import {
 } from "./lib/messages";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import ConversationComposer from "./components/ConversationComposer";
+import ConversationWorkspace from "./components/ConversationWorkspace";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3462,7 +3463,8 @@ function App() {
           </section>
         </div>
       ) : null}
-      <main
+      <ConversationWorkspace
+        as="main"
         ref={workspaceRef}
         className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"} ${layoutDragging ? "resizing" : ""}`}
         style={workspaceStyle}
@@ -4162,7 +4164,7 @@ function App() {
           </aside>
           </>
         ) : null}
-      </main>
+      </ConversationWorkspace>
 
     </div>
   );

@@ -262,8 +262,7 @@ body {
 .remote-queue-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-queue-row button { min-height: 28px; padding: 3px 8px; }
 
-.remote-workspace,
-.conversation-workspace {
+.remote-workspace {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -422,8 +421,7 @@ body {
   .remote-pairing { grid-template-columns: minmax(0, 1fr) auto; padding: 10px 12px; }
   .remote-pairing-code { grid-column: 1 / -1; }
   .remote-notice { padding: 7px 12px; }
-  .remote-workspace,
-  .conversation-workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .remote-workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .remote-session-pane { max-height: 220px; padding: 8px 12px; border-right: 0; border-bottom: 1px solid #30363a; }
   .remote-pane-heading { margin-bottom: 7px; }
   .remote-session-row { padding: 7px 9px; }
