@@ -40,6 +40,7 @@ import ConversationComposer from "./components/ConversationComposer";
 import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
+import ContextPanel from "./components/ContextPanel";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -4100,7 +4101,7 @@ function App() {
             aria-orientation="vertical"
             onPointerDown={(event) => beginLayoutDrag("context", event)}
           />
-          <aside className="panel context-panel">
+          <ContextPanel className="panel context-panel" ariaLabel={t("context.sessionDetails")}>
             <div className="panel-header">
               <div>
                 <p className="panel-kicker">{t("context.kicker")}</p>
@@ -4163,7 +4164,7 @@ function App() {
                 </div>
               )}
             </div>
-          </aside>
+          </ContextPanel>
           </>
         ) : null}
       </ConversationWorkspace>
