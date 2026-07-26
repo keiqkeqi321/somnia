@@ -360,7 +360,8 @@ body {
 .remote-message-streaming p { color: #f0f2f3; }
 .remote-message-pending { opacity: 0.72; }
 
-.remote-composer {
+.remote-composer,
+.conversation-composer {
   grid-column: 1;
   min-width: 0;
   display: grid;
@@ -371,19 +372,23 @@ body {
   background: #171a1d;
 }
 
-.remote-composer-context {
+.remote-composer-context,
+.conversation-composer-context {
   grid-column: 1 / -1;
 }
 
-.remote-composer-input {
+.remote-composer-input,
+.conversation-composer-input {
   grid-column: 1;
 }
 
-.remote-composer > input[type="file"] {
+.remote-composer > input[type="file"],
+.conversation-composer > input[type="file"] {
   grid-column: 2;
 }
 
-.remote-composer > button {
+.remote-composer > button,
+.conversation-composer > button {
   grid-column: auto;
 }
 
@@ -423,7 +428,8 @@ body {
   .remote-conversation { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto auto; }
   .remote-messages { grid-column: 1; grid-row: 1; padding: 10px 14px; }
   .remote-progress { grid-column: 1; grid-row: 2; max-height: 190px; border-left: 0; border-top: 1px solid #30363a; }
-  .remote-composer { grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr) auto auto auto; padding: 10px 12px; }
+  .remote-composer,
+  .conversation-composer { grid-column: 1; grid-row: 3; grid-template-columns: minmax(0, 1fr) auto auto auto; padding: 10px 12px; }
   .remote-queue { padding: 8px 12px; }
 }
 

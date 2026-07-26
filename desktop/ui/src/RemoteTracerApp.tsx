@@ -9,6 +9,7 @@ import type { SomniaConnectionNotification } from "./lib/somnia-connection";
 import { useRemoteAccess } from "./lib/use-remote-access";
 import { RemoteConversationRow } from "./RemoteRichContent";
 import { deriveRemoteConnectionState, remoteConnectionCopy } from "./lib/remote-connection-state";
+import ConversationComposer from "./components/ConversationComposer";
 
 const defaults = readConnectionDefaults();
 
@@ -672,7 +673,7 @@ export default function RemoteTracerApp() {
             <details><summary>Tool logs ({toolLogs.length})</summary>{toolLogs.map((log) => <button type="button" key={log.id} onClick={() => void showToolLog(log.id)}>{log.tool_name} · {log.actor}</button>)}</details>
             {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
           </aside> : null}
-          <div className="remote-composer">
+          <ConversationComposer value={draft} placeholder="Ask Somnia" disabled={!session || access.busy}>
             <div className="remote-composer-context" aria-label="Message target">
               Sending to <strong>{selectedDevice?.name ?? "No computer"}</strong> / <strong>{projects.find((project) => project.project_id === projectId)?.name ?? projectId}</strong>
               {connectionState !== "connected" ? <span>Draft is kept locally until the computer is connected.</span> : null}
@@ -687,7 +688,7 @@ export default function RemoteTracerApp() {
             <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!session || !connected || access.busy} aria-label="Attach image">＋</button>
             <button type="button" onClick={() => void sendPrompt()} disabled={!session || !connected || (!draft.trim() && pendingImages.length === 0) || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
             {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
-          </div>
+          </ConversationComposer>
         </section>
       </section>
     </main>
