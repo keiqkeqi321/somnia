@@ -4,7 +4,7 @@
 
 **Blocked by:** 27, 28
 
-**Status:** in-progress
+**Status:** completed
 
 ## Scope
 
@@ -34,4 +34,4 @@
 - [x] Conversation message stream boundary shared by Desktop and Remote (`7c9b55b`).
 - [x] Rich message row container shared by Desktop and Remote (`9ea407d`).
 - [x] Markdown block rendering shared, with client-specific Mermaid adapters (`pending commit`).
-- [ ] Shared event/render fixtures cover Desktop and Remote.
+- [x] Shared event and typed render fixtures cover empty, streaming, completed, interrupted, and resynchronized states (`conversation-state.test.ts`, `messages.test.ts`, `ConversationWorkspace.test.tsx`).

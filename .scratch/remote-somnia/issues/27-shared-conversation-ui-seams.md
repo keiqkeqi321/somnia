@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02
 
-**Status:** in-progress
+**Status:** completed
 
 ## Scope
 
@@ -23,6 +23,6 @@
 ## Progress
 
 - [x] Shared `ConversationComposer` frame extracted and Remote migrated (`5c7b506`).
-- [ ] Desktop Composer controls migrated to the shared slots.
-- [ ] Shared ConversationPanel and SessionSidebar extracted.
-- [ ] Remote tracer-only duplicate rendering removed.
+- [x] Desktop Composer controls migrated to the shared slots (`b7e643b`).
+- [x] Shared ConversationPanel and SessionSidebar extracted (`8440815`, `5efeb10`, `9163cf3`).
+- [x] Remote uses the shared workspace, panel, sidebar, message-list, row, progress, context, and composer boundaries; transport and access wiring remain in its adapter.

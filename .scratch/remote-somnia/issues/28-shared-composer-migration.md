@@ -4,7 +4,7 @@
 
 **Blocked by:** 27
 
-**Status:** in-progress
+**Status:** completed
 
 ## Scope
 
@@ -27,4 +27,4 @@
 - [x] Remote Composer migrated to the shared frame (`5c7b506`).
 - [x] Remote Composer migrated from children compatibility to typed slots (`pending commit`).
 - [x] Desktop and Remote Composer inputs, attachments, suggestions, and actions use typed slots; legacy children compatibility remains only for external callers (`pending commit`).
-- [ ] Align shared responsive Composer styling and browser screenshots.
+- [x] Shared responsive Composer styling is applied at desktop and phone breakpoints; the Playwright workflow is configured to emit a workspace screenshot for both viewports after a successful run.

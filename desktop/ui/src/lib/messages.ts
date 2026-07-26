@@ -149,7 +149,7 @@ export function buildConversationRows(
         index += 1;
       }
       if (parts.length > 0) {
-        appendAssistantRow(rows, { id: rowId, role: "assistant", text, parts, toolCalls });
+        appendAssistantRow(rows, { id: rowId, role: "assistant", text, parts, toolCalls, isStreaming: false });
       }
       index += 1;
       continue;

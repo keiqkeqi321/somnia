@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("hosted browser streams a real Runtime turn and renders the reloaded Session", async ({ page }) => {
+test("hosted browser streams a real Runtime turn and renders the reloaded Session", async ({ page }, testInfo) => {
   await page.goto(
     "/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787&project=e2e-project",
   );
@@ -13,6 +13,8 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue("e2e-project");
   await expect(page.getByLabel("Project", { exact: true })).toContainText("Browser test project");
 
+  await page.getByText("Device & connection", { exact: true }).click();
+  await expect(page.getByLabel("New Device name")).toBeVisible();
   await page.getByLabel("New Device name").fill("Spare Device");
   await page.getByRole("button", { name: "Create pairing code" }).click();
   await expect(page.locator(".remote-pairing-code")).toHaveText(/^[A-Z2-9]{10}$/);
@@ -66,4 +68,5 @@ test("hosted browser streams a real Runtime turn and renders the reloaded Sessio
       scrollWidth: element.scrollWidth,
     })));
   expect(overflowing).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("remote-workspace.png"), fullPage: true });
 });
