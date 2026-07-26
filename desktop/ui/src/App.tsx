@@ -42,6 +42,7 @@ import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
 import ContextPanel from "./components/ContextPanel";
 import ProgressPanel from "./components/ProgressPanel";
+import ConversationMessageList from "./components/ConversationMessageList";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3714,7 +3715,7 @@ function App() {
             <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
           ) : null}
 
-          <div ref={conversationBodyRef} className="conversation-body">
+          <ConversationMessageList ref={conversationBodyRef} className="conversation-body">
             <div ref={conversationContentRef} className="conversation-content">
               {selectedWorkerActive ? (
                 <WorkerOutputView member={selectedWorkerMember} workerName={selectedWorkerView?.name ?? ""} state={workerLogState} />
@@ -3805,7 +3806,7 @@ function App() {
               ) : null}
               <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
             </div>
-          </div>
+          </ConversationMessageList>
 
           {!selectedWorkerActive ? (
           <ConversationComposer className="composer">

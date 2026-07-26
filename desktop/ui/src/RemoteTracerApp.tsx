@@ -15,6 +15,7 @@ import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
 import ProgressPanel from "./components/ProgressPanel";
 import ContextPanel from "./components/ContextPanel";
+import ConversationMessageList from "./components/ConversationMessageList";
 
 const defaults = readConnectionDefaults();
 
@@ -658,13 +659,13 @@ export default function RemoteTracerApp() {
           {!sessions.length ? <p className="remote-empty">No active Session</p> : null}
         </SessionSidebar>
         <ConversationPanel className="remote-conversation" ariaLabel="Conversation">
-          <div className="remote-messages">
+          <ConversationMessageList className="remote-messages">
             {conversationRows.map((row) => <RemoteConversationRow key={row.id} row={row} resolveImage={(path) => {
               const connection = connectionRef.current;
               return connection ? connection.getWorkspaceImage(path) : Promise.reject(new Error("Remote Device is offline."));
             }} />)}
             {!session ? <p className="remote-conversation-empty">Create a Session to begin.</p> : null}
-          </div>
+          </ConversationMessageList>
           {session ? <ProgressPanel className="remote-progress" ariaLabel="Execution progress">
             <details open><summary>Progress</summary>
               {progress?.thinking ? <button type="button" onClick={() => progress.thinking?.path && void showThinkingLog(progress.thinking.path)} disabled={!progress.thinking.path}>Thinking · {progress.thinking.status}</button> : null}
