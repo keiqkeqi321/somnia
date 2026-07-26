@@ -4,7 +4,9 @@ export type ConversationComposerProps = {
   value?: string;
   onChange?: (value: string, cursor: number) => void;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKeyUp?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSelect?: (cursor: number) => void;
+  onClick?: (cursor: number) => void;
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   placeholder?: string;
   disabled?: boolean;
@@ -24,7 +26,9 @@ export default function ConversationComposer({
   value,
   onChange,
   onKeyDown,
+  onKeyUp,
   onSelect,
+  onClick,
   onPaste,
   placeholder,
   disabled = false,
@@ -38,7 +42,7 @@ export default function ConversationComposer({
   children,
   className,
 }: ConversationComposerProps) {
-  if (children) {
+  if (children && value === undefined) {
     return <div className={["conversation-composer", className].filter(Boolean).join(" ")}>{children}</div>;
   }
   return (
@@ -50,7 +54,9 @@ export default function ConversationComposer({
           value={value ?? ""}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onChange?.(event.target.value, event.target.selectionStart)}
           onKeyDown={(event) => onKeyDown?.(event)}
+          onKeyUp={(event) => onKeyUp?.(event)}
           onSelect={(event) => onSelect?.(event.currentTarget.selectionStart)}
+          onClick={(event) => onClick?.(event.currentTarget.selectionStart)}
           onPaste={onPaste}
           placeholder={placeholder ?? ""}
           disabled={disabled}

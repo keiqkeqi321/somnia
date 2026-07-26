@@ -25,5 +25,6 @@
 - [x] Shared `ConversationComposer` frame introduced.
 - [x] Desktop Composer migrated to the shared frame (`b99b270`).
 - [x] Remote Composer migrated to the shared frame (`5c7b506`).
+- [x] Remote Composer migrated from children compatibility to typed slots (`pending commit`).
 - [ ] Move Desktop/Remote controls fully into typed slots and remove children-mode compatibility.
 - [ ] Align shared responsive Composer styling and browser screenshots.

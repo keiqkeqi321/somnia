@@ -679,22 +679,20 @@ export default function RemoteTracerApp() {
             <details><summary>Tool logs ({toolLogs.length})</summary>{toolLogs.map((log) => <button type="button" key={log.id} onClick={() => void showToolLog(log.id)}>{log.tool_name} · {log.actor}</button>)}</details>
             {diagnosticDetail ? <ContextPanel className="remote-diagnostic-panel" ariaLabel="Diagnostic detail"><details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details></ContextPanel> : null}
           </ProgressPanel> : null}
-          <ConversationComposer value={draft} placeholder="Ask Somnia" disabled={!session || access.busy}>
-            <div className="remote-composer-context" aria-label="Message target">
-              Sending to <strong>{selectedDevice?.name ?? "No computer"}</strong> / <strong>{projects.find((project) => project.project_id === projectId)?.name ?? projectId}</strong>
-              {connectionState !== "connected" ? <span>Draft is kept locally until the computer is connected.</span> : null}
-            </div>
-            <div className="remote-composer-input">
-              {pendingImages.length ? <div className="remote-image-previews" aria-label="Pending images">{pendingImages.map((image) => <span key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}>×</button></span>)}</div> : null}
-              {commandPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Slash commands">{REMOTE_COMMANDS.filter((command) => command.startsWith(draft.trimStart())).map((command, index) => <button type="button" key={command} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(command)}>{command}</button>)}</div> : null}
-              {pathPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Project paths">{pathSuggestions.map((item, index) => <button type="button" key={item.path} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => choosePath(item.path)}><strong>{item.path}</strong><small>{item.kind}</small></button>)}</div> : null}
-              <textarea value={draft} onChange={(event) => { setDraft(event.target.value); setComposerCursor(event.target.selectionStart); }} onSelect={(event) => setComposerCursor(event.currentTarget.selectionStart)} onPaste={(event) => void handleComposerPaste(event)} placeholder="Ask Somnia" disabled={!session || access.busy} onKeyDown={handleComposerKeyDown} />
-            </div>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => void handleImageFiles(event.target.files)} />
-            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={!session || !connected || access.busy} aria-label="Attach image">＋</button>
-            <button type="button" onClick={() => void sendPrompt()} disabled={!session || !connected || (!draft.trim() && pendingImages.length === 0) || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>
-            {progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}
-          </ConversationComposer>
+          <ConversationComposer
+            value={draft}
+            placeholder="Ask Somnia"
+            disabled={!session || access.busy}
+            onChange={(value, cursor) => { setDraft(value); setComposerCursor(cursor); }}
+            onSelect={setComposerCursor}
+            onPaste={(event) => void handleComposerPaste(event)}
+            onKeyDown={handleComposerKeyDown}
+            context={<div className="remote-composer-context" aria-label="Message target">Sending to <strong>{selectedDevice?.name ?? "No computer"}</strong> / <strong>{projects.find((project) => project.project_id === projectId)?.name ?? projectId}</strong>{connectionState !== "connected" ? <span>Draft is kept locally until the computer is connected.</span> : null}</div>}
+            attachments={pendingImages.length ? <div className="remote-image-previews" aria-label="Pending images">{pendingImages.map((image) => <span key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setPendingImages((current) => current.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}>x</button></span>)}</div> : null}
+            suggestions={<>{commandPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Slash commands">{REMOTE_COMMANDS.filter((command) => command.startsWith(draft.trimStart())).map((command, index) => <button type="button" key={command} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(command)}>{command}</button>)}</div> : null}{pathPickerOpen ? <div className="remote-suggestion-picker" role="listbox" aria-label="Project paths">{pathSuggestions.map((item, index) => <button type="button" key={item.path} className={index === selectedSuggestionIndex ? "selected" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => choosePath(item.path)}><strong>{item.path}</strong><small>{item.kind}</small></button>)}</div> : null}</>}
+            fileInput={<input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => void handleImageFiles(event.target.files)} />}
+            actions={<><button type="button" onClick={() => fileInputRef.current?.click()} disabled={!session || !connected || access.busy} aria-label="Attach image">+</button><button type="button" onClick={() => void sendPrompt()} disabled={!session || !connected || (!draft.trim() && pendingImages.length === 0) || access.busy}>{progress?.activeTurnId ? "Queue" : "Send"}</button>{progress?.activeTurnId ? <button type="button" className="remote-interrupt-button" onClick={() => void interruptActiveTurn()}>Interrupt</button> : null}</>}
+          />
         </ConversationPanel>
       </ConversationWorkspace>
     </main>
