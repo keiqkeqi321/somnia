@@ -6,9 +6,11 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import json
 import urllib.error
 import urllib.request
 import webbrowser
+from http.cookiejar import CookieJar
 
 from open_somnia.remote.identity import DeviceIdentity
 
@@ -79,7 +81,7 @@ def main() -> int:
         webbrowser.open(web_url)
         relay_origin = f"http://127.0.0.1:{args.relay_port}"
         identity = _load_paired_identity(args.identity)
-        if identity is not None and identity.relay_url.rstrip("/") == relay_origin:
+        if identity is not None and identity.relay_url.rstrip("/") == relay_origin and _device_is_registered(relay_origin, identity.device_id):
             print(f"\nReusing paired Device {identity.device_name} ({identity.device_id}); no new pairing code is required.")
         else:
             print("\n1. Sign in at the opened Web page.")
@@ -176,6 +178,32 @@ def _load_paired_identity(path: Path) -> DeviceIdentity | None:
     except (OSError, ValueError):
         return None
     return identity if identity.is_paired else None
+
+
+def _device_is_registered(relay_origin: str, device_id: str) -> bool:
+    """Verify the local Relay still owns this identity before skipping pairing."""
+    username = str(os.environ.get("SOMNIA_ADMIN_USERNAME", "admin")).strip()
+    password = str(os.environ.get("SOMNIA_ADMIN_PASSWORD", ""))
+    if not password or not device_id:
+        return False
+    jar = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    try:
+        login = urllib.request.Request(
+            f"{relay_origin.rstrip('/')}/api/auth/login",
+            data=json.dumps({"username": username, "password": password}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with opener.open(login, timeout=3.0):
+            pass
+        with opener.open(f"{relay_origin.rstrip('/')}/api/devices", timeout=3.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("devices"), list):
+            return False
+        return any(isinstance(item, dict) and item.get("device_id") == device_id and not item.get("revoked_at") for item in payload["devices"])
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, urllib.error.HTTPError):
+        return False
 
 
 def print_log_tails(processes: list[tuple[str, subprocess.Popen, object, object]], logs: Path) -> None:
