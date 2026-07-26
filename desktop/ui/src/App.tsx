@@ -39,6 +39,7 @@ import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type S
 import ConversationComposer from "./components/ConversationComposer";
 import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
+import SessionSidebar from "./components/SessionSidebar";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -3491,7 +3492,7 @@ function App() {
 
           {projectLimitNotice ? <div className="sidebar-notice">{projectLimitNotice}</div> : null}
 
-          <div className="session-list">
+          <SessionSidebar as="div" className="session-list" ariaLabel={t("sidebar.projects")}>
             {sessionProjectGroups.length === 0 ? (
               <div className="empty-card">
                 <p>{t("sidebar.noProjects")}</p>
@@ -3653,7 +3654,7 @@ function App() {
                 })}
               </div>
             )}
-          </div>
+          </SessionSidebar>
         </aside>
 
         <div
