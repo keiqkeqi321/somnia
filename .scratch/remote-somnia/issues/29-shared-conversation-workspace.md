@@ -25,10 +25,10 @@
 - [x] Shared `ConversationWorkspace` frame introduced and Remote migrated (`093c518`).
 - [x] Desktop workspace container migrated while preserving resize refs and context panel (`35becc8`).
 - [x] ConversationPanel boundary extracted for Desktop and Remote (`8440815`).
-- [x] SessionSidebar boundary extracted for Remote (`5efeb10`).
+- [x] SessionSidebar boundary extracted for Remote (`5efeb10`)./
 - [x] Desktop session navigation migrated to the shared boundary (`9163cf3`).
 - [x] ProgressPanel boundary extracted for Remote (`84f08c3`).
-- [ ] Desktop execution activity migrated to the shared ProgressPanel.
+- [x] Desktop execution activity migrated to the shared ProgressPanel (`7e9e071`).
 - [x] ContextPanel boundary extracted for Desktop (`888ad38`).
 - [ ] Remote diagnostics/context content migrated to the shared ContextPanel.
 - [ ] Shared event/render fixtures cover Desktop and Remote.
