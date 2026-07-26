@@ -3852,6 +3852,16 @@ function App() {
               </div>
             ) : null}
 </>}
+            fileInput={
+              <input
+                ref={fileInputRef}
+                className="file-input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                onChange={(event) => void handleImageFilesSelected(event.currentTarget.files)}
+              />
+            }
             suggestions={<>            {commandPickerOpen && commandSuggestions.length > 0 ? (
               <div className="command-picker">
                 {commandSuggestions.map((item, index) => (
@@ -3888,14 +3898,6 @@ function App() {
             ) : null}
 </>}
             actions={<>            <div className="composer-actions">
-              <input
-                ref={fileInputRef}
-                className="file-input"
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                multiple
-                onChange={(event) => void handleImageFilesSelected(event.currentTarget.files)}
-              />
               <button
                 className="action secondary composer-icon-action attachment-action"
                 onClick={() => fileInputRef.current?.click()}

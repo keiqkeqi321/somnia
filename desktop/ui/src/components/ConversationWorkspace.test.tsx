@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ConversationRow } from "../types";
 import ContextPanel from "./ContextPanel";
+import ConversationComposer from "./ConversationComposer";
 import ConversationMessageContent from "./ConversationMessageContent";
 import ConversationMessageList from "./ConversationMessageList";
 import ConversationPanel from "./ConversationPanel";
@@ -69,5 +70,25 @@ describe("shared ConversationWorkspace rendering", () => {
     expect(html).toContain("Continue");
     expect(html).toContain("Waiting");
     expect(html).toContain("Remove Continue");
+  });
+
+  it("renders the shared composer slots in one stable tree", () => {
+    const html = renderToStaticMarkup(
+      <ConversationComposer
+        value="Draft"
+        onChange={() => undefined}
+        attachments={<span>Attachment</span>}
+        suggestions={<span>Suggestions</span>}
+        fileInput={<input className="file-input" type="file" />}
+        controls={<span>Client controls</span>}
+        actions={<button type="button">Send</button>}
+      />,
+    );
+
+    expect(html).toContain("Attachment");
+    expect(html).toContain("Suggestions");
+    expect(html).toContain("file-input");
+    expect(html).toContain("Client controls");
+    expect(html).toContain("Send");
   });
 });
