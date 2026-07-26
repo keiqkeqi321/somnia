@@ -13,6 +13,7 @@ import ConversationComposer from "./components/ConversationComposer";
 import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
+import ProgressPanel from "./components/ProgressPanel";
 
 const defaults = readConnectionDefaults();
 
@@ -663,7 +664,7 @@ export default function RemoteTracerApp() {
             }} />)}
             {!session ? <p className="remote-conversation-empty">Create a Session to begin.</p> : null}
           </div>
-          {session ? <aside className="remote-progress" aria-label="Execution progress">
+          {session ? <ProgressPanel className="remote-progress" ariaLabel="Execution progress">
             <details open><summary>Progress</summary>
               {progress?.thinking ? <button type="button" onClick={() => progress.thinking?.path && void showThinkingLog(progress.thinking.path)} disabled={!progress.thinking.path}>Thinking · {progress.thinking.status}</button> : null}
               {progress?.tools.map((tool) => <button type="button" key={tool.id} onClick={() => tool.logId && void showToolLog(tool.logId)} disabled={!tool.logId}>{tool.name} · {tool.status}</button>)}
@@ -675,7 +676,7 @@ export default function RemoteTracerApp() {
             <details><summary>Tasks ({tasks.length})</summary>{tasks.map((task) => <div key={task.id}>#{task.id} {task.subject ?? task.description} · {task.status}</div>)}</details>
             <details><summary>Tool logs ({toolLogs.length})</summary>{toolLogs.map((log) => <button type="button" key={log.id} onClick={() => void showToolLog(log.id)}>{log.tool_name} · {log.actor}</button>)}</details>
             {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
-          </aside> : null}
+          </ProgressPanel> : null}
           <ConversationComposer value={draft} placeholder="Ask Somnia" disabled={!session || access.busy}>
             <div className="remote-composer-context" aria-label="Message target">
               Sending to <strong>{selectedDevice?.name ?? "No computer"}</strong> / <strong>{projects.find((project) => project.project_id === projectId)?.name ?? projectId}</strong>
