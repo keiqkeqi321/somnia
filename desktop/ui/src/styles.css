@@ -149,6 +149,29 @@ body {
   letter-spacing: 0;
 }
 
+.remote-access-settings {
+  border-bottom: 1px solid #2b3034;
+  background: #141719;
+}
+
+.remote-access-settings > summary {
+  cursor: pointer;
+  padding: 9px 18px;
+  color: #c9d0d4;
+  font-size: 12px;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.remote-access-settings[open] > summary {
+  border-bottom: 1px solid #2b3034;
+}
+
+.remote-access-settings .remote-connection,
+.remote-access-settings .remote-pairing {
+  border-bottom: 0;
+}
+
 .remote-composer-context {
   display: flex;
   gap: 8px;
