@@ -14,6 +14,7 @@ import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
 import ProgressPanel from "./components/ProgressPanel";
+import ContextPanel from "./components/ContextPanel";
 
 const defaults = readConnectionDefaults();
 
@@ -675,7 +676,7 @@ export default function RemoteTracerApp() {
             <details><summary>Workers ({teamMembers.length + (progress?.subagents.length ?? 0)})</summary>{teamMembers.map((member) => <button type="button" key={member.name} onClick={() => void showTeamLog(member.name)}>{member.name} · {member.status ?? member.activity ?? "active"}</button>)}{progress?.subagents.map((worker, index) => <div key={index}>{activitySummary(worker)}</div>)}</details>
             <details><summary>Tasks ({tasks.length})</summary>{tasks.map((task) => <div key={task.id}>#{task.id} {task.subject ?? task.description} · {task.status}</div>)}</details>
             <details><summary>Tool logs ({toolLogs.length})</summary>{toolLogs.map((log) => <button type="button" key={log.id} onClick={() => void showToolLog(log.id)}>{log.tool_name} · {log.actor}</button>)}</details>
-            {diagnosticDetail ? <details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details> : null}
+            {diagnosticDetail ? <ContextPanel className="remote-diagnostic-panel" ariaLabel="Diagnostic detail"><details open><summary>Diagnostic detail</summary><pre>{diagnosticDetail}</pre></details></ContextPanel> : null}
           </ProgressPanel> : null}
           <ConversationComposer value={draft} placeholder="Ask Somnia" disabled={!session || access.busy}>
             <div className="remote-composer-context" aria-label="Message target">
