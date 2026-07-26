@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from "react";
 
 import type { ConversationImageReferenceBlock, ConversationRow, ConversationRowPart } from "./types";
 import ConversationMessageRow from "./components/ConversationMessageRow";
+import ConversationMarkdown from "./components/ConversationMarkdown";
 
 type ImageResolver = (path: string) => Promise<string>;
 
@@ -26,28 +27,7 @@ function RemotePart({ part, resolveImage }: { part: ConversationRowPart; resolve
 }
 
 export function RemoteMarkdown({ text }: { text: string }) {
-  const blocks = splitFences(text);
-  return <div className="remote-markdown">{blocks.map((block, index) => block.kind === "code" ? (block.language === "mermaid" ? <RemoteMermaid key={index} source={block.value} /> : <pre className="remote-code" key={index}><span>{block.language}</span><code>{block.value}</code></pre>) : <MarkdownText key={index} text={block.value} />)}</div>;
-}
-
-function MarkdownText({ text }: { text: string }) {
-  return <>{text.split(/\n{2,}/).filter(Boolean).map((paragraph, index) => {
-    const heading = /^(#{1,6})\s+(.+)$/.exec(paragraph);
-    if (heading) return <h3 key={index}>{heading[2]}</h3>;
-    const lines = paragraph.split("\n");
-    if (lines.every((line) => /^[-*]\s+/.test(line))) return <ul key={index}>{lines.map((line) => <li key={line}>{inlineMarkdown(line.replace(/^[-*]\s+/, ""))}</li>)}</ul>;
-    return <p key={index}>{lines.map((line, lineIndex) => <span key={lineIndex}>{inlineMarkdown(line)}{lineIndex < lines.length - 1 ? <br /> : null}</span>)}</p>;
-  })}</>;
-}
-
-function inlineMarkdown(text: string) {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`|!\[[^\]]*\]\([^\s)]+\)|\[[^\]]+\]\([^\s)]+\))/g).filter(Boolean).map((token, index) => {
-    let match = /^\*\*(.+)\*\*$/.exec(token); if (match) return <strong key={index}>{match[1]}</strong>;
-    match = /^`(.+)`$/.exec(token); if (match) return <code key={index}>{match[1]}</code>;
-    match = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(token); if (match && safeImageUrl(match[2])) return <img key={index} src={match[2]} alt={match[1]} loading="lazy" />;
-    match = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token); if (match && /^https?:\/\//.test(match[2])) return <a key={index} href={match[2]} target="_blank" rel="noreferrer">{match[1]}</a>;
-    return token;
-  });
+  return <ConversationMarkdown className="markdown-content remote-markdown" text={text} renderMermaid={(source) => <RemoteMermaid source={source} />} />;
 }
 
 function RemoteImage({ image, resolveImage }: { image: ConversationImageReferenceBlock; resolveImage?: ImageResolver }) {
@@ -66,15 +46,6 @@ function RemoteMermaid({ source }: { source: string }) {
   const [svg, setSvg] = useState("");
   useEffect(() => { let active = true; void import("mermaid").then(async ({ default: mermaid }) => { mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" }); const rendered = await mermaid.render(id, source); if (active) setSvg(rendered.svg); }).catch(() => { if (active) setSvg(""); }); return () => { active = false; }; }, [id, source]);
   return <figure className="remote-mermaid"><figcaption>Mermaid diagram</figcaption>{svg ? <div dangerouslySetInnerHTML={{ __html: svg }} /> : <pre className="remote-code"><code>{source}</code></pre>}</figure>;
-}
-
-function splitFences(text: string): Array<{ kind: "text" | "code"; language: string; value: string }> {
-  const blocks: Array<{ kind: "text" | "code"; language: string; value: string }> = [];
-  const pattern = /```([^\n`]*)\n([\s\S]*?)```/g;
-  let offset = 0; let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) { if (match.index > offset) blocks.push({ kind: "text", language: "", value: text.slice(offset, match.index) }); blocks.push({ kind: "code", language: match[1].trim().toLowerCase(), value: match[2].trimEnd() }); offset = pattern.lastIndex; }
-  if (offset < text.length) blocks.push({ kind: "text", language: "", value: text.slice(offset) });
-  return blocks;
 }
 
 function safeImageUrl(url: string): boolean { return /^(https?:|data:image\/)/i.test(url); }

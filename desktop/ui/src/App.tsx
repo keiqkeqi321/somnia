@@ -44,6 +44,7 @@ import ContextPanel from "./components/ContextPanel";
 import ProgressPanel from "./components/ProgressPanel";
 import ConversationMessageList from "./components/ConversationMessageList";
 import ConversationMessageRow from "./components/ConversationMessageRow";
+import ConversationMarkdown from "./components/ConversationMarkdown";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
 import {
@@ -4649,7 +4650,7 @@ function PromptQueueCard({
 }
 
 function MarkdownMessage({ text }: { text: string }) {
-  return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
+  return <ConversationMarkdown text={text} renderMermaid={(source) => <MermaidDiagram source={source} />} />;
 }
 
 function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationThinkingLog; client: SidecarClient | null }) {

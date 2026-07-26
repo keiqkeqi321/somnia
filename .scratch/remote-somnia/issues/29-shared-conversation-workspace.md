@@ -33,5 +33,5 @@
 - [x] Remote diagnostics/context content migrated to the shared ContextPanel (`0227f1d`).
 - [x] Conversation message stream boundary shared by Desktop and Remote (`7c9b55b`).
 - [x] Rich message row container shared by Desktop and Remote (`9ea407d`).
-- [ ] Rich part rendering (Markdown, tools, images, Mermaid) unified.
+- [x] Markdown block rendering shared, with client-specific Mermaid adapters (`pending commit`).
 - [ ] Shared event/render fixtures cover Desktop and Remote.
