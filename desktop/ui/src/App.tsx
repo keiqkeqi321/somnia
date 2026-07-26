@@ -44,6 +44,7 @@ import ContextPanel from "./components/ContextPanel";
 import ProgressPanel from "./components/ProgressPanel";
 import ConversationMessageList from "./components/ConversationMessageList";
 import ConversationMessageContent from "./components/ConversationMessageContent";
+import ConversationPromptQueue from "./components/ConversationPromptQueue";
 import ConversationMarkdown from "./components/ConversationMarkdown";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
@@ -3794,11 +3795,19 @@ function App() {
                 ))
               )}
               {!selectedWorkerActive && activeQueuedPrompts.length > 0 ? (
-                <PromptQueueCard
-                  prompts={activeQueuedPrompts}
+                <ConversationPromptQueue
+                  prompts={activeQueuedPrompts.map((prompt) => ({ id: prompt.id, text: prompt.userText, injectionRequested: prompt.injectionRequested }))}
                   canInject={currentSessionRunning}
                   busy={busyAction !== null}
-                  onInject={handleQueuePromptInjection}
+                  onInject={(prompt) => {
+                    const original = activeQueuedPrompts.find((candidate) => candidate.id === prompt.id);
+                    return original ? handleQueuePromptInjection(original) : undefined;
+                  }}
+                  labels={{
+                    title: t("queue.queuedPrompts"),
+                    waiting: t("queue.nextLoop"),
+                    inject: t("queue.injectNextLoop"),
+                  }}
                 />
               ) : null}
               {!selectedWorkerActive && currentSessionInteraction ? (
@@ -4612,43 +4621,6 @@ function InteractionDecisionCard({
           </button>
         </div>
       )}
-    </section>
-  );
-}
-
-function PromptQueueCard({
-  prompts,
-  canInject,
-  busy,
-  onInject,
-}: {
-  prompts: QueuedPrompt[];
-  canInject: boolean;
-  busy: boolean;
-  onInject: (prompt: QueuedPrompt) => Promise<void>;
-}) {
-  const { t } = useI18n();
-  return (
-    <section className="prompt-queue-card" aria-live="polite">
-      <div className="prompt-queue-head">
-        <p className="eyebrow">{t("queue.queuedPrompts")}</p>
-        <span>{prompts.length}</span>
-      </div>
-      <ol>
-        {prompts.map((prompt) => (
-          <li key={prompt.id}>
-            <span>{prompt.userText}</span>
-            <button
-              className="queue-inject-button"
-              onClick={() => void onInject(prompt)}
-              disabled={!canInject || busy || prompt.injectionRequested}
-              title={prompt.injectionRequested ? t("queue.waitingNextLoop") : t("queue.injectOnNextLoop")}
-            >
-              {prompt.injectionRequested ? t("queue.nextLoop") : t("queue.injectNextLoop")}
-            </button>
-          </li>
-        ))}
-      </ol>
     </section>
   );
 }

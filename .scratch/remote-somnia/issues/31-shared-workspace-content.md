@@ -22,4 +22,5 @@
 
 - [x] Shared `ConversationMessageContent` owns row wrapping, typed-part fallback, image grouping, loading state, and footer slots; Desktop and Remote both use it.
 - [ ] Extract session action rows and execution-progress details.
-- [ ] Extract queue and interaction cards.
+- [x] Shared `ConversationPromptQueue` is used by Desktop and Remote; each adapter supplies its scheduling and optional removal callback.
+- [ ] Extract interaction cards.

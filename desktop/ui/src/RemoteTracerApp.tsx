@@ -10,6 +10,7 @@ import { useRemoteAccess } from "./lib/use-remote-access";
 import { RemoteConversationRow } from "./RemoteRichContent";
 import { deriveRemoteConnectionState, remoteConnectionCopy } from "./lib/remote-connection-state";
 import ConversationComposer from "./components/ConversationComposer";
+import ConversationPromptQueue from "./components/ConversationPromptQueue";
 import ConversationWorkspace from "./components/ConversationWorkspace";
 import ConversationPanel from "./components/ConversationPanel";
 import SessionSidebar from "./components/SessionSidebar";
@@ -647,10 +648,18 @@ export default function RemoteTracerApp() {
         </section>
       </details>
       <div className="remote-notice" role="status">{access.notice}</div>
-      {queuedPrompts.length ? <section className="remote-queue" aria-label="Queued prompts">
-        <strong>Queued prompts ({queuedPrompts.length})</strong>
-        {queuedPrompts.map((prompt) => <div className="remote-queue-row" key={prompt.id}><span>{prompt.prompt}</span><button type="button" onClick={() => void injectQueuedPrompt(prompt)} disabled={!progress?.activeTurnId || prompt.injectionRequested}>{prompt.injectionRequested ? "Waiting for next loop" : "Inject next loop"}</button><button type="button" onClick={() => setQueuedPrompts((current) => current.filter((item) => item.id !== prompt.id))} aria-label={`Remove queued prompt ${prompt.id}`}>Remove</button></div>)}
-      </section> : null}
+      {queuedPrompts.length ? <ConversationPromptQueue
+        className="remote-queue"
+        prompts={queuedPrompts.map((prompt) => ({ id: prompt.id, text: prompt.prompt, injectionRequested: prompt.injectionRequested }))}
+        canInject={Boolean(progress?.activeTurnId)}
+        busy={busy}
+        onInject={(prompt) => {
+          const original = queuedPrompts.find((candidate) => candidate.id === prompt.id);
+          return original ? injectQueuedPrompt(original) : undefined;
+        }}
+        onRemove={(prompt) => setQueuedPrompts((current) => current.filter((item) => item.id !== prompt.id))}
+        labels={{ title: "Queued prompts", waiting: "Waiting for next loop", inject: "Inject next loop", remove: "Remove" }}
+      /> : null}
       <ConversationWorkspace className="remote-workspace">
         <SessionSidebar className="remote-session-pane" ariaLabel="Session">
           <div className="remote-pane-heading"><span>Session</span><button type="button" onClick={() => void createSession()} disabled={!connected || busy}>New</button></div>

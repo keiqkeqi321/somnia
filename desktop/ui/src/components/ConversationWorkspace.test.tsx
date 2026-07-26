@@ -6,6 +6,7 @@ import ContextPanel from "./ContextPanel";
 import ConversationMessageContent from "./ConversationMessageContent";
 import ConversationMessageList from "./ConversationMessageList";
 import ConversationPanel from "./ConversationPanel";
+import ConversationPromptQueue from "./ConversationPromptQueue";
 import ConversationWorkspace from "./ConversationWorkspace";
 import ProgressPanel from "./ProgressPanel";
 
@@ -50,5 +51,23 @@ describe("shared ConversationWorkspace rendering", () => {
       expect(html).toContain(`conversation-message-row-${row.role}`);
       expect(html.includes("conversation-message-row-streaming")).toBe(Boolean(row.isStreaming));
     }
+  });
+
+  it("renders a shared queue card with the client-provided actions", () => {
+    const html = renderToStaticMarkup(
+      <ConversationPromptQueue
+        prompts={[{ id: "queued-1", text: "Continue", injectionRequested: true }]}
+        canInject
+        busy={false}
+        onInject={() => undefined}
+        onRemove={() => undefined}
+        labels={{ title: "Queued prompts", waiting: "Waiting", inject: "Inject", remove: "Remove" }}
+      />,
+    );
+
+    expect(html).toContain("Queued prompts");
+    expect(html).toContain("Continue");
+    expect(html).toContain("Waiting");
+    expect(html).toContain("Remove Continue");
   });
 });
