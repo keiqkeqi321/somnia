@@ -30,5 +30,5 @@
 - [x] ProgressPanel boundary extracted for Remote (`84f08c3`).
 - [x] Desktop execution activity migrated to the shared ProgressPanel (`7e9e071`).
 - [x] ContextPanel boundary extracted for Desktop (`888ad38`).
-- [ ] Remote diagnostics/context content migrated to the shared ContextPanel.
+- [x] Remote diagnostics/context content migrated to the shared ContextPanel (`0227f1d`).
 - [ ] Shared event/render fixtures cover Desktop and Remote.
