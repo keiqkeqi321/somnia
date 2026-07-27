@@ -215,8 +215,11 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(bridge.execute("tool_log.get", {"log_id": "log-1"}), {"id": "log-1", "rendered": "done"})
             self.assertEqual(bridge.execute("thinking_log.get", {"path": "safe/log.jsonl"}), {"path": "safe/log.jsonl", "text": "reasoning"})
             self.assertEqual(bridge.execute("team.members", {"session_id": "session-1"}), {"members": [{"name": "Scout"}]})
+            self.assertEqual(bridge.execute("team.members", {}), {"members": [{"name": "Scout"}]})
             self.assertEqual(bridge.execute("team.log", {"name": "Scout", "session_id": "session-1"}), {"name": "Scout", "rendered": "working"})
+            self.assertEqual(bridge.execute("team.log", {"name": "Scout"}), {"name": "Scout", "rendered": "working"})
             self.assertEqual(bridge.execute("task.list", {"session_id": "session-1"}), {"tasks": [{"id": 1, "subject": "Ship"}]})
+            self.assertEqual(bridge.execute("task.list", {}), {"tasks": [{"id": 1, "subject": "Ship"}]})
             self.assertEqual(
                 bridge.execute("workspace.paths", {"query": "src", "limit": 30}),
                 {"paths": [{"path": "src", "basename": "src", "kind": "dir"}]},
@@ -230,6 +233,28 @@ class RemoteConnectorTests(unittest.TestCase):
             )
             self.assertEqual(bridge.execute("workspace.image", {"path": "safe/pixel.png"})["data_url"], "data:image/png;base64,cG5n")
             self.assertEqual(bridge.execute("provider.list", {}), {"providers": [{"name": "openai", "models": ["gpt-test"]}]})
+            self.assertEqual(bridge.execute("provider.presets", {}), {"presets": [{"name": "openai", "provider_type": "openai"}]})
+            self.assertEqual(
+                bridge.execute("provider.debug_model", {"provider": "openai", "model": "gpt-test"}),
+                {"provider": "openai", "model": "gpt-test", "ok": True, "message": "Connection OK."},
+            )
+            self.assertEqual(
+                bridge.execute("settings.config.get", {}),
+                {"active_scope": "project", "sections": {"provider": "[providers]", "hooks": "[hooks]"}},
+            )
+            self.assertEqual(
+                bridge.execute("settings.config.save", {"scope": "project", "section": "hooks", "content": "[hooks]"}),
+                {"saved": True, "scope": "project", "section": "hooks"},
+            )
+            self.assertEqual(bridge.execute("mcp.list", {}), {"servers": [{"name": "docs", "enabled": True}]})
+            self.assertEqual(
+                bridge.execute("mcp.debug", {"name": "docs"}),
+                {"server": {"name": "docs"}, "tool_count": 2},
+            )
+            self.assertEqual(
+                bridge.execute("mcp.set_enabled", {"name": "docs", "enabled": False}),
+                {"server": {"name": "docs"}, "enabled": False, "tool_count": 0},
+            )
             self.assertEqual(bridge.execute("runtime.status", {}), {"status": "ready", "provider": "openai", "model": "gpt-test"})
             self.assertEqual(bridge.execute("model.list", {"provider": "openai"}), {"models": [{"id": "gpt-test", "provider": "openai"}]})
             self.assertEqual(
@@ -245,9 +270,28 @@ class RemoteConnectorTests(unittest.TestCase):
                 {"message": "Reasoning level updated.", "reasoning_level": "high"},
             )
             self.assertEqual(bridge.execute("interaction.list", {}), {"interactions": [{"id": "interaction-1", "session_id": "session-1", "kind": "authorization"}]})
+            self.assertEqual(
+                bridge.execute(
+                    "interaction.resolve_authorization",
+                    {"interaction_id": "interaction-1", "scope": "workspace", "approved": True, "reason": "ok"},
+                ),
+                {"resolved": True, "scope": "workspace", "approved": True},
+            )
+            self.assertEqual(
+                bridge.execute(
+                    "interaction.resolve_mode_switch",
+                    {"interaction_id": "interaction-1", "approved": True, "active_mode": "yolo", "reason": ""},
+                ),
+                {"resolved": True, "approved": True, "active_mode": "yolo"},
+            )
             self.assertEqual(bridge.execute("execution.mode", {"mode": "plan"}), {"message": "Execution mode set.", "execution_mode": "plan"})
-            with self.assertRaisesRegex(ValueError, "Yolo.*remote"):
-                bridge.execute("execution.mode", {"mode": "yolo"})
+            self.assertEqual(bridge.execute("execution.mode", {"mode": "yolo"}), {"message": "Execution mode set.", "execution_mode": "yolo"})
+            with self.assertRaisesRegex(ValueError, "Unsupported remote execution mode"):
+                bridge.execute("execution.mode", {"mode": "bogus"})
+            with self.assertRaisesRegex(ValueError, "enabled must be a boolean"):
+                bridge.execute("mcp.set_enabled", {"name": "docs", "enabled": "yes"})
+            with self.assertRaisesRegex(ValueError, "scope is required"):
+                bridge.execute("interaction.resolve_authorization", {"interaction_id": "interaction-1"})
             with self.assertRaisesRegex(ValueError, "Unsupported remote method"):
                 bridge.execute("permission.persist", {"scope": "workspace"})
         finally:
@@ -306,6 +350,24 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         if self.path == "/providers/switch":
             self._send({"message": "Provider switched.", "provider": body.get("provider_name"), "model": body.get("model")})
             return
+        if self.path == "/providers/debug-model":
+            self._send({"provider": body.get("provider_name"), "model": body.get("model"), "ok": True, "message": "Connection OK."})
+            return
+        if self.path == "/settings/config":
+            self._send({"saved": True, "scope": body.get("scope"), "section": body.get("section")})
+            return
+        if self.path == "/mcp/servers/docs/debug":
+            self._send({"server": {"name": "docs"}, "tool_count": 2})
+            return
+        if self.path == "/mcp/servers/docs/enabled":
+            self._send({"server": {"name": "docs"}, "enabled": body.get("enabled"), "tool_count": 0})
+            return
+        if self.path == "/interactions/interaction-1/authorization":
+            self._send({"resolved": True, "scope": body.get("scope"), "approved": body.get("approved")})
+            return
+        if self.path == "/interactions/interaction-1/mode-switch":
+            self._send({"resolved": True, "approved": body.get("approved"), "active_mode": body.get("active_mode")})
+            return
         if self.path == "/vision-model":
             self._send({"message": "Vision model updated.", "vision_provider": body.get("vision_provider"), "vision_model": body.get("vision_model")})
             return
@@ -338,11 +400,29 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
         if self.path == "/team/active?session_id=session-1":
             self._send({"members": [{"name": "Scout"}]})
             return
+        if self.path == "/team/active":
+            self._send({"members": [{"name": "Scout"}]})
+            return
         if self.path == "/team/log?name=Scout&session_id=session-1":
+            self._send({"team_log": {"name": "Scout", "rendered": "working"}})
+            return
+        if self.path == "/team/log?name=Scout":
             self._send({"team_log": {"name": "Scout", "rendered": "working"}})
             return
         if self.path == "/tasks?session_id=session-1":
             self._send({"tasks": [{"id": 1, "subject": "Ship"}]})
+            return
+        if self.path == "/tasks":
+            self._send({"tasks": [{"id": 1, "subject": "Ship"}]})
+            return
+        if self.path == "/provider-presets":
+            self._send({"presets": [{"name": "openai", "provider_type": "openai"}]})
+            return
+        if self.path == "/settings/config":
+            self._send({"active_scope": "project", "sections": {"provider": "[providers]", "hooks": "[hooks]"}})
+            return
+        if self.path == "/mcp/servers":
+            self._send({"servers": [{"name": "docs", "enabled": True}]})
             return
         if self.path == "/workspace/paths?q=src&limit=30":
             self._send({"paths": [{"path": "src", "basename": "src", "kind": "dir"}]})

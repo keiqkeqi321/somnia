@@ -109,7 +109,7 @@ Architecture invariants:
 - Project paths, provider secrets, Session state, transcripts, and Runtime artifacts remain on the controlled Device.
 - PostgreSQL stores only the explicitly allowed account, Device, public-key, Project identity, and presence metadata.
 - Conversation-bearing frames exist in Relay process memory only while being forwarded. Offline Devices receive immediate errors rather than durable queued commands.
-- Permission persistence, sensitive configuration, and Yolo activation require confirmation on the controlled computer or its trusted server console.
+- The remote channel is fully authorized for paired, non-revoked Devices: permission approval (including persistence), sensitive configuration (all sections, hooks included), and Yolo activation are allowed remotely.
 
 ## User Stories
 
@@ -136,8 +136,8 @@ Architecture invariants:
 21. As a user, I want provider, model, vision model, and reasoning controls exposed where Desktop exposes them, so that remote conversations use the intended model configuration.
 22. As a user, I want existing per-Project and per-Session concurrency rules preserved, so that remote access cannot bypass Runtime safety.
 23. As a user, I want pending authorization and mode-switch interactions displayed, so that I know why a Turn is waiting.
-24. As the administrator, I want Yolo activation, sensitive configuration changes, and permission approval to require confirmation on the computer, so that account compromise cannot silently grant full machine control.
-25. As a user, I want a clear waiting-for-local-confirmation state, so that restricted remote actions do not look frozen.
+24. As the administrator, I want full remote authority — permission approval, sensitive configuration, and Yolo — to be available only through an authenticated, paired, non-revoked Device, so that pairing and revocation remain the single control point for remote machine control.
+25. As the administrator, I want hooks and every other configuration section editable remotely for verified Devices, so that remote settings management has no visible difference from Desktop.
 26. As a user, I want the browser to recover after Wi-Fi changes, mobile suspension, or Relay restart, so that an active session remains understandable.
 27. As a user, I want missed events replayed when available and a snapshot resync otherwise, so that reconnects never leave a silently incomplete view.
 28. As a user, I want repeated network delivery of a command to remain idempotent, so that a question or destructive action runs only once.
@@ -161,6 +161,7 @@ Architecture invariants:
 - The Connector is the authoritative remote endpoint and Runtime owner for its Device. It can run independently of Desktop and manages multiple registered Projects.
 - A Project folder is registered locally. Remote clients may select and operate registered Projects but may not browse the computer filesystem or register an arbitrary path.
 - Desktop and Web use a shared Somnia Connection seam with direct and remote adapters. Conversation state reduction, event interpretation, and message rendering are shared rather than reimplemented.
+- Desktop and Remote Web converge on a single UI tree (`App.tsx`); `RemoteTracerApp` is retired. Remote mode hides Project creation/removal and local-only chrome, and selects Projects only from the paired Device's registered list (issue 14).
 - Protocol envelopes carry a protocol version, Device and Project identity, optional Session and Turn identity, request identity, stream epoch, sequence number, message type, and payload.
 - Mutating commands require a unique request identity. The Connector maintains a bounded deduplication window and returns the original result for safe retries.
 - The Connector assigns ordered event sequence numbers and retains a bounded in-memory event ring for active streams. The browser acknowledges the highest contiguous sequence it has applied.
@@ -170,7 +171,7 @@ Architecture invariants:
 - Device-offline commands fail immediately. The browser may retain an unsent local draft, but automatic remote submission waits for explicit user action after reconnection.
 - Multiple browsers may observe and command the same Device. Existing Runtime concurrency rules and command idempotency resolve contention.
 - Remote conversation behavior matches Desktop, including queued prompts, loop injection, interruption, compaction, janitor, attachments, rich output, activity views, and model controls.
-- Remote clients cannot approve tool authorization, persist permission grants, change sensitive provider or MCP configuration, or enable Yolo without a local confirmation path. They can observe the pending interaction and its resolution.
+- Remote clients may approve tool authorization (including persistent grants), change sensitive provider, MCP, and hooks configuration, and enable Yolo, provided the channel runs through an authenticated, paired, non-revoked Device.
 - Session archive state and prompt history remain browser-local because the Relay may not store Session-derived data.
 - The responsive Web application uses mobile-first navigation without requiring visual identity with Desktop. Capability and state-transition parity are the acceptance target.
 - The initial deployment is a single Relay node backed by PostgreSQL for allowed metadata. Horizontal scaling and a non-content presence broker may be added only after preserving the no-content-persistence invariant.
@@ -180,7 +181,7 @@ Architecture invariants:
 - The highest behavioral test seam is Somnia Connection. The same contract suite runs against direct and remote adapters.
 - Tests assert observable commands, events, snapshots, errors, ordering, and recovery behavior rather than internal classes or private helper calls.
 - Shared conversation-state tests feed identical event streams through Desktop and Web consumers and require identical domain state.
-- Connector contract tests cover Project ownership, Runtime lifecycle, sequence assignment, acknowledgements, replay windows, snapshot fallback, deduplication, local confirmation policy, and concurrent clients.
+- Connector contract tests cover Project ownership, Runtime lifecycle, sequence assignment, acknowledgements, replay windows, snapshot fallback, deduplication, and concurrent clients.
 - Relay integration tests use real WebSocket clients on both sides and cover authentication, pairing, routing, revocation, Device isolation, payload limits, slow consumers, and abrupt disconnects.
 - Privacy tests inspect the Relay database, application logs, access logs, traces, metrics labels, exception reports, and temporary files after representative conversations and require that no prohibited content appears.
 - End-to-end tracer tests cover sign-in, pairing, Project selection, Session creation, streaming response, tool activity, continuation, interruption, browser reconnection, and Relay restart.
@@ -197,7 +198,7 @@ Architecture invariants:
 - End-to-end encryption that prevents the Relay process from seeing transient plaintext.
 - Offline command queues and delayed execution while a Device is disconnected.
 - Remote filesystem browsing or arbitrary remote Project registration.
-- Remote approval of tool permissions, persistent permission grants, sensitive provider or MCP configuration, and unconfirmed Yolo activation.
+- Remote access for unpaired or revoked Devices (device verification is the security gate for all remote authority).
 - Native Android or iOS applications; the first client is a responsive hosted Web application.
 - Horizontal Relay scaling until the single-node reliability and privacy invariants are proven.
 

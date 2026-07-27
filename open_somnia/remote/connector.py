@@ -113,16 +113,21 @@ class LocalSidecarBridge:
             payload = self._request("GET", f"/thinking-log?path={quote(path, safe='')}", None)
             return _required_mapping(payload, "thinking_log")
         if method == "team.members":
-            session_id = _required_text(params, "session_id")
-            return self._request("GET", f"/team/active?session_id={quote(session_id, safe='')}", None)
+            session_id = str(params.get("session_id", "")).strip()
+            path = "/team/active" if not session_id else f"/team/active?session_id={quote(session_id, safe='')}"
+            return self._request("GET", path, None)
         if method == "team.log":
             name = _required_text(params, "name")
-            session_id = _required_text(params, "session_id")
-            payload = self._request("GET", f"/team/log?name={quote(name, safe='')}&session_id={quote(session_id, safe='')}", None)
+            session_id = str(params.get("session_id", "")).strip()
+            path = f"/team/log?name={quote(name, safe='')}"
+            if session_id:
+                path += f"&session_id={quote(session_id, safe='')}"
+            payload = self._request("GET", path, None)
             return _required_mapping(payload, "team_log")
         if method == "task.list":
-            session_id = _required_text(params, "session_id")
-            return self._request("GET", f"/tasks?session_id={quote(session_id, safe='')}", None)
+            session_id = str(params.get("session_id", "")).strip()
+            path = "/tasks" if not session_id else f"/tasks?session_id={quote(session_id, safe='')}"
+            return self._request("GET", path, None)
         if method == "provider.list":
             return self._request("GET", "/providers", None)
         if method == "runtime.status":
@@ -131,14 +136,41 @@ class LocalSidecarBridge:
             provider = str(params.get("provider", "")).strip()
             path = "/models" if not provider else f"/models?provider={quote(provider, safe='')}"
             return self._request("GET", path, None)
+        if method == "provider.presets":
+            return self._request("GET", "/provider-presets", None)
         if method == "provider.switch":
             provider = _required_text(params, "provider")
             model = _required_text(params, "model")
             return self._request("POST", "/providers/switch", {"provider_name": provider, "model": model})
+        if method == "provider.debug_model":
+            provider = _required_text(params, "provider")
+            model = _required_text(params, "model")
+            return self._request("POST", "/providers/debug-model", {"provider_name": provider, "model": model})
+        if method == "settings.config.get":
+            return self._request("GET", "/settings/config", None)
+        if method == "settings.config.save":
+            scope = _required_text(params, "scope")
+            section = _required_text(params, "section")
+            content = str(params.get("content", ""))
+            return self._request("POST", "/settings/config", {"scope": scope, "section": section, "content": content})
+        if method == "mcp.list":
+            return self._request("GET", "/mcp/servers", None)
+        if method == "mcp.debug":
+            name = _required_text(params, "name")
+            return self._request("POST", f"/mcp/servers/{quote(name, safe='')}/debug", {})
+        if method == "mcp.set_enabled":
+            name = _required_text(params, "name")
+            enabled = params.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be a boolean.")
+            return self._request("POST", f"/mcp/servers/{quote(name, safe='')}/enabled", {"enabled": enabled})
         if method == "vision.set":
             provider = str(params.get("provider", "")).strip()
             model = str(params.get("model", "")).strip()
-            return self._request("POST", "/vision-model", {"scope": "project", "vision_provider": provider, "vision_model": model})
+            scope = str(params.get("scope", "project")).strip().lower()
+            if scope not in {"user", "project"}:
+                raise ValueError("scope must be 'user' or 'project'.")
+            return self._request("POST", "/vision-model", {"scope": scope, "vision_provider": provider, "vision_model": model})
         if method == "reasoning.set":
             level = str(params.get("level", "")).strip()
             if not level:
@@ -146,11 +178,33 @@ class LocalSidecarBridge:
             return self._request("POST", "/reasoning", {"reasoning_level": level})
         if method == "interaction.list":
             return self._request("GET", "/interactions", None)
+        if method == "interaction.resolve_authorization":
+            interaction_id = _required_text(params, "interaction_id")
+            scope = _required_text(params, "scope")
+            approved = params.get("approved", True)
+            if not isinstance(approved, bool):
+                raise ValueError("approved must be a boolean.")
+            reason = str(params.get("reason", "")).strip()
+            return self._request(
+                "POST",
+                f"/interactions/{quote(interaction_id, safe='')}/authorization",
+                {"scope": scope, "approved": approved, "reason": reason},
+            )
+        if method == "interaction.resolve_mode_switch":
+            interaction_id = _required_text(params, "interaction_id")
+            approved = params.get("approved", False)
+            if not isinstance(approved, bool):
+                raise ValueError("approved must be a boolean.")
+            active_mode = params.get("active_mode")
+            reason = str(params.get("reason", "")).strip()
+            return self._request(
+                "POST",
+                f"/interactions/{quote(interaction_id, safe='')}/mode-switch",
+                {"approved": approved, "active_mode": active_mode, "reason": reason},
+            )
         if method == "execution.mode":
             mode = _required_text(params, "mode").lower()
-            if mode == "yolo":
-                raise ValueError("Yolo cannot be enabled remotely; confirm on the computer.")
-            if mode not in {"shortcuts", "plan", "accept_edits"}:
+            if mode not in {"shortcuts", "plan", "accept_edits", "yolo"}:
                 raise ValueError("Unsupported remote execution mode.")
             return self._request("POST", "/execution-mode", {"mode": mode})
         if method == "workspace.paths":

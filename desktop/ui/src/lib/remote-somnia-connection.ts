@@ -1,10 +1,10 @@
-import type { AgentSession, InteractionRequestState, ModelDescriptor, ProviderDescriptor, SidecarEvent, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { AgentSession, InteractionRequestState, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { SomniaClient } from "./somnia-client";
 import type {
   SessionCreateCommand,
   SessionDeleteCommand,
   SessionListQuery,
   SessionLoadQuery,
-  SomniaConnection,
   SomniaConnectionListener,
   SomniaConnectionState,
   TurnStartCommand,
@@ -43,7 +43,7 @@ export interface RemoteSomniaConnectionOptions {
   reconnectDelayMs?: number;
 }
 
-export class RemoteSomniaConnection implements SomniaConnection {
+export class RemoteSomniaConnection implements SomniaClient {
   private readonly relayUrl: string;
   private readonly deviceId: string;
   private readonly projectId: string;
@@ -90,6 +90,30 @@ export class RemoteSomniaConnection implements SomniaConnection {
     return this.sendRequest("turn.start", { session_id: command.sessionId, user_input: command.userInput });
   }
 
+  /**
+   * Remote devices cannot serve workspace images over plain HTTP, so there is
+   * no usable base URL; image rendering resolves through `getWorkspaceImage`.
+   */
+  get baseUrl(): string {
+    return "";
+  }
+
+  listSessions(): Promise<AgentSession[]> {
+    return this.query({ type: "session.list" });
+  }
+
+  createSession(): Promise<AgentSession> {
+    return this.execute({ type: "session.create" });
+  }
+
+  loadSession(sessionId: string): Promise<AgentSession> {
+    return this.query({ type: "session.load", sessionId });
+  }
+
+  deleteSession(sessionId: string): Promise<{ session_id: string; deleted: boolean }> {
+    return this.execute({ type: "session.delete", sessionId });
+  }
+
   listToolLogs(limit = 24): Promise<ToolLogIndexEntry[]> {
     return this.sendRequest<{ tool_logs: ToolLogIndexEntry[] }>("tool_log.list", { limit }).then((result) => result.tool_logs);
   }
@@ -102,16 +126,16 @@ export class RemoteSomniaConnection implements SomniaConnection {
     return this.sendRequest("thinking_log.get", { path });
   }
 
-  listTeamMembers(sessionId: string): Promise<TeamMemberActivity[]> {
-    return this.sendRequest<{ members: TeamMemberActivity[] }>("team.members", { session_id: sessionId }).then((result) => result.members);
+  listActiveTeamMembers(sessionId?: string | null): Promise<TeamMemberActivity[]> {
+    return this.sendRequest<{ members: TeamMemberActivity[] }>("team.members", sessionId ? { session_id: sessionId } : {}).then((result) => result.members);
   }
 
-  getTeamLog(name: string, sessionId: string): Promise<TeamLogDetail> {
-    return this.sendRequest("team.log", { name, session_id: sessionId });
+  getTeamLog(name: string, sessionId?: string | null): Promise<TeamLogDetail> {
+    return this.sendRequest("team.log", sessionId ? { name, session_id: sessionId } : { name });
   }
 
-  listTasks(sessionId: string): Promise<TaskGraphItem[]> {
-    return this.sendRequest<{ tasks: TaskGraphItem[] }>("task.list", { session_id: sessionId }).then((result) => result.tasks);
+  listTasks(sessionId?: string | null): Promise<TaskGraphItem[]> {
+    return this.sendRequest<{ tasks: TaskGraphItem[] }>("task.list", sessionId ? { session_id: sessionId } : {}).then((result) => result.tasks);
   }
 
   getWorkspaceImage(path: string): Promise<string> {
@@ -138,7 +162,7 @@ export class RemoteSomniaConnection implements SomniaConnection {
     });
   }
 
-  getRuntimeStatus(): Promise<Record<string, unknown>> {
+  runtimeStatus(): Promise<SidecarStatus> {
     return this.sendRequest("runtime.status", {});
   }
 
@@ -150,23 +174,89 @@ export class RemoteSomniaConnection implements SomniaConnection {
     return this.sendRequest<{ models: ModelDescriptor[] }>("model.list", provider ? { provider } : {}).then((result) => result.models);
   }
 
-  switchProviderModel(provider: string, model: string): Promise<Record<string, unknown>> {
-    return this.sendRequest("provider.switch", { provider, model });
+  switchProviderModel(providerName: string, model: string): Promise<{ message: string; provider: string; model: string; vision_model?: string | null }> {
+    return this.sendRequest("provider.switch", { provider: providerName, model });
   }
 
-  setVisionModel(provider: string | null, model: string | null): Promise<Record<string, unknown>> {
-    return this.sendRequest("vision.set", { provider: provider ?? "", model: model ?? "" });
+  listProviderPresets(): Promise<ProviderPresetDescriptor[]> {
+    return this.sendRequest<{ presets: ProviderPresetDescriptor[] }>("provider.presets", {}).then((result) => result.presets);
   }
 
-  setReasoningLevel(level: string | null): Promise<Record<string, unknown>> {
-    return this.sendRequest("reasoning.set", { level: level ?? "auto" });
+  debugModelConnection(providerName: string, model: string): Promise<{ provider: string; model: string; ok: boolean; message: string }> {
+    return this.sendRequest("provider.debug_model", { provider: providerName, model });
+  }
+
+  getSettingsConfig(): Promise<SettingsConfigPayload> {
+    return this.sendRequest("settings.config.get", {});
+  }
+
+  saveSettingsConfigSection(
+    scope: SettingsConfigScopeKey,
+    section: SettingsConfigSectionKey,
+    content: string,
+  ): Promise<SaveSettingsConfigSectionResult> {
+    return this.sendRequest("settings.config.save", { scope, section, content });
+  }
+
+  listMcpServers(): Promise<McpServerSummary[]> {
+    return this.sendRequest<{ servers: McpServerSummary[] }>("mcp.list", {}).then((result) => result.servers);
+  }
+
+  debugMcpServer(serverName: string): Promise<{ server: McpServerSummary; tool_count: number }> {
+    return this.sendRequest("mcp.debug", { name: serverName });
+  }
+
+  setMcpServerEnabled(serverName: string, enabled: boolean): Promise<{ server: McpServerSummary; enabled: boolean; tool_count: number }> {
+    return this.sendRequest("mcp.set_enabled", { name: serverName, enabled });
+  }
+
+  setVisionModel(visionProvider: string | null, visionModel: string | null, scope: "user" | "project" = "project"): Promise<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }> {
+    return this.sendRequest("vision.set", { provider: visionProvider ?? "", model: visionModel ?? "", scope });
+  }
+
+  setReasoningLevel(reasoningLevel: string | null): Promise<{ message: string; provider: string; model: string; vision_model?: string | null; reasoning_level?: string | null }> {
+    return this.sendRequest("reasoning.set", { level: reasoningLevel ?? "auto" });
   }
 
   listInteractions(): Promise<InteractionRequestState[]> {
     return this.sendRequest<{ interactions: InteractionRequestState[] }>("interaction.list", {}).then((result) => result.interactions);
   }
 
-  setExecutionMode(mode: "shortcuts" | "plan" | "accept_edits"): Promise<Record<string, unknown>> {
+  resolveAuthorization(
+    requestId: string,
+    options: {
+      scope: "once" | "workspace" | "deny";
+      approved: boolean;
+      reason: string;
+    },
+  ): Promise<void> {
+    const { scope, approved, reason } = options;
+    return this.sendRequest("interaction.resolve_authorization", {
+      interaction_id: requestId,
+      scope,
+      approved,
+      reason,
+    }).then(() => undefined);
+  }
+
+  resolveModeSwitch(
+    requestId: string,
+    options: {
+      approved: boolean;
+      activeMode?: string;
+      reason: string;
+    },
+  ): Promise<void> {
+    const { approved, activeMode, reason } = options;
+    return this.sendRequest("interaction.resolve_mode_switch", {
+      interaction_id: requestId,
+      approved,
+      active_mode: activeMode,
+      reason,
+    }).then(() => undefined);
+  }
+
+  setExecutionMode(mode: string): Promise<{ message: string; execution_mode: string; execution_mode_title: string }> {
     return this.sendRequest("execution.mode", { mode });
   }
 
@@ -174,7 +264,7 @@ export class RemoteSomniaConnection implements SomniaConnection {
     return this.sendRequest("turn.interrupt", { turn_id: turnId });
   }
 
-  queueLoopInjection(turnId: string, injectionId: string, userInput: string | Record<string, unknown>): Promise<{ turn_id: string; injection_id: string; queued: boolean }> {
+  queueLoopInjection(turnId: string, injectionId: string, userInput: string | Record<string, unknown>): Promise<LoopInjectionResponse> {
     return this.sendRequest("turn.inject", { turn_id: turnId, injection_id: injectionId, user_input: userInput });
   }
 

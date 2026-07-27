@@ -27,8 +27,10 @@ authoritative owners of Session content.
 - [x] Oversized content frames are closed with WebSocket code 1009 and are not
   forwarded:
   `python -m unittest tests.test_remote_relay.RemoteRelayTests.test_relay_closes_oversized_content_frames_before_forwarding`
-- [x] Remote dangerous-operation policy is enforced in the Connector, including
-  Yolo denial and restricted configuration/permission methods:
+- [x] Remote operations are fully authorized through verified (paired, non-revoked)
+  Devices: tool-authorization and mode-switch interactions (including Yolo) may be
+  approved remotely, and all configuration sections — hooks included — are
+  readable/writable through the Connector:
   `python -m unittest tests.test_remote_connector`
 
 ## Recovery and load

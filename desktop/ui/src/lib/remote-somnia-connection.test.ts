@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentSession, SidecarEvent } from "../types";
-import { describeSomniaConnectionContract } from "./somnia-connection.contract";
+import {
+  contractMcpServers,
+  contractProviderPresets,
+  contractRuntimeStatus,
+  contractSettingsConfig,
+  contractSettingsSaveResult,
+  contractTasks,
+  contractToolLogDetail,
+  contractToolLogs,
+  contractWorkspacePaths,
+  describeSomniaConnectionContract,
+} from "./somnia-connection.contract";
 import { RemoteSomniaConnection } from "./remote-somnia-connection";
 import type { SomniaConnectionNotification } from "./somnia-connection";
 
@@ -12,6 +23,53 @@ const loadedSession: AgentSession = {
   todo_items: [],
   rounds_without_todo: 0,
 };
+
+function relayResultFor(method: string): unknown {
+  switch (method) {
+    case "turn.start":
+      return { turn_id: "turn-1", session_id: loadedSession.id };
+    case "session.list":
+      return { sessions: [loadedSession] };
+    case "session.delete":
+      return { session_id: loadedSession.id, deleted: true };
+    case "session.compact":
+      return { message: "Context compacted.", session: loadedSession };
+    case "session.janitor":
+      return { message: "Janitor complete.", session: loadedSession };
+    case "workspace.paths":
+      return { paths: contractWorkspacePaths };
+    case "workspace.image.stage":
+      return { path: ".open_somnia/clipboard-images/paste.png", absolute_path: "C:/workspace/paste.png", media_type: "image/png" };
+    case "runtime.status":
+      return contractRuntimeStatus;
+    case "provider.list":
+      return { providers: [{ name: "openai", provider_type: "openai", default_model: "gpt-test", models: ["gpt-test"], is_active: true }] };
+    case "model.list":
+      return { models: [{ provider_name: "openai", name: "gpt-test", is_default: true, is_active: true, is_vision: false }] };
+    case "interaction.list":
+      return { interactions: [] };
+    case "execution.mode":
+      return { message: "Execution mode set.", execution_mode: "plan", execution_mode_title: "Plan mode" };
+    case "settings.config.get":
+      return contractSettingsConfig;
+    case "settings.config.save":
+      return contractSettingsSaveResult;
+    case "provider.presets":
+      return { presets: contractProviderPresets };
+    case "mcp.list":
+      return { servers: contractMcpServers };
+    case "interaction.resolve_authorization":
+      return { resolved: true };
+    case "tool_log.list":
+      return { tool_logs: contractToolLogs };
+    case "tool_log.get":
+      return contractToolLogDetail;
+    case "task.list":
+      return { tasks: contractTasks };
+    default:
+      return loadedSession;
+  }
+}
 
 class FakeRelaySocket {
   onopen: ((event: Event) => unknown) | null = null;
@@ -25,32 +83,7 @@ class FakeRelaySocket {
 
   send(rawMessage: string) {
     const request = JSON.parse(rawMessage) as { request_id: string; method: string };
-    const result = request.method === "turn.start"
-      ? { turn_id: "turn-1", session_id: loadedSession.id }
-      : request.method === "session.list"
-        ? { sessions: [loadedSession] }
-        : request.method === "session.delete"
-        ? { session_id: loadedSession.id, deleted: true }
-        : request.method === "session.compact"
-          ? { message: "Context compacted.", session: loadedSession }
-          : request.method === "session.janitor"
-            ? { message: "Janitor complete.", session: loadedSession }
-            : request.method === "workspace.paths"
-              ? { paths: [{ path: "src", basename: "src", kind: "dir" }] }
-              : request.method === "workspace.image.stage"
-                ? { path: ".open_somnia/clipboard-images/paste.png", absolute_path: "C:/workspace/paste.png", media_type: "image/png" }
-                : request.method === "runtime.status"
-                  ? { status: "ready", provider: "openai", model: "gpt-test" }
-                  : request.method === "provider.list"
-                    ? { providers: [{ name: "openai", provider_type: "openai", default_model: "gpt-test", models: ["gpt-test"], is_active: true }] }
-                    : request.method === "model.list"
-                      ? { models: [{ provider_name: "openai", name: "gpt-test", is_default: true, is_active: true, is_vision: false }] }
-                      : request.method === "interaction.list"
-                        ? { interactions: [] }
-                        : request.method === "execution.mode"
-                          ? { message: "Execution mode set.", execution_mode: "plan" }
-        : loadedSession;
-    this.emit({ kind: "response", request_id: request.request_id, ok: true, result });
+    this.emit({ kind: "response", request_id: request.request_id, ok: true, result: relayResultFor(request.method) });
   }
 
   emit(message: unknown) {
@@ -98,7 +131,7 @@ describe("Remote Somnia Connection", () => {
     connection.subscribe(() => undefined);
     openStream();
 
-    await expect(connection.getRuntimeStatus()).resolves.toMatchObject({ status: "ready" });
+    await expect(connection.runtimeStatus()).resolves.toMatchObject({ status: "ready" });
     await expect(connection.listProviders()).resolves.toHaveLength(1);
     await expect(connection.listModels("openai")).resolves.toHaveLength(1);
     await expect(connection.switchProviderModel("openai", "gpt-test")).resolves.toBeDefined();
@@ -106,6 +139,62 @@ describe("Remote Somnia Connection", () => {
     await expect(connection.setReasoningLevel("high")).resolves.toBeDefined();
     await expect(connection.listInteractions()).resolves.toEqual([]);
     await expect(connection.setExecutionMode("plan")).resolves.toMatchObject({ execution_mode: "plan" });
+    connection.close();
+  });
+
+  it("maps settings, provider, mcp, and interaction operations to remote requests", async () => {
+    const socket = new RecordingRelaySocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    connection.subscribe(() => undefined);
+    socket.open();
+
+    const pending = [
+      connection.getSettingsConfig(),
+      connection.saveSettingsConfigSection("project", "hooks", "[hooks]"),
+      connection.listProviderPresets(),
+      connection.debugModelConnection("openai", "gpt-test"),
+      connection.listMcpServers(),
+      connection.debugMcpServer("docs"),
+      connection.setMcpServerEnabled("docs", false),
+      connection.resolveAuthorization("interaction-1", { scope: "workspace", approved: true, reason: "ok" }),
+      connection.resolveModeSwitch("interaction-2", { approved: true, activeMode: "yolo", reason: "" }),
+      connection.setExecutionMode("yolo"),
+      connection.setVisionModel("openai", "vision-test", "user"),
+      connection.listTasks(),
+      connection.getTeamLog("Scout"),
+      connection.listActiveTeamMembers(),
+    ];
+    const requests = socket.sent.filter((message) => message.kind === "request");
+    expect(requests.map((message) => [message.method, message.params])).toEqual([
+      ["settings.config.get", {}],
+      ["settings.config.save", { scope: "project", section: "hooks", content: "[hooks]" }],
+      ["provider.presets", {}],
+      ["provider.debug_model", { provider: "openai", model: "gpt-test" }],
+      ["mcp.list", {}],
+      ["mcp.debug", { name: "docs" }],
+      ["mcp.set_enabled", { name: "docs", enabled: false }],
+      ["interaction.resolve_authorization", { interaction_id: "interaction-1", scope: "workspace", approved: true, reason: "ok" }],
+      ["interaction.resolve_mode_switch", { interaction_id: "interaction-2", approved: true, active_mode: "yolo", reason: "" }],
+      ["execution.mode", { mode: "yolo" }],
+      ["vision.set", { provider: "openai", model: "vision-test", scope: "user" }],
+      ["task.list", {}],
+      ["team.log", { name: "Scout" }],
+      ["team.members", {}],
+    ]);
+    for (const request of requests) {
+      socket.emit({
+        kind: "response",
+        request_id: request.request_id,
+        ok: true,
+        result: { presets: [], servers: [], tasks: [], members: [] },
+      });
+    }
+    await expect(Promise.all(pending)).resolves.toBeDefined();
     connection.close();
   });
 
@@ -183,6 +272,50 @@ describe("Remote Somnia Connection", () => {
       result: { turn_id: "turn-1", session_id: "session-1" },
     });
     await expect(pending).resolves.toEqual({ turn_id: "turn-1", session_id: "session-1" });
+    connection.close();
+  });
+
+  it("publishes stream snapshots and acknowledges the snapshot sequence", () => {
+    const socket = new RecordingRelaySocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    const notifications: SomniaConnectionNotification[] = [];
+    connection.subscribe((notification) => notifications.push(notification));
+    socket.open();
+
+    socket.emit({
+      kind: "stream_snapshot",
+      protocol_version: 1,
+      device_id: "device-1",
+      project_id: "project-1",
+      stream_epoch: "epoch-2",
+      sequence: 7,
+      snapshot: { sessions: [{ id: "session-1" }] },
+    });
+    // Events at or before the snapshot sequence are stale and must be dropped.
+    socket.emit({
+      kind: "event",
+      protocol_version: 1,
+      device_id: "device-1",
+      project_id: "project-1",
+      stream_epoch: "epoch-2",
+      sequence: 6,
+      event: { type: "assistant_delta", payload: { delta: "stale" } },
+    });
+
+    expect(notifications.filter((notification) => notification.kind === "snapshot")).toEqual([
+      { kind: "snapshot", snapshot: { sessions: [{ id: "session-1" }] } },
+    ]);
+    expect(notifications.some((notification) => notification.kind === "event")).toBe(false);
+    const acknowledgements = socket.sent.filter((message) => message.kind === "stream_ack");
+    expect(acknowledgements[acknowledgements.length - 1]).toMatchObject({
+      stream_epoch: "epoch-2",
+      sequence: 7,
+    });
     connection.close();
   });
 

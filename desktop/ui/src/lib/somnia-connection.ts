@@ -53,7 +53,7 @@ interface SomniaEventSocket {
   close(): void;
 }
 
-export interface DirectSomniaClient {
+export interface DirectSomniaConnectionClient {
   createSession(): Promise<AgentSession>;
   listSessions(): Promise<AgentSession[]>;
   loadSession(sessionId: string): Promise<AgentSession>;
@@ -68,7 +68,7 @@ export class DirectSomniaConnection implements SomniaConnection {
   private state: SomniaConnectionState = "disconnected";
 
   constructor(
-    private readonly client: DirectSomniaClient,
+    private readonly client: DirectSomniaConnectionClient,
     private readonly wsUrl?: string,
   ) {}
 

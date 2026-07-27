@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
-from open_somnia.config.models import AgentSettings, AppSettings, ProviderSettings, RuntimeSettings, StorageSettings
+from open_somnia.config.models import AgentSettings, AppSettings, ProviderProfileSettings, ProviderSettings, RuntimeSettings, StorageSettings
 
 
 def remote_tracer_settings(root: Path) -> AppSettings:
@@ -32,6 +32,16 @@ def remote_tracer_settings(root: Path) -> AppSettings:
         ),
         runtime=RuntimeSettings(),
         storage=StorageSettings(data_dir=data_dir, **paths),
+        provider_profiles={
+            "openai": ProviderProfileSettings(
+                name="openai",
+                provider_type="openai",
+                models=["fake-model"],
+                default_model="fake-model",
+                api_key="fake",
+                base_url="http://localhost",
+            ),
+        },
     )
 
 

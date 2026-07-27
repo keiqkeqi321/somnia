@@ -28,7 +28,7 @@ type SettingsViewProps = {
   onSetArchivedSelection: (entryKeys: string[]) => void;
   onRestoreArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
   onDeleteArchived: (entries: ArchivedSessionEntry[]) => void | Promise<void>;
-  onOpenPath: (path: string) => void | Promise<void>;
+  onOpenPath: ((path: string) => void | Promise<void>) | null;
   configScopes: SettingsConfigScope[];
   configDrafts: Record<string, string>;
   mcpServers: McpServerSummary[];
@@ -294,13 +294,15 @@ function SettingsView({
                     <div className="config-path-row">
                       <span>{t("settings.config.skills")} · {activeConfigScope.label}</span>
                       <code>{activeConfigScope.skills_path}</code>
-                      <button
-                        className="settings-inline-button"
-                        type="button"
-                        onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
-                      >
-                        {t("settings.config.openFolder")}
-                      </button>
+                      {onOpenPath ? (
+                        <button
+                          className="settings-inline-button"
+                          type="button"
+                          onClick={() => onOpenPath(activeConfigScope.skills_exists ? activeConfigScope.skills_path : parentPath(activeConfigScope.skills_path))}
+                        >
+                          {t("settings.config.openFolder")}
+                        </button>
+                      ) : null}
                     </div>
                     {activeConfigScope.skills.length === 0 ? (
                       <div className="settings-empty-state">
@@ -324,13 +326,15 @@ function SettingsView({
                   <div className="config-path-row">
                     <span>{activeConfigScope.label} {t("settings.config.configLabel")}</span>
                     <code>{activeConfigScope.config_path}</code>
-                    <button
-                      className="settings-inline-button"
-                      type="button"
-                      onClick={() => onOpenPath(activeConfigScope.config_exists ? activeConfigScope.config_path : parentPath(activeConfigScope.config_path))}
-                    >
-                      {activeConfigScope.config_exists ? t("settings.config.openFile") : t("settings.config.openFolder")}
-                    </button>
+                    {onOpenPath ? (
+                      <button
+                        className="settings-inline-button"
+                        type="button"
+                        onClick={() => onOpenPath(activeConfigScope.config_exists ? activeConfigScope.config_path : parentPath(activeConfigScope.config_path))}
+                      >
+                        {activeConfigScope.config_exists ? t("settings.config.openFile") : t("settings.config.openFolder")}
+                      </button>
+                    ) : null}
                   </div>
                   {activeConfigSection === "provider" ? (
                     <>

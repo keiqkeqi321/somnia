@@ -37,14 +37,23 @@ import {
 } from "./lib/messages";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
-import { SidecarClient, normalizeBaseUrl } from "./lib/sidecar";
+import { normalizeBaseUrl } from "./lib/sidecar";
 import {
   createConversationState,
   readSessionPayload,
   transitionConversationEvent,
   type ConversationState,
 } from "./lib/conversation-state";
-import { DirectSomniaConnection, type SomniaConnection } from "./lib/somnia-connection";
+import { DirectSomniaClient, type SomniaClient } from "./lib/somnia-client";
+import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
+import {
+  isRemoteProjectPath,
+  remoteProjectPath,
+  remoteScopedStorageKey,
+} from "./lib/remote-storage";
+import { useWorkspaceImageSource } from "./lib/workspace-image";
+import { useRemoteAccess } from "./lib/use-remote-access";
+import RemoteGate from "./components/RemoteGate";
 import type {
   AgentSession,
   ContextWindowUsage,
@@ -81,6 +90,7 @@ const LAYOUT_STORAGE_KEY = "somnia.desktop.layout";
 const ARCHIVED_SESSIONS_STORAGE_KEY = "somnia.desktop.archived-sessions";
 const LAST_OPENED_SESSION_STORAGE_KEY = "somnia.desktop.last-opened-session";
 const DEFAULT_SIDECAR_URL = "http://127.0.0.1:8765";
+const DEFAULT_REMOTE_RELAY_URL = "ws://127.0.0.1:8787";
 const TOOL_LIMIT = 24;
 const PROJECT_LIMIT = 5;
 const SIDEBAR_MIN_WIDTH = 210;
@@ -242,7 +252,7 @@ type WorkerLogState = {
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
 const SUBAGENT_FACTS_LIMIT = 5;
 
-function App() {
+function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const { t } = useI18n();
   const initialSavedUrl = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
   const initialBaseUrl = normalizeBaseUrl(initialSavedUrl ?? DEFAULT_SIDECAR_URL);
@@ -331,11 +341,12 @@ function App() {
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [remoteGateVisible, setRemoteGateVisible] = useState(remoteMode);
+  const [remoteConnecting, setRemoteConnecting] = useState(false);
+  const remoteAccess = useRemoteAccess(readRemoteRelayDefault());
 
-  const clientRef = useRef<SidecarClient | null>(null);
-  const connectionRef = useRef<SomniaConnection | null>(null);
-  const projectClientsRef = useRef<Record<string, SidecarClient>>({});
-  const projectConnectionsRef = useRef<Record<string, SomniaConnection>>({});
+  const clientRef = useRef<SomniaClient | null>(null);
+  const projectClientsRef = useRef<Record<string, SomniaClient>>({});
   const conversationCoreStateRef = useRef<Record<string, ConversationState>>({});
   const selectedProjectPathRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -378,10 +389,11 @@ function App() {
   }
 
   useEffect(() => {
-    void initializeConnection();
+    if (!remoteMode) {
+      void initializeConnection();
+    }
     return () => {
-      connectionRef.current?.close();
-      Object.values(projectConnectionsRef.current).forEach((connection) => connection.close());
+      Object.values(projectClientsRef.current).forEach((client) => client.close());
     };
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -819,11 +831,89 @@ function App() {
     await connectToSidecar(normalizedSavedUrl ?? DEFAULT_SIDECAR_URL);
   }
 
+  async function connectRemoteProject(deviceId: string, projectId: string) {
+    const device = remoteAccess.devices.find((item) => item.device_id === deviceId);
+    const remoteProject = device?.projects.find((item) => item.project_id === projectId);
+    if (!device || !remoteProject) {
+      return;
+    }
+    if (!await remoteAccess.verifyAccess()) {
+      return;
+    }
+    const projectPath = remoteProjectPath(deviceId, projectId);
+    const client = new RemoteSomniaConnection({
+      relayUrl: remoteAccess.relayUrl,
+      deviceId,
+      projectId,
+    });
+    setRemoteConnecting(true);
+    setConnectionState("connecting");
+    setBannerMessage(`Connecting to ${device.name} / ${remoteProject.name}...`);
+    try {
+      openEventConnection(client, "", projectPath);
+      await waitForConnectionOpen(client);
+      const [runtimeStatus, sessionList, providerList, interactionList, logList] = await Promise.all([
+        client.runtimeStatus(),
+        client.listSessions(),
+        client.listProviders(),
+        client.listInteractions(),
+        client.listToolLogs(TOOL_LIMIT),
+      ]);
+      const project: ProjectState = {
+        path: projectPath,
+        label: remoteProject.name,
+        connection: null,
+        status: runtimeStatus,
+        connectionState: "connected",
+        connectionError: null,
+        sessions: sortSessions(sessionList),
+        pendingInteractions: interactionList,
+        toolLogs: logList,
+      };
+      setProjects((previous) => upsertProject(previous, project));
+      setCollapsedProjects((previous) => ({
+        ...previous,
+        [projectPath]: false,
+      }));
+      setRemoteGateVisible(false);
+      await activateProject(projectPath, client, project);
+      setBannerMessage(`Connected to ${device.name} / ${remoteProject.name}.`);
+    } catch (error) {
+      delete projectClientsRef.current[projectPath];
+      if (clientRef.current === client) {
+        clientRef.current = null;
+      }
+      client.close();
+      setConnectionState("error");
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setRemoteConnecting(false);
+    }
+  }
+
+  function handleRemoteSwitchTarget() {
+    Object.values(projectClientsRef.current).forEach((client) => client.close());
+    projectClientsRef.current = {};
+    clientRef.current = null;
+    setProjects([]);
+    setSelectedProjectPath(null);
+    setStatus(null);
+    setSessions([]);
+    setSelectedSessionId(null);
+    setCurrentSession(null);
+    setPendingInteractions([]);
+    setToolLogs([]);
+    setActiveTurnId(null);
+    setConnectionState("disconnected");
+    setBannerMessage("Switch to another Device or Project.");
+    setRemoteGateVisible(true);
+  }
+
   async function connectManagedProject(
     managedConnection: ManagedSidecarConnection,
     options: { selectProject: boolean; expandProject?: boolean } = { selectProject: true },
   ) {
-    const client = new SidecarClient(managedConnection.baseUrl);
+    const client = new DirectSomniaClient(managedConnection.baseUrl);
     setConnectionState("connecting");
     setBannerMessage(`Connecting to ${managedConnection.workspaceRoot}...`);
 
@@ -847,7 +937,6 @@ function App() {
       toolLogs: logList,
     };
 
-    projectClientsRef.current[projectPath] = client;
     setProjects((previous) => upsertProject(previous, project));
     persistProjectPath(projectPath);
     openEventConnection(client, runtimeStatus.ws_url, projectPath);
@@ -862,7 +951,7 @@ function App() {
     if (options.selectProject) {
       await activateProject(projectPath, client, project);
     } else if (!selectedProjectPathRef.current) {
-      const lastOpenedSession = readLastOpenedSession();
+      const lastOpenedSession = readLastOpenedSession(projectPath);
       if (!lastOpenedSession || projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)) {
         await activateProject(projectPath, client, project);
       }
@@ -875,7 +964,6 @@ function App() {
       return;
     }
     clientRef.current = client;
-    connectionRef.current = projectConnectionsRef.current[projectPath] ?? null;
     setSelectedProjectPath(projectPath);
     setStatus(nextProject.status);
     setSessions(nextProject.sessions);
@@ -890,7 +978,11 @@ function App() {
     await refreshVisionModels(nextProject.status.vision_provider ?? "", client, nextProject.status.vision_model ?? "");
 
     const visibleSessions = visibleSessionsForProject(projectPath, nextProject.sessions, archivedSessions);
-    const lastOpenedSession = readLastOpenedSession();
+    if (isRemoteProjectPath(projectPath)) {
+      // Remote projects keep prompt history in their own device/project bucket.
+      setPromptHistory(readStoredPromptHistory(projectPath));
+    }
+    const lastOpenedSession = readLastOpenedSession(projectPath);
     const preferredSessionId =
       lastOpenedSession && projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)
         ? lastOpenedSession.sessionId
@@ -919,10 +1011,10 @@ function App() {
     setConnectionState("connecting");
     setBaseUrlInput(normalizedBaseUrl);
     setBannerMessage("Connecting to sidecar...");
-    connectionRef.current?.close();
+    clientRef.current?.close();
 
     try {
-      const nextClient = new SidecarClient(normalizedBaseUrl);
+      const nextClient = new DirectSomniaClient(normalizedBaseUrl);
       const runtimeStatus = await nextClient.runtimeStatus();
       const [sessionList, providerList, interactionList, logList] = await Promise.all([
         nextClient.listSessions(),
@@ -966,7 +1058,6 @@ function App() {
         pendingInteractions: interactionList,
         toolLogs: logList,
       };
-      projectClientsRef.current[projectPath] = nextClient;
       openEventConnection(nextClient, runtimeStatus.ws_url, projectPath);
       setProjects((previous) => upsertProject(previous, project));
       setSelectedProjectPath(projectPath);
@@ -975,7 +1066,7 @@ function App() {
         ...previous,
         [projectPath]: false,
       }));
-      const lastOpenedSession = readLastOpenedSession();
+      const lastOpenedSession = readLastOpenedSession(projectPath);
       const preferredSessionId =
         lastOpenedSession && projectPathKey(lastOpenedSession.projectPath) === projectPathKey(projectPath)
           ? lastOpenedSession.sessionId
@@ -998,14 +1089,19 @@ function App() {
     }
   }
 
-  function openEventConnection(client: SidecarClient, wsUrl: string, projectPath: string) {
-    projectConnectionsRef.current[projectPath]?.close();
-    const connection = new DirectSomniaConnection(client, wsUrl);
-    projectConnectionsRef.current[projectPath] = connection;
-    if (selectedProjectPathRef.current === projectPath || !selectedProjectPathRef.current) {
-      connectionRef.current = connection;
+  function openEventConnection(client: SomniaClient, wsUrl: string, projectPath: string) {
+    const previousClient = projectClientsRef.current[projectPath];
+    if (previousClient && previousClient !== client) {
+      previousClient.close();
     }
-    connection.subscribe((notification) => {
+    if (client instanceof DirectSomniaClient) {
+      client.setEventStreamUrl(wsUrl);
+    }
+    projectClientsRef.current[projectPath] = client;
+    if (selectedProjectPathRef.current === projectPath || !selectedProjectPathRef.current) {
+      clientRef.current = client;
+    }
+    client.subscribe((notification) => {
       if (notification.kind === "event") {
         void handleSidecarEvent(projectPath, notification.event);
         return;
@@ -1015,15 +1111,49 @@ function App() {
         return;
       }
       if (notification.kind === "snapshot") {
+        // Remote-only: the relay re-synced the full stream after a reconnect;
+        // pull the authoritative state back into the UI.
+        void resyncAfterRemoteSnapshot(projectPath, client);
         return;
       }
       setConnectionState(notification.state);
+      const remoteProject = isRemoteProjectPath(projectPath);
       if (notification.state === "disconnected" && clientRef.current === client) {
-        setBannerMessage("Sidecar event stream disconnected.");
+        setBannerMessage(remoteProject ? t("remote.reconnecting") : "Sidecar event stream disconnected.");
+      } else if (notification.state === "connecting" && remoteProject && clientRef.current === client) {
+        setBannerMessage(t("remote.connectingDevice"));
       } else if (notification.state === "error") {
-        setBannerMessage(notification.error ?? "Sidecar event stream failed.");
+        setBannerMessage(notification.error ?? (remoteProject ? t("remote.connectionFailed") : "Sidecar event stream failed."));
       }
     });
+  }
+
+  async function resyncAfterRemoteSnapshot(projectPath: string, client: SomniaClient) {
+    try {
+      const sessionList = sortSessions(await client.listSessions());
+      setProjects((previous) =>
+        previous.map((project) =>
+          projectPathKey(project.path) === projectPathKey(projectPath) ? { ...project, sessions: sessionList } : project,
+        ),
+      );
+      if (clientRef.current !== client || selectedProjectPathRef.current !== projectPath) {
+        return;
+      }
+      setSessions(sessionList);
+      await refreshStatusAndProviders();
+      await refreshToolLogs();
+      const sessionId = selectedSessionIdRef.current;
+      if (sessionId && sessionList.some((session) => session.id === sessionId)) {
+        setCurrentSession(await client.loadSession(sessionId));
+      } else if (sessionId) {
+        setSelectedSessionId(null);
+        setCurrentSession(null);
+        clearLastOpenedSession(projectPath, sessionId);
+      }
+      setBannerMessage(t("remote.resynced"));
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    }
   }
 
   function conversationStateKey(projectPath: string | null | undefined, sessionId: string | null | undefined): string | null {
@@ -1816,7 +1946,7 @@ function App() {
     if (!client) {
       return;
     }
-    const connection = projectPath ? projectConnectionsRef.current[projectPath] : connectionRef.current;
+    const connection = projectPath ? projectClientsRef.current[projectPath] : clientRef.current;
     if (!connection) {
       throw new Error("Somnia connection is unavailable.");
     }
@@ -1945,6 +2075,9 @@ function App() {
   }
 
   async function handleCreateProject() {
+    if (remoteMode) {
+      return;
+    }
     if (projects.length >= PROJECT_LIMIT) {
       const message = t("sidebar.projectLimitReached", { count: PROJECT_LIMIT });
       setProjectLimitNotice(message);
@@ -2049,14 +2182,16 @@ function App() {
   }
 
   async function handleRemoveProject(projectPath: string) {
+    if (remoteMode) {
+      return;
+    }
     const project = projects.find((item) => item.path === projectPath);
     if (!project) {
       return;
     }
     setBusyAction("remove-project");
     try {
-      projectConnectionsRef.current[projectPath]?.close();
-      delete projectConnectionsRef.current[projectPath];
+      projectClientsRef.current[projectPath]?.close();
       delete projectClientsRef.current[projectPath];
       await stopManagedSidecar(projectPath);
       removeStoredProjectPath(projectPath);
@@ -2085,7 +2220,6 @@ function App() {
           await activateProject(nextProject.path, projectClientsRef.current[nextProject.path], nextProject);
         } else {
           clientRef.current = null;
-          connectionRef.current = null;
           setSelectedProjectPath(null);
           setStatus(null);
           setSessions([]);
@@ -2105,7 +2239,7 @@ function App() {
   }
 
   async function startPromptTurn(
-    client: SidecarClient,
+    client: SomniaClient,
     projectPath: string | null,
     session: AgentSession,
     prompt: string,
@@ -2137,7 +2271,7 @@ function App() {
       }));
     }
     const userInput = await buildPromptPayload(client, prompt, images);
-    const connection = projectPath ? projectConnectionsRef.current[projectPath] : connectionRef.current;
+    const connection = projectPath ? projectClientsRef.current[projectPath] : clientRef.current;
     if (!connection) {
       throw new Error("Somnia connection is unavailable.");
     }
@@ -2326,7 +2460,7 @@ function App() {
     setPromptHistory((previous) => {
       const deduped = previous.filter((item) => item !== normalized);
       const next = [...deduped, normalized].slice(-100);
-      persistPromptHistory(next);
+      persistPromptHistory(next, selectedProjectPathRef.current);
       return next;
     });
   }
@@ -3171,6 +3305,9 @@ function App() {
   const activeProviderLabel = status?.provider ?? selectedProvider ?? t("composer.provider");
   const activeModelLabel = status?.model ?? selectedModel ?? t("composer.model");
   const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
+  // Remote mode surfaces reconnect semantics on the connection indicator;
+  // desktop keeps the raw state string.
+  const connectionStateLabel = remoteMode ? t(remoteConnectionStateKey(connectionState)) : connectionState;
   const activeExecutionMode = normalizeExecutionMode(status?.execution_mode);
   const activeModeOption = EXECUTION_MODE_OPTIONS.find((mode) => mode.key === activeExecutionMode);
   const activeExecutionModeLabel =
@@ -3302,6 +3439,16 @@ function App() {
     };
   }, [selectedWorkerActive, selectedWorkerView?.name, selectedWorkerView?.sessionId, workerRefreshKey]);
 
+  if (remoteMode && remoteGateVisible) {
+    return (
+      <RemoteGate
+        access={remoteAccess}
+        connecting={remoteConnecting}
+        onConnect={(deviceId, projectId) => void connectRemoteProject(deviceId, projectId)}
+      />
+    );
+  }
+
   return (
     <div className="shell">
       <header
@@ -3318,33 +3465,37 @@ function App() {
           <button className="titlebar-button" type="button" onClick={handleOpenSettings} title={t("settings.title")} aria-label={t("settings.title")}>
             ⚙
           </button>
-          <button
-            className="titlebar-button titlebar-minimize"
-            type="button"
-            onClick={() => void handleWindowControl("minimize")}
-            title={t("titlebar.minimize")}
-            aria-label={t("titlebar.minimize")}
-          >
-            <span aria-hidden="true" />
-          </button>
-          <button
-            className={`titlebar-button ${windowMaximized ? "titlebar-restore" : "titlebar-maximize"}`}
-            type="button"
-            onClick={() => void handleWindowControl("toggle-maximize")}
-            title={maximizeTitle}
-            aria-label={maximizeTitle}
-          >
-            <span aria-hidden="true" />
-          </button>
-          <button
-            className="titlebar-button close"
-            type="button"
-            onClick={() => void handleWindowControl("close")}
-            title={t("titlebar.close")}
-            aria-label={t("titlebar.close")}
-          >
-            ×
-          </button>
+          {!remoteMode ? (
+            <>
+              <button
+                className="titlebar-button titlebar-minimize"
+                type="button"
+                onClick={() => void handleWindowControl("minimize")}
+                title={t("titlebar.minimize")}
+                aria-label={t("titlebar.minimize")}
+              >
+                <span aria-hidden="true" />
+              </button>
+              <button
+                className={`titlebar-button ${windowMaximized ? "titlebar-restore" : "titlebar-maximize"}`}
+                type="button"
+                onClick={() => void handleWindowControl("toggle-maximize")}
+                title={maximizeTitle}
+                aria-label={maximizeTitle}
+              >
+                <span aria-hidden="true" />
+              </button>
+              <button
+                className="titlebar-button close"
+                type="button"
+                onClick={() => void handleWindowControl("close")}
+                title={t("titlebar.close")}
+                aria-label={t("titlebar.close")}
+              >
+                ×
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
       <div className="ambient ambient-left" />
@@ -3370,7 +3521,7 @@ function App() {
           onSetArchivedSelection={setSelectedArchivedSessionKeys}
           onRestoreArchived={handleRestoreArchivedSessions}
           onDeleteArchived={handleDeleteArchivedSessions}
-          onOpenPath={handleOpenSettingsPath}
+          onOpenPath={remoteMode ? null : handleOpenSettingsPath}
           configScopes={settingsConfigScopes}
           configDrafts={settingsConfigDrafts}
           mcpServers={settingsMcpServers}
@@ -3473,15 +3624,26 @@ function App() {
             </div>
             <div className="panel-header-actions">
               <span className="panel-count">{t("sidebar.total", { count: visibleProjectCount })}</span>
-              <button
-                className="action primary sidebar-new"
-                onClick={() => void handleCreateProject()}
-                disabled={busyAction !== null}
-                title={t("sidebar.newProject")}
-                aria-label={t("sidebar.newProject")}
-              >
-                +
-              </button>
+              {remoteMode ? (
+                <button
+                  className="action primary sidebar-new"
+                  onClick={handleRemoteSwitchTarget}
+                  title={t("remote.switchTarget")}
+                  aria-label={t("remote.switchTarget")}
+                >
+                  ⇄
+                </button>
+              ) : (
+                <button
+                  className="action primary sidebar-new"
+                  onClick={() => void handleCreateProject()}
+                  disabled={busyAction !== null}
+                  title={t("sidebar.newProject")}
+                  aria-label={t("sidebar.newProject")}
+                >
+                  +
+                </button>
+              )}
             </div>
           </div>
 
@@ -3534,15 +3696,17 @@ function App() {
                           </button>
                           {projectMenuOpenKey === group.key ? (
                             <div className="project-menu-panel">
-                              <button
-                                className="project-menu-item"
-                                onClick={() => {
-                                  setProjectMenuOpenKey(null);
-                                  void handleOpenProjectWorkspace(group.path);
-                                }}
-                              >
-                                {t("sidebar.openWorkspace")}
-                              </button>
+                              {!remoteMode ? (
+                                <button
+                                  className="project-menu-item"
+                                  onClick={() => {
+                                    setProjectMenuOpenKey(null);
+                                    void handleOpenProjectWorkspace(group.path);
+                                  }}
+                                >
+                                  {t("sidebar.openWorkspace")}
+                                </button>
+                              ) : null}
                               <button
                                 className="project-menu-item"
                                 onClick={() => {
@@ -3553,15 +3717,17 @@ function App() {
                               >
                                 {t("sidebar.newSession")}
                               </button>
-                              <button
-                                className="project-menu-item danger"
-                                onClick={() => {
-                                  void handleRemoveProject(group.path);
-                                }}
-                                disabled={busyAction !== null}
-                              >
-                                {t("sidebar.removeProject")}
-                              </button>
+                              {!remoteMode ? (
+                                <button
+                                  className="project-menu-item danger"
+                                  onClick={() => {
+                                    void handleRemoveProject(group.path);
+                                  }}
+                                  disabled={busyAction !== null}
+                                >
+                                  {t("sidebar.removeProject")}
+                                </button>
+                              ) : null}
                             </div>
                           ) : null}
                         </div>
@@ -3664,18 +3830,24 @@ function App() {
           <div className="panel-header conversation-header">
             <div className="conversation-heading">
               <h2 title={conversationPreview || selectedSessionId || "New conversation"}>{conversationTitle}</h2>
-              <button
-                className="workspace-link"
-                onClick={() => {
-                  if (workspaceRootPath) {
-                    void openWorkspaceRoot(workspaceRootPath);
-                  }
-                }}
-                disabled={!workspaceRootPath}
-                title={workspaceRootPath || t("conversation.workspaceUnavailable")}
-              >
-                {workspaceRootName}
-              </button>
+              {remoteMode ? (
+                <span className="workspace-link workspace-link-static" title={workspaceRootPath || t("conversation.workspaceUnavailable")}>
+                  {workspaceRootName}
+                </span>
+              ) : (
+                <button
+                  className="workspace-link"
+                  onClick={() => {
+                    if (workspaceRootPath) {
+                      void openWorkspaceRoot(workspaceRootPath);
+                    }
+                  }}
+                  disabled={!workspaceRootPath}
+                  title={workspaceRootPath || t("conversation.workspaceUnavailable")}
+                >
+                  {workspaceRootName}
+                </button>
+              )}
             </div>
             <div className="status-cluster">
               {selectedWorkerActive ? (
@@ -3729,7 +3901,7 @@ function App() {
                           <div key={part.id} className="tool-call-stack">
                             <ToolCallWithImages
                               toolCall={part.toolCall}
-                              baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                              client={clientRef.current}
                               onPreviewImage={setToolImagePreview}
                             />
                           </div>
@@ -3745,7 +3917,7 @@ function App() {
                             key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
                             image={image}
                             index={index}
-                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                            client={clientRef.current}
                             onPreviewImage={setToolImagePreview}
                           />
                         ))}
@@ -3764,7 +3936,7 @@ function App() {
                           <ToolCallWithImages
                             key={toolCall.id}
                             toolCall={toolCall}
-                            baseUrl={status?.base_url ?? clientRef.current?.baseUrl ?? ""}
+                            client={clientRef.current}
                             onPreviewImage={setToolImagePreview}
                           />
                         ))}
@@ -3896,8 +4068,8 @@ function App() {
                         <span className="model-trigger-caret">{activeReasoningLabel}</span>
                         <span
                           className={`connection-dot ${connectionState === "connected" ? "connected" : "attention"}`}
-                          aria-label={connectionState}
-                          title={connectionState}
+                          aria-label={connectionStateLabel}
+                          title={connectionStateLabel}
                         />
                       </span>
                     </button>
@@ -4641,7 +4813,7 @@ function MarkdownMessage({ text }: { text: string }) {
   return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
 }
 
-function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationThinkingLog; client: SidecarClient | null }) {
+function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationThinkingLog; client: SomniaClient | null }) {
   const bodyRef = useRef<HTMLPreElement | null>(null);
   const isRunning = thinkingLog.status === "running";
   const path = thinkingLog.path?.trim() ?? "";
@@ -4949,11 +5121,11 @@ function clampMermaidZoom(value: number): number {
 
 function ToolCallWithImages({
   toolCall,
-  baseUrl,
+  client,
   onPreviewImage,
 }: {
   toolCall: ConversationToolCall;
-  baseUrl: string;
+  client: SomniaClient | null;
   onPreviewImage: (preview: ToolImagePreviewState) => void;
 }) {
   const imageReferences = toolCall.contentBlocks?.filter((block) => block.type === "image_reference") ?? [];
@@ -4967,7 +5139,7 @@ function ToolCallWithImages({
               key={`${image.path ?? image.absolute_path ?? image.image_url ?? "image"}-${index}`}
               image={image}
               index={index}
-              baseUrl={baseUrl}
+              client={client}
               onPreviewImage={onPreviewImage}
             />
           ))}
@@ -5020,15 +5192,15 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
 function UserImagePreview({
   image,
   index,
-  baseUrl,
+  client,
   onPreviewImage,
 }: {
   image: import("./types").ConversationImageReferenceBlock;
   index: number;
-  baseUrl: string;
+  client: SomniaClient | null;
   onPreviewImage: (preview: ToolImagePreviewState) => void;
 }) {
-  const src = toolImageSource(image, baseUrl);
+  const src = useWorkspaceImageSource(image, client);
   if (!src) {
     return null;
   }
@@ -5042,15 +5214,15 @@ function UserImagePreview({
 function ToolImagePreview({
   image,
   index,
-  baseUrl,
+  client,
   onPreviewImage,
 }: {
   image: NonNullable<ConversationToolCall["contentBlocks"]>[number] & { type: "image_reference" };
   index: number;
-  baseUrl: string;
+  client: SomniaClient | null;
   onPreviewImage: (preview: ToolImagePreviewState) => void;
 }) {
-  const src = toolImageSource(image, baseUrl);
+  const src = useWorkspaceImageSource(image, client);
   const labels = toolImageLabels(image, index);
   if (!src) {
     return <span className="tool-image-missing" title={labels.title}>{labels.display}</span>;
@@ -5101,19 +5273,6 @@ function clampToolImageScale(value: number): number {
 
 function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, Number(value.toFixed(2))));
-}
-
-function toolImageSource(image: { path?: string; absolute_path?: string; image_url?: string }, baseUrl: string): string {
-  const imageUrl = String(image.image_url ?? "").trim();
-  if (/^(?:https?:|data:image\/)/i.test(imageUrl)) {
-    return imageUrl;
-  }
-  const path = String(image.path || image.absolute_path || "").trim();
-  if (!path || !baseUrl.trim()) {
-    return "";
-  }
-  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
-  return `${normalizedBaseUrl}/workspace/images?path=${encodeURIComponent(path)}`;
 }
 
 function toolImageLabels(image: { path?: string; absolute_path?: string; image_url?: string }, index: number): { display: string; title: string } {
@@ -5720,21 +5879,72 @@ function projectPathKey(path: string | null | undefined): string {
   return normalized;
 }
 
-function readLastOpenedSession(): LastOpenedSessionState | null {
+function readRemoteRelayDefault(): string {
+  if (typeof window === "undefined") {
+    return DEFAULT_REMOTE_RELAY_URL;
+  }
+  return new URLSearchParams(window.location.search).get("relay") ?? DEFAULT_REMOTE_RELAY_URL;
+}
+
+function remoteConnectionStateKey(
+  state: "connecting" | "connected" | "disconnected" | "error",
+): "remote.state.connecting" | "remote.state.connected" | "remote.state.disconnected" | "remote.state.error" {
+  switch (state) {
+    case "connected":
+      return "remote.state.connected";
+    case "connecting":
+      return "remote.state.connecting";
+    case "error":
+      return "remote.state.error";
+    default:
+      return "remote.state.disconnected";
+  }
+}
+
+function waitForConnectionOpen(client: SomniaClient): Promise<void> {
+  if (client.connectionState() === "connected") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const unsubscribe = client.subscribe((notification) => {
+      if (notification.kind !== "state") {
+        return;
+      }
+      if (notification.state === "connected") {
+        unsubscribe();
+        resolve();
+      } else if (notification.state === "error") {
+        unsubscribe();
+        reject(new Error(notification.error ?? "Remote connection failed."));
+      }
+    });
+  });
+}
+
+/**
+ * Remote projects bucket their last-opened-session memory per
+ * device/project under `somnia.remote.last-opened-session:<deviceId>:<projectId>`;
+ * desktop projects keep the unchanged global desktop key.
+ */
+function lastOpenedSessionStorageKey(projectPath?: string | null): string {
+  return remoteScopedStorageKey("last-opened-session", projectPath) ?? LAST_OPENED_SESSION_STORAGE_KEY;
+}
+
+function readLastOpenedSession(projectPath?: string | null): LastOpenedSessionState | null {
   if (typeof window === "undefined") {
     return null;
   }
   try {
-    const value = JSON.parse(window.localStorage.getItem(LAST_OPENED_SESSION_STORAGE_KEY) ?? "null") as unknown;
+    const value = JSON.parse(window.localStorage.getItem(lastOpenedSessionStorageKey(projectPath)) ?? "null") as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return null;
     }
-    const projectPath = (value as { projectPath?: unknown }).projectPath;
+    const projectPathValue = (value as { projectPath?: unknown }).projectPath;
     const sessionId = (value as { sessionId?: unknown }).sessionId;
-    if (typeof projectPath !== "string" || !projectPath.trim() || typeof sessionId !== "string" || !sessionId.trim()) {
+    if (typeof projectPathValue !== "string" || !projectPathValue.trim() || typeof sessionId !== "string" || !sessionId.trim()) {
       return null;
     }
-    return { projectPath, sessionId };
+    return { projectPath: projectPathValue, sessionId };
   } catch {
     return null;
   }
@@ -5744,21 +5954,22 @@ function persistLastOpenedSession(projectPath: string, sessionId: string) {
   if (typeof window === "undefined" || !projectPath.trim() || !sessionId.trim()) {
     return;
   }
-  window.localStorage.setItem(LAST_OPENED_SESSION_STORAGE_KEY, JSON.stringify({ projectPath, sessionId }));
+  window.localStorage.setItem(lastOpenedSessionStorageKey(projectPath), JSON.stringify({ projectPath, sessionId }));
 }
 
 function clearLastOpenedSession(projectPath?: string | null, sessionId?: string | null) {
   if (typeof window === "undefined") {
     return;
   }
-  const current = readLastOpenedSession();
+  const storageKey = lastOpenedSessionStorageKey(projectPath);
+  const current = readLastOpenedSession(projectPath);
   if (!current) {
     return;
   }
   const projectMatches = !projectPath || projectPathKey(current.projectPath) === projectPathKey(projectPath);
   const sessionMatches = !sessionId || current.sessionId === sessionId;
   if (projectMatches && sessionMatches) {
-    window.localStorage.removeItem(LAST_OPENED_SESSION_STORAGE_KEY);
+    window.localStorage.removeItem(storageKey);
   }
 }
 
@@ -5977,6 +6188,12 @@ function buildArchivedSessionEntries(
   return entries;
 }
 
+/**
+ * Archived sessions use a single desktop key holding a projectPath → sessionIds
+ * map. Remote projects are naturally bucketed by their `remote://<deviceId>/<projectId>`
+ * path keys, which can never collide with desktop filesystem paths; the key
+ * name and value shape stay unchanged for desktop compatibility.
+ */
 function readStoredArchivedSessions(): ArchivedSessionsState {
   if (typeof window === "undefined") {
     return {};
@@ -6039,23 +6256,32 @@ function removeStoredProjectPath(projectPath: string) {
   window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(paths));
 }
 
-function readStoredPromptHistory(): string[] {
+/**
+ * Remote projects bucket their prompt history per device/project under
+ * `somnia.remote.prompt-history:<deviceId>:<projectId>`; desktop projects
+ * keep the unchanged global desktop key.
+ */
+function promptHistoryStorageKey(projectPath?: string | null): string {
+  return remoteScopedStorageKey("prompt-history", projectPath) ?? PROMPT_HISTORY_STORAGE_KEY;
+}
+
+function readStoredPromptHistory(projectPath?: string | null): string[] {
   if (typeof window === "undefined") {
     return [];
   }
   try {
-    const value = JSON.parse(window.localStorage.getItem(PROMPT_HISTORY_STORAGE_KEY) ?? "[]") as unknown;
+    const value = JSON.parse(window.localStorage.getItem(promptHistoryStorageKey(projectPath)) ?? "[]") as unknown;
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
   } catch {
     return [];
   }
 }
 
-function persistPromptHistory(history: string[]) {
+function persistPromptHistory(history: string[], projectPath?: string | null) {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(PROMPT_HISTORY_STORAGE_KEY, JSON.stringify(history));
+  window.localStorage.setItem(promptHistoryStorageKey(projectPath), JSON.stringify(history));
 }
 
 function currentCommandSuggestions(value: string): Array<(typeof COMMAND_SPECS)[number]> {
@@ -6118,7 +6344,7 @@ function currentPathMention(value: string, cursor: number): { query: string; que
   };
 }
 
-async function buildPromptPayload(client: SidecarClient, prompt: string, images: PendingImage[]): Promise<PreparedPromptPayload> {
+async function buildPromptPayload(client: SomniaClient, prompt: string, images: PendingImage[]): Promise<PreparedPromptPayload> {
   if (images.length === 0) {
     return prompt;
   }
