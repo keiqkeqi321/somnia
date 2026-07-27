@@ -52,3 +52,40 @@ export function remoteScopedStorageKey(kind: string, projectPath: string | null 
   }
   return `${REMOTE_STORAGE_PREFIX}.${kind}:${bucket.deviceId}:${bucket.projectId}`;
 }
+
+const REMOTE_LAST_TARGET_KEY = `${REMOTE_STORAGE_PREFIX}.last-target`;
+
+/**
+ * Remembers the last connected Device/Project so a refresh on `#/workspace`
+ * can restore the connection while the relay cookie session is still valid.
+ * Cleared on "switch target" and sign-out.
+ */
+export function readRemoteLastTarget(): RemoteProjectBucket | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(REMOTE_LAST_TARGET_KEY) ?? "null") as unknown;
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const { deviceId, projectId } = value as { deviceId?: unknown; projectId?: unknown };
+    if (typeof deviceId !== "string" || typeof projectId !== "string" || !deviceId || !projectId) {
+      return null;
+    }
+    return { deviceId, projectId };
+  } catch {
+    return null;
+  }
+}
+
+export function writeRemoteLastTarget(bucket: RemoteProjectBucket | null): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!bucket) {
+    window.localStorage.removeItem(REMOTE_LAST_TARGET_KEY);
+    return;
+  }
+  window.localStorage.setItem(REMOTE_LAST_TARGET_KEY, JSON.stringify(bucket));
+}

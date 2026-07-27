@@ -48,12 +48,16 @@ import { DirectSomniaClient, type SomniaClient } from "./lib/somnia-client";
 import { RemoteSomniaConnection } from "./lib/remote-somnia-connection";
 import {
   isRemoteProjectPath,
+  readRemoteLastTarget,
   remoteProjectPath,
   remoteScopedStorageKey,
+  writeRemoteLastTarget,
 } from "./lib/remote-storage";
+import { navigateRemoteRoute, parseRemoteRoute, resolveRemoteRoute, useRemoteRouteHash } from "./lib/remote-router";
 import { useWorkspaceImageSource } from "./lib/workspace-image";
 import { useRemoteAccess } from "./lib/use-remote-access";
-import RemoteGate from "./components/RemoteGate";
+import RemoteConnectPage from "./components/RemoteConnectPage";
+import RemoteLoginPage from "./components/RemoteLoginPage";
 import type {
   AgentSession,
   ContextWindowUsage,
@@ -341,9 +345,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [remoteGateVisible, setRemoteGateVisible] = useState(remoteMode);
+  const [remoteConnected, setRemoteConnected] = useState(false);
   const [remoteConnecting, setRemoteConnecting] = useState(false);
+  // Remote mode restores the cookie session (and the last connection) on
+  // mount before any route is shown, so deep links into `#/workspace` survive
+  // a refresh. Desktop mode never restores and never touches the hash router.
+  const [remoteRestorePending, setRemoteRestorePending] = useState(remoteMode);
+  const remoteRestoreAttemptedRef = useRef(false);
   const remoteAccess = useRemoteAccess(readRemoteRelayDefault());
+  const remoteRoute = resolveRemoteRoute({ authenticated: remoteAccess.authenticated, connected: remoteConnected });
+  const remoteRouteHash = useRemoteRouteHash();
 
   const clientRef = useRef<SomniaClient | null>(null);
   const projectClientsRef = useRef<Record<string, SomniaClient>>({});
@@ -398,6 +409,31 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Remote mode: restore the relay cookie session once on mount, then try to
+  // re-establish the last Device/Project connection so a `#/workspace` deep
+  // link survives a refresh. Falls back to `#/connect` / `#/login` via the
+  // route-sync effect below when restore is not possible.
+  useEffect(() => {
+    if (!remoteMode || remoteRestoreAttemptedRef.current) {
+      return;
+    }
+    remoteRestoreAttemptedRef.current = true;
+    void restoreRemoteSession().finally(() => setRemoteRestorePending(false));
+    // Intentionally run only once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Remote mode: keep the URL hash converged on the route matching the
+  // current auth/connection state (empty or hand-edited hashes redirect too).
+  useEffect(() => {
+    if (!remoteMode || remoteRestorePending) {
+      return;
+    }
+    if (parseRemoteRoute(remoteRouteHash) !== remoteRoute) {
+      navigateRemoteRoute(remoteRoute, { replace: true });
+    }
+  }, [remoteMode, remoteRestorePending, remoteRoute, remoteRouteHash]);
 
   useEffect(() => {
     const providerMissing = connectionState === "connected" && Boolean(status) && (status?.provider === "unconfigured" || providers.length === 0);
@@ -831,8 +867,28 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     await connectToSidecar(normalizedSavedUrl ?? DEFAULT_SIDECAR_URL);
   }
 
+  async function restoreRemoteSession() {
+    const restored = await remoteAccess.restoreSession();
+    if (!restored) {
+      return;
+    }
+    const target = readRemoteLastTarget();
+    if (!target) {
+      return;
+    }
+    const device = remoteAccess.devicesRef.current.find((item) => item.device_id === target.deviceId && !item.revoked_at);
+    const remoteProject = device?.projects.find((item) => item.project_id === target.projectId);
+    if (!device || !remoteProject) {
+      // The remembered target is gone (revoked Device or removed Project);
+      // drop it and let the route-sync effect land on `#/connect`.
+      writeRemoteLastTarget(null);
+      return;
+    }
+    await connectRemoteProject(target.deviceId, target.projectId);
+  }
+
   async function connectRemoteProject(deviceId: string, projectId: string) {
-    const device = remoteAccess.devices.find((item) => item.device_id === deviceId);
+    const device = remoteAccess.devicesRef.current.find((item) => item.device_id === deviceId);
     const remoteProject = device?.projects.find((item) => item.project_id === projectId);
     if (!device || !remoteProject) {
       return;
@@ -875,7 +931,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         ...previous,
         [projectPath]: false,
       }));
-      setRemoteGateVisible(false);
+      setRemoteConnected(true);
+      writeRemoteLastTarget({ deviceId, projectId });
       await activateProject(projectPath, client, project);
       setBannerMessage(`Connected to ${device.name} / ${remoteProject.name}.`);
     } catch (error) {
@@ -906,7 +963,13 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     setActiveTurnId(null);
     setConnectionState("disconnected");
     setBannerMessage("Switch to another Device or Project.");
-    setRemoteGateVisible(true);
+    writeRemoteLastTarget(null);
+    setRemoteConnected(false);
+  }
+
+  function handleRemoteSignOut() {
+    writeRemoteLastTarget(null);
+    void remoteAccess.signOut();
   }
 
   async function connectManagedProject(
@@ -3439,12 +3502,28 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     };
   }, [selectedWorkerActive, selectedWorkerView?.name, selectedWorkerView?.sessionId, workerRefreshKey]);
 
-  if (remoteMode && remoteGateVisible) {
+  if (remoteMode && !remoteConnected) {
+    if (remoteRestorePending) {
+      return (
+        <main className="remote-shell remote-shell-login">
+          <div className="remote-login">
+            <h1>{t("remote.title")}</h1>
+            <div className="remote-notice" role="status">
+              {t("remote.restoring")}
+            </div>
+          </div>
+        </main>
+      );
+    }
+    if (!remoteAccess.authenticated) {
+      return <RemoteLoginPage access={remoteAccess} />;
+    }
     return (
-      <RemoteGate
+      <RemoteConnectPage
         access={remoteAccess}
         connecting={remoteConnecting}
         onConnect={(deviceId, projectId) => void connectRemoteProject(deviceId, projectId)}
+        onSignOut={handleRemoteSignOut}
       />
     );
   }

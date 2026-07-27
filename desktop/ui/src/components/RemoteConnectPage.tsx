@@ -5,19 +5,20 @@ import type { useRemoteAccess } from "../lib/use-remote-access";
 
 type RemoteAccess = ReturnType<typeof useRemoteAccess>;
 
-type RemoteGateProps = {
+type RemoteConnectPageProps = {
   access: RemoteAccess;
   connecting: boolean;
   onConnect: (deviceId: string, projectId: string) => void;
+  onSignOut: () => void;
 };
 
 /**
- * Remote-mode entry gate rendered inside App when `?remote=1`: sign in against
- * the relay, pick a paired Device, then pick one of the Device's registered
- * projects. Remote mode can only switch among pre-registered projects — there
- * is intentionally no project create/remove UI here.
+ * Remote-mode `#/connect` route: pick a paired Device, then one of the
+ * Device's registered projects. Remote mode can only switch among
+ * pre-registered projects — there is intentionally no project create/remove
+ * UI here. Pairing, revoke, and sign-out also live on this page.
  */
-export default function RemoteGate({ access, connecting, onConnect }: RemoteGateProps) {
+export default function RemoteConnectPage({ access, connecting, onConnect, onSignOut }: RemoteConnectPageProps) {
   const { t } = useI18n();
   const [projectId, setProjectId] = useState("");
 
@@ -32,45 +33,6 @@ export default function RemoteGate({ access, connecting, onConnect }: RemoteGate
       setProjectId("");
     }
   }, [projectId, projects]);
-
-  if (!access.authenticated) {
-    return (
-      <main className="remote-shell remote-shell-login">
-        <form
-          className="remote-login"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void access.signIn();
-          }}
-        >
-          <h1>{t("remote.title")}</h1>
-          <label>
-            {t("remote.relay")}
-            <input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} />
-          </label>
-          <label>
-            {t("remote.username")}
-            <input value={access.username} onChange={(event) => access.setUsername(event.target.value)} autoComplete="username" />
-          </label>
-          <label>
-            {t("remote.password")}
-            <input
-              type="password"
-              value={access.password}
-              onChange={(event) => access.setPassword(event.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          <button type="submit" disabled={busy || !access.username.trim() || !access.password}>
-            {t("remote.signIn")}
-          </button>
-          <div className="remote-notice" role="status">
-            {access.notice}
-          </div>
-        </form>
-      </main>
-    );
-  }
 
   return (
     <main className="remote-shell remote-shell-gate">
@@ -121,7 +83,7 @@ export default function RemoteGate({ access, connecting, onConnect }: RemoteGate
         <button type="button" onClick={() => void access.revokeSelectedDevice()} disabled={!access.deviceId || busy}>
           {t("remote.revokeDevice")}
         </button>
-        <button type="button" onClick={() => void access.signOut()} disabled={busy}>
+        <button type="button" onClick={onSignOut} disabled={busy}>
           {t("remote.signOut")}
         </button>
       </section>

@@ -184,6 +184,7 @@ const translations = {
     "remote.connectingDevice": "Connecting to remote device…",
     "remote.connectionFailed": "Remote connection failed.",
     "remote.resynced": "Remote state resynchronized.",
+    "remote.restoring": "Restoring remote session…",
 
     /* ── Conversation panel ── */
     "conversation.newConversation": "New conversation",
@@ -556,6 +557,7 @@ const translations = {
     "remote.connectingDevice": "正在连接远程设备…",
     "remote.connectionFailed": "远程连接失败。",
     "remote.resynced": "远程状态已重新同步。",
+    "remote.restoring": "正在恢复远程会话…",
 
     /* ── Conversation panel ── */
     "conversation.newConversation": "新会话",

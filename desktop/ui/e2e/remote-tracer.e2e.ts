@@ -1,28 +1,30 @@
 import { expect, test } from "@playwright/test";
 
-test("hosted browser signs in through RemoteGate and streams a real Runtime turn in the unified App UI", async ({ page }) => {
-  await page.goto(
-    "/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787&project=e2e-project",
-  );
+test("hosted browser signs in through the remote routes and streams a real Runtime turn in the unified App UI", async ({ page }) => {
+  // No hash: the router redirects to `#/login` while signed out.
+  await page.goto("/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787");
+  await expect(page).toHaveURL(/#\/login$/);
 
-  // RemoteGate: sign in against the Relay.
+  // `#/login`: sign in against the Relay.
   await page.getByLabel("Username").fill("admin");
   await page.getByLabel("Password").fill("admin-password");
   await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/#\/connect$/);
 
-  // RemoteGate: Device and Project pickers sourced from the paired Device.
+  // `#/connect`: Device and Project pickers sourced from the paired Device.
   await expect(page.getByLabel("Device", { exact: true })).toContainText("Browser Test Device");
   await expect(page.getByLabel("Device", { exact: true })).toContainText("online");
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue("e2e-project");
   await expect(page.getByLabel("Project", { exact: true })).toContainText("Browser test project");
 
-  // Pairing stays available in the gate.
+  // Pairing stays available on the connect page.
   await page.getByLabel("New Device name").fill("Spare Device");
   await page.getByRole("button", { name: "Create pairing code" }).click();
   await expect(page.locator(".remote-pairing-code")).toHaveText(/^[A-Z2-9]{10}$/);
 
-  // Connect into the unified App tree.
+  // Connect into the unified App tree at `#/workspace`.
   await page.getByRole("button", { name: "Connect" }).click();
+  await expect(page).toHaveURL(/#\/workspace$/);
   await expect(page.locator(".composer textarea")).toBeVisible();
   await expect(page.locator(".connection-dot")).toHaveAttribute("aria-label", "Connected");
   // Remote chrome: the sidebar offers a switch-target button instead of local project creation.
@@ -92,6 +94,13 @@ test("hosted browser signs in through RemoteGate and streams a real Runtime turn
   await page.locator(".archived-row", { hasText: sessionId }).getByRole("button", { name: "Restore", exact: true }).click();
   await page.locator(".settings-back").click();
   await expect(page.getByLabel(`Session options for ${sessionId}`)).toHaveCount(1);
+
+  // Refreshing the `#/workspace` deep link restores the cookie session and
+  // reconnects the last Device/Project automatically.
+  await page.reload();
+  await expect(page).toHaveURL(/#\/workspace$/);
+  await expect(page.locator(".composer textarea")).toBeVisible();
+  await expect(page.locator(".connection-dot")).toHaveAttribute("aria-label", "Connected");
 
   // The .ambient backdrop glows are intentionally oversized and clipped by .shell;
   // exclude them from the horizontal-overflow audit.

@@ -14,6 +14,14 @@ export function useRemoteAccess(initialRelayUrl: string) {
   const [notice, setNotice] = useState("Sign in to Somnia Remote.");
   const [busy, setBusy] = useState(false);
   const clientRef = useRef<RemoteRelayClient | null>(null);
+  // Mirrors `devices` so async flows started from a stale render (e.g. the
+  // refresh-restore effect on mount) still see the latest device list.
+  const devicesRef = useRef<RemoteDevice[]>([]);
+
+  function applyDevices(availableDevices: RemoteDevice[]) {
+    devicesRef.current = availableDevices;
+    setDevices(availableDevices);
+  }
 
   async function signIn(): Promise<void> {
     setBusy(true);
@@ -22,13 +30,36 @@ export function useRemoteAccess(initialRelayUrl: string) {
       await client.login(username.trim(), password);
       const availableDevices = await client.listDevices();
       clientRef.current = client;
-      setDevices(availableDevices);
+      applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
       setAuthenticated(true);
       setPassword("");
       setNotice("Signed in.");
     } catch (error) {
       setNotice(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Re-attaches to an existing cookie session after a page refresh: the relay
+   * cookie is still in the browser, so listing Devices doubles as the session
+   * check. Returns false when the session expired (caller routes to login).
+   */
+  async function restoreSession(): Promise<boolean> {
+    setBusy(true);
+    try {
+      const client = new RemoteRelayClient(relayUrl);
+      const availableDevices = await client.listDevices();
+      clientRef.current = client;
+      applyDevices(availableDevices);
+      selectFirstActiveDevice(availableDevices);
+      setAuthenticated(true);
+      setNotice("Signed in.");
+      return true;
+    } catch {
+      return false;
     } finally {
       setBusy(false);
     }
@@ -58,7 +89,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
     try {
       await client.revokeDevice(deviceId);
       const availableDevices = await client.listDevices();
-      setDevices(availableDevices);
+      applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
       setNotice("Device revoked.");
       return true;
@@ -78,6 +109,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       setNotice(formatError(error));
     } finally {
       clientRef.current = null;
+      devicesRef.current = [];
       setAuthenticated(false);
       setDevices([]);
       setDeviceId("");
@@ -106,11 +138,13 @@ export function useRemoteAccess(initialRelayUrl: string) {
     createPairing,
     deviceId,
     devices,
+    devicesRef,
     notice,
     pairingCode,
     pairingName,
     password,
     relayUrl,
+    restoreSession,
     revokeSelectedDevice,
     setDeviceId,
     setNotice,
