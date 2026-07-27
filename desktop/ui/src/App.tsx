@@ -5962,7 +5962,18 @@ function readRemoteRelayDefault(): string {
   if (typeof window === "undefined") {
     return DEFAULT_REMOTE_RELAY_URL;
   }
-  return new URLSearchParams(window.location.search).get("relay") ?? DEFAULT_REMOTE_RELAY_URL;
+  const override = new URLSearchParams(window.location.search).get("relay");
+  if (override) {
+    return override;
+  }
+  // Deployed stacks serve the Web app and the Relay behind the same origin,
+  // so non-loopback hosts talk to their own origin. Local preview servers
+  // run the Relay separately, which keeps the loopback default below.
+  const hostname = window.location.hostname.toLowerCase();
+  if (hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1" && hostname !== "[::1]") {
+    return window.location.origin;
+  }
+  return DEFAULT_REMOTE_RELAY_URL;
 }
 
 function remoteConnectionStateKey(

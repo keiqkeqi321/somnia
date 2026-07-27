@@ -29,10 +29,6 @@ export default function RemoteLoginPage({ access }: RemoteLoginPageProps) {
           <h1>{t("remote.title")}</h1>
         </div>
         <label>
-          {t("remote.relay")}
-          <input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} />
-        </label>
-        <label>
           {t("remote.username")}
           <input value={access.username} onChange={(event) => access.setUsername(event.target.value)} autoComplete="username" />
         </label>

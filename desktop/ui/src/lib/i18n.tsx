@@ -161,7 +161,6 @@ const translations = {
 
     /* ── Remote gate ── */
     "remote.title": "Somnia Remote",
-    "remote.relay": "Relay",
     "remote.username": "Username",
     "remote.password": "Password",
     "remote.signIn": "Sign in",
@@ -534,7 +533,6 @@ const translations = {
 
     /* ── Remote gate ── */
     "remote.title": "Somnia 远程",
-    "remote.relay": "Relay",
     "remote.username": "用户名",
     "remote.password": "密码",
     "remote.signIn": "登录",
