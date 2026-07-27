@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 import webbrowser
 
+from open_somnia.remote.identity import DeviceIdentity
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local Remote Somnia test stack.")
@@ -20,6 +22,7 @@ def main() -> int:
     parser.add_argument("--sidecar-port", type=int, default=18765)
     parser.add_argument("--web-port", type=int, default=4173)
     parser.add_argument("--identity", type=Path, required=True)
+    parser.add_argument("--rebind", action="store_true", help="Pair again even if a paired Device identity exists.")
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -68,30 +71,39 @@ def main() -> int:
         wait_ready("Sidecar", sidecar, f"http://127.0.0.1:{args.sidecar_port}/health")
 
         web_url = f"http://127.0.0.1:{args.web_port}/?remote=1"
-        webbrowser.open(web_url)
-        print("\n1. Sign in at the opened Web page.")
-        print("2. Create a Device pairing code.")
-        pairing_code = input("Paste the pairing code here: ").strip()
-        if not pairing_code:
-            raise RuntimeError("A pairing code is required.")
+        relay_base_url = f"http://127.0.0.1:{args.relay_port}"
+        paired_identity = load_paired_identity(args.identity, relay_base_url)
+        skip_pairing = paired_identity is not None and not args.rebind
+        if skip_pairing:
+            print(f"\nDevice '{paired_identity.device_name}' is already paired with this relay; skipping pairing.")
+            print("Run with -Rebind to pair this computer as a new device.")
+        else:
+            if args.rebind and paired_identity is not None:
+                print("\nRebind requested: pairing this computer as a new device.")
+            webbrowser.open(web_url)
+            print("\n1. Sign in at the opened Web page.")
+            print("2. Create a Device pairing code.")
+            pairing_code = input("Paste the pairing code here: ").strip()
+            if not pairing_code:
+                raise RuntimeError("A pairing code is required.")
 
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "open_somnia.remote.cli",
-                "connector",
-                "pair",
-                "--relay",
-                f"http://127.0.0.1:{args.relay_port}",
-                "--code",
-                pairing_code,
-                "--identity",
-                str(args.identity),
-            ],
-            cwd=repo,
-            check=True,
-        )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "open_somnia.remote.cli",
+                    "connector",
+                    "pair",
+                    "--relay",
+                    relay_base_url,
+                    "--code",
+                    pairing_code,
+                    "--identity",
+                    str(args.identity),
+                ],
+                cwd=repo,
+                check=True,
+            )
         connector = start(
             "connector",
             [
@@ -111,7 +123,12 @@ def main() -> int:
         )
         time.sleep(2)
         if connector.poll() is not None:
-            raise RuntimeError("Connector exited during startup.")
+            hint = ""
+            if skip_pairing:
+                hint = " The relay may no longer recognize this device; re-run with -Rebind to pair again."
+            raise RuntimeError(f"Connector exited during startup.{hint}")
+        if skip_pairing:
+            webbrowser.open(web_url)
 
         print("\nReady. Sign in again, select the newly paired Device, and Connect.")
         print("Keep this window open. Press Ctrl+C to stop the entire local stack.")
@@ -138,6 +155,17 @@ def main() -> int:
                 process.kill()
             stdout.close()
             stderr.close()
+
+
+def load_paired_identity(identity_path: Path, relay_url: str) -> DeviceIdentity | None:
+    """Return the stored Device identity when it is already paired with this relay."""
+    try:
+        identity = DeviceIdentity.load(identity_path)
+    except ValueError:
+        return None
+    if not identity.is_paired or identity.relay_url != relay_url:
+        return None
+    return identity
 
 
 def wait_ready(name: str, process: subprocess.Popen, url: str, timeout: float = 90.0) -> None:

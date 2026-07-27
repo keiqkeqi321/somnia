@@ -6,7 +6,8 @@ param(
     [int]$RelayPort = 8787,
     [int]$SidecarPort = 18765,
     [int]$WebPort = 4173,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Rebind
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,14 +100,18 @@ Clear-OwnedListener $WebPort "(preview_server\.py|http\.server)"
 Clear-OwnedListener $SidecarPort "desktop\.backend\.bootstrap"
 
 Write-Host "Starting the supervised local stack..." -ForegroundColor Cyan
-& $python (Join-Path $PSScriptRoot "remote_somnia_supervisor.py") `
-    --repo $repo `
-    --workspace $Workspace `
-    --project $Project `
-    --relay-port $RelayPort `
-    --sidecar-port $SidecarPort `
-    --web-port $WebPort `
-    --identity $identityPath
+$supervisorArgs = @(
+    (Join-Path $PSScriptRoot "remote_somnia_supervisor.py"),
+    "--repo", $repo,
+    "--workspace", $Workspace,
+    "--project", $Project,
+    "--relay-port", $RelayPort,
+    "--sidecar-port", $SidecarPort,
+    "--web-port", $WebPort,
+    "--identity", $identityPath
+)
+if ($Rebind) { $supervisorArgs += "--rebind" }
+& $python @supervisorArgs
 $exitCode = $LASTEXITCODE
 $env:SOMNIA_ADMIN_PASSWORD = $null
 if ($exitCode -ne 0) { throw "Remote Somnia supervisor failed with exit code $exitCode." }
