@@ -1,5 +1,6 @@
 import { useI18n } from "../lib/i18n";
 import type { useRemoteAccess } from "../lib/use-remote-access";
+import appIconUrl from "../../src-tauri/icons/32x32.png";
 
 type RemoteAccess = ReturnType<typeof useRemoteAccess>;
 
@@ -23,7 +24,10 @@ export default function RemoteLoginPage({ access }: RemoteLoginPageProps) {
           void access.signIn();
         }}
       >
-        <h1>{t("remote.title")}</h1>
+        <div className="remote-brand">
+          <img className="remote-brand-icon" src={appIconUrl} alt="" aria-hidden="true" />
+          <h1>{t("remote.title")}</h1>
+        </div>
         <label>
           {t("remote.relay")}
           <input value={access.relayUrl} onChange={(event) => access.setRelayUrl(event.target.value)} />

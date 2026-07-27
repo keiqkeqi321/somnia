@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { useI18n } from "../lib/i18n";
 import type { useRemoteAccess } from "../lib/use-remote-access";
+import appIconUrl from "../../src-tauri/icons/32x32.png";
 
 type RemoteAccess = ReturnType<typeof useRemoteAccess>;
 
@@ -37,7 +38,10 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
   return (
     <main className="remote-shell remote-shell-gate">
       <section className="remote-connection" aria-label={t("remote.title")}>
-        <h1 className="remote-gate-title">{t("remote.title")}</h1>
+        <div className="remote-brand">
+          <img className="remote-brand-icon" src={appIconUrl} alt="" aria-hidden="true" />
+          <h1 className="remote-gate-title">{t("remote.title")}</h1>
+        </div>
         <label>
           {t("remote.device")}
           <select

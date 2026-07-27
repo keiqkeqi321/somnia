@@ -35,6 +35,8 @@ def write_dist_html() -> None:
     if source_tag not in source:
         raise RuntimeError(f"Expected to find {source_tag!r} in {SOURCE_HTML}.")
     DIST_DIR.mkdir(parents=True, exist_ok=True)
+    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "src-tauri" / "icons" / "32x32.png", ASSET_DIR / "favicon.png")
     (DIST_DIR / "index.html").write_text(source.replace(source_tag, replacement), encoding="utf-8")
 
 
