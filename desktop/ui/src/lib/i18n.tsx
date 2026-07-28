@@ -218,6 +218,7 @@ const translations = {
     "remote.pair.checking": "Checking pairing link…",
     "remote.pair.invalid": "This pairing link is invalid or has expired. Start pairing again from Somnia Desktop.",
     "remote.pair.done": "Pairing approved. You can return to Somnia Desktop now.",
+    "remote.pair.gotoWorkspace": "Go to workspace",
     "remote.pair.signInAgain": "Your sign-in expired. Sign in again and retry.",
 
     /* ── Conversation panel ── */
@@ -625,6 +626,7 @@ const translations = {
     "remote.pair.checking": "正在校验配对链接…",
     "remote.pair.invalid": "配对链接无效或已过期，请从 Somnia Desktop 重新发起配对。",
     "remote.pair.done": "配对已批准，现在可以回到 Somnia Desktop。",
+    "remote.pair.gotoWorkspace": "进入工作区",
     "remote.pair.signInAgain": "登录已过期，请重新登录后重试。",
 
     /* ── Conversation panel ── */

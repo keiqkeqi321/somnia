@@ -120,7 +120,14 @@ export default function RemotePairPage({ relayUrl }: RemotePairPageProps) {
             </button>
           </>
         ) : null}
-        {phase === "done" ? <p className="remote-pair-done">{t("remote.pair.done")}</p> : null}
+        {phase === "done" ? (
+          <>
+            <p className="remote-pair-done">{t("remote.pair.done")}</p>
+            <button type="button" onClick={() => { window.location.hash = "#/connect"; }}>
+              {t("remote.pair.gotoWorkspace")}
+            </button>
+          </>
+        ) : null}
         {notice ? (
           <div className="remote-notice" role="alert">
             {notice}
