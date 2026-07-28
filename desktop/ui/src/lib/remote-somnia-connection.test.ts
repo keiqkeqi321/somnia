@@ -142,6 +142,41 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
+  it("delivers turn_result even when the authoritative Session reload fails", async () => {
+    class FailingLoadSocket extends FakeRelaySocket {
+      send(rawMessage: string) {
+        const request = JSON.parse(rawMessage) as { request_id?: string; method?: string };
+        if (request.method === "session.load") {
+          this.emit({ kind: "response", request_id: request.request_id, ok: false, error: "relay exploded" });
+          return;
+        }
+        super.send(rawMessage);
+      }
+    }
+    const socket = new FailingLoadSocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    const notifications: Array<{ kind: string; event?: { type: string } }> = [];
+    connection.subscribe((notification) => notifications.push(notification as { kind: string }));
+    socket.open();
+    socket.emit({
+      kind: "event",
+      project_id: "project-1",
+      stream_epoch: "epoch-1",
+      sequence: 1,
+      event: { type: "turn_result", session_id: "session-1", turn_id: "turn-1", payload: {} },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const published = notifications.filter((notification) => notification.kind === "event");
+    expect(published).toHaveLength(1);
+    expect(published[0].event?.type).toBe("turn_result");
+    connection.close();
+  });
+
   it("holds requests made during a reconnect window until the socket returns", async () => {
     const { connection, openStream } = createHarness();
     // Issued while disconnected: must not reject immediately.

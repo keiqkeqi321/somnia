@@ -445,6 +445,10 @@ export class RemoteSomniaConnection implements SomniaClient {
       const session = await this.query({ type: "session.load", sessionId: String(event.session_id) });
       this.notify({ kind: "event", event: { ...event, payload: { ...event.payload, session } } });
     } catch (error) {
+      // Always deliver the completion itself — a payload without the freshly
+      // reloaded Session still completes the turn in the UI, while swallowing
+      // the event leaves the "answering" indicator stuck forever.
+      this.notify({ kind: "event", event });
       this.notify({ kind: "protocol_error", error: `Unable to reload completed Session: ${formatError(error)}` });
     }
   }
