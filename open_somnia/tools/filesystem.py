@@ -162,6 +162,20 @@ SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
 MAX_SYMBOL_QUERY_TERMS = 10
 
 
+def _drop_windows_extended_prefix(path: Path) -> Path:
+    """去掉 Windows 扩展长度路径前缀（``\\?\\``、``\\?\\UNC\\``）。
+
+    Tauri/Rust 侧 canonicalize 得到的工作区路径带此前缀，而模型给出的绝对
+    路径通常不带，直接做边界比对会把工作区内路径误判为逃逸。
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + text[len("\\\\?\\UNC\\"):])
+    if text.startswith("\\\\?\\"):
+        return Path(text[len("\\\\?\\"):])
+    return path
+
+
 def safe_path(workspace_root: Path, relative_path: str, *, allow_outside: bool = False) -> Path:
     """解析并验证路径安全性.
 
@@ -175,12 +189,13 @@ def safe_path(workspace_root: Path, relative_path: str, *, allow_outside: bool =
     Raises:
         ValueError: 如果路径尝试逃逸工作空间。
     """
-    workspace_root = workspace_root.resolve()
+    workspace_root = _drop_windows_extended_prefix(workspace_root.resolve())
     requested_path = Path(relative_path)
     if requested_path.is_absolute() and hasattr(workspace_root, "anchor"):
         path = requested_path.resolve()
     else:
         path = (workspace_root / relative_path).resolve()
+    path = _drop_windows_extended_prefix(path)
     if allow_outside:
         return path
     if not path.is_relative_to(workspace_root) and not _is_workspace_relative_text_path(

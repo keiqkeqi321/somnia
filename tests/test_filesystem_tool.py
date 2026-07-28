@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +146,17 @@ class FilesystemToolTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Path escapes workspace"):
             safe_path(root, str(outside))
+
+    def test_safe_path_normalizes_windows_extended_length_prefix(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows extended-length prefix scenario")
+        root = Path.cwd().resolve()
+        prefixed_root = Path("\\\\?\\" + str(root))
+
+        # 工作区根带 \\?\ 前缀、输入为普通绝对路径：工作区内必须放行，区外仍拒绝。
+        self.assertEqual(safe_path(prefixed_root, str(root / "open_somnia")), root / "open_somnia")
+        with self.assertRaisesRegex(ValueError, "Path escapes workspace"):
+            safe_path(prefixed_root, str(root.parent / f"{root.name}-outside"))
 
     def test_read_file_accepts_absolute_path_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:
