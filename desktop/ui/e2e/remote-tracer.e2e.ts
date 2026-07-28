@@ -17,10 +17,12 @@ test("hosted browser signs in through the remote routes and streams a real Runti
   await expect(page.getByLabel("Project", { exact: true })).toHaveValue("e2e-project");
   await expect(page.getByLabel("Project", { exact: true })).toContainText("Browser test project");
 
-  // Pairing stays available on the connect page.
+  // Pairing lives behind the "+" dialog on the connect page.
+  await page.getByRole("button", { name: "Add Device" }).click();
   await page.getByLabel("New Device name").fill("Spare Device");
   await page.getByRole("button", { name: "Create pairing code" }).click();
   await expect(page.locator(".remote-pairing-code")).toHaveText(/^[A-Z2-9]{10}$/);
+  await page.getByRole("button", { name: "Close" }).click();
 
   // Connect into the unified App tree at `#/workspace`.
   await page.getByRole("button", { name: "Connect" }).click();
