@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("hosted browser signs in through the remote routes and streams a real Runtime turn in the unified App UI", async ({ page }) => {
   // No hash: the router redirects to `#/login` while signed out.
-  await page.goto("/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787");
+  await page.goto("/?relay=ws%3A%2F%2F127.0.0.1%3A18787");
   await expect(page).toHaveURL(/#\/login$/);
 
   // `#/login`: sign in against the Relay.
@@ -127,7 +127,7 @@ test("device-flow pair link signs in and approves the pairing", async ({ page })
 
   // Signed-out deep link: the hash stays on `#/pair?…` and the sign-in form
   // renders in place.
-  await page.goto(`/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787#/pair?session=${sessionId}&secret=${secret}`);
+  await page.goto(`/?relay=ws%3A%2F%2F127.0.0.1%3A18787#/pair?session=${sessionId}&secret=${secret}`);
   await expect(page).toHaveURL(/#\/pair\?/);
   await page.getByLabel("Username").fill("admin");
   await page.getByLabel("Password").fill("admin-password");
@@ -156,7 +156,7 @@ test("registering a new account auto-signs in and lands on the device picker; du
   // account and reuses that same name for the duplicate-username check.
   const username = `e2e-reg-${testInfo.project.name}-${Math.random().toString(36).slice(2, 8)}`;
 
-  await page.goto("/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787");
+  await page.goto("/?relay=ws%3A%2F%2F127.0.0.1%3A18787");
   await expect(page).toHaveURL(/#\/login$/);
 
   // `#/login` links to `#/register`; both are legal while signed out.
