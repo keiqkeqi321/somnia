@@ -2697,12 +2697,13 @@ button {
 
 .bubble.user {
   align-self: flex-end;
-  background: rgba(36, 41, 50, 0.95);
+  border-color: rgba(216, 184, 106, 0.3);
+  background: rgba(46, 40, 33, 0.95);
 }
 
 .bubble.user.pending {
-  border-color: rgba(143, 180, 255, 0.28);
-  background: rgba(36, 41, 50, 0.78);
+  border-color: rgba(216, 184, 106, 0.2);
+  background: rgba(46, 40, 33, 0.78);
 }
 
 .bubble.assistant {
@@ -3204,8 +3205,9 @@ button {
   white-space: nowrap;
 }
 
-.bubble.user .markdown-content {
-  color: #eef2f8;
+.bubble.user .markdown-content,
+.bubble.user pre {
+  color: #f3e8d4;
 }
 
 .typing-indicator {
