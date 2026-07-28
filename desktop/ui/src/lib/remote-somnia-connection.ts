@@ -452,7 +452,9 @@ export class RemoteSomniaConnection implements SomniaClient {
   private sendRequest<T>(method: string, params: Record<string, unknown>): Promise<T> {
     const socket = this.socket;
     if (!socket || this.state !== "connected") {
-      return Promise.reject(new Error("Remote Somnia connection is not connected."));
+      // Transient reconnect windows are normal on mobile networks; hold the
+      // request briefly instead of failing the user's click outright.
+      return this.waitForConnection().then(() => this.sendRequest<T>(method, params));
     }
     const requestId = `web-${Date.now().toString(36)}-${uniqueRequestSuffix()}-${++this.requestSequence}`;
     const message = JSON.stringify({
@@ -533,6 +535,34 @@ export class RemoteSomniaConnection implements SomniaClient {
         break;
       }
     }
+  }
+
+  private waitForConnection(timeoutMs = 10_000): Promise<void> {
+    if (this.socket && this.state === "connected") {
+      return Promise.resolve();
+    }
+    if (this.explicitlyClosed) {
+      return Promise.reject(new Error("Remote Somnia connection is not connected."));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        unsubscribe();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Remote Somnia connection is not connected."));
+      }, timeoutMs);
+      const unsubscribe = this.subscribe((notification) => {
+        if (notification.kind === "state" && notification.state === "connected") {
+          cleanup();
+          resolve();
+        }
+      });
+      // subscribe() only opens when the socket is missing; nudge a reconnect
+      // in case the drop predated this wait.
+      this.open();
+    });
   }
 
   private scheduleReconnect(): void {

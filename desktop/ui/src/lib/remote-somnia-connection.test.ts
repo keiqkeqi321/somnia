@@ -142,6 +142,15 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
+  it("holds requests made during a reconnect window until the socket returns", async () => {
+    const { connection, openStream } = createHarness();
+    // Issued while disconnected: must not reject immediately.
+    const pending = connection.runtimeStatus();
+    openStream();
+    await expect(pending).resolves.toMatchObject({ status: "ready" });
+    connection.close();
+  });
+
   it("maps settings, provider, mcp, and interaction operations to remote requests", async () => {
     const socket = new RecordingRelaySocket();
     const connection = new RemoteSomniaConnection({
