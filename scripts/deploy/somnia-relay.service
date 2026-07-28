@@ -1,0 +1,15 @@
+[Unit]
+Description=Somnia Remote Relay
+After=network.target
+
+[Service]
+Type=simple
+Environment=SOMNIA_ADMIN_USERNAME=@ADMIN_USERNAME@
+Environment=SOMNIA_ADMIN_PASSWORD=@ADMIN_PASSWORD@
+Environment=SOMNIA_RELAY_DATABASE_URL=sqlite:///@DATA_DIR@/relay.db
+ExecStart=/usr/local/bin/somnia-relay --host 127.0.0.1 --port 8787 --web-origin https://@SERVER_NAME@ --secure-cookies
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
