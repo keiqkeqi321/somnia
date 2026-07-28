@@ -74,6 +74,7 @@ import type {
   ModelDescriptor,
   ProviderDescriptor,
   ProviderPresetDescriptor,
+  RemoteProjectTarget,
   SettingsConfigScope,
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
@@ -977,6 +978,29 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   function handleRemoteSignOut() {
     writeRemoteLastTarget(null);
     void remoteAccess.signOut();
+  }
+
+  async function collectRemoteProjects(): Promise<RemoteProjectTarget[]> {
+    // The embedded Connector can only bridge loopback sidecars, so only
+    // projects with a managed sidecar connection are exposed; each sidecar
+    // reports its own desktop-<hash> project id (see /remote/project-id).
+    const managed = projects.filter((project) => project.connection !== null);
+    const collected = await Promise.all(
+      managed.map(async (project) => {
+        const connection = project.connection;
+        if (!connection) {
+          return null;
+        }
+        try {
+          const projectId = await new SidecarClient(connection.baseUrl).getRemoteProjectId();
+          return { project_id: projectId, name: project.label, base_url: connection.baseUrl };
+        } catch {
+          // A sidecar that does not answer cannot be exposed; skip it.
+          return null;
+        }
+      }),
+    );
+    return collected.filter((entry): entry is RemoteProjectTarget => entry !== null);
   }
 
   async function connectManagedProject(
@@ -3635,6 +3659,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
           onSetVisionProviderDraft={(providerName) => void handleVisionProviderChange(providerName)}
           onSetVisionModelDraft={setSelectedVisionModel}
           remoteClient={remoteMode || !clientRef.current ? null : new SidecarClient(clientRef.current.baseUrl)}
+          collectRemoteProjects={remoteMode ? null : collectRemoteProjects}
         />
       ) : null}
       {providerSetupOpen ? (

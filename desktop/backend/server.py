@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 import uuid
 
-from desktop.backend.remote_device import RemoteDeviceManager, RemoteNotPairedError
+from desktop.backend.remote_device import RemoteDeviceManager, RemoteNotPairedError, workspace_project_id
 from desktop.backend.ipc import (
     build_websocket_close_frame,
     build_websocket_pong_frame,
@@ -858,15 +858,18 @@ class SidecarServer:
     def remote_pair_cancel(self) -> dict[str, Any]:
         return self.remote_device.pair_cancel()
 
-    def remote_enable(self) -> dict[str, Any]:
+    def remote_enable(self, projects: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         try:
-            return self.remote_device.enable()
+            return self.remote_device.enable(projects)
         except RemoteNotPairedError as exc:
             raise SidecarAPIError(HTTPStatus.CONFLICT, str(exc)) from exc
         except ValueError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         except RuntimeError as exc:
             raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, str(exc)) from exc
+
+    def remote_project_id(self) -> dict[str, Any]:
+        return {"project_id": workspace_project_id(self.settings.workspace_root)}
 
     def remote_disable(self) -> dict[str, Any]:
         return self.remote_device.disable()
@@ -1263,6 +1266,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"tasks": self.sidecar.list_tasks(session_id)}
         if path_parts == ["remote", "status"]:
             return self.sidecar.remote_status()
+        if path_parts == ["remote", "project-id"]:
+            return self.sidecar.remote_project_id()
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
 
     def _handle_workspace_image(self, parsed) -> None:
@@ -1356,7 +1361,11 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if path_parts == ["remote", "pair-cancel"]:
             return self.sidecar.remote_pair_cancel(), HTTPStatus.OK
         if path_parts == ["remote", "enable"]:
-            return self.sidecar.remote_enable(), HTTPStatus.OK
+            projects = body.get("projects")
+            return (
+                self.sidecar.remote_enable(projects=projects if isinstance(projects, list) else None),
+                HTTPStatus.OK,
+            )
         if path_parts == ["remote", "disable"]:
             return self.sidecar.remote_disable(), HTTPStatus.OK
         if path_parts == ["remote", "unpair"]:

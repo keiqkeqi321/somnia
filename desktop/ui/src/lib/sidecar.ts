@@ -7,6 +7,7 @@ import type {
   ProviderDescriptor,
   ProviderPresetDescriptor,
   RemoteDeviceStatus,
+  RemoteProjectTarget,
   SaveSettingsConfigSectionResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
@@ -408,14 +409,19 @@ export class SidecarClient {
     );
   }
 
-  async enableRemoteDevice(): Promise<RemoteDeviceStatus> {
+  async enableRemoteDevice(projects?: RemoteProjectTarget[]): Promise<RemoteDeviceStatus> {
     return parseResponse<RemoteDeviceStatus>(
       await fetch(`${this.baseUrl}/remote/enable`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: projects && projects.length > 0 ? JSON.stringify({ projects }) : "{}",
       }),
     );
+  }
+
+  async getRemoteProjectId(): Promise<string> {
+    const payload = await parseResponse<{ project_id: string }>(await fetch(`${this.baseUrl}/remote/project-id`));
+    return payload.project_id;
   }
 
   async disableRemoteDevice(): Promise<RemoteDeviceStatus> {

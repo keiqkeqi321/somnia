@@ -351,6 +351,17 @@ export interface ConversationPendingTurn {
   placeholderText: string;
 }
 
+export interface RemoteExposedProject {
+  project_id: string;
+  name: string;
+}
+
+export interface RemoteProjectTarget {
+  project_id: string;
+  name: string;
+  base_url: string;
+}
+
 export interface RemoteDeviceStatus {
   paired: boolean;
   device_id: string;
@@ -361,4 +372,5 @@ export interface RemoteDeviceStatus {
   connector_running: boolean;
   pair_pending: boolean;
   last_error: string;
+  projects: RemoteExposedProject[];
 }

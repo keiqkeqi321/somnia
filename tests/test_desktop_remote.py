@@ -100,6 +100,7 @@ class _FakeConnector:
         self.identity = identity
         self.project_id = project_id
         self.sidecar = sidecar
+        self.sidecars = sidecars or {}
         self.project_names = project_names or {}
         self.started = Event()
         type(self).instances.append(self)
@@ -191,6 +192,7 @@ class DesktopRemoteTests(unittest.TestCase):
                 "connector_running": False,
                 "pair_pending": False,
                 "last_error": "",
+                "projects": [],
             },
         )
 
@@ -332,6 +334,143 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertTrue(payload["enabled"])
         self.assertEqual(len(_FakeConnector.instances), 2)
         self.assertTrue(_FakeConnector.instances[1].started.wait(5.0))
+
+    def test_enable_with_projects_exposes_all_bridges(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        status, payload = self._request("POST", "/remote/disable")
+        self.assertEqual(status, 200, payload)
+
+        own_id = workspace_project_id(self.settings.workspace_root)
+        projects = [
+            {"project_id": own_id, "name": "Own Project", "base_url": self.server.base_url},
+            {"project_id": "desktop-second", "name": "Second Project", "base_url": "http://127.0.0.1:59001"},
+            {"project_id": "desktop-third", "name": "Third Project", "base_url": "http://127.0.0.1:59002"},
+        ]
+        status, payload = self._request("POST", "/remote/enable", {"projects": projects})
+        self.assertEqual(status, 200, payload)
+
+        self.assertEqual(len(_FakeConnector.instances), 2)
+        connector = _FakeConnector.instances[1]
+        self.assertEqual(connector.project_id, own_id)
+        # The own bridge uses the base_url supplied by the caller, not the manager default.
+        self.assertEqual(connector.sidecar.base_url, self.server.base_url)
+        self.assertEqual(set(connector.sidecars), {"desktop-second", "desktop-third"})
+        self.assertEqual(connector.sidecars["desktop-second"].base_url, "http://127.0.0.1:59001")
+        self.assertEqual(connector.sidecars["desktop-third"].base_url, "http://127.0.0.1:59002")
+        self.assertEqual(
+            connector.project_names,
+            {own_id: "Own Project", "desktop-second": "Second Project", "desktop-third": "Third Project"},
+        )
+        self.assertTrue(connector.started.wait(5.0))
+
+        self.assertEqual(
+            payload["projects"],
+            [
+                {"project_id": own_id, "name": "Own Project"},
+                {"project_id": "desktop-second", "name": "Second Project"},
+                {"project_id": "desktop-third", "name": "Third Project"},
+            ],
+        )
+        persisted = json.loads(
+            (self.settings.storage.data_dir / "remote" / "settings.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["projects"], projects)
+
+    def test_enable_with_projects_deduplicates_and_defaults_name(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        status, _ = self._request("POST", "/remote/disable")
+        self.assertEqual(status, 200)
+
+        own_id = workspace_project_id(self.settings.workspace_root)
+        projects = [
+            {"project_id": own_id, "name": "Own Project", "base_url": self.server.base_url},
+            {"project_id": "desktop-second", "name": "", "base_url": "http://127.0.0.1:59001"},
+            {"project_id": "desktop-second", "name": "Duplicate", "base_url": "http://127.0.0.1:59003"},
+        ]
+        status, payload = self._request("POST", "/remote/enable", {"projects": projects})
+        self.assertEqual(status, 200, payload)
+        connector = _FakeConnector.instances[1]
+        self.assertEqual(set(connector.sidecars), {"desktop-second"})
+        self.assertEqual(connector.sidecars["desktop-second"].base_url, "http://127.0.0.1:59001")
+        self.assertEqual(connector.project_names["desktop-second"], "desktop-second")
+
+    def test_enable_with_projects_rejects_invalid_entries(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        status, _ = self._request("POST", "/remote/disable")
+        self.assertEqual(status, 200)
+        before = len(_FakeConnector.instances)
+
+        own_id = workspace_project_id(self.settings.workspace_root)
+        status, payload = self._request(
+            "POST",
+            "/remote/enable",
+            {"projects": [{"project_id": "", "name": "Broken", "base_url": self.server.base_url}]},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+
+        status, payload = self._request(
+            "POST",
+            "/remote/enable",
+            {
+                "projects": [
+                    {"project_id": own_id, "name": "Own", "base_url": self.server.base_url},
+                    {"project_id": "desktop-remote", "name": "Remote", "base_url": "http://192.168.1.10:8765"},
+                ]
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("error", payload)
+        self.assertEqual(len(_FakeConnector.instances), before)
+
+    def test_autostart_prunes_unreachable_projects(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        status, _ = self._request("POST", "/remote/disable")
+        self.assertEqual(status, 200)
+
+        own_id = workspace_project_id(self.settings.workspace_root)
+        projects = [
+            {"project_id": own_id, "name": "Own Project", "base_url": self.server.base_url},
+            # Answers /health (it is this very sidecar) but stands in for another project.
+            {"project_id": "desktop-alive", "name": "Alive Project", "base_url": self.server.base_url},
+            {"project_id": "desktop-dead", "name": "Dead Project", "base_url": "http://127.0.0.1:1"},
+        ]
+        status, payload = self._request("POST", "/remote/enable", {"projects": projects})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(set(_FakeConnector.instances[1].sidecars), {"desktop-alive", "desktop-dead"})
+
+        # Simulate a restart: a fresh manager over the same workspace/identity.
+        restarted = RemoteDeviceManager(
+            workspace_root=self.settings.workspace_root,
+            data_dir=self.settings.storage.data_dir,
+            sidecar_base_url=self.server.base_url,
+        )
+        self.addCleanup(restarted.shutdown)
+        restarted.autostart_if_enabled()
+
+        self.assertEqual(len(_FakeConnector.instances), 3)
+        connector = _FakeConnector.instances[2]
+        self.assertTrue(connector.started.wait(5.0))
+        self.assertEqual(connector.project_id, own_id)
+        self.assertEqual(set(connector.sidecars), {"desktop-alive"})
+        restarted_status = restarted.status()
+        self.assertIn("Dead Project", restarted_status["last_error"])
+        self.assertEqual(
+            restarted_status["projects"],
+            [
+                {"project_id": own_id, "name": "Own Project"},
+                {"project_id": "desktop-alive", "name": "Alive Project"},
+            ],
+        )
+
+    def test_project_id_endpoint_matches_workspace_scheme(self) -> None:
+        status, payload = self._request("GET", "/remote/project-id")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"project_id": workspace_project_id(self.settings.workspace_root)})
 
     def test_connector_failure_is_recorded_not_fatal(self) -> None:
         _FakeConnector.run_error = RuntimeError("relay exploded")

@@ -77,6 +77,7 @@ class RemoteDeviceManager:
         self._pair_stop_event: Event | None = None
         self._pair_thread: Thread | None = None
         self._last_error = ""
+        self._exposed_projects: list[dict[str, str]] = []
 
     # ------------------------------------------------------------------
     # Persistence (relay_url, device_name, enabled)
@@ -116,6 +117,9 @@ class RemoteDeviceManager:
             running = self._thread is not None and self._thread.is_alive()
             pair_pending = self._pair_thread is not None and self._pair_thread.is_alive()
             last_error = self._last_error
+            exposed_projects = list(self._exposed_projects)
+        if not exposed_projects:
+            exposed_projects = self._persisted_projects(settings)
         return {
             "paired": paired,
             "device_id": identity.device_id if paired and identity is not None else "",
@@ -128,7 +132,23 @@ class RemoteDeviceManager:
             "connector_running": running,
             "pair_pending": pair_pending,
             "last_error": last_error,
+            "projects": exposed_projects,
         }
+
+    @staticmethod
+    def _persisted_projects(settings: dict[str, Any]) -> list[dict[str, str]]:
+        persisted = settings.get("projects")
+        if not isinstance(persisted, list):
+            return []
+        projects = []
+        for entry in persisted:
+            if not isinstance(entry, dict):
+                continue
+            project_id = str(entry.get("project_id", "")).strip()
+            if not project_id:
+                continue
+            projects.append({"project_id": project_id, "name": str(entry.get("name", "")).strip() or project_id})
+        return projects
 
     # ------------------------------------------------------------------
     # Pairing (device flow: pair session → browser approval → poll → claim)
@@ -304,20 +324,30 @@ class RemoteDeviceManager:
     # ------------------------------------------------------------------
     # Connector lifecycle (in-process daemon thread)
     # ------------------------------------------------------------------
-    def enable(self) -> dict[str, Any]:
+    def enable(self, projects: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         identity = self._load_identity()
         if identity is None or not identity.is_paired:
             raise RemoteNotPairedError("Pair this device before enabling remote control.")
+        own_project_id = workspace_project_id(self._workspace_root)
+        if projects is None or projects == []:
+            entries = [self._own_project_entry(own_project_id)]
+        else:
+            entries = self._normalize_projects(projects, own_project_id)
+        primary = next(entry for entry in entries if entry["project_id"] == own_project_id)
+        extras = [entry for entry in entries if entry is not primary]
         with self._lock:
             already_running = self._thread is not None and self._thread.is_alive()
             if not already_running:
-                project_id = workspace_project_id(self._workspace_root)
                 connector = RemoteConnector(
                     _relay_websocket_url(identity.relay_url),
                     identity=identity,
-                    project_id=project_id,
-                    sidecar=LocalSidecarBridge(self._sidecar_base_url),
-                    project_names={project_id: self._workspace_root.name or project_id},
+                    project_id=own_project_id,
+                    sidecar=LocalSidecarBridge(primary["base_url"]),
+                    sidecars={
+                        entry["project_id"]: LocalSidecarBridge(entry["base_url"]) for entry in extras
+                    }
+                    or None,
+                    project_names={entry["project_id"]: entry["name"] for entry in entries},
                 )
                 stop_event = Event()
                 thread = Thread(
@@ -329,9 +359,51 @@ class RemoteDeviceManager:
                 self._stop_event = stop_event
                 self._thread = thread
                 self._last_error = ""
+                self._exposed_projects = [
+                    {"project_id": entry["project_id"], "name": entry["name"]} for entry in entries
+                ]
                 thread.start()
-        self._save_settings({"enabled": True})
+        self._save_settings({"enabled": True, "projects": entries})
         return self.status()
+
+    def _own_project_entry(self, own_project_id: str) -> dict[str, str]:
+        return {
+            "project_id": own_project_id,
+            "name": self._workspace_root.name or own_project_id,
+            "base_url": self._sidecar_base_url,
+        }
+
+    def _normalize_projects(
+        self, projects: list[dict[str, Any]], own_project_id: str
+    ) -> list[dict[str, str]]:
+        if not isinstance(projects, list):
+            raise ValueError("Remote projects must be a list.")
+        entries: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw in projects:
+            if not isinstance(raw, dict):
+                raise ValueError("Remote project entries must be objects.")
+            project_id = str(raw.get("project_id", "")).strip()
+            if not project_id:
+                raise ValueError("Remote project entries require a project_id.")
+            if project_id in seen:
+                continue
+            seen.add(project_id)
+            base_url = str(raw.get("base_url", "")).strip()
+            if not base_url:
+                raise ValueError(f"Remote project '{project_id}' requires a base_url.")
+            entries.append(
+                {
+                    "project_id": project_id,
+                    "name": str(raw.get("name", "")).strip() or project_id,
+                    "base_url": base_url,
+                }
+            )
+        if own_project_id not in seen:
+            # The caller did not list this sidecar's own project; bridge it directly
+            # so the Connector always exposes the workspace it runs on.
+            entries.insert(0, self._own_project_entry(own_project_id))
+        return entries
 
     def disable(self) -> dict[str, Any]:
         self._stop_connector()
@@ -353,11 +425,44 @@ class RemoteDeviceManager:
         settings = self._load_settings()
         if not settings.get("enabled"):
             return
+        persisted = settings.get("projects")
+        projects = persisted if isinstance(persisted, list) and persisted else None
+        pruned_message = ""
+        if projects is not None:
+            projects, pruned_message = self._prune_unreachable_projects(projects)
         try:
-            self.enable()
+            self.enable(projects)
         except Exception as exc:  # never let autostart take the sidecar down
             with self._lock:
                 self._last_error = f"Remote Connector autostart failed: {exc}"
+            return
+        if pruned_message:
+            self._record_last_error(pruned_message)
+
+    def _prune_unreachable_projects(
+        self, projects: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Drop projects whose sidecar no longer answers; own project is always kept."""
+        own_project_id = workspace_project_id(self._workspace_root)
+        kept: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for entry in projects:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("project_id", "")).strip() == own_project_id:
+                kept.append(entry)
+                continue
+            base_url = str(entry.get("base_url", "")).strip().rstrip("/")
+            try:
+                self._get_json(f"{base_url}/health", action="Sidecar health check failed")
+            except Exception:
+                skipped.append(str(entry.get("name", "")).strip() or str(entry.get("project_id", "")).strip())
+                continue
+            kept.append(entry)
+        if not skipped:
+            return kept, ""
+        names = ", ".join(name for name in skipped if name)
+        return kept, f"Remote Connector skipped unreachable project sidecars: {names}."
 
     def shutdown(self) -> None:
         """Stop the Connector and pair-poll threads with the sidecar (keeps enabled state)."""

@@ -2,21 +2,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useI18n } from "../lib/i18n";
 import type { SidecarClient } from "../lib/sidecar";
-import type { RemoteDeviceStatus } from "../types";
+import type { RemoteDeviceStatus, RemoteProjectTarget } from "../types";
 
 const STATUS_POLL_INTERVAL_MS = 3000;
 
 type RemoteSettingsSectionProps = {
   client: SidecarClient;
+  collectProjects: (() => Promise<RemoteProjectTarget[]>) | null;
 };
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
+function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectionProps) {
   const { t } = useI18n();
   const [status, setStatus] = useState<RemoteDeviceStatus | null>(null);
+  const [currentProjects, setCurrentProjects] = useState<RemoteProjectTarget[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [relayUrl, setRelayUrl] = useState("");
@@ -25,6 +27,8 @@ function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
   // keyed to the stable base URL and always call the latest client.
   const clientRef = useRef(client);
   clientRef.current = client;
+  const collectRef = useRef(collectProjects);
+  collectRef.current = collectProjects;
   const baseUrl = client.baseUrl;
 
   const refresh = useCallback(async () => {
@@ -34,6 +38,13 @@ function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
       setError("");
     } catch (refreshError) {
       setError(formatError(refreshError));
+    }
+    if (collectRef.current) {
+      try {
+        setCurrentProjects(await collectRef.current());
+      } catch {
+        // A project sidecar that does not answer only hides the re-apply hint.
+      }
     }
   }, [baseUrl]);
 
@@ -81,7 +92,15 @@ function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
     if (!status) {
       return;
     }
-    await runAction(() => (status.enabled ? client.disableRemoteDevice() : client.enableRemoteDevice()));
+    await runAction(async () => {
+      if (status.enabled) {
+        return client.disableRemoteDevice();
+      }
+      // Enabling exposes every managed Desktop project through this sidecar's
+      // embedded Connector, not just the active workspace.
+      const projects = collectRef.current ? await collectRef.current() : [];
+      return client.enableRemoteDevice(projects.length > 0 ? projects : undefined);
+    });
   }
 
   async function handleUnpair() {
@@ -95,6 +114,12 @@ function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
   const pairPending = Boolean(status?.pair_pending);
   const online = Boolean(status?.connector_running);
   const pairFormReady = Boolean(relayUrl.trim());
+  const exposedIds = (status?.projects ?? []).map((project) => project.project_id);
+  const currentIds = currentProjects.map((project) => project.project_id);
+  // Project add/remove only takes effect on the next enable (v2 has no live
+  // reconfiguration), so surface a hint while the running set is stale.
+  const projectsChanged = Boolean(status?.enabled) && currentProjects.length > 0 &&
+    (exposedIds.length !== currentIds.length || exposedIds.some((id) => !currentIds.includes(id)));
 
   return (
     <div className="settings-group remote-settings-group">
@@ -118,7 +143,20 @@ function RemoteSettingsSection({ client }: RemoteSettingsSectionProps) {
                 </span>
               </dd>
             </div>
+            {status.projects.length > 0 ? (
+              <div>
+                <dt>{t("settings.remote.projects")}</dt>
+                <dd>
+                  <ul className="remote-settings-projects">
+                    {status.projects.map((project) => (
+                      <li key={project.project_id}>{project.name}</li>
+                    ))}
+                  </ul>
+                </dd>
+              </div>
+            ) : null}
           </dl>
+          {projectsChanged ? <p className="remote-settings-hint">{t("settings.remote.reapplyHint")}</p> : null}
           {status.last_error ? <p className="remote-settings-error">{t("settings.remote.lastError", { error: status.last_error })}</p> : null}
           <div className="remote-settings-actions">
             <button className="settings-action-button" type="button" onClick={() => void handleToggle()} disabled={busy}>

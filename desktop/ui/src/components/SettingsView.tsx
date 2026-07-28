@@ -2,7 +2,7 @@ import { formatRelativeTime } from "../lib/messages";
 import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "../lib/i18n";
 import type { SidecarClient } from "../lib/sidecar";
 import RemoteSettingsSection from "./RemoteSettingsSection";
-import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
+import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, RemoteProjectTarget, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useEffect, useState } from "react";
 
 export type ArchivedSessionEntry = {
@@ -52,6 +52,7 @@ type SettingsViewProps = {
   onSetVisionModelDraft: (model: string) => void;
   onDebugProviderModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
   remoteClient: SidecarClient | null;
+  collectRemoteProjects: (() => Promise<RemoteProjectTarget[]>) | null;
 };
 
 type ProviderProfileDraft = {
@@ -146,6 +147,7 @@ function SettingsView({
   onSetVisionModelDraft,
   onDebugProviderModel,
   remoteClient,
+  collectRemoteProjects,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
   const visibleSections = remoteClient ? SETTINGS_SECTIONS : SETTINGS_SECTIONS.filter((item) => item.key !== "remote");
@@ -630,7 +632,7 @@ function SettingsView({
         ) : null}
 
         {activeSection === "remote" && remoteClient ? (
-          <RemoteSettingsSection client={remoteClient} />
+          <RemoteSettingsSection client={remoteClient} collectProjects={collectRemoteProjects} />
         ) : null}
       </div>
     </section>

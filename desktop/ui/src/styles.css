@@ -5021,6 +5021,18 @@ button {
   line-height: 1.5;
 }
 
+.remote-settings-projects {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.remote-settings-hint {
+  margin: 0;
+  color: #ffd9a0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 /* ── Remote mode / pair approval page ── */
 .remote-pair-description {
   margin: 0;
