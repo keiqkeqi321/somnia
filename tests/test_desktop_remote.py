@@ -111,6 +111,10 @@ class _FakeConnector:
             raise type(self).run_error
         stop_event.wait(30.0)
 
+    def run_forever(self, stop_event: Event, *, on_retry=None, on_connect=None) -> None:
+        del on_retry, on_connect
+        self.run(stop_event)
+
 
 class DesktopRemoteTests(unittest.TestCase):
     def setUp(self) -> None:

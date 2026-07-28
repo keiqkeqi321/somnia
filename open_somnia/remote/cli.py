@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import uvicorn
 
-from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
+from open_somnia.remote.connector import ConnectorReplaced, DeviceAuthRejected, LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, default_identity_path, pair_device
 from open_somnia.remote.relay import create_relay_app
 from open_somnia.remote.runtime_manager import ProjectRegistry, ProjectRuntimeManager, default_registry_path
@@ -131,9 +131,12 @@ def connector_main() -> int:
         project_names=project_names,
     )
     try:
-        connector.run()
+        connector.run_forever()
     except KeyboardInterrupt:
         return 130
+    except (ConnectorReplaced, DeviceAuthRejected) as exc:
+        print(f"Connector stopped: {exc}", file=sys.stderr)
+        return 1
     finally:
         if manager is not None:
             manager.stop_all()

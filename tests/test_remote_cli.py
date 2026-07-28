@@ -56,7 +56,7 @@ class _FakeConnector:
     def __init__(self, *args: object, **kwargs: object) -> None:
         del args, kwargs
 
-    def run(self) -> None:
+    def run_forever(self) -> None:
         return None
 
 

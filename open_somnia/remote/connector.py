@@ -6,12 +6,14 @@ from collections import OrderedDict, deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
+import time
 from typing import Any, Callable
 from urllib.parse import quote, urlparse
 import urllib.request
 import uuid
 
 from websockets.sync.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from open_somnia.remote.auth import encode_bytes
 from open_somnia.remote.identity import DeviceIdentity
@@ -19,6 +21,29 @@ from open_somnia.remote.identity import DeviceIdentity
 
 JsonRequest = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 PROTOCOL_VERSION = 1
+RECONNECT_INITIAL_DELAY_SECONDS = 1.0
+RECONNECT_MAX_DELAY_SECONDS = 30.0
+# A connection surviving at least this long counts as stable; the backoff resets after it drops.
+RECONNECT_STABLE_SECONDS = 10.0
+# Relay close codes that will never succeed on retry (auth rejected / device revoked).
+PERMANENT_CLOSE_CODES = frozenset({4401, 4403})
+
+
+class DeviceAuthRejected(RuntimeError):
+    """The Relay refused this Device's authentication proof."""
+
+
+class ConnectorReplaced(RuntimeError):
+    """Another Connector took over this Device identity on the Relay."""
+
+
+def _is_permanent_failure(exc: Exception) -> bool:
+    if isinstance(exc, (DeviceAuthRejected, ConnectorReplaced)):
+        return True
+    if isinstance(exc, ConnectionClosed):
+        close = exc.rcvd
+        return close is not None and close.code in PERMANENT_CLOSE_CODES
+    return False
 
 
 @dataclass
@@ -291,8 +316,14 @@ class RemoteConnector:
         }
         self._state_lock = Lock()
 
-    def run(self, stop_event: Event | None = None) -> None:
-        stop = stop_event or Event()
+    def run(self, stop_event: Event | None = None, *, on_connect: Callable[[], None] | None = None) -> int | None:
+        """Serve one Relay connection until it drops or ``stop_event`` is set.
+
+        Returns the Relay close code when the Relay closed the connection, or
+        ``None`` when the stop event ended the run locally.
+        """
+        external_stop = stop_event or Event()
+        stop = Event()  # internal: halts the sidecar event threads when this run ends
         for project_id in self._projects:
             self._begin_stream(project_id)
         connector_url = f"{self.relay_url.rstrip('/')}/ws/connector/{quote(self.device_id, safe='')}"
@@ -303,6 +334,8 @@ class RemoteConnector:
             }
             with connect(connector_url, open_timeout=10, close_timeout=2) as relay:
                 self._authenticate_relay(relay)
+                if on_connect is not None:
+                    on_connect()
                 relay.send(json.dumps(self.presence_message(), ensure_ascii=False, separators=(",", ":")))
                 send_lock = Lock()
 
@@ -318,13 +351,59 @@ class RemoteConnector:
                     event_thread.start()
                 try:
                     for raw_message in relay:
-                        if stop.is_set():
+                        if external_stop.is_set():
                             break
                         self.handle_relay_message(raw_message, send)
                 finally:
                     stop.set()
                     for event_thread in event_threads:
                         event_thread.join(timeout=2.0)
+                if external_stop.is_set():
+                    return None
+                close_reason = str(relay.close_reason or "")
+                if relay.close_code == 1012 and close_reason.startswith("Connector replaced"):
+                    raise ConnectorReplaced("Another Connector took over this Device on the Relay.")
+                return relay.close_code
+
+    def run_forever(
+        self,
+        stop_event: Event | None = None,
+        *,
+        on_retry: Callable[[str, float], None] | None = None,
+        on_connect: Callable[[], None] | None = None,
+    ) -> None:
+        """Keep this Connector connected until ``stop_event`` is set.
+
+        Transient failures (network loss, Relay restarts during deploys) are
+        retried with exponential backoff; permanent ones (Device revoked,
+        authentication rejected, another Connector replacing this one) are
+        raised to the caller. ``on_retry(reason, delay)`` fires before each
+        backoff wait; ``on_connect()`` fires after every successful Relay
+        authentication.
+        """
+        stop = stop_event or Event()
+        delay = RECONNECT_INITIAL_DELAY_SECONDS
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                close_code = self.run(stop, on_connect=on_connect)
+            except Exception as exc:
+                if stop.is_set():
+                    return
+                if _is_permanent_failure(exc):
+                    raise
+                reason = str(exc)
+            else:
+                if stop.is_set():
+                    return
+                reason = f"Relay closed the connection (code {close_code})."
+            if time.monotonic() - started >= RECONNECT_STABLE_SECONDS:
+                delay = RECONNECT_INITIAL_DELAY_SECONDS
+            if on_retry is not None:
+                on_retry(reason, delay)
+            if stop.wait(delay):
+                return
+            delay = min(delay * 2.0, RECONNECT_MAX_DELAY_SECONDS)
 
     def _authenticate_relay(self, relay: Any) -> None:
         raw_challenge = relay.recv(timeout=10.0)
@@ -344,7 +423,7 @@ class RemoteConnector:
         raw_result = relay.recv(timeout=10.0)
         result = json.loads(raw_result)
         if not isinstance(result, dict) or result != {"kind": "auth_ok", "device_id": self.device_id}:
-            raise RuntimeError("Relay rejected Device authentication.")
+            raise DeviceAuthRejected("Relay rejected Device authentication.")
 
     def presence_message(self) -> dict[str, Any]:
         """Return the Relay-safe metadata for Projects served by this Connector."""

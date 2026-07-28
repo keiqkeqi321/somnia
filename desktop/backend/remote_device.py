@@ -483,8 +483,17 @@ class RemoteDeviceManager:
                 self._stop_event = None
 
     def _run_connector(self, connector: RemoteConnector, stop_event: Event) -> None:
+        def _on_connect() -> None:
+            with self._lock:
+                self._last_error = ""
+
+        def _on_retry(reason: str, delay: float) -> None:
+            with self._lock:
+                if not stop_event.is_set():
+                    self._last_error = f"Remote Connector disconnected ({reason}); reconnecting in {delay:.0f}s."
+
         try:
-            connector.run(stop_event)
+            connector.run_forever(stop_event, on_retry=_on_retry, on_connect=_on_connect)
         except Exception as exc:
             with self._lock:
                 if not stop_event.is_set():

@@ -4,13 +4,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
+import time
 import unittest
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 
 from open_somnia.remote.auth import device_challenge_payload
-from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
+from open_somnia.remote.connector import ConnectorReplaced, LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, pair_device
 
 
@@ -508,6 +512,116 @@ class RemoteConnectorForTest(RemoteConnector):
             sidecar=CountingSidecar(),
             replay_limit=replay_limit,
         )
+
+
+class ScriptedConnector(RemoteConnector):
+    """Connector double whose run() plays a scripted sequence of outcomes.
+
+    Each outcome is an Exception to raise, the string "close" (Relay closed the
+    connection, e.g. a deploy restart), or "block" (stay connected until stopped).
+    """
+
+    def __init__(self, identity: DeviceIdentity, outcomes: list[object]) -> None:
+        super().__init__(
+            "wss://relay.example.com",
+            identity=identity,
+            project_id="project-1",
+            sidecar=CountingSidecar(),
+        )
+        self.outcomes = list(outcomes)
+        self._script_len = len(outcomes)
+        self.attempts = 0
+
+    def outcomes_exhausted(self) -> bool:
+        """True once the scripted outcomes ran and the final blocking attempt started."""
+        return self.attempts > self._script_len
+
+    def run(self, stop_event: Event | None = None, *, on_connect=None) -> int | None:
+        self.attempts += 1
+        if on_connect is not None:
+            on_connect()
+        outcome = self.outcomes.pop(0) if self.outcomes else "block"
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome == "close":
+            return 1012
+        stop_event.wait(30.0)
+        return None
+
+
+class RemoteConnectorRunForeverTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = TemporaryDirectory()
+        self.addCleanup(self._temp.cleanup)
+        identity = DeviceIdentity.load_or_create(Path(self._temp.name) / "identity.json")
+        identity.complete_pairing(device_id="device-1", device_name="Device", relay_url="https://relay.example.com")
+        self.identity = identity
+        initial_patcher = patch("open_somnia.remote.connector.RECONNECT_INITIAL_DELAY_SECONDS", 0.01)
+        initial_patcher.start()
+        self.addCleanup(initial_patcher.stop)
+        max_patcher = patch("open_somnia.remote.connector.RECONNECT_MAX_DELAY_SECONDS", 0.02)
+        max_patcher.start()
+        self.addCleanup(max_patcher.stop)
+
+    def _run_until_stopped(self, connector: ScriptedConnector, retries: list[str], connects: list[int]) -> Event:
+        stop = Event()
+        thread = Thread(
+            target=connector.run_forever,
+            kwargs={
+                "stop_event": stop,
+                "on_retry": lambda reason, delay: retries.append(reason),
+                "on_connect": lambda: connects.append(1),
+            },
+            daemon=True,
+        )
+        thread.start()
+        self.assertTrue(_wait_until(lambda: not thread.is_alive() or connector.outcomes_exhausted()))
+        stop.set()
+        thread.join(timeout=5.0)
+        self.assertFalse(thread.is_alive())
+        return stop
+
+    def test_transient_failures_are_retried_with_backoff_until_stopped(self) -> None:
+        connector = ScriptedConnector(self.identity, [OSError("connection refused"), OSError("connection refused")])
+        retries: list[str] = []
+        connects: list[int] = []
+        self._run_until_stopped(connector, retries, connects)
+        self.assertEqual(connector.attempts, 3)
+        self.assertEqual(retries, ["connection refused", "connection refused"])
+        self.assertEqual(len(connects), 3)
+
+    def test_relay_close_is_retried(self) -> None:
+        connector = ScriptedConnector(self.identity, ["close"])
+        retries: list[str] = []
+        connects: list[int] = []
+        self._run_until_stopped(connector, retries, connects)
+        self.assertEqual(connector.attempts, 2)
+        self.assertEqual(len(retries), 1)
+        self.assertIn("Relay closed the connection", retries[0])
+
+    def test_permanent_close_is_not_retried(self) -> None:
+        connector = ScriptedConnector(
+            self.identity,
+            [ConnectionClosedError(Close(4403, "Device authentication failed."), None)],
+        )
+        with self.assertRaises(ConnectionClosedError):
+            connector.run_forever()
+        self.assertEqual(connector.attempts, 1)
+
+    def test_replaced_connector_is_not_retried(self) -> None:
+        connector = ScriptedConnector(self.identity, [ConnectorReplaced("Another Connector took over this Device on the Relay.")])
+        with self.assertRaises(ConnectorReplaced):
+            connector.run_forever()
+        self.assertEqual(connector.attempts, 1)
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 if __name__ == "__main__":
