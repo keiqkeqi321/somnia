@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import socket
+import threading
 import time
 import unittest
 import urllib.error
@@ -247,6 +248,38 @@ class SidecarServerTests(unittest.TestCase):
             finally:
                 self._close_websocket(client)
         finally:
+            server.close()
+
+    def test_runtime_status_stays_available_during_an_active_turn(self) -> None:
+        root = self._stable_test_dir("sidecar-status-mid-turn")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        release = threading.Event()
+
+        def blocking_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+            if text_callback is not None:
+                text_callback("partial ")
+            release.wait(timeout=10)
+            return AssistantTurn(stop_reason="end_turn", text_blocks=["done"])
+
+        server.runtime.complete = blocking_complete
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            _, session_response = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = session_response["session"]["id"]
+            _, turn_response = self._request_json(
+                "POST",
+                f"{server.base_url}/turns",
+                {"session_id": session_id, "user_input": "hello"},
+            )
+            status, payload = self._request_json("GET", f"{server.base_url}/runtime/status")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                payload["active_turns"],
+                [{"turn_id": turn_response["turn_id"], "session_id": session_id}],
+            )
+        finally:
+            release.set()
             server.close()
 
     def test_sidecar_expands_init_command_before_starting_turn(self) -> None:

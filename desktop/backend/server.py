@@ -602,7 +602,7 @@ class SidecarServer:
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
         active_turn = next(
-            (turn for turn in self._active_turns.values() if getattr(turn.session, "id", None) == session_id and not turn.done_event.is_set()),
+            (turn for turn in self._active_turns.values() if getattr(turn.session, "id", None) == session_id and not turn.is_done()),
             None,
         )
         if active_turn is not None:
@@ -962,7 +962,7 @@ class SidecarServer:
                 "session_id": str(turn.session.id),
             }
             for turn in self._active_turns.values()
-            if not turn.done_event.is_set()
+            if not turn.is_done()
         ]
         return payload
 
