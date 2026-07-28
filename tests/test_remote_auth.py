@@ -279,6 +279,121 @@ class RemoteAuthenticationTests(unittest.TestCase):
             self.assertEqual(reconnect.exception.code, 4403)
 
 
+class PairSessionTests(unittest.TestCase):
+    def test_info_reports_the_configured_web_origin(self) -> None:
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            allowed_origins=["https://somnia.example.com", "https://alt.example.com"],
+        )
+        with TestClient(app) as client:
+            response = client.get("/api/info")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"web_origin": "https://somnia.example.com"})
+
+    def _create_session(self, client: TestClient) -> dict:
+        response = client.post("/api/pair-sessions")
+        if response.status_code != 201:
+            raise AssertionError(response.text)
+        return response.json()
+
+    def test_device_flow_full_round_trip(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            session = self._create_session(client)
+            self.assertTrue(session["session_id"])
+            self.assertTrue(session["secret"])
+            self.assertGreater(session["expires_at"], 0)
+
+            status_url = f"/api/pair-sessions/{session['session_id']}?secret={session['secret']}"
+            self.assertEqual(client.get(status_url).json(), {"status": "pending"})
+
+            login(client)
+            approved = client.post(
+                f"/api/pair-sessions/{session['session_id']}/approve",
+                json={"secret": session["secret"], "device_name": "Desktop PC"},
+            )
+            self.assertEqual(approved.status_code, 200)
+            self.assertEqual(approved.json(), {"status": "approved"})
+
+            polled = client.get(status_url)
+            self.assertEqual(polled.status_code, 200)
+            self.assertEqual(polled.json()["status"], "approved")
+            code = polled.json()["code"]
+            self.assertRegex(code, re.compile(r"^[A-Z2-9]{10}$"))
+
+            claimed = claim_pairing(client, code, "ignored", Ed25519PrivateKey.generate())
+            self.assertEqual(claimed.status_code, 201)
+            self.assertEqual(claimed.json()["name"], "Desktop PC")
+
+    def test_pair_session_rejects_a_wrong_secret(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            session = self._create_session(client)
+            wrong_status = client.get(f"/api/pair-sessions/{session['session_id']}?secret=wrong")
+            self.assertEqual(wrong_status.status_code, 403)
+
+            login(client)
+            wrong_approve = client.post(
+                f"/api/pair-sessions/{session['session_id']}/approve",
+                json={"secret": "wrong", "device_name": "Desktop PC"},
+            )
+            self.assertEqual(wrong_approve.status_code, 403)
+
+    def test_pair_session_approve_requires_authentication(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            session = self._create_session(client)
+            response = client.post(
+                f"/api/pair-sessions/{session['session_id']}/approve",
+                json={"secret": session["secret"], "device_name": "Desktop PC"},
+            )
+            self.assertEqual(response.status_code, 401)
+
+    def test_pair_session_expires_with_the_pairing_ttl(self) -> None:
+        now = [3_000.0]
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            clock=lambda: now[0],
+            pairing_ttl_seconds=60,
+        )
+        with TestClient(app) as client:
+            session = self._create_session(client)
+            now[0] += 61
+            status = client.get(f"/api/pair-sessions/{session['session_id']}?secret={session['secret']}")
+            self.assertEqual(status.json(), {"status": "expired"})
+
+            login(client)
+            approved = client.post(
+                f"/api/pair-sessions/{session['session_id']}/approve",
+                json={"secret": session["secret"], "device_name": "Desktop PC"},
+            )
+            self.assertEqual(approved.status_code, 410)
+
+    def test_approved_code_is_returned_exactly_once(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            session = self._create_session(client)
+            login(client)
+            client.post(
+                f"/api/pair-sessions/{session['session_id']}/approve",
+                json={"secret": session["secret"], "device_name": "Desktop PC"},
+            )
+            status_url = f"/api/pair-sessions/{session['session_id']}?secret={session['secret']}"
+            first = client.get(status_url)
+            self.assertEqual(first.json()["status"], "approved")
+            second = client.get(status_url)
+            self.assertEqual(second.json(), {"status": "expired"})
+
+    def test_pair_session_creation_is_rate_limited_per_source(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"}, pair_session_attempt_limit=3)
+        with TestClient(app) as client:
+            for _ in range(3):
+                self.assertEqual(client.post("/api/pair-sessions").status_code, 201)
+            blocked = client.post("/api/pair-sessions")
+            self.assertEqual(blocked.status_code, 429)
+            self.assertTrue(blocked.headers.get("Retry-After"))
+
+
 class RegistrationTests(unittest.TestCase):
     def test_registration_issues_a_session_and_persists_the_account(self) -> None:
         with TemporaryDirectory() as temp_dir:

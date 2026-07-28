@@ -118,6 +118,38 @@ test("hosted browser signs in through the remote routes and streams a real Runti
   expect(overflowing).toEqual([]);
 });
 
+test("device-flow pair link signs in and approves the pairing", async ({ page }) => {
+  // Desktop would call this same endpoint; the test stands in for it.
+  const relayBase = "http://127.0.0.1:18787";
+  const created = await page.request.post(`${relayBase}/api/pair-sessions`);
+  expect(created.status()).toBe(201);
+  const { session_id: sessionId, secret } = (await created.json()) as { session_id: string; secret: string };
+
+  // Signed-out deep link: the hash stays on `#/pair?…` and the sign-in form
+  // renders in place.
+  await page.goto(`/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787#/pair?session=${sessionId}&secret=${secret}`);
+  await expect(page).toHaveURL(/#\/pair\?/);
+  await page.getByLabel("Username").fill("admin");
+  await page.getByLabel("Password").fill("admin-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  // After sign-in the same hash resolves to the pair approval page.
+  await expect(page).toHaveURL(/#\/pair\?/);
+  const deviceNameInput = page.getByLabel("Device name");
+  await expect(deviceNameInput).toHaveValue("My Computer");
+  await deviceNameInput.fill("E2E Browser-Approved Device");
+  await page.getByRole("button", { name: "Approve pairing" }).click();
+  await expect(page.getByText("Pairing approved")).toBeVisible();
+
+  // The Relay now reports the session approved, with the one-time pairing
+  // code the Desktop poll would claim.
+  const status = await page.request.get(`${relayBase}/api/pair-sessions/${sessionId}?secret=${encodeURIComponent(secret)}`);
+  expect(status.ok()).toBeTruthy();
+  const payload = (await status.json()) as { status: string; code?: string };
+  expect(payload.status).toBe("approved");
+  expect(payload.code).toBeTruthy();
+});
+
 test("registering a new account auto-signs in and lands on the device picker; duplicates are rejected", async ({ page }, testInfo) => {
   // The fixture Relay is shared across viewport projects and registration is
   // rate-limited per source, so each project registers exactly one new

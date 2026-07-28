@@ -39,7 +39,18 @@ def main() -> int:
 
     relay = start(
         "relay",
-        [sys.executable, "-m", "open_somnia.remote.cli", "relay", "--host", "127.0.0.1", "--port", str(args.relay_port)],
+        [
+            sys.executable,
+            "-m",
+            "open_somnia.remote.cli",
+            "relay",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(args.relay_port),
+            "--web-origin",
+            f"http://127.0.0.1:{args.web_port}",
+        ],
         repo,
     )
     web = start(

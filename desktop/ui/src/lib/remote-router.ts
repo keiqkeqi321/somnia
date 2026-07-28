@@ -9,13 +9,18 @@ import { useEffect, useState } from "react";
  * - `#/register`  — self-service account creation (also legal only while signed out)
  * - `#/connect`   — device/project picker (redirects to `#/login` when signed out)
  * - `#/workspace` — connected workspace (redirects to `#/connect` when not connected)
+ * - `#/pair`      — device-flow approval (deep link `#/pair?session=<id>&secret=<s>`
+ *   opened by Desktop; legal while signed out — the sign-in form shows in place
+ *   and the same hash resolves back here after sign-in)
  */
 
-export type RemoteRouteName = "login" | "register" | "connect" | "workspace";
+export type RemoteRouteName = "login" | "register" | "connect" | "workspace" | "pair";
 
 /** Parses a location hash into a known route, or `null` for empty/unknown hashes. */
 export function parseRemoteRoute(hash: string): RemoteRouteName | null {
-  switch (hash.replace(/^#/, "")) {
+  // The pair deep link carries its parameters as a query inside the hash
+  // (`#/pair?session=…&secret=…`); routing only looks at the path part.
+  switch (hash.replace(/^#/, "").split("?")[0]) {
     case "/login":
       return "login";
     case "/register":
@@ -24,9 +29,29 @@ export function parseRemoteRoute(hash: string): RemoteRouteName | null {
       return "connect";
     case "/workspace":
       return "workspace";
+    case "/pair":
+      return "pair";
     default:
       return null;
   }
+}
+
+/**
+ * Extracts the device-flow parameters from a `#/pair?session=…&secret=…`
+ * hash. Returns `null` for other routes or when either parameter is missing.
+ */
+export function parsePairLink(hash: string): { sessionId: string; secret: string } | null {
+  if (parseRemoteRoute(hash) !== "pair") {
+    return null;
+  }
+  const query = hash.replace(/^#/, "").split("?")[1] ?? "";
+  const params = new URLSearchParams(query);
+  const sessionId = params.get("session") ?? "";
+  const secret = params.get("secret") ?? "";
+  if (!sessionId || !secret) {
+    return null;
+  }
+  return { sessionId, secret };
 }
 
 /**
@@ -35,15 +60,20 @@ export function parseRemoteRoute(hash: string): RemoteRouteName | null {
  * to a route matching reality. While signed out both `#/login` and
  * `#/register` are legal, so the current `hash` is honored when it names
  * either of them; signed-in users hitting either route land on `#/connect`.
+ * A `#/pair` deep link is honored in every state except an active workspace
+ * connection, so the approval page survives the sign-in round trip.
  */
 export function resolveRemoteRoute(state: { authenticated: boolean; connected: boolean; hash?: string }): RemoteRouteName {
   if (state.connected) {
     return "workspace";
   }
+  const requested = state.hash === undefined ? null : parseRemoteRoute(state.hash);
+  if (requested === "pair") {
+    return "pair";
+  }
   if (state.authenticated) {
     return "connect";
   }
-  const requested = state.hash === undefined ? null : parseRemoteRoute(state.hash);
   if (requested === "login" || requested === "register") {
     return requested;
   }

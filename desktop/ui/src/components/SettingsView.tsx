@@ -1,5 +1,7 @@
 import { formatRelativeTime } from "../lib/messages";
 import { SUPPORTED_LOCALES, useI18n, type Locale, type TranslationKey } from "../lib/i18n";
+import type { SidecarClient } from "../lib/sidecar";
+import RemoteSettingsSection from "./RemoteSettingsSection";
 import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useEffect, useState } from "react";
 
@@ -49,6 +51,7 @@ type SettingsViewProps = {
   onSetVisionProviderDraft: (provider: string) => void;
   onSetVisionModelDraft: (model: string) => void;
   onDebugProviderModel: (provider: string, model: string) => Promise<{ ok: boolean; message: string }>;
+  remoteClient: SidecarClient | null;
 };
 
 type ProviderProfileDraft = {
@@ -97,6 +100,7 @@ const SETTINGS_SECTIONS = [
   { key: "hooks", labelKey: "settings.config.hooks", titleKey: "settings.config.hooksTitle" },
   { key: "system_prompt", labelKey: "settings.config.systemPrompt", titleKey: "settings.config.systemPromptTitle" },
   { key: "skills", labelKey: "settings.config.skills", titleKey: "settings.config.skills" },
+  { key: "remote", labelKey: "settings.section.remote", titleKey: "settings.section.remote" },
   { key: "archived", labelKey: "settings.section.archived", titleKey: "settings.section.archived" },
 ] as const;
 
@@ -141,9 +145,11 @@ function SettingsView({
   onSetVisionProviderDraft,
   onSetVisionModelDraft,
   onDebugProviderModel,
+  remoteClient,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
-  const section = SETTINGS_SECTIONS.find((item) => item.key === activeSection) ?? SETTINGS_SECTIONS[0];
+  const visibleSections = remoteClient ? SETTINGS_SECTIONS : SETTINGS_SECTIONS.filter((item) => item.key !== "remote");
+  const section = visibleSections.find((item) => item.key === activeSection) ?? visibleSections[0];
   const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
   const activeConfigSection = isConfigSectionKey(activeSection) ? activeSection : "provider";
   const activeDraftKey = `${selectedConfigScope}:${activeConfigSection}`;
@@ -243,7 +249,7 @@ function SettingsView({
           </div>
         </div>
         <nav className="settings-nav" aria-label="Settings sections">
-          {SETTINGS_SECTIONS.map((item) => (
+          {visibleSections.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -621,6 +627,10 @@ function SettingsView({
               </div>
             )}
           </div>
+        ) : null}
+
+        {activeSection === "remote" && remoteClient ? (
+          <RemoteSettingsSection client={remoteClient} />
         ) : null}
       </div>
     </section>

@@ -27,6 +27,9 @@ from open_somnia.remote.auth import (
     PairingCodeInvalid,
     PairingCodeUsed,
     PairingRateLimited,
+    PairSessionExpired,
+    PairSessionRateLimited,
+    PairSessionSecretInvalid,
     RegistrationRateLimited,
     RemoteAuth,
     UsernameRateLimited,
@@ -326,6 +329,8 @@ def create_relay_app(
     refresh_ttl_seconds: int = 30 * 24 * 60 * 60,
     pairing_ttl_seconds: int = 5 * 60,
     pairing_attempt_limit: int = 10,
+    pair_session_attempt_limit: int = 10,
+    pair_session_attempt_window_seconds: int = 60 * 60,
     login_attempt_limit: int = 10,
     login_username_attempt_limit: int = 10,
     login_username_attempt_window_seconds: int = 10 * 60,
@@ -344,9 +349,8 @@ def create_relay_app(
         password = os.environ.get("SOMNIA_ADMIN_PASSWORD", "")
         configured = {username: password} if password else {}
     metadata_store = AuthMetadataStore(database_url) if database_url else None
-    browser_origins = set(
-        allowed_origins or ["http://127.0.0.1:4173", "http://localhost:4173"]
-    )
+    web_origins = allowed_origins or ["http://127.0.0.1:4173", "http://localhost:4173"]
+    browser_origins = set(web_origins)
     auth = RemoteAuth(
         configured,
         secret_key=secret_key,
@@ -355,6 +359,8 @@ def create_relay_app(
         refresh_ttl_seconds=refresh_ttl_seconds,
         pairing_ttl_seconds=pairing_ttl_seconds,
         pairing_attempt_limit=pairing_attempt_limit,
+        pair_session_attempt_limit=pair_session_attempt_limit,
+        pair_session_attempt_window_seconds=pair_session_attempt_window_seconds,
         login_attempt_limit=login_attempt_limit,
         login_username_attempt_limit=login_username_attempt_limit,
         login_username_attempt_window_seconds=login_username_attempt_window_seconds,
@@ -372,6 +378,13 @@ def create_relay_app(
     async def health_endpoint(request: Request) -> JSONResponse:
         del request
         return JSONResponse({"status": "ready"})
+
+    async def info_endpoint(request: Request) -> JSONResponse:
+        del request
+        # Clients (e.g. Desktop pairing) use this to find the Web app origin;
+        # it differs from the Relay origin whenever the SPA is hosted separately.
+        web_origin = web_origins[0] if web_origins else None
+        return JSONResponse({"web_origin": web_origin})
 
     async def login_endpoint(request: Request) -> JSONResponse:
         body = await _json_body(request)
@@ -458,6 +471,46 @@ def create_relay_app(
             return JSONResponse({"error": str(exc)}, status_code=401)
         return JSONResponse(_serialize_device(device), status_code=201)
 
+    async def create_pair_session_endpoint(request: Request) -> JSONResponse:
+        source = request.client.host if request.client is not None else "unknown"
+        try:
+            session_id, secret, expires_at = auth.create_pair_session(source=source)
+        except PairSessionRateLimited as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=429,
+                headers={"Retry-After": str(auth.pair_session_attempt_window_seconds)},
+            )
+        return JSONResponse(
+            {"session_id": session_id, "secret": secret, "expires_at": expires_at},
+            status_code=201,
+        )
+
+    async def pair_session_status_endpoint(request: Request) -> JSONResponse:
+        session_id = str(request.path_params["session_id"])
+        secret = str(request.query_params.get("secret", ""))
+        try:
+            return JSONResponse(auth.pair_session_status(session_id, secret))
+        except PairSessionSecretInvalid as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+
+    async def approve_pair_session_endpoint(request: Request) -> JSONResponse:
+        account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
+        if account is None:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+        body = await _json_body(request)
+        device_name = str(body.get("device_name", "")).strip()
+        if not device_name or len(device_name) > 80:
+            return JSONResponse({"error": "Device name must be between 1 and 80 characters."}, status_code=400)
+        session_id = str(request.path_params["session_id"])
+        try:
+            auth.approve_pair_session(session_id, str(body.get("secret", "")), account.id, device_name)
+        except PairSessionSecretInvalid as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except PairSessionExpired as exc:
+            return JSONResponse({"error": str(exc)}, status_code=410)
+        return JSONResponse({"status": "approved"})
+
     async def list_devices_endpoint(request: Request) -> JSONResponse:
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
         if account is None:
@@ -504,12 +557,16 @@ def create_relay_app(
         ],
         routes=[
             Route("/health", health_endpoint),
+            Route("/api/info", info_endpoint),
             Route("/api/auth/login", login_endpoint, methods=["POST"]),
             Route("/api/auth/register", register_endpoint, methods=["POST"]),
             Route("/api/auth/refresh", refresh_endpoint, methods=["POST"]),
             Route("/api/auth/logout", logout_endpoint, methods=["POST"]),
             Route("/api/pairings", create_pairing_endpoint, methods=["POST"]),
             Route("/api/pairings/claim", claim_pairing_endpoint, methods=["POST"]),
+            Route("/api/pair-sessions", create_pair_session_endpoint, methods=["POST"]),
+            Route("/api/pair-sessions/{session_id}", pair_session_status_endpoint, methods=["GET"]),
+            Route("/api/pair-sessions/{session_id}/approve", approve_pair_session_endpoint, methods=["POST"]),
             Route("/api/devices", list_devices_endpoint, methods=["GET"]),
             Route("/api/devices/{device_id}", revoke_device_endpoint, methods=["DELETE"]),
             WebSocketRoute("/ws/connector/{device_id}", connector_endpoint),

@@ -36,6 +36,18 @@ class PairingRateLimited(ValueError):
     pass
 
 
+class PairSessionRateLimited(ValueError):
+    pass
+
+
+class PairSessionSecretInvalid(ValueError):
+    pass
+
+
+class PairSessionExpired(ValueError):
+    pass
+
+
 class LoginRateLimited(ValueError):
     pass
 
@@ -103,6 +115,13 @@ class _Pairing:
     used_at: float | None = None
 
 
+@dataclass(slots=True)
+class _PairSession:
+    secret_digest: str
+    expires_at: float
+    code: str | None = None
+
+
 class RemoteAuth:
     """Owns browser sessions, pairing grants, and Device identity metadata."""
 
@@ -117,6 +136,8 @@ class RemoteAuth:
         pairing_ttl_seconds: int = 5 * 60,
         pairing_attempt_limit: int = 10,
         pairing_attempt_window_seconds: int = 60,
+        pair_session_attempt_limit: int = 10,
+        pair_session_attempt_window_seconds: int = 60 * 60,
         login_attempt_limit: int = 10,
         login_attempt_window_seconds: int = 60,
         login_username_attempt_limit: int = 10,
@@ -125,6 +146,7 @@ class RemoteAuth:
         registration_attempt_window_seconds: int = 60 * 60,
         max_browser_sessions: int = 10_000,
         max_pairings: int = 10_000,
+        max_pair_sessions: int = 10_000,
         max_attempt_sources: int = 10_000,
         metadata_store: AuthMetadataStore | None = None,
     ) -> None:
@@ -134,6 +156,8 @@ class RemoteAuth:
         self.pairing_ttl_seconds = int(pairing_ttl_seconds)
         self.pairing_attempt_limit = int(pairing_attempt_limit)
         self.pairing_attempt_window_seconds = int(pairing_attempt_window_seconds)
+        self.pair_session_attempt_limit = int(pair_session_attempt_limit)
+        self.pair_session_attempt_window_seconds = int(pair_session_attempt_window_seconds)
         self.login_attempt_limit = int(login_attempt_limit)
         self.login_attempt_window_seconds = int(login_attempt_window_seconds)
         self.login_username_attempt_limit = int(login_username_attempt_limit)
@@ -142,6 +166,7 @@ class RemoteAuth:
         self.registration_attempt_window_seconds = int(registration_attempt_window_seconds)
         self.max_browser_sessions = max(1, int(max_browser_sessions))
         self.max_pairings = max(1, int(max_pairings))
+        self.max_pair_sessions = max(1, int(max_pair_sessions))
         self.max_attempt_sources = max(1, int(max_attempt_sources))
         self._secret_key = secret_key or secrets.token_bytes(32)
         self._password_hasher = PasswordHasher()
@@ -153,6 +178,8 @@ class RemoteAuth:
         self._sessions_by_refresh: dict[str, _BrowserSession] = {}
         self._pairings: dict[str, _Pairing] = {}
         self._pairing_attempts: dict[str, list[float]] = {}
+        self._pair_sessions: dict[str, _PairSession] = {}
+        self._pair_session_attempts: dict[str, list[float]] = {}
         self._login_attempts: dict[str, list[float]] = {}
         self._login_failures: dict[str, list[float]] = {}
         self._registration_attempts: dict[str, list[float]] = {}
@@ -363,6 +390,57 @@ class RemoteAuth:
             self._devices[device.id] = device
             return device
 
+    def create_pair_session(self, *, source: str) -> tuple[str, str, float]:
+        """Create an in-memory device-flow pair session: (session_id, secret, expires_at)."""
+        session_id = uuid.uuid4().hex
+        secret = _token()
+        with self._lock:
+            now = self._clock()
+            recent = self._recent_attempts(
+                self._pair_session_attempts,
+                source,
+                now=now,
+                window_seconds=self.pair_session_attempt_window_seconds,
+            )
+            if len(recent) >= self.pair_session_attempt_limit:
+                raise PairSessionRateLimited("Too many pair session requests. Try again later.")
+            recent.append(now)
+            self._prune_pair_sessions(now)
+            while len(self._pair_sessions) >= self.max_pair_sessions:
+                self._pair_sessions.pop(next(iter(self._pair_sessions)))
+            self._pair_sessions[session_id] = _PairSession(
+                secret_digest=self._digest(secret),
+                expires_at=now + self.pairing_ttl_seconds,
+            )
+            return session_id, secret, self._pair_sessions[session_id].expires_at
+
+    def pair_session_status(self, session_id: str, secret: str) -> dict[str, str]:
+        """Return {"status": pending|approved|expired}; an approved code is returned exactly once."""
+        with self._lock:
+            session = self._pair_sessions.get(str(session_id))
+            if session is None or session.expires_at <= self._clock():
+                return {"status": "expired"}
+            if not hmac.compare_digest(session.secret_digest, self._digest(str(secret))):
+                raise PairSessionSecretInvalid("Pair session secret is invalid.")
+            if session.code is None:
+                return {"status": "pending"}
+            code = session.code
+            self._pair_sessions.pop(str(session_id), None)
+            return {"status": "approved", "code": code}
+
+    def approve_pair_session(self, session_id: str, secret: str, account_id: str, device_name: str) -> str:
+        """Bind a fresh pairing code to the session and mark it approved. Returns the code."""
+        with self._lock:
+            session = self._pair_sessions.get(str(session_id))
+            if session is None or session.expires_at <= self._clock():
+                self._pair_sessions.pop(str(session_id), None)
+                raise PairSessionExpired("Pair session has expired.")
+            if not hmac.compare_digest(session.secret_digest, self._digest(str(secret))):
+                raise PairSessionSecretInvalid("Pair session secret is invalid.")
+            code, _ = self.create_pairing(account_id, device_name)
+            session.code = code
+            return code
+
     def device(self, device_id: str) -> Device | None:
         with self._lock:
             return self._devices.get(str(device_id))
@@ -427,6 +505,11 @@ class RemoteAuth:
         for digest, pairing in list(self._pairings.items()):
             if pairing.expires_at <= now:
                 self._pairings.pop(digest, None)
+
+    def _prune_pair_sessions(self, now: float) -> None:
+        for session_id, session in list(self._pair_sessions.items()):
+            if session.expires_at <= now:
+                self._pair_sessions.pop(session_id, None)
 
     def _recent_attempts(
         self,

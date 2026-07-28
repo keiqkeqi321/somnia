@@ -350,3 +350,15 @@ export interface ConversationPendingTurn {
   userText: string;
   placeholderText: string;
 }
+
+export interface RemoteDeviceStatus {
+  paired: boolean;
+  device_id: string;
+  device_name: string;
+  relay_url: string;
+  username: string;
+  enabled: boolean;
+  connector_running: boolean;
+  pair_pending: boolean;
+  last_error: string;
+}

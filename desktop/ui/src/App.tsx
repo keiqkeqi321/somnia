@@ -37,7 +37,7 @@ import {
 } from "./lib/messages";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
-import { normalizeBaseUrl } from "./lib/sidecar";
+import { normalizeBaseUrl, SidecarClient } from "./lib/sidecar";
 import {
   createConversationState,
   readSessionPayload,
@@ -58,6 +58,7 @@ import { useWorkspaceImageSource } from "./lib/workspace-image";
 import { useRemoteAccess } from "./lib/use-remote-access";
 import RemoteConnectPage from "./components/RemoteConnectPage";
 import RemoteLoginPage from "./components/RemoteLoginPage";
+import RemotePairPage from "./components/RemotePairPage";
 import RemoteRegisterPage from "./components/RemoteRegisterPage";
 import type {
   AgentSession,
@@ -871,6 +872,11 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   async function restoreRemoteSession() {
     const restored = await remoteAccess.restoreSession();
     if (!restored) {
+      return;
+    }
+    // A `#/pair` deep link must not be overridden by the remembered
+    // device/project auto-reconnect — the approval page is why the tab exists.
+    if (parseRemoteRoute(window.location.hash) === "pair") {
       return;
     }
     const target = readRemoteLastTarget();
@@ -3517,7 +3523,13 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       );
     }
     if (!remoteAccess.authenticated) {
+      // A `#/pair` deep link stays on its hash while signed out: the sign-in
+      // form renders in place and the router resolves back to the pair page
+      // once authenticated — no return-URL bookkeeping needed.
       return remoteRoute === "register" ? <RemoteRegisterPage access={remoteAccess} /> : <RemoteLoginPage access={remoteAccess} />;
+    }
+    if (remoteRoute === "pair") {
+      return <RemotePairPage relayUrl={remoteAccess.relayUrl} />;
     }
     return (
       <RemoteConnectPage
@@ -3622,6 +3634,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
           selectedVisionModel={selectedVisionModel}
           onSetVisionProviderDraft={(providerName) => void handleVisionProviderChange(providerName)}
           onSetVisionModelDraft={setSelectedVisionModel}
+          remoteClient={remoteMode || !clientRef.current ? null : new SidecarClient(clientRef.current.baseUrl)}
         />
       ) : null}
       {providerSetupOpen ? (

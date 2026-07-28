@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 import uuid
 
+from desktop.backend.remote_device import RemoteDeviceManager, RemoteNotPairedError
 from desktop.backend.ipc import (
     build_websocket_close_frame,
     build_websocket_pong_frame,
@@ -380,6 +381,11 @@ class SidecarServer:
         self._closed = False
         self._server_thread: Thread | None = None
         self.httpd = _SidecarHTTPServer((host, port), _SidecarRequestHandler, sidecar=self)
+        self.remote_device = RemoteDeviceManager(
+            workspace_root=self.settings.workspace_root,
+            data_dir=self.settings.storage.data_dir,
+            sidecar_base_url=self.base_url,
+        )
 
     @classmethod
     def from_settings(cls, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765) -> "SidecarServer":
@@ -520,6 +526,7 @@ class SidecarServer:
         return resolved, media_type
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self.remote_device.autostart_if_enabled()
         self.httpd.serve_forever(poll_interval=poll_interval)
 
     def start_background(self) -> Thread:
@@ -552,6 +559,10 @@ class SidecarServer:
             self._closed = True
             clients = list(self._clients.values())
             self._clients = {}
+        try:
+            self.remote_device.shutdown()
+        except Exception:
+            pass
         for client in clients:
             try:
                 client.queue.put_nowait(None)
@@ -832,6 +843,39 @@ class SidecarServer:
         }
         self.broadcast_event(make_sidecar_event("execution_mode_updated", payload=payload))
         return payload
+
+    def remote_status(self) -> dict[str, Any]:
+        return self.remote_device.status()
+
+    def remote_pair_begin(self, *, relay_url: str) -> dict[str, Any]:
+        try:
+            return self.remote_device.pair_begin(relay_url=relay_url)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except RuntimeError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, str(exc)) from exc
+
+    def remote_pair_cancel(self) -> dict[str, Any]:
+        return self.remote_device.pair_cancel()
+
+    def remote_enable(self) -> dict[str, Any]:
+        try:
+            return self.remote_device.enable()
+        except RemoteNotPairedError as exc:
+            raise SidecarAPIError(HTTPStatus.CONFLICT, str(exc)) from exc
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except RuntimeError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_GATEWAY, str(exc)) from exc
+
+    def remote_disable(self) -> dict[str, Any]:
+        return self.remote_device.disable()
+
+    def remote_unpair(self) -> dict[str, Any]:
+        try:
+            return self.remote_device.unpair()
+        except RuntimeError as exc:
+            raise SidecarAPIError(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc)) from exc
 
     def start_turn(self, session_id: str, user_input: str | dict[str, Any]) -> dict[str, Any]:
         try:
@@ -1217,6 +1261,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
         if path_parts == ["tasks"]:
             session_id = (query.get("session_id") or [None])[0]
             return {"tasks": self.sidecar.list_tasks(session_id)}
+        if path_parts == ["remote", "status"]:
+            return self.sidecar.remote_status()
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")
 
     def _handle_workspace_image(self, parsed) -> None:
@@ -1302,6 +1348,19 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if not mode:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "mode is required.")
             return self.sidecar.set_execution_mode(mode), HTTPStatus.OK
+        if path_parts == ["remote", "pair-begin"]:
+            return (
+                self.sidecar.remote_pair_begin(relay_url=str(body.get("relay_url", "")).strip()),
+                HTTPStatus.OK,
+            )
+        if path_parts == ["remote", "pair-cancel"]:
+            return self.sidecar.remote_pair_cancel(), HTTPStatus.OK
+        if path_parts == ["remote", "enable"]:
+            return self.sidecar.remote_enable(), HTTPStatus.OK
+        if path_parts == ["remote", "disable"]:
+            return self.sidecar.remote_disable(), HTTPStatus.OK
+        if path_parts == ["remote", "unpair"]:
+            return self.sidecar.remote_unpair(), HTTPStatus.OK
         if len(path_parts) == 4 and path_parts[0] == "mcp" and path_parts[1] == "servers" and path_parts[3] == "debug":
             return self.sidecar.debug_mcp_server(path_parts[2]), HTTPStatus.OK
         if len(path_parts) == 4 and path_parts[0] == "mcp" and path_parts[1] == "servers" and path_parts[3] == "enabled":

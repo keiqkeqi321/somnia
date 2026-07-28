@@ -6,6 +6,7 @@ import type {
   McpServerSummary,
   ProviderDescriptor,
   ProviderPresetDescriptor,
+  RemoteDeviceStatus,
   SaveSettingsConfigSectionResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
@@ -381,6 +382,60 @@ export class SidecarClient {
     const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
     const payload = await parseResponse<{ tasks: TaskGraphItem[] }>(await fetch(`${this.baseUrl}/tasks${query}`));
     return payload.tasks;
+  }
+
+  async getRemoteStatus(): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(await fetch(`${this.baseUrl}/remote/status`));
+  }
+
+  async pairBeginRemoteDevice(relayUrl: string): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(
+      await fetch(`${this.baseUrl}/remote/pair-begin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relay_url: relayUrl }),
+      }),
+    );
+  }
+
+  async pairCancelRemoteDevice(): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(
+      await fetch(`${this.baseUrl}/remote/pair-cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
+  async enableRemoteDevice(): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(
+      await fetch(`${this.baseUrl}/remote/enable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
+  async disableRemoteDevice(): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(
+      await fetch(`${this.baseUrl}/remote/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
+  }
+
+  async unpairRemoteDevice(): Promise<RemoteDeviceStatus> {
+    return parseResponse<RemoteDeviceStatus>(
+      await fetch(`${this.baseUrl}/remote/unpair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+    );
   }
 }
 

@@ -13,8 +13,8 @@ class ProviderPresetTests(unittest.TestCase):
         self.assertIn("glm-coding-plan", preset_ids)
         self.assertIn("bailian-token-plan", preset_ids)
         self.assertIn("mimo-token-plan", preset_ids)
-        self.assertIn("kimi-coding-plan", preset_ids)
-        self.assertIn("minimax-coding-plan", preset_ids)
+        self.assertIn("kimi-code", preset_ids)
+        self.assertIn("minimax-token-plan", preset_ids)
         self.assertIn("openai", preset_ids)
         self.assertIn("anthropic", preset_ids)
 

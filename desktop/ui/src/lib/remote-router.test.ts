@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRemoteRoute, remoteRouteHash, resolveRemoteRoute } from "./remote-router";
+import { parsePairLink, parseRemoteRoute, remoteRouteHash, resolveRemoteRoute } from "./remote-router";
 
 describe("remote hash router", () => {
   it("parses known routes and rejects empty/unknown hashes", () => {
@@ -8,6 +8,7 @@ describe("remote hash router", () => {
     expect(parseRemoteRoute("#/register")).toBe("register");
     expect(parseRemoteRoute("#/connect")).toBe("connect");
     expect(parseRemoteRoute("#/workspace")).toBe("workspace");
+    expect(parseRemoteRoute("#/pair")).toBe("pair");
     expect(parseRemoteRoute("")).toBeNull();
     expect(parseRemoteRoute("#")).toBeNull();
     expect(parseRemoteRoute("#/")).toBeNull();
@@ -15,11 +16,22 @@ describe("remote hash router", () => {
     expect(parseRemoteRoute("#/login/extra")).toBeNull();
   });
 
+  it("parses the pair deep link with its in-hash query", () => {
+    expect(parseRemoteRoute("#/pair?session=s-1&secret=abc")).toBe("pair");
+    expect(parsePairLink("#/pair?session=s-1&secret=abc")).toEqual({ sessionId: "s-1", secret: "abc" });
+    expect(parsePairLink("#/pair?secret=abc&session=s-1")).toEqual({ sessionId: "s-1", secret: "abc" });
+    expect(parsePairLink("#/pair")).toBeNull();
+    expect(parsePairLink("#/pair?session=s-1")).toBeNull();
+    expect(parsePairLink("#/pair?secret=abc")).toBeNull();
+    expect(parsePairLink("#/connect")).toBeNull();
+  });
+
   it("formats route hashes", () => {
     expect(remoteRouteHash("login")).toBe("#/login");
     expect(remoteRouteHash("register")).toBe("#/register");
     expect(remoteRouteHash("connect")).toBe("#/connect");
     expect(remoteRouteHash("workspace")).toBe("#/workspace");
+    expect(remoteRouteHash("pair")).toBe("#/pair");
   });
 
   it("resolves the route from auth/connection state", () => {
@@ -44,5 +56,12 @@ describe("remote hash router", () => {
     expect(resolveRemoteRoute({ authenticated: true, connected: false, hash: "#/login" })).toBe("connect");
     expect(resolveRemoteRoute({ authenticated: true, connected: false, hash: "#/register" })).toBe("connect");
     expect(resolveRemoteRoute({ authenticated: true, connected: true, hash: "#/register" })).toBe("workspace");
+  });
+
+  it("keeps the pair deep link legal while signed out and after sign-in", () => {
+    expect(resolveRemoteRoute({ authenticated: false, connected: false, hash: "#/pair?session=s-1&secret=abc" })).toBe("pair");
+    expect(resolveRemoteRoute({ authenticated: true, connected: false, hash: "#/pair?session=s-1&secret=abc" })).toBe("pair");
+    // An active workspace connection still wins over the deep link.
+    expect(resolveRemoteRoute({ authenticated: true, connected: true, hash: "#/pair?session=s-1&secret=abc" })).toBe("workspace");
   });
 });

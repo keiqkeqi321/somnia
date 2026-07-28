@@ -17,6 +17,12 @@ export interface PairingGrant {
   expires_at: number;
 }
 
+/** Device-flow pair session as reported by `GET /api/pair-sessions/{id}`. */
+export interface PairSessionInfo {
+  status: "pending" | "approved" | "expired";
+  code?: string;
+}
+
 type Fetcher = typeof fetch;
 
 /** Error carrying the Relay HTTP status so callers can map failures (e.g. 409 vs 429 on register). */
@@ -65,6 +71,20 @@ export class RemoteRelayClient {
       method: "POST",
       body: JSON.stringify({ name }),
     }, true) as Promise<PairingGrant>;
+  }
+
+  /** Device-flow status check; unauthenticated — the secret in the query authorizes the read. */
+  getPairSession(sessionId: string, secret: string): Promise<PairSessionInfo> {
+    const query = new URLSearchParams({ secret });
+    return this.request(`/api/pair-sessions/${encodeURIComponent(sessionId)}?${query}`, {}, false) as Promise<PairSessionInfo>;
+  }
+
+  /** Device-flow approval from the signed-in browser session. */
+  async approvePairSession(sessionId: string, secret: string, deviceName: string): Promise<void> {
+    await this.request(`/api/pair-sessions/${encodeURIComponent(sessionId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ secret, device_name: deviceName }),
+    }, true);
   }
 
   async revokeDevice(deviceId: string): Promise<void> {
