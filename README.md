@@ -130,6 +130,60 @@ Somnia Desktop 是 Somnia 的桌面端应用，安装即用。它不是一套独
 - 工作区级配置编辑，包括 Provider、runtime、MCP、Hooks 和 system prompt。
 - 会话压缩、janitor、归档会话、工具日志、team/task 状态查看。
 
+## 远程访问（Remote）
+
+Somnia 支持从浏览器远程控制运行在其他机器上的 Runtime。整体链路：
+
+```
+浏览器 (Web UI) ⇄ Relay（云端中转/认证） ⇄ Connector（被控机器） ⇄ 本地 Runtime
+```
+
+Relay 只做认证、设备管理和转发，不落地任何会话内容；所有会话、配置和文件都留在被控机器上。
+
+### 被控端（CLI）
+
+被控机器只需安装 `somnia` 包（自带 `somnia-connector` 命令），一次配对、长期有效：
+
+```bash
+# 1. 配对（配对码在 Web 端 #/connect 的「添加设备」对话框中生成，5 分钟内有效）
+somnia-connector pair --relay https://<relay 地址> --code <配对码>
+
+# 2. 注册要暴露的项目（可注册多个）
+somnia-connector register --project my-proj --path /path/to/project --name "我的项目"
+somnia-connector list-projects        # 查看已注册项目
+somnia-connector unregister --project my-proj
+
+# 3. 常驻运行（外连 Relay，托管模式自动拉起各项目 Runtime）
+somnia-connector run
+```
+
+配对身份保存在 `~/.open_somnia/remote/device-identity.json`，之后重启 `somnia-connector run` 无需重新配对。`--sidecar <url>` 是遗留模式，用于桥接一个已在运行的 sidecar。
+
+### 控制端（浏览器）
+
+1. 打开 `https://<relay 地址>/?remote=1`（部署在域名下直接访问根路径即可）；
+2. 注册/登录账号；
+3. 在连接页选择在线设备和项目，点击连接即进入与桌面端一致的工作区（会话、工具调用、MCP、Hooks 设置等能力一致）；
+4. 添加新设备：连接页设备选择框旁的「+」按钮生成配对码。
+
+### 被控端（Desktop 一键）
+
+Desktop 的 **Settings → 远程控制** 可以一键把本机变成被控设备：填 Relay 地址点「配对并启用」，浏览器里确认后自动上线（device-flow，无需复制配对码），Desktop 打开的所有项目都会暴露给远程。
+
+### 自建 Relay
+
+```bash
+SOMNIA_ADMIN_USERNAME=admin \
+SOMNIA_ADMIN_PASSWORD=<引导密码> \
+SOMNIA_RELAY_DATABASE_URL=sqlite:////var/lib/somnia/relay.db \
+somnia-relay --host 127.0.0.1 --port 8787 \
+    --web-origin https://<对外域名> --secure-cookies
+```
+
+- 账号体系开放注册（`--disable-registration` 可关闭）；引导账号仅首次生效。
+- 生产环境需 HTTPS（非本机 HTTP 会被拒绝），建议 nginx 同源反代 Web 静态页与 `/api`、`/ws`。
+- 仓库自带一键部署脚本：`scripts/deploy-remote.sh`（详见脚本头部注释和 `.env.example`）。
+
 ## CLI 用法
 
 ```bash
