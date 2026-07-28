@@ -58,6 +58,7 @@ import { useWorkspaceImageSource } from "./lib/workspace-image";
 import { useRemoteAccess } from "./lib/use-remote-access";
 import RemoteConnectPage from "./components/RemoteConnectPage";
 import RemoteLoginPage from "./components/RemoteLoginPage";
+import RemoteRegisterPage from "./components/RemoteRegisterPage";
 import type {
   AgentSession,
   ContextWindowUsage,
@@ -353,8 +354,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const [remoteRestorePending, setRemoteRestorePending] = useState(remoteMode);
   const remoteRestoreAttemptedRef = useRef(false);
   const remoteAccess = useRemoteAccess(readRemoteRelayDefault());
-  const remoteRoute = resolveRemoteRoute({ authenticated: remoteAccess.authenticated, connected: remoteConnected });
   const remoteRouteHash = useRemoteRouteHash();
+  const remoteRoute = resolveRemoteRoute({ authenticated: remoteAccess.authenticated, connected: remoteConnected, hash: remoteRouteHash });
 
   const clientRef = useRef<SomniaClient | null>(null);
   const projectClientsRef = useRef<Record<string, SomniaClient>>({});
@@ -3516,7 +3517,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       );
     }
     if (!remoteAccess.authenticated) {
-      return <RemoteLoginPage access={remoteAccess} />;
+      return remoteRoute === "register" ? <RemoteRegisterPage access={remoteAccess} /> : <RemoteLoginPage access={remoteAccess} />;
     }
     return (
       <RemoteConnectPage

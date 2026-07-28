@@ -184,6 +184,13 @@ const translations = {
     "remote.connectionFailed": "Remote connection failed.",
     "remote.resynced": "Remote state resynchronized.",
     "remote.restoring": "Restoring remote session…",
+    "remote.confirmPassword": "Confirm password",
+    "remote.signUp": "Create account",
+    "remote.registerNotice": "Create a new Somnia Remote account.",
+    "remote.noAccountRegister": "No account yet? Register",
+    "remote.haveAccountSignIn": "Already have an account? Sign in",
+    "remote.passwordTooShort": "Password must be at least 8 characters.",
+    "remote.passwordMismatch": "Passwords do not match.",
 
     /* ── Conversation panel ── */
     "conversation.newConversation": "New conversation",
@@ -556,6 +563,13 @@ const translations = {
     "remote.connectionFailed": "远程连接失败。",
     "remote.resynced": "远程状态已重新同步。",
     "remote.restoring": "正在恢复远程会话…",
+    "remote.confirmPassword": "确认密码",
+    "remote.signUp": "创建账号",
+    "remote.registerNotice": "创建一个新的 Somnia 远程账号。",
+    "remote.noAccountRegister": "还没有账号？注册",
+    "remote.haveAccountSignIn": "已有账号？登录",
+    "remote.passwordTooShort": "密码长度至少为 8 个字符。",
+    "remote.passwordMismatch": "两次输入的密码不一致。",
 
     /* ── Conversation panel ── */
     "conversation.newConversation": "新会话",

@@ -115,3 +115,52 @@ test("hosted browser signs in through the remote routes and streams a real Runti
     })));
   expect(overflowing).toEqual([]);
 });
+
+test("registering a new account auto-signs in and lands on the device picker; duplicates are rejected", async ({ page }, testInfo) => {
+  // The fixture Relay is shared across viewport projects and registration is
+  // rate-limited per source, so each project registers exactly one new
+  // account and reuses that same name for the duplicate-username check.
+  const username = `e2e-reg-${testInfo.project.name}-${Math.random().toString(36).slice(2, 8)}`;
+
+  await page.goto("/?remote=1&relay=ws%3A%2F%2F127.0.0.1%3A18787");
+  await expect(page).toHaveURL(/#\/login$/);
+
+  // `#/login` links to `#/register`; both are legal while signed out.
+  await page.getByRole("link", { name: "No account yet? Register" }).click();
+  await expect(page).toHaveURL(/#\/register$/);
+
+  // Client-side validation: mismatched/short passwords never reach the Relay.
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Password", { exact: true }).fill("e2e-remote-password");
+  await page.getByLabel("Confirm password").fill("e2e-remote-password-2");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.locator(".remote-notice")).toContainText("Passwords do not match.");
+  await page.getByLabel("Password", { exact: true }).fill("short");
+  await page.getByLabel("Confirm password").fill("short");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.locator(".remote-notice")).toContainText("Password must be at least 8 characters.");
+
+  // Happy path: register → auto sign-in → `#/connect` with the device picker.
+  await page.getByLabel("Password", { exact: true }).fill("e2e-remote-password");
+  await page.getByLabel("Confirm password").fill("e2e-remote-password");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page).toHaveURL(/#\/connect$/);
+  await expect(page.getByLabel("Device", { exact: true })).toBeVisible();
+
+  // Duplicate username (case-insensitive) is rejected with a 409 notice. The
+  // Relay counts every registration attempt toward the 5/hour per-source
+  // limit, so only one viewport project spends the extra attempt (4 projects
+  // × 1 register + 1 duplicate = 5 attempts, exactly at the limit).
+  if (testInfo.project.name === "phone") {
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page).toHaveURL(/#\/login$/);
+    await page.getByRole("link", { name: "No account yet? Register" }).click();
+    await expect(page).toHaveURL(/#\/register$/);
+    await page.getByLabel("Username").fill(username.toUpperCase());
+    await page.getByLabel("Password", { exact: true }).fill("e2e-remote-password");
+    await page.getByLabel("Confirm password").fill("e2e-remote-password");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.locator(".remote-notice")).toContainText("Username is already taken.");
+    await expect(page).toHaveURL(/#\/register$/);
+  }
+});

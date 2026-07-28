@@ -162,6 +162,7 @@ Architecture invariants:
 - A Project folder is registered locally. Remote clients may select and operate registered Projects but may not browse the computer filesystem or register an arbitrary path.
 - Desktop and Web use a shared Somnia Connection seam with direct and remote adapters. Conversation state reduction, event interpretation, and message rendering are shared rather than reimplemented.
 - Desktop and Remote Web converge on a single UI tree (`App.tsx`); `RemoteTracerApp` is retired. Remote mode hides Project creation/removal and local-only chrome, and selects Projects only from the paired Device's registered list (issue 14).
+- Self-service account registration is open (issue 15), guarded by per-source registration limits, per-username login throttling that never permanently locks an account, and credential policy; a Relay may opt out with `--disable-registration`. Every registered account is an ordinary isolated tenant; env-provisioned administrators are bootstrap-only.
 - Protocol envelopes carry a protocol version, Device and Project identity, optional Session and Turn identity, request identity, stream epoch, sequence number, message type, and payload.
 - Mutating commands require a unique request identity. The Connector maintains a bounded deduplication window and returns the original result for safe retries.
 - The Connector assigns ordered event sequence numbers and retains a bounded in-memory event ring for active streams. The browser acknowledges the highest contiguous sequence it has applied.
@@ -193,7 +194,7 @@ Architecture invariants:
 
 ## Out of Scope
 
-- Multi-user registration, organizations, roles, sharing, and collaboration between different accounts.
+- Multi-user organizations, roles, sharing, and collaboration between different accounts. (Open self-service registration is supported from issue 15 onward; every account remains an isolated tenant.)
 - Cloud persistence or synchronization of Session history, Session search, archived state, drafts, or prompt history.
 - End-to-end encryption that prevents the Relay process from seeing transient plaintext.
 - Offline command queues and delayed execution while a Device is disconnected.

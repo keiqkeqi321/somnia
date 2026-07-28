@@ -21,12 +21,16 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from open_somnia.remote.auth import (
+    CredentialPolicyError,
     LoginRateLimited,
     PairingCodeExpired,
     PairingCodeInvalid,
     PairingCodeUsed,
     PairingRateLimited,
+    RegistrationRateLimited,
     RemoteAuth,
+    UsernameRateLimited,
+    UsernameTaken,
     decode_bytes,
     device_challenge_payload,
 )
@@ -323,6 +327,11 @@ def create_relay_app(
     pairing_ttl_seconds: int = 5 * 60,
     pairing_attempt_limit: int = 10,
     login_attempt_limit: int = 10,
+    login_username_attempt_limit: int = 10,
+    login_username_attempt_window_seconds: int = 10 * 60,
+    registration_enabled: bool = True,
+    registration_attempt_limit: int = 5,
+    registration_attempt_window_seconds: int = 60 * 60,
     secure_cookies: bool = False,
     allowed_origins: list[str] | None = None,
     database_url: str | None = None,
@@ -347,6 +356,10 @@ def create_relay_app(
         pairing_ttl_seconds=pairing_ttl_seconds,
         pairing_attempt_limit=pairing_attempt_limit,
         login_attempt_limit=login_attempt_limit,
+        login_username_attempt_limit=login_username_attempt_limit,
+        login_username_attempt_window_seconds=login_username_attempt_window_seconds,
+        registration_attempt_limit=registration_attempt_limit,
+        registration_attempt_window_seconds=registration_attempt_window_seconds,
         metadata_store=metadata_store,
     )
     hub = RelayHub(
@@ -367,9 +380,36 @@ def create_relay_app(
             account = auth.authenticate_password(body.get("username", ""), body.get("password", ""), source=source)
         except LoginRateLimited as exc:
             return JSONResponse({"error": str(exc)}, status_code=429, headers={"Retry-After": "60"})
+        except UsernameRateLimited as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=429,
+                headers={"Retry-After": str(auth.login_username_attempt_window_seconds)},
+            )
         if account is None:
             return JSONResponse({"error": "Invalid username or password."}, status_code=401)
         response = JSONResponse({"username": account.username})
+        _set_browser_cookies(response, auth.issue_browser_tokens(account.id), auth, secure=secure_cookies)
+        return response
+
+    async def register_endpoint(request: Request) -> JSONResponse:
+        if not registration_enabled:
+            return JSONResponse({"error": "Registration is disabled on this Relay."}, status_code=403)
+        body = await _json_body(request)
+        source = request.client.host if request.client is not None else "unknown"
+        try:
+            account = auth.register_account(body.get("username", ""), body.get("password", ""), source=source)
+        except RegistrationRateLimited as exc:
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=429,
+                headers={"Retry-After": str(auth.registration_attempt_window_seconds)},
+            )
+        except UsernameTaken as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except CredentialPolicyError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        response = JSONResponse({"username": account.username, "account_id": account.id}, status_code=201)
         _set_browser_cookies(response, auth.issue_browser_tokens(account.id), auth, secure=secure_cookies)
         return response
 
@@ -465,6 +505,7 @@ def create_relay_app(
         routes=[
             Route("/health", health_endpoint),
             Route("/api/auth/login", login_endpoint, methods=["POST"]),
+            Route("/api/auth/register", register_endpoint, methods=["POST"]),
             Route("/api/auth/refresh", refresh_endpoint, methods=["POST"]),
             Route("/api/auth/logout", logout_endpoint, methods=["POST"]),
             Route("/api/pairings", create_pairing_endpoint, methods=["POST"]),

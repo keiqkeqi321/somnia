@@ -154,6 +154,17 @@ body {
   border: 0;
 }
 
+.remote-login .remote-login-link {
+  justify-self: center;
+  color: #8fb8ff;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.remote-login .remote-login-link:hover {
+  text-decoration: underline;
+}
+
 .remote-shell button {
   min-height: 34px;
   border: 1px solid #465158;

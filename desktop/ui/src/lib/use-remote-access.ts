@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 
-import { RemoteRelayClient, type RemoteDevice } from "./remote-relay-client";
+import { RemoteRelayClient, RemoteRelayError, type RemoteDevice } from "./remote-relay-client";
 
 export function useRemoteAccess(initialRelayUrl: string) {
   const [relayUrl, setRelayUrl] = useState(initialRelayUrl);
@@ -37,6 +37,29 @@ export function useRemoteAccess(initialRelayUrl: string) {
       setNotice("Signed in.");
     } catch (error) {
       setNotice(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Self-service registration: the Relay issues the same cookie session as
+   * login on success, so the flow ends authenticated exactly like `signIn`.
+   */
+  async function signUp(): Promise<void> {
+    setBusy(true);
+    try {
+      const client = new RemoteRelayClient(relayUrl);
+      await client.register(username.trim(), password);
+      const availableDevices = await client.listDevices();
+      clientRef.current = client;
+      applyDevices(availableDevices);
+      selectFirstActiveDevice(availableDevices);
+      setAuthenticated(true);
+      setPassword("");
+      setNotice("Account created. Signed in.");
+    } catch (error) {
+      setNotice(formatRegisterError(error));
     } finally {
       setBusy(false);
     }
@@ -154,6 +177,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
     setUsername,
     signIn,
     signOut,
+    signUp,
     username,
     verifyAccess,
   };
@@ -161,4 +185,26 @@ export function useRemoteAccess(initialRelayUrl: string) {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Maps registration failures to notice copy. 400 keeps the backend message
+ * (it names the credential-policy violation); the rest get stable text.
+ */
+function formatRegisterError(error: unknown): string {
+  if (error instanceof RemoteRelayError) {
+    if (error.status === 400) {
+      return error.message;
+    }
+    if (error.status === 403) {
+      return "Registration is disabled on this Relay.";
+    }
+    if (error.status === 409) {
+      return "Username is already taken.";
+    }
+    if (error.status === 429) {
+      return "Too many registration attempts. Try again later.";
+    }
+  }
+  return formatError(error);
 }

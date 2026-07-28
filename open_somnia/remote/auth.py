@@ -4,6 +4,7 @@ import base64
 from dataclasses import dataclass
 import hashlib
 import hmac
+import re
 import secrets
 from threading import RLock
 import time
@@ -37,6 +38,25 @@ class PairingRateLimited(ValueError):
 
 class LoginRateLimited(ValueError):
     pass
+
+
+class UsernameRateLimited(ValueError):
+    pass
+
+
+class RegistrationRateLimited(ValueError):
+    pass
+
+
+class UsernameTaken(ValueError):
+    pass
+
+
+class CredentialPolicyError(ValueError):
+    pass
+
+
+USERNAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]{3,32}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +119,10 @@ class RemoteAuth:
         pairing_attempt_window_seconds: int = 60,
         login_attempt_limit: int = 10,
         login_attempt_window_seconds: int = 60,
+        login_username_attempt_limit: int = 10,
+        login_username_attempt_window_seconds: int = 10 * 60,
+        registration_attempt_limit: int = 5,
+        registration_attempt_window_seconds: int = 60 * 60,
         max_browser_sessions: int = 10_000,
         max_pairings: int = 10_000,
         max_attempt_sources: int = 10_000,
@@ -112,6 +136,10 @@ class RemoteAuth:
         self.pairing_attempt_window_seconds = int(pairing_attempt_window_seconds)
         self.login_attempt_limit = int(login_attempt_limit)
         self.login_attempt_window_seconds = int(login_attempt_window_seconds)
+        self.login_username_attempt_limit = int(login_username_attempt_limit)
+        self.login_username_attempt_window_seconds = int(login_username_attempt_window_seconds)
+        self.registration_attempt_limit = int(registration_attempt_limit)
+        self.registration_attempt_window_seconds = int(registration_attempt_window_seconds)
         self.max_browser_sessions = max(1, int(max_browser_sessions))
         self.max_pairings = max(1, int(max_pairings))
         self.max_attempt_sources = max(1, int(max_attempt_sources))
@@ -126,6 +154,8 @@ class RemoteAuth:
         self._pairings: dict[str, _Pairing] = {}
         self._pairing_attempts: dict[str, list[float]] = {}
         self._login_attempts: dict[str, list[float]] = {}
+        self._login_failures: dict[str, list[float]] = {}
+        self._registration_attempts: dict[str, list[float]] = {}
         self._devices: dict[str, Device] = {}
         if metadata_store is not None:
             for stored in metadata_store.load_accounts():
@@ -145,6 +175,7 @@ class RemoteAuth:
             self._add_account(username, password)
 
     def authenticate_password(self, username: str, password: str, *, source: str) -> Account | None:
+        normalized = str(username).strip().casefold()
         with self._lock:
             now = self._clock()
             recent = self._recent_attempts(
@@ -155,19 +186,71 @@ class RemoteAuth:
             )
             if len(recent) >= self.login_attempt_limit:
                 raise LoginRateLimited("Too many login attempts. Try again later.")
+            failures = self._recent_attempts(
+                self._login_failures,
+                normalized,
+                now=now,
+                window_seconds=self.login_username_attempt_window_seconds,
+            )
+            if len(failures) >= self.login_username_attempt_limit:
+                raise UsernameRateLimited("Too many login attempts. Try again later.")
             recent.append(now)
-            account = self._accounts_by_username.get(str(username).strip().casefold())
+            account = self._accounts_by_username.get(normalized)
+        verified = False
         if account is None:
             self._password_hasher.hash(str(password))
-            return None
-        try:
-            if not self._password_hasher.verify(account.password_hash, str(password)):
-                return None
-        except (VerifyMismatchError, InvalidHashError):
-            return None
+        else:
+            try:
+                verified = bool(self._password_hasher.verify(account.password_hash, str(password)))
+            except (VerifyMismatchError, InvalidHashError):
+                verified = False
         with self._lock:
-            self._login_attempts.pop(source, None)
-        return account
+            if verified:
+                self._login_attempts.pop(source, None)
+                self._login_failures.pop(normalized, None)
+            else:
+                failures = self._recent_attempts(
+                    self._login_failures,
+                    normalized,
+                    now=now,
+                    window_seconds=self.login_username_attempt_window_seconds,
+                )
+                failures.append(now)
+        return account if verified else None
+
+    def register_account(self, username: str, password: str, *, source: str) -> Account:
+        normalized = str(username).strip()
+        password = str(password)
+        if USERNAME_PATTERN.fullmatch(normalized) is None:
+            raise CredentialPolicyError(
+                "Username must be 3-32 characters using only letters, digits, '_', '.', or '-'."
+            )
+        if len(password) < 8 or password.casefold() == normalized.casefold():
+            raise CredentialPolicyError("Password must be at least 8 characters and differ from the username.")
+        with self._lock:
+            now = self._clock()
+            recent = self._recent_attempts(
+                self._registration_attempts,
+                source,
+                now=now,
+                window_seconds=self.registration_attempt_window_seconds,
+            )
+            if len(recent) >= self.registration_attempt_limit:
+                raise RegistrationRateLimited("Too many registration attempts. Try again later.")
+            recent.append(now)
+        password_hash = self._password_hasher.hash(password)
+        with self._lock:
+            key = normalized.casefold()
+            if key in self._accounts_by_username:
+                raise UsernameTaken("Username is already taken.")
+            account = Account(id=uuid.uuid4().hex, username=normalized, password_hash=password_hash)
+            self._accounts_by_username[key] = account
+            self._accounts_by_id[account.id] = account
+            if self._metadata_store is not None:
+                self._metadata_store.save_account(
+                    StoredAccount(id=account.id, username=account.username, password_hash=account.password_hash)
+                )
+            return account
 
     def issue_browser_tokens(self, account_id: str) -> BrowserTokens:
         now = self._clock()

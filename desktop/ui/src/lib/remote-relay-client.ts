@@ -19,6 +19,17 @@ export interface PairingGrant {
 
 type Fetcher = typeof fetch;
 
+/** Error carrying the Relay HTTP status so callers can map failures (e.g. 409 vs 429 on register). */
+export class RemoteRelayError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RemoteRelayError";
+    this.status = status;
+  }
+}
+
 export class RemoteRelayClient {
   private readonly baseUrl: string;
 
@@ -28,6 +39,13 @@ export class RemoteRelayClient {
 
   async login(username: string, password: string): Promise<void> {
     await this.request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }, false);
+  }
+
+  async register(username: string, password: string): Promise<void> {
+    await this.request("/api/auth/register", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }, false);
@@ -70,7 +88,7 @@ export class RemoteRelayClient {
     }
     const payload = await response.json().catch(() => ({})) as { error?: unknown };
     if (!response.ok) {
-      throw new Error(String(payload.error ?? `Relay request failed (${response.status}).`));
+      throw new RemoteRelayError(String(payload.error ?? `Relay request failed (${response.status}).`), response.status);
     }
     return payload;
   }

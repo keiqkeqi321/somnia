@@ -25,6 +25,11 @@ def relay_main() -> int:
         action="store_true",
         help="Mark browser cookies Secure when TLS terminates at a reverse proxy.",
     )
+    parser.add_argument(
+        "--disable-registration",
+        action="store_true",
+        help="Disable open self-service account registration (POST /api/auth/register returns 403).",
+    )
     args = parser.parse_args()
     if not os.environ.get("SOMNIA_ADMIN_PASSWORD", ""):
         parser.error("SOMNIA_ADMIN_PASSWORD must be set.")
@@ -36,6 +41,7 @@ def relay_main() -> int:
             secure_cookies=secure_cookies,
             database_url=args.database_url,
             allowed_origins=args.web_origins,
+            registration_enabled=not args.disable_registration,
         ),
         host=args.host,
         port=args.port,

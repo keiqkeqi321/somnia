@@ -44,6 +44,9 @@ export default function RemoteLoginPage({ access }: RemoteLoginPageProps) {
         <button type="submit" disabled={access.busy || !access.username.trim() || !access.password}>
           {t("remote.signIn")}
         </button>
+        <a className="remote-login-link" href="#/register">
+          {t("remote.noAccountRegister")}
+        </a>
         <div className="remote-notice" role="status">
           {access.notice}
         </div>

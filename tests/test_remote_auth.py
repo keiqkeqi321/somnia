@@ -279,5 +279,96 @@ class RemoteAuthenticationTests(unittest.TestCase):
             self.assertEqual(reconnect.exception.code, 4403)
 
 
+class RegistrationTests(unittest.TestCase):
+    def test_registration_issues_a_session_and_persists_the_account(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{(Path(temp_dir) / 'relay.db').as_posix()}"
+            app = create_relay_app(administrators={}, database_url=database_url)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/auth/register",
+                    json={"username": "new_user", "password": "sup3r-secret"},
+                )
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(response.json()["username"], "new_user")
+                self.assertTrue(response.json()["account_id"])
+                self.assertTrue(client.cookies.get("somnia_access"))
+                self.assertTrue(client.cookies.get("somnia_refresh"))
+                self.assertEqual(client.get("/api/devices").status_code, 200)
+
+            restarted = create_relay_app(administrators={}, database_url=database_url)
+            with TestClient(restarted) as restarted_client:
+                login(restarted_client, "new_user", "sup3r-secret")
+                self.assertEqual(restarted_client.get("/api/devices").status_code, 200)
+
+    def test_registration_rejects_a_case_variant_of_an_existing_username(self) -> None:
+        app = create_relay_app(administrators={})
+        with TestClient(app) as client:
+            first = client.post("/api/auth/register", json={"username": "Alice_1", "password": "sup3r-secret"})
+            self.assertEqual(first.status_code, 201)
+            duplicate = client.post("/api/auth/register", json={"username": "ALICE_1", "password": "an0ther-secret"})
+            self.assertEqual(duplicate.status_code, 409)
+
+    def test_registration_enforces_the_credential_policy(self) -> None:
+        app = create_relay_app(administrators={})
+        with TestClient(app) as client:
+            cases = [
+                {"username": "ab", "password": "sup3r-secret"},
+                {"username": "bad name!", "password": "sup3r-secret"},
+                {"username": "x" * 33, "password": "sup3r-secret"},
+                {"username": "valid_user", "password": "short"},
+                {"username": "ValidName1", "password": "validname1"},
+            ]
+            for body in cases:
+                with self.subTest(body=body):
+                    response = client.post("/api/auth/register", json=body)
+                    self.assertEqual(response.status_code, 400)
+
+    def test_registration_is_rate_limited_per_source(self) -> None:
+        app = create_relay_app(administrators={}, registration_attempt_limit=3)
+        with TestClient(app) as client:
+            for index in range(3):
+                response = client.post(
+                    "/api/auth/register",
+                    json={"username": f"user_{index}", "password": "sup3r-secret"},
+                )
+                self.assertEqual(response.status_code, 201)
+
+            blocked = client.post("/api/auth/register", json={"username": "user_3", "password": "sup3r-secret"})
+            self.assertEqual(blocked.status_code, 429)
+            self.assertTrue(blocked.headers.get("Retry-After"))
+
+    def test_per_username_login_throttle_slides_without_lockout(self) -> None:
+        now = [1_000.0]
+        app = create_relay_app(
+            administrators={"admin": "admin-password"},
+            clock=lambda: now[0],
+            login_username_attempt_limit=3,
+            login_username_attempt_window_seconds=60,
+        )
+        with TestClient(app) as client:
+            for _ in range(3):
+                response = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+                self.assertEqual(response.status_code, 401)
+
+            throttled = client.post("/api/auth/login", json={"username": "admin", "password": "admin-password"})
+            self.assertEqual(throttled.status_code, 429)
+            self.assertTrue(throttled.headers.get("Retry-After"))
+
+            now[0] += 61
+            recovered = client.post("/api/auth/login", json={"username": "admin", "password": "admin-password"})
+            self.assertEqual(recovered.status_code, 200)
+
+            for _ in range(3):
+                response = client.post("/api/auth/login", json={"username": "admin", "password": "wrong"})
+                self.assertEqual(response.status_code, 401)
+
+    def test_registration_can_be_disabled(self) -> None:
+        app = create_relay_app(administrators={}, registration_enabled=False)
+        with TestClient(app) as client:
+            response = client.post("/api/auth/register", json={"username": "new_user", "password": "sup3r-secret"})
+            self.assertEqual(response.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
