@@ -2692,7 +2692,6 @@ button {
   padding: 16px 18px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  backdrop-filter: blur(8px);
 }
 
 .bubble.user {
@@ -2715,7 +2714,6 @@ button {
   border-left: 3px solid rgba(111, 183, 255, 0.72);
   border-radius: 0;
   background: linear-gradient(90deg, rgba(111, 183, 255, 0.1), rgba(111, 183, 255, 0));
-  backdrop-filter: none;
 }
 
 .bubble.assistant.pending {

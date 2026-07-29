@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -366,6 +367,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const selectedSessionIdRef = useRef<string | null>(null);
   const currentSessionRef = useRef<AgentSession | null>(null);
   const queuedPromptsRef = useRef<Record<string, QueuedPrompt[]>>({});
+  const pendingAssistantDeltasRef = useRef<Record<string, { turnId: string | null | undefined; text: string }>>({});
+  const assistantDeltaFlushTimerRef = useRef<number | null>(null);
   const activeProjectTurnsRef = useRef<Record<string, ActiveProjectTurn[]>>({});
   const workspaceRef = useRef<HTMLElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
@@ -1261,6 +1264,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     if (!key) {
       return;
     }
+    dropPendingAssistantDelta(key);
     setRuntimeConversationItems((previous) => {
       if (!(key in previous)) {
         return previous;
@@ -1300,7 +1304,17 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     if (!key) {
       return;
     }
+    dropPendingAssistantDelta(key);
     setRuntimeConversationItems((previous) => ({ ...previous, [key]: [] }));
+  }
+
+  function dropPendingAssistantDelta(key: string) {
+    const pending = pendingAssistantDeltasRef.current;
+    if (key in pending) {
+      const next = { ...pending };
+      delete next[key];
+      pendingAssistantDeltasRef.current = next;
+    }
   }
 
   function appendAssistantRuntimeDelta(projectPath: string | null | undefined, sessionId: string | null | undefined, turnId: string | null | undefined, delta: string) {
@@ -1308,26 +1322,59 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     if (!key || !delta) {
       return;
     }
+    // Buffer per-token deltas and flush them in batches so streaming does not
+    // re-render the whole conversation for every single token.
+    const pending = pendingAssistantDeltasRef.current;
+    const existing = pending[key];
+    pendingAssistantDeltasRef.current = {
+      ...pending,
+      [key]: { turnId, text: existing ? existing.text + delta : delta },
+    };
+    if (assistantDeltaFlushTimerRef.current === null) {
+      assistantDeltaFlushTimerRef.current = window.setTimeout(() => {
+        assistantDeltaFlushTimerRef.current = null;
+        flushAssistantRuntimeDeltas();
+      }, 50);
+    }
+  }
+
+  function flushAssistantRuntimeDeltas() {
+    if (assistantDeltaFlushTimerRef.current !== null) {
+      window.clearTimeout(assistantDeltaFlushTimerRef.current);
+      assistantDeltaFlushTimerRef.current = null;
+    }
+    const pending = pendingAssistantDeltasRef.current;
+    const keys = Object.keys(pending);
+    if (keys.length === 0) {
+      return;
+    }
+    pendingAssistantDeltasRef.current = {};
     setRuntimeConversationItems((previous) => {
-      const current = previous[key] ?? [];
-      const last = current[current.length - 1];
-      if (last?.type === "assistant_text") {
-        return {
-          ...previous,
-          [key]: [...current.slice(0, -1), { ...last, text: `${last.text}${delta}` }],
-        };
+      let next = previous;
+      for (const key of keys) {
+        const entry = pending[key];
+        const current = next[key] ?? [];
+        const last = current[current.length - 1];
+        if (last?.type === "assistant_text") {
+          next = {
+            ...next,
+            [key]: [...current.slice(0, -1), { ...last, text: `${last.text}${entry.text}` }],
+          };
+        } else {
+          next = {
+            ...next,
+            [key]: [
+              ...current,
+              {
+                id: runtimeItemId("assistant", entry.turnId),
+                type: "assistant_text",
+                text: entry.text,
+              },
+            ],
+          };
+        }
       }
-      return {
-        ...previous,
-        [key]: [
-          ...current,
-          {
-            id: runtimeItemId("assistant", turnId),
-            type: "assistant_text",
-            text: delta,
-          },
-        ],
-      };
+      return next;
     });
   }
 
@@ -1706,6 +1753,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         createConversationState(selectedSession?.id === event.session_id ? selectedSession : event.session_id);
       conversationTransition = transitionConversationEvent(previousConversationState, event);
       conversationCoreStateRef.current[coreKey] = conversationTransition.state;
+    }
+    if (conversationTransition?.effect.type !== "assistant_delta") {
+      flushAssistantRuntimeDeltas();
     }
     if (event.type === "sidecar_ready") {
       return;
@@ -4927,9 +4977,26 @@ function PromptQueueCard({
   );
 }
 
-function MarkdownMessage({ text }: { text: string }) {
-  return <div className="markdown-content">{renderMarkdownBlocks(text)}</div>;
+// Cache parsed markdown per message text so re-renders (streaming, composer
+// keystrokes) do not re-parse the whole history. Bounded to cap memory use.
+const markdownRenderCache = new Map<string, ReactNode>();
+
+function renderMarkdownBlocksCached(text: string): ReactNode {
+  const cached = markdownRenderCache.get(text);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const rendered = renderMarkdownBlocks(text);
+  if (markdownRenderCache.size >= 200) {
+    markdownRenderCache.clear();
+  }
+  markdownRenderCache.set(text, rendered);
+  return rendered;
 }
+
+const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
+  return <div className="markdown-content">{renderMarkdownBlocksCached(text)}</div>;
+});
 
 function ThinkingLogPanel({ thinkingLog, client }: { thinkingLog: ConversationThinkingLog; client: SomniaClient | null }) {
   const bodyRef = useRef<HTMLPreElement | null>(null);
