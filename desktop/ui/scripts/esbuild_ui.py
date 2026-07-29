@@ -28,19 +28,37 @@ def resolve_esbuild_binary() -> Path:
 def write_dist_html() -> None:
     source = SOURCE_HTML.read_text(encoding="utf-8")
     source_tag = '<script type="module" src="/src/main.tsx"></script>'
-    replacement = (
-        '    <link rel="stylesheet" href="./assets/app.css" />\n'
-        '    <script type="module" src="./assets/app.js"></script>'
-    )
     if source_tag not in source:
         raise RuntimeError(f"Expected to find {source_tag!r} in {SOURCE_HTML}.")
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    replacement = _asset_tags()
     shutil.copy2(ROOT / "src-tauri" / "icons" / "32x32.png", ASSET_DIR / "favicon.png")
     (DIST_DIR / "index.html").write_text(source.replace(source_tag, replacement), encoding="utf-8")
 
 
-def base_build_args() -> list[str]:
+def _asset_tags() -> str:
+    """Reference the hashed production bundles when they exist (build mode).
+
+    Dev mode writes the HTML before the watch build produces any assets, so it
+    falls back to the fixed un-hashed names used there.
+    """
+    js_assets = sorted(ASSET_DIR.glob("app-*.js"))
+    css_assets = sorted(ASSET_DIR.glob("app-*.css"))
+    if not js_assets and not css_assets:
+        return (
+            '    <link rel="stylesheet" href="./assets/app.css" />\n'
+            '    <script type="module" src="./assets/app.js"></script>'
+        )
+    if len(js_assets) != 1 or len(css_assets) != 1:
+        raise RuntimeError(f"Expected exactly one app js/css bundle in {ASSET_DIR}, found {js_assets + css_assets}.")
+    return (
+        f'    <link rel="stylesheet" href="./assets/{css_assets[0].name}" />\n'
+        f'    <script type="module" src="./assets/{js_assets[0].name}"></script>'
+    )
+
+
+def base_build_args(*, hashed: bool) -> list[str]:
     return [
         str(resolve_esbuild_binary()),
         str(ENTRYPOINT.relative_to(ROOT)),
@@ -49,7 +67,7 @@ def base_build_args() -> list[str]:
         "--platform=browser",
         "--target=es2020",
         "--jsx=automatic",
-        "--entry-names=app",
+        f"--entry-names=app{'-[hash]' if hashed else ''}",
         "--outdir=dist/assets",
         "--public-path=./assets",
         "--loader:.ts=ts",
@@ -62,17 +80,22 @@ def base_build_args() -> list[str]:
 def run_build() -> int:
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
-    write_dist_html()
-    command = base_build_args() + [
+    command = base_build_args(hashed=True) + [
         "--minify",
         '--define:process.env.NODE_ENV="production"',
     ]
-    return subprocess.run(command, cwd=ROOT, check=False).returncode
+    result = subprocess.run(command, cwd=ROOT, check=False).returncode
+    if result != 0:
+        return result
+    # The HTML references the hashed bundle names, so it is written after the
+    # assets exist.
+    write_dist_html()
+    return 0
 
 
 def run_dev() -> int:
     write_dist_html()
-    command = base_build_args() + [
+    command = base_build_args(hashed=False) + [
         "--sourcemap",
         '--define:process.env.NODE_ENV="development"',
         "--serve=127.0.0.1:1420",
