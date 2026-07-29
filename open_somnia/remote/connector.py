@@ -42,7 +42,14 @@ def _is_permanent_failure(exc: Exception) -> bool:
         return True
     if isinstance(exc, ConnectionClosed):
         close = exc.rcvd
-        return close is not None and close.code in PERMANENT_CLOSE_CODES
+        if close is None:
+            return False
+        if close.code in PERMANENT_CLOSE_CODES:
+            return True
+        # "Connector replaced" (1012) can surface as a ConnectionClosed exception
+        # instead of the clean close-code path in run(); being replaced by another
+        # Connector with the same identity must never be retried.
+        return close.code == 1012 and str(close.reason or "").startswith("Connector replaced")
     return False
 
 

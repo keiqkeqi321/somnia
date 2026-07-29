@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 import uuid
 
+from desktop.backend.instance_lock import SidecarInstanceLock
 from desktop.backend.remote_device import RemoteDeviceManager, RemoteNotPairedError, workspace_project_id
 from desktop.backend.ipc import (
     build_websocket_close_frame,
@@ -39,6 +40,7 @@ from desktop.backend.ipc import (
 )
 from open_somnia import __version__
 from open_somnia.app_service import AppService
+from open_somnia.pid_liveness import pid_is_alive
 from open_somnia.config.models import AppSettings
 from open_somnia.config.backup import write_config_text, remove_config_file
 from open_somnia.config.provider_presets import list_provider_presets, serialize_provider_preset
@@ -356,6 +358,11 @@ class _WebSocketClient:
     queue: Queue
 
 
+# Set by the desktop app when spawning a managed sidecar; enables the parent watchdog.
+PARENT_WATCHDOG_ENV = "SOMNIA_SIDECAR_PARENT_PID"
+PARENT_WATCHDOG_INTERVAL_SECONDS = 5.0
+
+
 class _SidecarHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -368,7 +375,16 @@ class _SidecarHTTPServer(ThreadingHTTPServer):
 class SidecarServer:
     def __init__(self, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765) -> None:
         self.settings = settings
-        self.runtime = OpenAgentRuntime(settings)
+        self._instance_lock = SidecarInstanceLock(settings.workspace_root)
+        self._instance_lock.acquire()
+        try:
+            self._initialize(host, port)
+        except Exception:
+            self._instance_lock.release()
+            raise
+
+    def _initialize(self, host: str, port: int) -> None:
+        self.runtime = OpenAgentRuntime(self.settings)
         self.service = AppService(self.runtime)
         self._lock = Lock()
         self._clients: dict[str, _WebSocketClient] = {}
@@ -527,7 +543,42 @@ class SidecarServer:
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.remote_device.autostart_if_enabled()
+        self._start_parent_watchdog()
         self.httpd.serve_forever(poll_interval=poll_interval)
+
+    def _start_parent_watchdog(
+        self,
+        *,
+        interval_seconds: float = PARENT_WATCHDOG_INTERVAL_SECONDS,
+        is_alive: Any = pid_is_alive,
+    ) -> Thread | None:
+        """Exit this sidecar when the spawning desktop app disappears.
+
+        The app normally terminates its sidecars on exit, but a crash,
+        force-kill, or `tauri dev` restart skips that path; without this
+        watchdog the orphaned sidecar (and its remote connector) leaks.
+        Disabled unless the spawner set SOMNIA_SIDECAR_PARENT_PID, so manual
+        dev sidecars are unaffected. Known limitation: the OS may recycle the
+        parent PID; the per-workspace instance lock still prevents duplicates.
+        """
+        raw_pid = os.environ.get(PARENT_WATCHDOG_ENV, "").strip()
+        try:
+            parent_pid = int(raw_pid)
+        except ValueError:
+            return None
+        if parent_pid <= 0:
+            return None
+
+        def _watch() -> None:
+            while not self.is_closed:
+                if not is_alive(parent_pid):
+                    self.close()
+                    return
+                time.sleep(interval_seconds)
+
+        thread = Thread(target=_watch, name="somnia-sidecar-parent-watchdog", daemon=True)
+        thread.start()
+        return thread
 
     def start_background(self) -> Thread:
         with self._lock:
@@ -583,6 +634,7 @@ class SidecarServer:
             self._server_thread = None
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
+        self._instance_lock.release()
 
     def list_sessions(self) -> list[dict[str, Any]]:
         return [serialize_session_summary(summary) for summary in self.service.list_session_summaries()]

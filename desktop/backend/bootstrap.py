@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
+from desktop.backend.instance_lock import SidecarInstanceLockError
 from desktop.backend.server import SidecarServer
 from open_somnia.config.settings import load_settings
 
@@ -47,7 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.disable_mcp:
         settings.mcp_servers = []
 
-    server = SidecarServer.from_settings(settings, host=args.host, port=args.port)
+    try:
+        server = SidecarServer.from_settings(settings, host=args.host, port=args.port)
+    except SidecarInstanceLockError as exc:
+        # A live sidecar already serves this workspace; exit quietly instead of
+        # fighting over it. The launcher will adopt the existing one.
+        print(f"somnia-sidecar: {exc}", file=sys.stderr)
+        return 0
     try:
         if not args.quiet:
             print(json.dumps(server.ready_payload(), ensure_ascii=False))

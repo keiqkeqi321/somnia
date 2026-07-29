@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, Once},
     thread,
     time::{Duration, Instant},
 };
@@ -61,6 +61,7 @@ impl ManagedSidecar {
     ) -> Result<ManagedSidecarConnection, String> {
         let workspace_root = resolve_workspace_root(app, workspace_path)?;
         let workspace_key = workspace_key(&workspace_root)?;
+        ORPHAN_SWEEP.call_once(sweep_orphan_sidecars);
         if let Some(connection) = discover_connector_runtime(&workspace_root)? {
             return Ok(connection);
         }
@@ -279,6 +280,7 @@ fn spawn_sidecar(
         .arg(port.to_string())
         .arg("--quiet")
         .env("OPEN_SOMNIA_SKIP_BUILTIN_NOTIFY_BOOTSTRAP", "1")
+        .env("SOMNIA_SIDECAR_PARENT_PID", std::process::id().to_string())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
 
@@ -592,4 +594,123 @@ pub fn open_workspace_root(path: String) -> Result<(), String> {
 pub fn shutdown_managed_sidecar(app: &tauri::AppHandle) {
     let sidecar = app.state::<ManagedSidecar>();
     let _ = sidecar.stop_all();
+}
+
+static ORPHAN_SWEEP: Once = Once::new();
+
+/// Kill sidecar processes whose spawning app is already gone.
+///
+/// Runs once per app launch, before the first managed sidecar starts. The app
+/// normally terminates its sidecars on exit, but a crash, force-kill, or
+/// `tauri dev` restart skips that path; sweeping here clears the orphans those
+/// leaks left behind. Sidecars with a living parent (supervisors, manual dev
+/// runs) are never touched. Best-effort: failures are logged and ignored.
+fn sweep_orphan_sidecars() {
+    if let Err(error) = try_sweep_orphan_sidecars() {
+        eprintln!("orphan sidecar sweep failed: {error}");
+    }
+}
+
+fn try_sweep_orphan_sidecars() -> Result<(), String> {
+    let processes = list_processes()?;
+    let alive: std::collections::HashSet<u32> = processes.iter().map(|entry| entry.pid).collect();
+    let self_pid = std::process::id();
+    for entry in processes.iter().filter(|entry| {
+        entry.pid != self_pid
+            && !alive.contains(&entry.parent_pid)
+            && entry
+                .command_line
+                .as_deref()
+                .map(|command| {
+                    let command = command.to_ascii_lowercase();
+                    command.contains("desktop.backend.bootstrap") || command.contains("somnia-sidecar")
+                })
+                .unwrap_or(false)
+    }) {
+        kill_process_tree(entry.pid);
+    }
+    Ok(())
+}
+
+struct ProcessEntry {
+    pid: u32,
+    parent_pid: u32,
+    command_line: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn list_processes() -> Result<Vec<ProcessEntry>, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct Win32Process {
+        process_id: u32,
+        parent_process_id: u32,
+        command_line: Option<String>,
+    }
+
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("unable to enumerate processes: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    // ConvertTo-Json emits a bare object instead of an array for a single result.
+    let entries: Vec<Win32Process> = if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed)
+    } else {
+        serde_json::from_str::<Win32Process>(trimmed).map(|single| vec![single])
+    }
+    .map_err(|error| format!("unable to parse the process list: {error}"))?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| ProcessEntry {
+            pid: entry.process_id,
+            parent_pid: entry.parent_process_id,
+            command_line: entry.command_line,
+        })
+        .collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn list_processes() -> Result<Vec<ProcessEntry>, String> {
+    let output = Command::new("ps")
+        .args(["-eo", "pid=,ppid=,args="])
+        .output()
+        .map_err(|error| format!("unable to enumerate processes: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.trim_start().splitn(3, char::is_whitespace);
+            let pid = parts.next()?.trim().parse().ok()?;
+            let parent_pid = parts.next()?.trim().parse().ok()?;
+            let command = parts.next().map(str::trim).filter(|value| !value.is_empty());
+            Some(ProcessEntry {
+                pid,
+                parent_pid,
+                command_line: command.map(str::to_string),
+            })
+        })
+        .collect())
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).output();
 }

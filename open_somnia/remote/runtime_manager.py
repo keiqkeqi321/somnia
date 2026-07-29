@@ -17,6 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 import uuid
 
+from open_somnia.pid_liveness import pid_is_alive
 from open_somnia.remote.connector import LocalSidecarBridge
 from open_somnia.storage.common import atomic_write_text, get_lock
 
@@ -331,25 +332,7 @@ def _owner_is_alive(path: Path) -> bool:
         pid = int(payload.get("pid", 0))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-
-        process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not process:
-            return False
-        ctypes.windll.kernel32.CloseHandle(process)
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return pid_is_alive(pid)
 
 
 def _required_project_id(value: Any) -> str:

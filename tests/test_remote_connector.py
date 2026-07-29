@@ -614,6 +614,28 @@ class RemoteConnectorRunForeverTests(unittest.TestCase):
             connector.run_forever()
         self.assertEqual(connector.attempts, 1)
 
+    def test_replaced_close_exception_is_not_retried(self) -> None:
+        # 1012 + "Connector replaced" can arrive as a ConnectionClosed exception
+        # instead of the clean close-code path; it must still be permanent.
+        connector = ScriptedConnector(
+            self.identity,
+            [ConnectionClosedError(Close(1012, "Connector replaced."), None)],
+        )
+        with self.assertRaises(ConnectionClosedError):
+            connector.run_forever()
+        self.assertEqual(connector.attempts, 1)
+
+    def test_service_restart_close_exception_is_retried(self) -> None:
+        connector = ScriptedConnector(
+            self.identity,
+            [ConnectionClosedError(Close(1012, "Service restart"), None)],
+        )
+        retries: list[str] = []
+        connects: list[int] = []
+        self._run_until_stopped(connector, retries, connects)
+        self.assertEqual(connector.attempts, 2)
+        self.assertEqual(len(retries), 1)
+
 
 def _wait_until(predicate, timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
