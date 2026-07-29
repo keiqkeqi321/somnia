@@ -55,6 +55,7 @@ export interface SidecarStatus {
   execution_mode_title?: string | null;
   pending_interaction_count?: number;
   open_session_count?: number;
+  active_turns?: Array<{ turn_id: string; session_id: string }>;
 }
 
 export interface ManagedSidecarConnection {

@@ -244,39 +244,46 @@ class RelayHub:
 
     async def _forward_to_connector(self, device_id: str, client: _Peer, message: dict[str, Any]) -> None:
         claimed_device = str(message.get("device_id", device_id)).strip()
+        request_id = str(message.get("request_id", "")).strip()
         if claimed_device != device_id:
-            await client.send(
-                {
-                    "kind": "response",
-                    "request_id": str(message.get("request_id", "")),
-                    "ok": False,
-                    "error": "Cross-Device routing is not allowed.",
-                }
-            )
+            if request_id:
+                await client.send(
+                    {
+                        "kind": "response",
+                        "request_id": request_id,
+                        "ok": False,
+                        "error": "Cross-Device routing is not allowed.",
+                    }
+                )
             return
         async with self._lock:
             connector = self._connectors.get(device_id)
         if connector is None or connector.account_id != client.account_id:
-            await client.send(
-                {
-                    "kind": "response",
-                    "request_id": str(message.get("request_id", "")),
-                    "ok": False,
-                    "error": "Device is offline.",
-                }
-            )
+            if request_id:
+                await client.send(
+                    {
+                        "kind": "response",
+                        "request_id": request_id,
+                        "ok": False,
+                        "error": "Device is offline.",
+                    }
+                )
             return
         try:
             await connector.send(message)
         except (TimeoutError, asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
-            await client.send(
-                {
-                    "kind": "response",
-                    "request_id": str(message.get("request_id", "")),
-                    "ok": False,
-                    "error": "Device connection failed.",
-                }
-            )
+            # Control frames (stream_resume/stream_ack) carry no request_id; an
+            # error response would have no pending request to land on, so the
+            # client simply retries instead of parsing a synthetic failure.
+            if request_id:
+                await client.send(
+                    {
+                        "kind": "response",
+                        "request_id": request_id,
+                        "ok": False,
+                        "error": "Device connection failed.",
+                    }
+                )
 
     async def _broadcast_to_clients(self, device_id: str, message: dict[str, Any]) -> None:
         async with self._lock:

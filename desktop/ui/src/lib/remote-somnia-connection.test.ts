@@ -476,6 +476,60 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
+  it("retries an unanswered stream_resume until a replay or snapshot arrives", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new RecordingRelaySocket();
+      const connection = new RemoteSomniaConnection({
+        relayUrl: "ws://relay.test",
+        deviceId: "device-1",
+        projectId: "project-1",
+        socketFactory: () => socket,
+      });
+      connection.subscribe(() => undefined);
+      socket.open();
+
+      const resumeCount = () => socket.sent.filter((message) => message.kind === "stream_resume").length;
+      expect(resumeCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(resumeCount()).toBe(2);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(resumeCount()).toBe(3);
+
+      socket.emit({
+        kind: "stream_replay",
+        protocol_version: 1,
+        device_id: "device-1",
+        project_id: "project-1",
+        stream_epoch: "epoch-1",
+        events: [],
+      });
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(resumeCount()).toBe(3);
+      connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries stream_resume when the Relay reports an undeliverable frame", () => {
+    const socket = new RecordingRelaySocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    connection.subscribe(() => undefined);
+    socket.open();
+
+    const resumeCount = () => socket.sent.filter((message) => message.kind === "stream_resume").length;
+    expect(resumeCount()).toBe(1);
+    socket.emit({ kind: "response", request_id: "", ok: false, error: "Device connection failed." });
+    expect(resumeCount()).toBe(2);
+    connection.close();
+  });
+
   it("reloads the authoritative Session before publishing Turn completion", async () => {
     const { connection, socket, openStream } = createHarness();
     const notifications: SomniaConnectionNotification[] = [];

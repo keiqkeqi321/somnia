@@ -67,6 +67,92 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(sent[0]["kind"], "stream_snapshot")
             self.assertEqual(sent[0]["snapshot"], {"sessions": [{"id": "session-1"}], "runtime": {"status": "ready"}})
 
+    def test_fresh_client_resume_replays_the_full_epoch_when_the_ring_covers_it(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=10)
+            connector.publish_sidecar_event({"type": "first", "payload": {}})
+            connector.publish_sidecar_event({"type": "second", "payload": {}})
+            sent: list[dict] = []
+
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": None,
+                        "after_sequence": 0,
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_replay")
+            self.assertEqual([event["sequence"] for event in sent[0]["events"]], [1, 2])
+
+    def test_fresh_client_resume_falls_back_to_snapshot_once_the_ring_overflowed(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=1)
+            connector.publish_sidecar_event({"type": "first", "payload": {}})
+            connector.publish_sidecar_event({"type": "second", "payload": {}})
+            sent: list[dict] = []
+
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": None,
+                        "after_sequence": 0,
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_snapshot")
+
+    def test_snapshot_resume_keeps_recording_events_while_the_snapshot_is_built(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=10)
+            connector.publish_sidecar_event({"type": "before", "payload": {}})
+
+            class ReentrantSidecar(CountingSidecar):
+                def execute(self, method: str, params: dict) -> dict:
+                    if method == "stream.snapshot":
+                        # Recording live events must not deadlock behind the snapshot build.
+                        connector.publish_sidecar_event({"type": "during", "payload": {}})
+                    return super().execute(method, params)
+
+            connector._projects["project-1"].sidecar = ReentrantSidecar()
+            sent: list[dict] = []
+            done = Event()
+
+            def run() -> None:
+                connector.handle_relay_message(
+                    json.dumps(
+                        {
+                            "kind": "stream_resume",
+                            "project_id": "project-1",
+                            "stream_epoch": "old-epoch",
+                            "after_sequence": 0,
+                        }
+                    ),
+                    sent.append,
+                )
+                done.set()
+
+            thread = Thread(target=run, name="test-snapshot-resume", daemon=True)
+            thread.start()
+
+            self.assertTrue(done.wait(timeout=5.0), "Snapshot resume deadlocked while recording live events.")
+            self.assertEqual(sent[0]["kind"], "stream_snapshot")
+            self.assertEqual(sent[0]["sequence"], 2)
+
     def test_retried_request_id_returns_the_original_result_without_reexecuting(self) -> None:
         with TemporaryDirectory() as temp_dir:
             identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")

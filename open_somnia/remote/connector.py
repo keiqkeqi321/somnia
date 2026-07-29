@@ -564,7 +564,8 @@ class RemoteConnector:
             after_sequence = int(message.get("after_sequence", 0))
         except (TypeError, ValueError):
             after_sequence = -1
-        requested_epoch = str(message.get("stream_epoch", "")).strip()
+        # JSON null (fresh client without an epoch) must stay empty, not "None".
+        requested_epoch = str(message.get("stream_epoch") or "").strip()
         with self._state_lock:
             epoch = project.stream_epoch
             events = list(project.event_ring)
@@ -575,7 +576,17 @@ class RemoteConnector:
                 and after_sequence >= oldest_sequence - 1
                 and after_sequence <= latest_sequence
             )
-        if replay_available:
+            # A fresh client (no epoch yet, nothing applied) gets the whole current
+            # epoch replayed while the ring still holds it, so in-flight turns
+            # resume their streamed output instead of jumping to a bare snapshot.
+            fresh_replay_available = (
+                not requested_epoch
+                and after_sequence <= 0
+                and oldest_sequence == 1
+                and latest_sequence >= 1
+            )
+        if replay_available or fresh_replay_available:
+            replay_from = after_sequence if replay_available else 0
             send(
                 {
                     "kind": "stream_replay",
@@ -583,39 +594,41 @@ class RemoteConnector:
                     "device_id": self.device_id,
                     "project_id": project_id,
                     "stream_epoch": epoch,
-                    "after_sequence": after_sequence,
-                    "events": [event for event in events if event["sequence"] > after_sequence],
+                    "after_sequence": replay_from,
+                    "events": [event for event in events if event["sequence"] > replay_from],
                 }
             )
             return
-        with self._state_lock:
-            try:
-                snapshot = project.sidecar.execute("stream.snapshot", {})
-            except Exception as exc:
-                send(
-                    {
-                        "kind": "snapshot_required",
-                        "protocol_version": PROTOCOL_VERSION,
-                        "device_id": self.device_id,
-                        "project_id": project_id,
-                        "stream_epoch": epoch,
-                        "sequence": latest_sequence,
-                        "reason": f"Snapshot resync failed: {exc}",
-                    }
-                )
-                return
-            latest_sequence = project.next_sequence
+        # The snapshot round-trip must not hold the state lock: recording live
+        # events would stall behind it and freeze the whole event pipeline.
+        try:
+            snapshot = project.sidecar.execute("stream.snapshot", {})
+        except Exception as exc:
             send(
                 {
-                    "kind": "stream_snapshot",
+                    "kind": "snapshot_required",
                     "protocol_version": PROTOCOL_VERSION,
                     "device_id": self.device_id,
                     "project_id": project_id,
                     "stream_epoch": epoch,
                     "sequence": latest_sequence,
-                    "snapshot": snapshot,
+                    "reason": f"Snapshot resync failed: {exc}",
                 }
             )
+            return
+        with self._state_lock:
+            latest_sequence = project.next_sequence
+        send(
+            {
+                "kind": "stream_snapshot",
+                "protocol_version": PROTOCOL_VERSION,
+                "device_id": self.device_id,
+                "project_id": project_id,
+                "stream_epoch": epoch,
+                "sequence": latest_sequence,
+                "snapshot": snapshot,
+            }
+        )
 
     def _response(self, request_id: str, *, project_id: str, ok: bool, result: Any = None, error: str = "") -> dict[str, Any]:
         response: dict[str, Any] = {

@@ -38,6 +38,11 @@ const PROTOCOL_VERSION = 1;
 // can never succeed, so the connection surfaces them instead of looping.
 const AUTH_FAILURE_CLOSE_CODES = new Set([4401, 4403]);
 const MAX_RECONNECT_DELAY_MS = 30_000;
+// A stream_resume (or its reply) can be lost without the socket dropping, e.g.
+// when the Relay's bounded send to a busy Connector times out. Without a retry
+// the strict-ordering stream would wedge forever, so unanswered resumes are
+// re-sent on this interval until a replay/snapshot arrives.
+const RESUME_RETRY_DELAY_MS = 2500;
 
 export interface RemoteSomniaConnectionOptions {
   relayUrl: string;
@@ -71,6 +76,7 @@ export class RemoteSomniaConnection implements SomniaClient {
   private lastAppliedSequence = 0;
   private lastAcknowledgedSequence = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private resumeRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private reauthorizeInFlight = false;
   private explicitlyClosed = false;
@@ -301,6 +307,7 @@ export class RemoteSomniaConnection implements SomniaClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearResumeRetry();
     const socket = this.socket;
     this.socket = null;
     socket?.close();
@@ -328,6 +335,8 @@ export class RemoteSomniaConnection implements SomniaClient {
     socket.onclose = (event) => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.clearResumeRetry();
+      this.resumeInFlight = false;
       if (AUTH_FAILURE_CLOSE_CODES.has(event.code)) {
         this.handleAuthFailure(event);
         return;
@@ -354,6 +363,13 @@ export class RemoteSomniaConnection implements SomniaClient {
       const requestId = String(message.request_id ?? "");
       const pending = this.pending.get(requestId);
       if (!pending) {
+        // Undeliverable control frames (e.g. a stream_resume the Relay could
+        // not hand to a busy Connector) come back as failures with an empty
+        // request_id. Treat one as a lost resume and retry, otherwise the
+        // strict-ordering stream stalls permanently.
+        if (!requestId && message.ok === false && this.resumeInFlight) {
+          this.sendStreamResume();
+        }
         return;
       }
       this.pending.delete(requestId);
@@ -374,6 +390,7 @@ export class RemoteSomniaConnection implements SomniaClient {
     }
     if (message.kind === "snapshot_required") {
       this.resumeInFlight = false;
+      this.clearResumeRetry();
       this.notify({ kind: "protocol_error", error: String(message.reason ?? "A snapshot resync is required.") });
       return;
     }
@@ -394,6 +411,7 @@ export class RemoteSomniaConnection implements SomniaClient {
       return;
     }
     this.resumeInFlight = false;
+    this.clearResumeRetry();
     if (this.streamEpoch !== null && this.streamEpoch !== message.stream_epoch) {
       this.requestSnapshotResume();
       return;
@@ -416,9 +434,11 @@ export class RemoteSomniaConnection implements SomniaClient {
     }
     if (this.streamEpoch === message.stream_epoch && sequence <= this.lastAppliedSequence) {
       this.resumeInFlight = false;
+      this.clearResumeRetry();
       return;
     }
     this.resumeInFlight = false;
+    this.clearResumeRetry();
     if (this.streamEpoch !== message.stream_epoch) {
       this.lastAcknowledgedSequence = 0;
     }
@@ -518,6 +538,24 @@ export class RemoteSomniaConnection implements SomniaClient {
       }));
     } catch (error) {
       this.notify({ kind: "protocol_error", error: `Unable to request stream recovery: ${formatError(error)}` });
+    }
+    this.scheduleResumeRetry();
+  }
+
+  private scheduleResumeRetry(): void {
+    if (this.resumeRetryTimer !== null) return;
+    this.resumeRetryTimer = setTimeout(() => {
+      this.resumeRetryTimer = null;
+      // The previous resume (or its reply) never landed; ask again instead of
+      // letting buffered events pile up forever.
+      this.sendStreamResume();
+    }, RESUME_RETRY_DELAY_MS);
+  }
+
+  private clearResumeRetry(): void {
+    if (this.resumeRetryTimer !== null) {
+      clearTimeout(this.resumeRetryTimer);
+      this.resumeRetryTimer = null;
     }
   }
 

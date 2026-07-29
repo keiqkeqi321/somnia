@@ -1208,7 +1208,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         return;
       }
       setSessions(sessionList);
-      await refreshStatusAndProviders();
+      const statusResult = await refreshStatusAndProviders();
+      restoreActiveTurnsFromStatus(projectPath, statusResult?.runtimeStatus.active_turns, sessionList);
       await refreshToolLogs();
       const sessionId = selectedSessionIdRef.current;
       if (sessionId && sessionList.some((session) => session.id === sessionId)) {
@@ -1221,6 +1222,32 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       setBannerMessage(t("remote.resynced"));
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
+  // After a remote reconnect the server is the only authority on which turns
+  // are still running; rebuild the project's in-flight turn markers so those
+  // sessions show as "answering" again and keep accepting live stream events.
+  function restoreActiveTurnsFromStatus(
+    projectPath: string,
+    activeTurns: SidecarStatus["active_turns"],
+    sessionList: AgentSession[],
+  ) {
+    if (!Array.isArray(activeTurns)) {
+      return;
+    }
+    const restored: ActiveProjectTurn[] = activeTurns
+      .filter((turn) => turn && typeof turn.session_id === "string" && typeof turn.turn_id === "string")
+      .map((turn) => ({
+        sessionId: turn.session_id,
+        turnId: turn.turn_id,
+        baseMessageCount: sessionList.find((session) => session.id === turn.session_id)?.messages.length ?? 0,
+      }));
+    updateActiveProjectTurns((previous) => ({ ...previous, [projectPath]: restored.slice(-2) }));
+    const selectedSessionId = selectedSessionIdRef.current;
+    const selectedTurn = restored.find((turn) => turn.sessionId === selectedSessionId);
+    if (selectedProjectPathRef.current === projectPath && selectedTurn) {
+      setActiveTurnId(selectedTurn.turnId);
     }
   }
 
