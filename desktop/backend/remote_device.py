@@ -398,6 +398,11 @@ class RemoteDeviceManager:
             base_url = str(raw.get("base_url", "")).strip()
             if not base_url:
                 raise ValueError(f"Remote project '{project_id}' requires a base_url.")
+            if project_id == own_project_id:
+                # A persisted base_url for this sidecar's own project goes stale
+                # on every restart (ephemeral ports), which wedges the Connector
+                # against a dead port. Always bridge the live sidecar instead.
+                base_url = self._sidecar_base_url
             entries.append(
                 {
                     "project_id": project_id,

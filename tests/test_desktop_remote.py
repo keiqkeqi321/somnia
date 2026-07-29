@@ -369,7 +369,8 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertEqual(len(_FakeConnector.instances), 2)
         connector = _FakeConnector.instances[1]
         self.assertEqual(connector.project_id, own_id)
-        # The own bridge uses the base_url supplied by the caller, not the manager default.
+        # The own bridge always uses the manager's live base_url (here the
+        # caller happens to supply the same value).
         self.assertEqual(connector.sidecar.base_url, self.server.base_url)
         self.assertEqual(set(connector.sidecars), {"desktop-second", "desktop-third"})
         self.assertEqual(connector.sidecars["desktop-second"].base_url, "http://127.0.0.1:59001")
@@ -392,6 +393,29 @@ class DesktopRemoteTests(unittest.TestCase):
             (self.settings.storage.data_dir / "remote" / "settings.json").read_text(encoding="utf-8")
         )
         self.assertEqual(persisted["projects"], projects)
+
+    def test_enable_overrides_a_stale_own_project_base_url(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        status, _ = self._request("POST", "/remote/disable")
+        self.assertEqual(status, 200)
+
+        own_id = workspace_project_id(self.settings.workspace_root)
+        projects = [
+            # Persisted by an earlier sidecar generation whose port is now dead.
+            {"project_id": own_id, "name": "Own Project", "base_url": "http://127.0.0.1:9"},
+        ]
+        status, payload = self._request("POST", "/remote/enable", {"projects": projects})
+        self.assertEqual(status, 200, payload)
+
+        self.assertEqual(len(_FakeConnector.instances), 2)
+        connector = _FakeConnector.instances[1]
+        self.assertEqual(connector.sidecar.base_url, self.server.base_url)
+        persisted = json.loads(
+            (self.settings.storage.data_dir / "remote" / "settings.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted["projects"][0]["base_url"], self.server.base_url)
+        self.assertTrue(connector.started.wait(5.0))
 
     def test_enable_with_projects_deduplicates_and_defaults_name(self) -> None:
         self._pair()
