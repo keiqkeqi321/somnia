@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import json
 import os
+from pathlib import Path
 import secrets
 import time
 from typing import Any, Callable, Mapping
@@ -320,6 +321,48 @@ class RelayHub:
             pass
 
 
+def _secret_key_from_env() -> bytes | None:
+    raw = os.environ.get("SOMNIA_RELAY_SECRET_KEY", "").strip()
+    if not raw:
+        return None
+    try:
+        key = bytes.fromhex(raw)
+    except ValueError:
+        raise ValueError("SOMNIA_RELAY_SECRET_KEY must be hex-encoded.") from None
+    if len(key) < 32:
+        raise ValueError("SOMNIA_RELAY_SECRET_KEY must be at least 32 bytes (64 hex chars).")
+    return key
+
+
+def _load_or_create_secret_key(database_url: str | None) -> bytes | None:
+    """Persist the cookie-signing key next to the Relay database.
+
+    Without persistence the key is regenerated on every boot, which silently
+    invalidates every browser cookie on each deploy/restart and sends open
+    clients into reconnect loops. Returns None when there is no sqlite file
+    to anchor the key to (tests, in-memory setups), preserving the old
+    random-per-boot behavior there.
+    """
+    if not database_url or not database_url.startswith("sqlite:///") or ":memory:" in database_url:
+        return None
+    db_path = Path(database_url[len("sqlite:///"):])
+    key_path = db_path.with_name(f"{db_path.stem}-secret.key")
+    try:
+        existing = key_path.read_text(encoding="utf-8").strip()
+        if existing:
+            return bytes.fromhex(existing)
+    except FileNotFoundError:
+        pass
+    key = secrets.token_bytes(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(key.hex(), encoding="utf-8")
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return key
+
+
 def create_relay_app(
     *,
     administrators: Mapping[str, str] | None = None,
@@ -349,11 +392,14 @@ def create_relay_app(
         password = os.environ.get("SOMNIA_ADMIN_PASSWORD", "")
         configured = {username: password} if password else {}
     metadata_store = AuthMetadataStore(database_url) if database_url else None
+    resolved_secret_key = secret_key
+    if resolved_secret_key is None:
+        resolved_secret_key = _secret_key_from_env() or _load_or_create_secret_key(database_url)
     web_origins = allowed_origins or ["http://127.0.0.1:4173", "http://localhost:4173"]
     browser_origins = set(web_origins)
     auth = RemoteAuth(
         configured,
-        secret_key=secret_key,
+        secret_key=resolved_secret_key,
         clock=clock,
         access_ttl_seconds=access_ttl_seconds,
         refresh_ttl_seconds=refresh_ttl_seconds,

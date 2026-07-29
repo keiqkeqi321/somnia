@@ -14,7 +14,7 @@ import uuid
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-from open_somnia.remote.auth_store import AuthMetadataStore, StoredAccount, StoredDevice
+from open_somnia.remote.auth_store import AuthMetadataStore, StoredAccount, StoredBrowserSession, StoredDevice
 
 
 Clock = Callable[[], float]
@@ -199,6 +199,23 @@ class RemoteAuth:
                     created_at=stored.created_at,
                     revoked_at=stored.revoked_at,
                 )
+            # Restore live browser sessions so a Relay restart (e.g. deploy)
+            # does not invalidate every signed-in browser. Expired rows are
+            # pruned from the store as they are skipped.
+            now = self._clock()
+            for stored in metadata_store.load_browser_sessions():
+                if stored.refresh_expires_at <= now:
+                    metadata_store.delete_browser_session(stored.access_digest)
+                    continue
+                session = _BrowserSession(
+                    account_id=stored.account_id,
+                    access_digest=stored.access_digest,
+                    refresh_digest=stored.refresh_digest,
+                    access_expires_at=stored.access_expires_at,
+                    refresh_expires_at=stored.refresh_expires_at,
+                )
+                self._sessions_by_access[session.access_digest] = session
+                self._sessions_by_refresh[session.refresh_digest] = session
         for username, password in administrators.items():
             self._add_account(username, password)
 
@@ -298,6 +315,16 @@ class RemoteAuth:
                 self._remove_session(oldest)
             self._sessions_by_access[session.access_digest] = session
             self._sessions_by_refresh[session.refresh_digest] = session
+            if self._metadata_store is not None:
+                self._metadata_store.save_browser_session(
+                    StoredBrowserSession(
+                        account_id=session.account_id,
+                        access_digest=session.access_digest,
+                        refresh_digest=session.refresh_digest,
+                        access_expires_at=session.access_expires_at,
+                        refresh_expires_at=session.refresh_expires_at,
+                    )
+                )
         return BrowserTokens(
             access_token=access_token,
             refresh_token=refresh_token,
@@ -506,6 +533,8 @@ class RemoteAuth:
         session.revoked = True
         self._sessions_by_access.pop(session.access_digest, None)
         self._sessions_by_refresh.pop(session.refresh_digest, None)
+        if self._metadata_store is not None:
+            self._metadata_store.delete_browser_session(session.access_digest)
 
     def _prune_pairings(self, now: float) -> None:
         for digest, pairing in list(self._pairings.items()):

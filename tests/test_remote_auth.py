@@ -16,6 +16,47 @@ from tests.remote_auth_support import BROWSER_ORIGIN, authenticate_connector, cl
 
 
 class RemoteAuthenticationTests(unittest.TestCase):
+    def test_browser_session_survives_relay_restart(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{(Path(temp_dir) / 'relay.db').as_posix()}"
+            first_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(first_app) as first_client:
+                login(first_client)
+                cookies = first_client.cookies
+
+            second_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(second_app) as second_client:
+                second_client.cookies.update(cookies)
+                response = second_client.get("/api/devices")
+                self.assertEqual(response.status_code, 200)
+
+    def test_signed_out_session_stays_signed_out_after_relay_restart(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            database_url = f"sqlite:///{(Path(temp_dir) / 'relay.db').as_posix()}"
+            first_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(first_app) as first_client:
+                login(first_client)
+                cookies = first_client.cookies
+                self.assertEqual(first_client.post("/api/auth/logout").status_code, 200)
+
+            second_app = create_relay_app(
+                administrators={"admin": "admin-password"},
+                database_url=database_url,
+            )
+            with TestClient(second_app) as second_client:
+                second_client.cookies.update(cookies)
+                response = second_client.get("/api/devices")
+                self.assertEqual(response.status_code, 401)
+
     def test_device_identity_and_revocation_survive_relay_restart(self) -> None:
         with TemporaryDirectory() as temp_dir:
             database_url = f"sqlite:///{(Path(temp_dir) / 'relay.db').as_posix()}"
