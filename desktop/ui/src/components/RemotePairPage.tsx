@@ -44,6 +44,10 @@ export default function RemotePairPage({ relayUrl }: RemotePairPageProps) {
       .getPairSession(linkSessionId, linkSecret)
       .then((info) => {
         if (!cancelled) {
+          const suggested = info.suggested_name?.trim();
+          if (suggested) {
+            setDeviceName(suggested);
+          }
           setPhase(info.status === "pending" ? "ready" : "invalid");
         }
       })

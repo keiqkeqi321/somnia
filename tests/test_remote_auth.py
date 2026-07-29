@@ -305,7 +305,7 @@ class PairSessionTests(unittest.TestCase):
             self.assertGreater(session["expires_at"], 0)
 
             status_url = f"/api/pair-sessions/{session['session_id']}?secret={session['secret']}"
-            self.assertEqual(client.get(status_url).json(), {"status": "pending"})
+            self.assertEqual(client.get(status_url).json(), {"status": "pending", "suggested_name": ""})
 
             login(client)
             approved = client.post(
@@ -324,6 +324,15 @@ class PairSessionTests(unittest.TestCase):
             claimed = claim_pairing(client, code, "ignored", Ed25519PrivateKey.generate())
             self.assertEqual(claimed.status_code, 201)
             self.assertEqual(claimed.json()["name"], "Desktop PC")
+
+    def test_pair_session_carries_the_suggested_device_name(self) -> None:
+        app = create_relay_app(administrators={"admin": "admin-password"})
+        with TestClient(app) as client:
+            response = client.post("/api/pair-sessions", json={"device_name": "DESKTOP-Office"})
+            self.assertEqual(response.status_code, 201)
+            session = response.json()
+            status = client.get(f"/api/pair-sessions/{session['session_id']}?secret={session['secret']}")
+            self.assertEqual(status.json(), {"status": "pending", "suggested_name": "DESKTOP-Office"})
 
     def test_pair_session_rejects_a_wrong_secret(self) -> None:
         app = create_relay_app(administrators={"admin": "admin-password"})

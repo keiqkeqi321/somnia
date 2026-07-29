@@ -3,6 +3,7 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import socket
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 import time
@@ -25,6 +26,7 @@ class _MockRelayHandler(BaseHTTPRequestHandler):
     poll_count = 0
     session_creations = 0
     web_origin = "http://web.test:4173"
+    last_pair_session_body: dict = {}
 
     @classmethod
     def reset(cls) -> None:
@@ -33,6 +35,7 @@ class _MockRelayHandler(BaseHTTPRequestHandler):
         cls.poll_count = 0
         cls.session_creations = 0
         cls.web_origin = "http://web.test:4173"
+        cls.last_pair_session_body = {}
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -40,9 +43,9 @@ class _MockRelayHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             body = {}
-        del body
         if self.path == "/api/pair-sessions":
             type(self).session_creations += 1
+            type(self).last_pair_session_body = body
             if type(self).session_mode == "error":
                 self._send_json(500, {"error": "relay exploded"})
                 return
@@ -202,6 +205,10 @@ class DesktopRemoteTests(unittest.TestCase):
 
     def test_pair_begin_opens_browser_polls_and_auto_enables(self) -> None:
         relay_url = self._pair()
+
+        # The pair session carries the machine hostname as the suggested Device
+        # name, so the approving browser pre-fills something recognizable.
+        self.assertEqual(_MockRelayHandler.last_pair_session_body.get("device_name"), socket.gethostname())
 
         # The browser was sent to the Web app origin reported by /api/info (split hosting),
         # carrying the session credentials — not to the Relay origin itself.

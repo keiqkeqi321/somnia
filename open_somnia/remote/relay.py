@@ -473,8 +473,10 @@ def create_relay_app(
 
     async def create_pair_session_endpoint(request: Request) -> JSONResponse:
         source = request.client.host if request.client is not None else "unknown"
+        body = await _json_body(request)
+        suggested_name = str(body.get("device_name", "")).strip()[:80]
         try:
-            session_id, secret, expires_at = auth.create_pair_session(source=source)
+            session_id, secret, expires_at = auth.create_pair_session(source=source, suggested_name=suggested_name)
         except PairSessionRateLimited as exc:
             return JSONResponse(
                 {"error": str(exc)},

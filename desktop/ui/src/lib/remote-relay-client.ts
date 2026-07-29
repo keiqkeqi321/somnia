@@ -21,6 +21,8 @@ export interface PairingGrant {
 export interface PairSessionInfo {
   status: "pending" | "approved" | "expired";
   code?: string;
+  /** Device-side default for the Device name, e.g. the machine hostname. */
+  suggested_name?: string;
 }
 
 type Fetcher = typeof fetch;

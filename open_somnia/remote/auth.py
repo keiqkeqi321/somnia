@@ -120,6 +120,7 @@ class _PairSession:
     secret_digest: str
     expires_at: float
     code: str | None = None
+    suggested_name: str = ""
 
 
 class RemoteAuth:
@@ -390,8 +391,12 @@ class RemoteAuth:
             self._devices[device.id] = device
             return device
 
-    def create_pair_session(self, *, source: str) -> tuple[str, str, float]:
-        """Create an in-memory device-flow pair session: (session_id, secret, expires_at)."""
+    def create_pair_session(self, *, source: str, suggested_name: str = "") -> tuple[str, str, float]:
+        """Create an in-memory device-flow pair session: (session_id, secret, expires_at).
+
+        ``suggested_name`` is the device-side default the approving browser
+        pre-fills as the Device name; the user can still edit it.
+        """
         session_id = uuid.uuid4().hex
         secret = _token()
         with self._lock:
@@ -411,6 +416,7 @@ class RemoteAuth:
             self._pair_sessions[session_id] = _PairSession(
                 secret_digest=self._digest(secret),
                 expires_at=now + self.pairing_ttl_seconds,
+                suggested_name=str(suggested_name).strip()[:80],
             )
             return session_id, secret, self._pair_sessions[session_id].expires_at
 
@@ -423,7 +429,7 @@ class RemoteAuth:
             if not hmac.compare_digest(session.secret_digest, self._digest(str(secret))):
                 raise PairSessionSecretInvalid("Pair session secret is invalid.")
             if session.code is None:
-                return {"status": "pending"}
+                return {"status": "pending", "suggested_name": session.suggested_name}
             code = session.code
             self._pair_sessions.pop(str(session_id), None)
             return {"status": "approved", "code": code}

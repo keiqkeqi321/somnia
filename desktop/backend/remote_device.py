@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import socket
 from threading import Event, Lock, Thread
 import time
 from typing import Any
@@ -39,6 +40,11 @@ def _relay_websocket_url(relay_http_url: str) -> str:
     if scheme is None:
         raise ValueError("Paired Relay URL must use http or https.")
     return parsed._replace(scheme=scheme).geturl()
+
+
+def _default_device_name() -> str:
+    """Device name suggested to the approving browser; the hostname identifies the machine."""
+    return socket.gethostname().strip() or "Somnia Desktop"
 
 
 def _http_error_message(exc: urllib.error.HTTPError) -> str:
@@ -166,7 +172,7 @@ class RemoteDeviceManager:
 
         session = self._post_json(
             f"{base_url}/api/pair-sessions",
-            {},
+            {"device_name": _default_device_name()},
             action="Relay pair session creation failed",
         )
         session_id = str(session.get("session_id", "")).strip()
