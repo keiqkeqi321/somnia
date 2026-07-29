@@ -594,7 +594,10 @@ class HookSystemTests(unittest.TestCase):
         self.assertEqual(payload["text"], "Hi there! 👋")
 
     def test_assistant_response_background_hook_does_not_block_turn_completion(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # The background hook subprocess may still hold the temp dir as its CWD
+        # when the test body finishes, which makes cleanup fail intermittently
+        # on Windows (WinError 32). The assertions do not depend on cleanup.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             root = Path(tmpdir)
             output_path = root / "assistant_background.txt"
             script_path = self._write_script(

@@ -223,7 +223,12 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertEqual(remote_status["device_id"], "device-123")
         self.assertEqual(remote_status["device_name"], "Test Device")
         self.assertEqual(remote_status["relay_url"], relay_url)
-        self.assertTrue(remote_status["enabled"])
+        # Enabling happens on the pair poll thread after claiming, so wait for
+        # it instead of asserting on the first status read (latent race).
+        self.assertTrue(
+            wait_until(lambda: self.server.remote_status()["enabled"]),
+            "Remote access was not auto-enabled after pairing.",
+        )
         self.assertTrue(
             wait_until(lambda: not self.server.remote_status()["pair_pending"]),
             "Pair poll thread did not wind down after approval.",
