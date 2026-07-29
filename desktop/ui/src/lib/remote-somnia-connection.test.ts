@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentSession, SidecarEvent } from "../types";
 import {
@@ -317,6 +317,68 @@ describe("Remote Somnia Connection", () => {
     });
     await expect(pending).resolves.toEqual({ turn_id: "turn-1", session_id: "session-1" });
     connection.close();
+  });
+
+  it("stops reconnecting and surfaces an error when the Relay rejects authentication", async () => {
+    const sockets: RecordingRelaySocket[] = [];
+    const notifications: SomniaConnectionNotification[] = [];
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      reconnectDelayMs: 1,
+      socketFactory: () => {
+        const socket = new RecordingRelaySocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    connection.subscribe((notification) => notifications.push(notification));
+    sockets[0].open();
+
+    sockets[0].onclose?.(
+      Object.assign(new Event("close"), { code: 4401, reason: "Browser authentication required." }) as CloseEvent,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sockets).toHaveLength(1);
+    expect(notifications.some((notification) => notification.kind === "state" && notification.state === "error")).toBe(true);
+    connection.close();
+  });
+
+  it("backs off exponentially between reconnect attempts", async () => {
+    vi.useFakeTimers();
+    try {
+      const sockets: RecordingRelaySocket[] = [];
+      const connection = new RemoteSomniaConnection({
+        relayUrl: "ws://relay.test",
+        deviceId: "device-1",
+        projectId: "project-1",
+        reconnectDelayMs: 100,
+        socketFactory: () => {
+          const socket = new RecordingRelaySocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      connection.subscribe(() => undefined);
+      expect(sockets).toHaveLength(1);
+
+      sockets[0].close();
+      await vi.advanceTimersByTimeAsync(99);
+      expect(sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(2);
+
+      sockets[1].close();
+      await vi.advanceTimersByTimeAsync(199);
+      expect(sockets).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(3);
+      connection.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("publishes stream snapshots and acknowledges the snapshot sequence", () => {

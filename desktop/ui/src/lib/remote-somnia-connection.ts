@@ -34,6 +34,10 @@ interface SequencedEvent {
 }
 
 const PROTOCOL_VERSION = 1;
+// Relay close codes for authentication/authorization failures: retrying these
+// can never succeed, so the connection surfaces them instead of looping.
+const AUTH_FAILURE_CLOSE_CODES = new Set([4401, 4403]);
+const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export interface RemoteSomniaConnectionOptions {
   relayUrl: string;
@@ -59,6 +63,7 @@ export class RemoteSomniaConnection implements SomniaClient {
   private lastAppliedSequence = 0;
   private lastAcknowledgedSequence = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempt = 0;
   private explicitlyClosed = false;
   private resumeInFlight = false;
 
@@ -304,14 +309,21 @@ export class RemoteSomniaConnection implements SomniaClient {
     this.socket = socket;
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      this.reconnectAttempt = 0;
       this.setState("connected");
       this.sendStreamResume();
       this.resendPending();
     };
     socket.onerror = () => this.setState("error", "Relay connection failed.");
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (this.socket !== socket) return;
       this.socket = null;
+      if (AUTH_FAILURE_CLOSE_CODES.has(event.code)) {
+        // Auth failures never heal by retrying; surface them instead of looping.
+        const detail = event.reason ? ` (${event.reason})` : "";
+        this.setState("error", `Relay rejected the connection (${event.code})${detail} Sign in again to reconnect.`);
+        return;
+      }
       this.setState("disconnected");
       this.scheduleReconnect();
     };
@@ -571,10 +583,13 @@ export class RemoteSomniaConnection implements SomniaClient {
 
   private scheduleReconnect(): void {
     if (this.explicitlyClosed || this.listeners.size === 0 || this.reconnectTimer !== null) return;
+    const delay =
+      this.reconnectDelayMs === 0 ? 0 : Math.min(this.reconnectDelayMs * 2 ** this.reconnectAttempt, MAX_RECONNECT_DELAY_MS);
+    this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.open();
-    }, this.reconnectDelayMs);
+    }, delay);
   }
 
   private setState(state: SomniaConnectionState, error?: string): void {

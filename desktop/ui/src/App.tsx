@@ -907,9 +907,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         ...previous,
         [projectPath]: false,
       }));
-      setRemoteConnected(true);
       writeRemoteLastTarget({ deviceId, projectId });
+      // Enter the workspace only after the full initial load (providers,
+      // models, session selection) settles, so the connecting screen covers
+      // the whole startup window instead of flickering inside the workspace.
       await activateProject(projectPath, client, project);
+      setRemoteConnected(true);
       setBannerMessage(`Connected to ${device.name} / ${remoteProject.name}.`);
     } catch (error) {
       delete projectClientsRef.current[projectPath];
