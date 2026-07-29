@@ -2670,8 +2670,6 @@ button {
 .conversation-body {
   flex: 1;
   min-height: 0;
-  padding: 18px 22px 24px;
-  overflow: auto;
 }
 
 .conversation-content {
@@ -2679,11 +2677,26 @@ button {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  padding: 18px 22px 24px;
+}
+
+.conversation-virtual-list {
+  height: 100%;
+}
+
+.conversation-virtual-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0 22px 18px;
+}
+
+.conversation-virtual-item.first {
+  padding-top: 18px;
 }
 
 .conversation-end {
   width: 100%;
-  height: 1px;
+  height: 24px;
   flex: 0 0 auto;
 }
 

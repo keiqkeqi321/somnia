@@ -13,6 +13,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import mermaid from "mermaid";
+import { VList, type VListHandle } from "virtua";
 import appIconUrl from "../src-tauri/icons/32x32.png";
 
 import {
@@ -378,9 +379,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const sessionMenuRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const conversationBodyRef = useRef<HTMLDivElement | null>(null);
-  const conversationContentRef = useRef<HTMLDivElement | null>(null);
-  const conversationEndRef = useRef<HTMLDivElement | null>(null);
+  const conversationListRef = useRef<VListHandle | null>(null);
+  const conversationVirtualCountRef = useRef(0);
   const conversationPinnedToBottomRef = useRef(true);
   const conversationScrollFrameRef = useRef<number | null>(null);
 
@@ -396,12 +396,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
     conversationScrollFrameRef.current = window.requestAnimationFrame(() => {
       conversationScrollFrameRef.current = null;
-      const el = conversationBodyRef.current;
-      if (!el) {
+      const list = conversationListRef.current;
+      const count = conversationVirtualCountRef.current;
+      if (!list || count <= 0) {
         return;
       }
-      el.scrollTop = el.scrollHeight;
-      conversationEndRef.current?.scrollIntoView({ block: "end" });
+      list.scrollToIndex(count - 1, { align: "end" });
     });
   }
 
@@ -685,41 +685,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
     conversationPinnedToBottomRef.current = true;
     scrollConversationBodyToBottom();
-  }, [selectedSessionId]);
-
-  useEffect(() => {
-    const el = conversationBodyRef.current;
-    if (!el) {
-      return;
-    }
-
-    const handleScroll = () => {
-      conversationPinnedToBottomRef.current =
-        el.scrollHeight - el.clientHeight - el.scrollTop <= CONVERSATION_BOTTOM_STICKY_THRESHOLD;
-    };
-
-    handleScroll();
-    el.addEventListener("scroll", handleScroll, { passive: true });
-    return () => {
-      el.removeEventListener("scroll", handleScroll);
-    };
-  }, [selectedSessionId]);
-
-  useEffect(() => {
-    const el = conversationContentRef.current;
-    if (!el || typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      if (conversationPinnedToBottomRef.current) {
-        scrollConversationBodyToBottom();
-      }
-    });
-    observer.observe(el);
-    return () => {
-      observer.disconnect();
-    };
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -3522,6 +3487,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         .join("\u0002")
     : "";
 
+  conversationVirtualCountRef.current =
+    conversationRows.length + (activeQueuedPrompts.length > 0 ? 1 : 0) + (currentSessionInteraction ? 1 : 0) + 1;
+
   useLayoutEffect(() => {
     if (conversationPinnedToBottomRef.current) {
       scrollConversationBodyToBottom();
@@ -3536,6 +3504,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     latestConversationRowId,
     latestStreamingAssistantRowId,
     pendingImages.length,
+    runtimeConversationItems,
     todoExpanded,
     todoLayoutKey,
   ]);
@@ -4047,97 +4016,119 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
           ) : null}
 
-          <div ref={conversationBodyRef} className="conversation-body">
-            <div ref={conversationContentRef} className="conversation-content">
-              {selectedWorkerActive ? (
+          <div className="conversation-body">
+            {selectedWorkerActive ? (
+              <div className="conversation-content">
                 <WorkerOutputView member={selectedWorkerMember} workerName={selectedWorkerView?.name ?? ""} state={workerLogState} />
-              ) : conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
+              </div>
+            ) : conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
+              <div className="conversation-content">
                 <div className="empty-conversation">
                   <h3>{t("conversation.startSession")}</h3>
                   <p>{t("conversation.startSessionHint")}</p>
                 </div>
-              ) : (
-                conversationRows.map((row) => (
-                  <article key={row.id} className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
-                    {row.parts?.length ? (
-                      row.parts.map((part) =>
-                        part.type === "text" ? (
-                          <MarkdownMessage key={part.id} text={part.text} />
-                        ) : part.type === "thinking_log" ? (
-                          <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
-                        ) : (
-                          <div key={part.id} className="tool-call-stack">
-                            <ToolCallWithImages
-                              toolCall={part.toolCall}
+              </div>
+            ) : (
+              <VList
+                ref={conversationListRef}
+                className="conversation-virtual-list"
+                bufferSize={400}
+                onScroll={() => {
+                  const list = conversationListRef.current;
+                  if (!list) {
+                    return;
+                  }
+                  conversationPinnedToBottomRef.current =
+                    list.scrollSize - list.viewportSize - list.scrollOffset <= CONVERSATION_BOTTOM_STICKY_THRESHOLD;
+                }}
+              >
+                {conversationRows.map((row, index) => (
+                  <div key={row.id} className={`conversation-virtual-item${index === 0 ? " first" : ""}`}>
+                    <article className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
+                      {row.parts?.length ? (
+                        row.parts.map((part) =>
+                          part.type === "text" ? (
+                            <MarkdownMessage key={part.id} text={part.text} />
+                          ) : part.type === "thinking_log" ? (
+                            <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
+                          ) : (
+                            <div key={part.id} className="tool-call-stack">
+                              <ToolCallWithImages
+                                toolCall={part.toolCall}
+                                client={clientRef.current}
+                                onPreviewImage={setToolImagePreview}
+                              />
+                            </div>
+                          ),
+                        )
+                      ) : row.text ? (
+                        <MarkdownMessage text={row.text} />
+                      ) : null}
+                      {row.images?.length ? (
+                        <div className="user-image-list">
+                          {row.images.map((image, index) => (
+                            <UserImagePreview
+                              key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
+                              image={image}
+                              index={index}
                               client={clientRef.current}
                               onPreviewImage={setToolImagePreview}
                             />
-                          </div>
-                        ),
-                      )
-                    ) : row.text ? (
-                      <MarkdownMessage text={row.text} />
-                    ) : null}
-                    {row.images?.length ? (
-                      <div className="user-image-list">
-                        {row.images.map((image, index) => (
-                          <UserImagePreview
-                            key={`${image.path ?? image.absolute_path ?? image.image_url ?? `img-${index}`}`}
-                            image={image}
-                            index={index}
-                            client={clientRef.current}
-                            onPreviewImage={setToolImagePreview}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                    {row.isLoading ? (
-                      <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
-                        <span />
-                        <span />
-                        <span />
-                      </span>
-                    ) : null}
-                    {!row.parts?.length && row.toolCalls?.length ? (
-                      <div className="tool-call-stack">
-                        {row.toolCalls.map((toolCall) => (
-                          <ToolCallWithImages
-                            key={toolCall.id}
-                            toolCall={toolCall}
-                            client={clientRef.current}
-                            onPreviewImage={setToolImagePreview}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                    {row.id === latestStreamingAssistantRowId ? (
-                      <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
-                        <span aria-hidden="true" />
-                        <span aria-hidden="true" />
-                        <span aria-hidden="true" />
-                      </span>
-                    ) : null}
-                  </article>
-                ))
-              )}
-              {!selectedWorkerActive && activeQueuedPrompts.length > 0 ? (
-                <PromptQueueCard
-                  prompts={activeQueuedPrompts}
-                  canInject={currentSessionRunning}
-                  busy={busyAction !== null}
-                  onInject={handleQueuePromptInjection}
-                />
-              ) : null}
-              {!selectedWorkerActive && currentSessionInteraction ? (
-                <InteractionDecisionCard
-                  interaction={currentSessionInteraction}
-                  busy={busyAction !== null}
-                  onResolveAuthorization={handleResolveAuthorization}
-                  onResolveModeSwitch={handleResolveModeSwitch}
-                />
-              ) : null}
-              <div ref={conversationEndRef} className="conversation-end" aria-hidden="true" />
-            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {row.isLoading ? (
+                        <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                      ) : null}
+                      {!row.parts?.length && row.toolCalls?.length ? (
+                        <div className="tool-call-stack">
+                          {row.toolCalls.map((toolCall) => (
+                            <ToolCallWithImages
+                              key={toolCall.id}
+                              toolCall={toolCall}
+                              client={clientRef.current}
+                              onPreviewImage={setToolImagePreview}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                      {row.id === latestStreamingAssistantRowId ? (
+                        <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
+                          <span aria-hidden="true" />
+                          <span aria-hidden="true" />
+                          <span aria-hidden="true" />
+                        </span>
+                      ) : null}
+                    </article>
+                  </div>
+                ))}
+                {activeQueuedPrompts.length > 0 ? (
+                  <div key="prompt-queue" className="conversation-virtual-item">
+                    <PromptQueueCard
+                      prompts={activeQueuedPrompts}
+                      canInject={currentSessionRunning}
+                      busy={busyAction !== null}
+                      onInject={handleQueuePromptInjection}
+                    />
+                  </div>
+                ) : null}
+                {currentSessionInteraction ? (
+                  <div key="session-interaction" className="conversation-virtual-item">
+                    <InteractionDecisionCard
+                      interaction={currentSessionInteraction}
+                      busy={busyAction !== null}
+                      onResolveAuthorization={handleResolveAuthorization}
+                      onResolveModeSwitch={handleResolveModeSwitch}
+                    />
+                  </div>
+                ) : null}
+                <div key="conversation-end" className="conversation-end" aria-hidden="true" />
+              </VList>
+            )}
           </div>
 
           {!selectedWorkerActive ? (
