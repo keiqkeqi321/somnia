@@ -877,6 +877,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       relayUrl: remoteAccess.relayUrl,
       deviceId,
       projectId,
+      // On ws 4401 (the 15-minute access cookie expired), renew the cookie
+      // before reconnecting so the connection does not fall into a loop.
+      reauthorize: () => remoteAccess.verifyAccess(),
     });
     setRemoteConnecting(true);
     setConnectionState("connecting");

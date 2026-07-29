@@ -346,6 +346,57 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
+  it("renews credentials via reauthorize and reconnects on an auth close", async () => {
+    const sockets: RecordingRelaySocket[] = [];
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      reconnectDelayMs: 0,
+      reauthorize: () => Promise.resolve(true),
+      socketFactory: () => {
+        const socket = new RecordingRelaySocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    connection.subscribe(() => undefined);
+    sockets[0].open();
+
+    sockets[0].onclose?.(Object.assign(new Event("close"), { code: 4401, reason: "Browser authentication expired." }) as CloseEvent);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sockets).toHaveLength(2);
+    connection.close();
+  });
+
+  it("surfaces an error without reconnecting when reauthorize cannot renew", async () => {
+    const sockets: RecordingRelaySocket[] = [];
+    const notifications: SomniaConnectionNotification[] = [];
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      reconnectDelayMs: 1,
+      reauthorize: () => Promise.resolve(false),
+      socketFactory: () => {
+        const socket = new RecordingRelaySocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    connection.subscribe((notification) => notifications.push(notification));
+    sockets[0].open();
+
+    sockets[0].onclose?.(Object.assign(new Event("close"), { code: 4401, reason: "Browser authentication expired." }) as CloseEvent);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sockets).toHaveLength(1);
+    expect(notifications.some((notification) => notification.kind === "state" && notification.state === "error")).toBe(true);
+    connection.close();
+  });
+
   it("backs off exponentially between reconnect attempts", async () => {
     vi.useFakeTimers();
     try {

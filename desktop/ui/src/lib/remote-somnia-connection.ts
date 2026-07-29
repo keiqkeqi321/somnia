@@ -45,6 +45,13 @@ export interface RemoteSomniaConnectionOptions {
   projectId: string;
   socketFactory?: (url: string) => RemoteSocket;
   reconnectDelayMs?: number;
+  /**
+   * Called when the Relay closes with an auth failure (4401/4403). Should
+   * renew credentials (e.g. rotate the short-lived access cookie via the
+   * refresh cookie) and resolve true when a reconnect is worth attempting.
+   * Without it, auth failures surface as an unretried error.
+   */
+  reauthorize?: () => Promise<boolean>;
 }
 
 export class RemoteSomniaConnection implements SomniaClient {
@@ -52,6 +59,7 @@ export class RemoteSomniaConnection implements SomniaClient {
   private readonly deviceId: string;
   private readonly projectId: string;
   private readonly socketFactory: (url: string) => RemoteSocket;
+  private readonly reauthorize: (() => Promise<boolean>) | null;
   private readonly listeners = new Set<SomniaConnectionListener>();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly reconnectDelayMs: number;
@@ -64,6 +72,7 @@ export class RemoteSomniaConnection implements SomniaClient {
   private lastAcknowledgedSequence = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
+  private reauthorizeInFlight = false;
   private explicitlyClosed = false;
   private resumeInFlight = false;
 
@@ -73,6 +82,7 @@ export class RemoteSomniaConnection implements SomniaClient {
     this.projectId = required(options.projectId, "projectId");
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url));
     this.reconnectDelayMs = Math.max(0, options.reconnectDelayMs ?? 1000);
+    this.reauthorize = options.reauthorize ?? null;
   }
 
   query(query: SessionLoadQuery): Promise<AgentSession>;
@@ -319,9 +329,7 @@ export class RemoteSomniaConnection implements SomniaClient {
       if (this.socket !== socket) return;
       this.socket = null;
       if (AUTH_FAILURE_CLOSE_CODES.has(event.code)) {
-        // Auth failures never heal by retrying; surface them instead of looping.
-        const detail = event.reason ? ` (${event.reason})` : "";
-        this.setState("error", `Relay rejected the connection (${event.code})${detail} Sign in again to reconnect.`);
+        this.handleAuthFailure(event);
         return;
       }
       this.setState("disconnected");
@@ -579,6 +587,40 @@ export class RemoteSomniaConnection implements SomniaClient {
       // in case the drop predated this wait.
       this.open();
     });
+  }
+
+  private handleAuthFailure(event: CloseEvent): void {
+    const reauthorize = this.reauthorize;
+    if (!reauthorize) {
+      // No renewal path: retrying can never succeed, so surface instead of looping.
+      const detail = event.reason ? ` (${event.reason})` : "";
+      this.setState("error", `Relay rejected the connection (${event.code})${detail} Sign in again to reconnect.`);
+      return;
+    }
+    if (this.reauthorizeInFlight) {
+      return;
+    }
+    // The short-lived access cookie expired; renew it via the refresh cookie,
+    // then reconnect. Pending requests hold and resend on the new socket.
+    this.reauthorizeInFlight = true;
+    this.setState("disconnected");
+    void reauthorize()
+      .then((renewed) => {
+        if (renewed) {
+          this.reconnectAttempt = 0;
+          this.scheduleReconnect();
+        } else {
+          const detail = event.reason ? ` (${event.reason})` : "";
+          this.setState("error", `Relay rejected the connection (${event.code})${detail} Sign in again to reconnect.`);
+        }
+      })
+      .catch(() => {
+        // Renewal itself failed transiently; keep retrying with backoff.
+        this.scheduleReconnect();
+      })
+      .finally(() => {
+        this.reauthorizeInFlight = false;
+      });
   }
 
   private scheduleReconnect(): void {
