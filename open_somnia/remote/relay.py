@@ -55,13 +55,21 @@ class _Peer:
     send_timeout_seconds: float = 2.0
 
     async def send(self, message: dict[str, Any]) -> None:
-        if self.send_lock.locked():
-            raise TimeoutError("Client send queue is full.")
-        async with self.send_lock:
+        # Bursts are normal (e.g. two turns streaming in parallel): wait for
+        # the in-flight send instead of failing immediately. A client that
+        # stays backlogged beyond the timeout is still reported as slow so the
+        # caller disconnects it for resync.
+        try:
+            await asyncio.wait_for(self.send_lock.acquire(), timeout=self.send_timeout_seconds)
+        except asyncio.TimeoutError:
+            raise TimeoutError("Client send queue is full.") from None
+        try:
             await asyncio.wait_for(
                 self.socket.send_json(message),
                 timeout=self.send_timeout_seconds,
             )
+        finally:
+            self.send_lock.release()
 
 
 class RelayHub:

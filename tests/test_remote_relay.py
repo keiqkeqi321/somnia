@@ -42,6 +42,36 @@ class RemoteRelayTests(unittest.TestCase):
         self.assertEqual(closed, {"code": 4008, "reason": "Client too slow; resync required."})
         self.assertEqual(clients, {})
 
+    def test_burst_events_are_queued_instead_of_disconnecting_the_client(self) -> None:
+        async def scenario() -> tuple[list, dict, dict]:
+            app = create_relay_app(administrators={"admin": "admin-password"}, client_send_timeout_seconds=0.5)
+            hub: RelayHub = app.state.relay_hub
+            account = app.state.remote_auth.authenticate_password("admin", "admin-password", source="test")
+            tokens = app.state.remote_auth.issue_browser_tokens(account.id)
+            burst_socket = _DelaySocket(0.02)
+            burst_peer = _Peer(
+                socket=burst_socket,
+                account_id=account.id,
+                access_token=tokens.access_token,
+                send_timeout_seconds=0.5,
+            )
+            hub._clients["device-1"] = {"burst": burst_peer}
+            hub._connectors["device-1"] = _Peer(
+                socket=SimpleNamespace(),
+                account_id=account.id,
+                send_timeout_seconds=0.5,
+            )
+
+            for index in range(3):
+                await hub._broadcast_to_clients("device-1", {"kind": "event", "seq": index})
+            await asyncio.sleep(0.3)
+            return burst_socket.received, burst_socket.closed, hub._clients.get("device-1", {})
+
+        received, closed, clients = asyncio.run(scenario())
+        self.assertEqual([message["seq"] for message in received], [0, 1, 2])
+        self.assertIsNone(closed)
+        self.assertTrue(clients)
+
     def test_health_endpoint_reports_ready_without_storing_state(self) -> None:
         with TestClient(create_relay_app()) as client:
             response = client.get("/health")
@@ -187,6 +217,22 @@ class _SlowSocket:
     async def send_json(self, message: dict) -> None:
         del message
         await self._never.wait()
+
+    async def close(self, *, code: int, reason: str) -> None:
+        self.closed = {"code": code, "reason": reason}
+
+
+class _DelaySocket:
+    """Sends succeed after a small delay, simulating a busy-but-alive client."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+        self.received: list[dict] = []
+        self.closed: dict | None = None
+
+    async def send_json(self, message: dict) -> None:
+        await asyncio.sleep(self.delay_seconds)
+        self.received.append(message)
 
     async def close(self, *, code: int, reason: str) -> None:
         self.closed = {"code": code, "reason": reason}
