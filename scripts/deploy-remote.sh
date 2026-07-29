@@ -69,7 +69,7 @@ ssh "$TARGET" "$SERVER_PYTHON -c 'import sys; assert sys.version_info >= (3, 11)
     exit 1
 }
 scp -q "$WHEEL" "$TARGET:/tmp/"
-ssh "$TARGET" "$SERVER_PYTHON -m pip install --upgrade '/tmp/$(basename "$WHEEL")' && rm -f '/tmp/$(basename "$WHEEL")'"
+ssh "$TARGET" "$SERVER_PYTHON -m pip install --upgrade --force-reinstall --no-deps '/tmp/$(basename "$WHEEL")' && rm -f '/tmp/$(basename "$WHEEL")'"
 
 if [ "$SETUP" -eq 1 ]; then
     echo "==> Running first-time setup on $TARGET ..."
