@@ -44,6 +44,12 @@ from open_somnia.remote.auth_store import AuthMetadataStore
 ACCESS_COOKIE = "somnia_access"
 REFRESH_COOKIE = "somnia_refresh"
 DEFAULT_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+# Large frames (turn completion carrying a full Session, stream snapshots)
+# legitimately need longer than the base timeout on slow links. The per-write
+# timeout scales with payload size at this assumed floor bandwidth, so big
+# frames finish delivering instead of forcing a resync disconnect.
+SEND_TIMEOUT_BYTES_PER_SECOND = 64 * 1024
+MAX_SEND_TIMEOUT_SECONDS = 120.0
 
 
 @dataclass(slots=True)
@@ -64,12 +70,23 @@ class _Peer:
         except asyncio.TimeoutError:
             raise TimeoutError("Client send queue is full.") from None
         try:
+            write_timeout = min(
+                MAX_SEND_TIMEOUT_SECONDS,
+                self.send_timeout_seconds + self._payload_size(message) / SEND_TIMEOUT_BYTES_PER_SECOND,
+            )
             await asyncio.wait_for(
                 self.socket.send_json(message),
-                timeout=self.send_timeout_seconds,
+                timeout=write_timeout,
             )
         finally:
             self.send_lock.release()
+
+    @staticmethod
+    def _payload_size(message: dict[str, Any]) -> int:
+        try:
+            return len(json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError):
+            return 0
 
 
 class RelayHub:

@@ -44,6 +44,43 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(sent[0]["kind"], "stream_replay")
             self.assertEqual([event["sequence"] for event in sent[0]["events"]], [2, 3])
 
+    def test_pump_reconnect_resync_resets_the_epoch_and_pushes_a_snapshot(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=4)
+            lost_epoch = connector.publish_sidecar_event({"type": "turn_result", "payload": {}})["stream_epoch"]
+            sent: list[dict] = []
+            connector._active_send = sent.append
+            try:
+                connector.resync_project_stream("project-1")
+            finally:
+                connector._active_send = None
+
+            self.assertEqual(sent[0]["kind"], "stream_snapshot")
+            self.assertEqual(sent[0]["project_id"], "project-1")
+            self.assertEqual(sent[0]["sequence"], 0)
+            self.assertNotEqual(sent[0]["stream_epoch"], lost_epoch)
+            self.assertEqual(sent[0]["snapshot"], {"sessions": [{"id": "session-1"}], "runtime": {"status": "ready"}})
+            # Live events continue on the new epoch from sequence 1, so clients
+            # detect the epoch change and fall back to a snapshot resume.
+            following = connector.publish_sidecar_event({"type": "next", "payload": {}})
+            self.assertEqual(following["stream_epoch"], sent[0]["stream_epoch"])
+            self.assertEqual(following["sequence"], 1)
+
+    def test_pump_reconnect_resync_still_resets_the_epoch_while_the_relay_is_down(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=4)
+            lost_epoch = connector.publish_sidecar_event({"type": "turn_result", "payload": {}})["stream_epoch"]
+
+            connector.resync_project_stream("project-1")
+
+            following = connector.publish_sidecar_event({"type": "next", "payload": {}})
+            self.assertNotEqual(following["stream_epoch"], lost_epoch)
+            self.assertEqual(following["sequence"], 1)
+
     def test_replay_window_miss_returns_an_authoritative_snapshot(self) -> None:
         with TemporaryDirectory() as temp_dir:
             identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")

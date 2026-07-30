@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -74,6 +75,8 @@ IMAGE_MEDIA_TYPE_SUFFIXES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+
+logger = logging.getLogger(__name__)
 CONFIG_SECTION_KEYS = {"provider", "runtime", "mcp", "hooks", "system_prompt"}
 CONFIG_SCOPES = {"user", "project"}
 
@@ -1166,7 +1169,14 @@ class SidecarServer:
             try:
                 client.queue.put_nowait(deepcopy(event))
             except Exception:
-                continue
+                # Was a silent "continue": a dropped event (e.g. turn_result)
+                # leaves remote clients stuck on a stale turn with no trace.
+                logger.warning(
+                    "Dropping event for WebSocket client %s (type=%s)",
+                    client.id,
+                    event.get("type"),
+                    exc_info=True,
+                )
 
     def _drain_turn_events(self, handle) -> None:
         latest_context_usage = None
@@ -1554,7 +1564,10 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
                     continue
                 if opcode == 0x1:
                     continue
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            # The pump will reconnect, but events queued in the meantime are
+            # lost; log it so silent event gaps stay diagnosable.
+            logger.info("WebSocket client %s connection failed: %s", client.id, exc)
             return
         finally:
             self.sidecar.unregister_client(client.id)

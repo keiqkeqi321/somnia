@@ -320,6 +320,7 @@ class _ProjectEventPump:
 
     def _run(self) -> None:
         delay = SIDECAR_PUMP_INITIAL_DELAY_SECONDS
+        had_connection = False
         while not self._stop.is_set():
             sidecar = self._connector.project_sidecar(self.project_id)
             if sidecar is None:
@@ -327,6 +328,12 @@ class _ProjectEventPump:
             try:
                 with connect(sidecar.event_url, open_timeout=5, close_timeout=2) as events:
                     delay = SIDECAR_PUMP_INITIAL_DELAY_SECONDS
+                    if had_connection:
+                        # Reconnected after an outage: events the sidecar
+                        # broadcast while this pump was away are lost without
+                        # any sequence gap, so force every client to resync.
+                        self._connector.resync_project_stream(self.project_id)
+                    had_connection = True
                     self._outage_reported = False
                     for raw_event in events:
                         if self._stop.is_set():
@@ -413,6 +420,49 @@ class RemoteConnector:
                 "kind": "connector_error",
                 "project_id": project_id,
                 "error": f"Sidecar event stream failed: {exc}",
+            }
+        )
+
+    def resync_project_stream(self, project_id: str) -> None:
+        """Force clients onto a fresh stream epoch and push a snapshot.
+
+        The sidecar event pump has no replay channel: events broadcast while
+        it was reconnecting vanish without any sequence gap, so downstream
+        recovery (resume/replay) can never notice the loss — a lost
+        ``turn_result`` leaves clients stuck on a turn that actually finished.
+        Resetting the epoch and pushing an authoritative snapshot moves every
+        client back to the resync path (``restoreActiveTurnsFromStatus``).
+        """
+        with self._state_lock:
+            state = self._projects.get(project_id)
+            if state is None:
+                return
+            state.stream_epoch = uuid.uuid4().hex
+            state.next_sequence = 0
+            state.highest_acknowledged = 0
+            state.event_ring.clear()
+            epoch = state.stream_epoch
+            sidecar = state.sidecar
+        try:
+            snapshot = sidecar.execute("stream.snapshot", {})
+        except Exception:
+            # The next stream_resume (or the epoch mismatch on the next live
+            # event) still drives clients to a snapshot on their own.
+            return
+        with self._projects_lock:
+            send = self._active_send
+        if send is None:
+            # Relay link is down; run() resets the epoch on reconnect anyway.
+            return
+        send(
+            {
+                "kind": "stream_snapshot",
+                "protocol_version": PROTOCOL_VERSION,
+                "device_id": self.device_id,
+                "project_id": project_id,
+                "stream_epoch": epoch,
+                "sequence": 0,
+                "snapshot": snapshot,
             }
         )
 

@@ -530,7 +530,7 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
-  it("reloads the authoritative Session before publishing Turn completion", async () => {
+  it("publishes Turn completion immediately and enriches the Session afterwards", async () => {
     const { connection, socket, openStream } = createHarness();
     const notifications: SomniaConnectionNotification[] = [];
     connection.subscribe((notification) => notifications.push(notification));
@@ -557,9 +557,57 @@ describe("Remote Somnia Connection", () => {
         type: "turn_result",
         session_id: loadedSession.id,
         turn_id: "turn-1",
+        payload: { session: { ...loadedSession, messages: [] } },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const enrichment = notifications.find(
+      (notification) => notification.kind === "event" && notification.event.type === "session_updated",
+    );
+    expect(enrichment).toEqual({
+      kind: "event",
+      event: {
+        type: "session_updated",
+        session_id: loadedSession.id,
+        turn_id: "turn-1",
         payload: { session: loadedSession },
       },
     });
+  });
+
+  it("publishes Turn completion even when the Session reload never responds", async () => {
+    class HangingLoadSocket extends FakeRelaySocket {
+      send(rawMessage: string) {
+        const request = JSON.parse(rawMessage) as { request_id?: string; method?: string };
+        if (request.method === "session.load") {
+          // Never respond: the reload hangs without rejecting.
+          return;
+        }
+        super.send(rawMessage);
+      }
+    }
+    const socket = new HangingLoadSocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    const notifications: SomniaConnectionNotification[] = [];
+    connection.subscribe((notification) => notifications.push(notification));
+    socket.open();
+    socket.emit({
+      kind: "event",
+      project_id: "project-1",
+      stream_epoch: "epoch-1",
+      sequence: 1,
+      event: { type: "turn_result", session_id: "session-1", turn_id: "turn-1", payload: {} },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const published = notifications.filter((notification) => notification.kind === "event");
+    expect(published).toHaveLength(1);
+    expect(published[0].event?.type).toBe("turn_result");
+    connection.close();
   });
 });
 

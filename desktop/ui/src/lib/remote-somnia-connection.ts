@@ -474,21 +474,31 @@ export class RemoteSomniaConnection implements SomniaClient {
 
   private publishEvent(event: SidecarEvent): void {
     if (event.type === "turn_result" && event.session_id) {
-      void this.publishAuthoritativeCompletion(event);
+      // Deliver the completion immediately. Gating it on an authoritative
+      // Session reload meant a hung or lost request swallowed the completion
+      // entirely and left the UI stuck on the "answering" indicator.
+      this.notify({ kind: "event", event });
+      void this.enrichCompletedSession(event);
       return;
     }
     this.notify({ kind: "event", event });
   }
 
-  private async publishAuthoritativeCompletion(event: SidecarEvent): Promise<void> {
+  private async enrichCompletedSession(event: SidecarEvent): Promise<void> {
     try {
       const session = await this.query({ type: "session.load", sessionId: String(event.session_id) });
-      this.notify({ kind: "event", event: { ...event, payload: { ...event.payload, session } } });
+      this.notify({
+        kind: "event",
+        event: {
+          type: "session_updated",
+          session_id: event.session_id ?? null,
+          turn_id: event.turn_id ?? null,
+          payload: { ...event.payload, session },
+        },
+      });
     } catch (error) {
-      // Always deliver the completion itself — a payload without the freshly
-      // reloaded Session still completes the turn in the UI, while swallowing
-      // the event leaves the "answering" indicator stuck forever.
-      this.notify({ kind: "event", event });
+      // The completion itself already landed; only the authoritative refresh
+      // failed, so surface it as a non-fatal protocol error.
       this.notify({ kind: "protocol_error", error: `Unable to reload completed Session: ${formatError(error)}` });
     }
   }
