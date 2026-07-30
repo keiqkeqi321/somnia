@@ -18,7 +18,9 @@ class SystemPromptBuilder:
         bash_hint = (
             "When using the `bash` tool on Windows, prefer PowerShell commands such as "
             "`Get-ChildItem`, `Get-Content`, `Select-String`, and `Select-Object`. "
-            "Do not assume Unix commands like `ls`, `find -name`, `head`, `grep`, or `/dev/null` are available."
+            "Do not assume Unix commands like `ls`, `find -name`, `head`, `grep`, or `/dev/null` are available. "
+            "Never launch GUI programs in the foreground with `&` (they block the tool call until the app exits); "
+            "start them detached with `Start-Process` and check them via `Get-Process` or log files instead."
             if sys.platform == "win32"
             else "When using the `bash` tool on Unix-like systems, standard shell commands are available."
         )

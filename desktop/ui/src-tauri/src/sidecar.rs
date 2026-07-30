@@ -75,26 +75,40 @@ impl ManagedSidecar {
         let (stdout_log_path, stderr_log_path) = resolve_log_paths(app, &workspace_key)?;
         let port = pick_available_port()?;
         let connection = build_connection(port, &workspace_root);
-        let child = spawn_sidecar(
-            &launcher,
-            port,
-            &workspace_root,
-            &stdout_log_path,
-            &stderr_log_path,
-        )?;
 
-        state.child = Some(child);
-        state.connection = Some(connection.clone());
-        state.port = Some(port);
-        state.stdout_log_path = Some(stdout_log_path);
-        state.stderr_log_path = Some(stderr_log_path);
+        // A leftover sidecar from a previous app instance can still hold the
+        // per-workspace instance lock. The once-per-launch orphan sweep may
+        // have run before the old app finished exiting, so the first spawn
+        // attempt can trip the lock; sweep again and retry once before
+        // surfacing the failure.
+        let mut last_error: Option<String> = None;
+        for attempt in 0..2 {
+            if attempt > 0 {
+                thread::sleep(Duration::from_secs(2));
+                sweep_orphan_sidecars();
+            }
+            let child = spawn_sidecar(
+                &launcher,
+                port,
+                &workspace_root,
+                &stdout_log_path,
+                &stderr_log_path,
+            )?;
+            state.child = Some(child);
+            state.connection = Some(connection.clone());
+            state.port = Some(port);
+            state.stdout_log_path = Some(stdout_log_path.clone());
+            state.stderr_log_path = Some(stderr_log_path.clone());
 
-        if let Err(error) = wait_for_sidecar_ready(state) {
-            stop_locked(state);
-            return Err(error);
+            match wait_for_sidecar_ready(state) {
+                Ok(()) => return Ok(connection),
+                Err(error) => {
+                    last_error = Some(error);
+                    stop_locked(state);
+                }
+            }
         }
-
-        Ok(connection)
+        Err(last_error.unwrap_or_else(|| "Bundled sidecar failed to start.".to_string()))
     }
 
     pub fn stop_all(&self) -> Result<bool, String> {

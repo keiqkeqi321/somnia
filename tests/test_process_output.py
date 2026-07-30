@@ -48,18 +48,68 @@ class ProcessOutputTests(unittest.TestCase):
         self.assertEqual(decode_output(text.encode("utf-8")), text)
 
     def test_run_command_uses_binary_mode_and_decodes_output(self) -> None:
-        with patch("open_somnia.tools.process.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args="git status",
-                returncode=0,
-                stdout="submit git chinese infor".encode("utf-8"),
-                stderr=b"",
-            )
-
-            result = run_command("git status", shell=True, cwd=Path.cwd(), timeout=10)
+        result = run_command(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write('submit git chinese infor'.encode('utf-8'))",
+            ],
+            shell=False,
+            cwd=Path.cwd(),
+            timeout=10,
+        )
 
         self.assertEqual(result.stdout, "submit git chinese infor")
-        self.assertFalse(mock_run.call_args.kwargs["text"])
+
+    def test_run_command_timeout_kills_the_whole_tree_without_hanging(self) -> None:
+        # The direct child spawns a grandchild that inherits the output pipes
+        # and outlives every timeout; a naive kill+communicate() would block
+        # on the pipes forever. The tree kill plus bounded drain must return.
+        command = (
+            "import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
+            "stdout=sys.stdout,stderr=sys.stderr);"
+            "time.sleep(30)"
+        )
+        started_at = time.monotonic()
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_command(
+                [sys.executable, "-c", command],
+                shell=False,
+                cwd=Path.cwd(),
+                timeout=1,
+            )
+
+        self.assertLess(time.monotonic() - started_at, 15.0)
+
+    def test_run_command_interrupt_kills_the_whole_tree_without_hanging(self) -> None:
+        interrupt_requested = threading.Event()
+        command = (
+            "import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],"
+            "stdout=sys.stdout,stderr=sys.stderr);"
+            "time.sleep(30)"
+        )
+
+        def request_interrupt() -> None:
+            time.sleep(0.5)
+            interrupt_requested.set()
+
+        interrupter = threading.Thread(target=request_interrupt, daemon=True)
+        interrupter.start()
+        started_at = time.monotonic()
+
+        with self.assertRaises(TurnInterrupted):
+            run_command(
+                [sys.executable, "-c", command],
+                shell=False,
+                cwd=Path.cwd(),
+                timeout=60,
+                stop_checker=interrupt_requested.is_set,
+            )
+
+        self.assertLess(time.monotonic() - started_at, 15.0)
 
     def test_run_command_raises_turn_interrupted_when_stop_requested(self) -> None:
         interrupt_requested = threading.Event()
