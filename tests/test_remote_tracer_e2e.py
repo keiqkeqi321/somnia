@@ -131,13 +131,13 @@ class RemoteTracerProtocolIntegrationTests(unittest.TestCase):
                 connector_thread.join(timeout=5.0)
 
 
-def _request_until_online(browser, *, request_id: str, method: str, params: dict) -> dict:
+def _request_until_online(browser, *, request_id: str, method: str, params: dict, project_id: str = "project-1") -> dict:
     deadline = time.time() + 5.0
     attempt = 0
     while time.time() < deadline:
         attempt += 1
         try:
-            return _request(browser, request_id=f"{request_id}-{attempt}", method=method, params=params)
+            return _request(browser, request_id=f"{request_id}-{attempt}", method=method, params=params, project_id=project_id)
         except RuntimeError as exc:
             if "offline" not in str(exc).lower():
                 raise
@@ -145,13 +145,13 @@ def _request_until_online(browser, *, request_id: str, method: str, params: dict
     raise TimeoutError("Connector did not come online.")
 
 
-def _request(browser, *, request_id: str, method: str, params: dict) -> dict:
+def _request(browser, *, request_id: str, method: str, params: dict, project_id: str = "project-1") -> dict:
     browser.send(
         json.dumps(
             {
                 "kind": "request",
                 "request_id": request_id,
-                "project_id": "project-1",
+                "project_id": project_id,
                 "method": method,
                 "params": params,
             }

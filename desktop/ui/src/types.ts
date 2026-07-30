@@ -371,6 +371,7 @@ export interface RemoteDeviceStatus {
   username: string;
   enabled: boolean;
   connector_running: boolean;
+  connector_hosted_here?: boolean;
   pair_pending: boolean;
   last_error: string;
   projects: RemoteExposedProject[];

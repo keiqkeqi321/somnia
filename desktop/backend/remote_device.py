@@ -12,9 +12,10 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from open_somnia.remote.connector import LocalSidecarBridge, RemoteConnector
+from open_somnia.remote.connector import ConnectorReplaced, LocalSidecarBridge, RemoteConnector
 from open_somnia.remote.identity import DeviceIdentity, default_identity_path, pair_device
 from open_somnia.remote.identity import _relay_http_url as validate_relay_http_url
+from open_somnia.remote.runtime_manager import RuntimeOwnershipError, _OwnerLease
 
 CONNECTOR_JOIN_TIMEOUT_SECONDS = 5.0
 PAIR_POLL_INTERVAL_SECONDS = 1.5
@@ -72,14 +73,22 @@ class RemoteDeviceManager:
         data_dir: Path,
         sidecar_base_url: str,
         identity_path: Path | None = None,
+        owner_lease_path: Path | None = None,
     ) -> None:
         self._workspace_root = Path(workspace_root)
         self._settings_path = Path(data_dir) / REMOTE_SETTINGS_DIRNAME / REMOTE_SETTINGS_FILENAME
         self._identity_path = Path(identity_path) if identity_path is not None else default_identity_path()
         self._sidecar_base_url = str(sidecar_base_url).strip().rstrip("/")
+        # Machine-wide host lease: exactly one sidecar per device runs the
+        # Connector, so concurrent autostarts no longer 1012-ping-pong.
+        self._owner_lease_path = (
+            Path(owner_lease_path) if owner_lease_path is not None else self._identity_path.with_name("connector.owner")
+        )
+        self._owner_lease: _OwnerLease | None = None
         self._lock = Lock()
         self._stop_event: Event | None = None
         self._thread: Thread | None = None
+        self._connector: RemoteConnector | None = None
         self._pair_stop_event: Event | None = None
         self._pair_thread: Thread | None = None
         self._last_error = ""
@@ -136,6 +145,7 @@ class RemoteDeviceManager:
             "username": str(settings.get("username", "")),
             "enabled": bool(settings.get("enabled", False)),
             "connector_running": running,
+            "connector_hosted_here": running,
             "pair_pending": pair_pending,
             "last_error": last_error,
             "projects": exposed_projects,
@@ -342,35 +352,61 @@ class RemoteDeviceManager:
         primary = next(entry for entry in entries if entry["project_id"] == own_project_id)
         extras = [entry for entry in entries if entry is not primary]
         with self._lock:
-            already_running = self._thread is not None and self._thread.is_alive()
-            if not already_running:
-                connector = RemoteConnector(
-                    _relay_websocket_url(identity.relay_url),
-                    identity=identity,
-                    project_id=own_project_id,
-                    sidecar=LocalSidecarBridge(primary["base_url"]),
-                    sidecars={
-                        entry["project_id"]: LocalSidecarBridge(entry["base_url"]) for entry in extras
-                    }
-                    or None,
-                    project_names={entry["project_id"]: entry["name"] for entry in entries},
-                )
-                stop_event = Event()
-                thread = Thread(
-                    target=self._run_connector,
-                    args=(connector, stop_event),
-                    name="somnia-desktop-remote-connector",
-                    daemon=True,
-                )
-                self._stop_event = stop_event
-                self._thread = thread
-                self._last_error = ""
+            running_connector = self._connector if (self._thread is not None and self._thread.is_alive()) else None
+        if running_connector is not None:
+            # Live reconfiguration: added/removed/late Projects join the running
+            # Connector; the Relay connection and its clients stay up.
+            bridges = {entry["project_id"]: LocalSidecarBridge(entry["base_url"]) for entry in entries}
+            names = {entry["project_id"]: entry["name"] for entry in entries}
+            running_connector.update_projects(bridges, names)
+            with self._lock:
                 self._exposed_projects = [
                     {"project_id": entry["project_id"], "name": entry["name"]} for entry in entries
                 ]
-                thread.start()
+            self._save_settings({"enabled": True, "projects": entries})
+            return self.status()
+        lease = self._take_host_lease(steal=True)
+        if lease is None:
+            raise RuntimeError("Another process on this device already hosts the Remote Connector.")
+        connector = RemoteConnector(
+            _relay_websocket_url(identity.relay_url),
+            identity=identity,
+            project_id=own_project_id,
+            sidecar=LocalSidecarBridge(primary["base_url"]),
+            sidecars={entry["project_id"]: LocalSidecarBridge(entry["base_url"]) for entry in extras} or None,
+            project_names={entry["project_id"]: entry["name"] for entry in entries},
+        )
+        stop_event = Event()
+        thread = Thread(
+            target=self._run_connector,
+            args=(connector, stop_event),
+            name="somnia-desktop-remote-connector",
+            daemon=True,
+        )
+        with self._lock:
+            self._stop_event = stop_event
+            self._thread = thread
+            self._connector = connector
+            self._last_error = ""
+            self._exposed_projects = [
+                {"project_id": entry["project_id"], "name": entry["name"]} for entry in entries
+            ]
+            thread.start()
         self._save_settings({"enabled": True, "projects": entries})
         return self.status()
+
+    def _take_host_lease(self, *, steal: bool) -> _OwnerLease | None:
+        lease = _OwnerLease(self._owner_lease_path, "remote-connector")
+        if steal:
+            # Explicit enable wins over any previous host; the Relay replaces the
+            # old Connector (1012) once this one connects.
+            lease.path.unlink(missing_ok=True)
+        try:
+            lease.acquire()
+        except RuntimeOwnershipError:
+            return None
+        self._owner_lease = lease
+        return lease
 
     def _own_project_entry(self, own_project_id: str) -> dict[str, str]:
         return {
@@ -432,48 +468,71 @@ class RemoteDeviceManager:
         return self.status()
 
     def autostart_if_enabled(self) -> None:
-        """Start the Connector on sidecar start when it was left enabled."""
+        """Start the Connector on sidecar start when it was left enabled.
+
+        Late-starting Project sidecars no longer get pruned: the Connector's
+        per-Project event pumps retry until each sidecar answers, and the
+        Desktop pushes fresh loopback URLs via enable() once its projects load.
+        """
         settings = self._load_settings()
         if not settings.get("enabled"):
             return
         persisted = settings.get("projects")
         projects = persisted if isinstance(persisted, list) and persisted else None
-        pruned_message = ""
-        if projects is not None:
-            projects, pruned_message = self._prune_unreachable_projects(projects)
+        with self._lock:
+            already_running = self._thread is not None and self._thread.is_alive()
+        if already_running:
+            return
+        identity = self._load_identity()
+        if identity is None or not identity.is_paired:
+            return
+        own_project_id = workspace_project_id(self._workspace_root)
+        if projects is None:
+            entries = [self._own_project_entry(own_project_id)]
+        else:
+            try:
+                entries = self._normalize_projects(projects, own_project_id)
+            except ValueError as exc:
+                self._record_last_error(f"Remote Connector autostart failed: {exc}")
+                return
+        lease = self._take_host_lease(steal=False)
+        if lease is None:
+            # Another sidecar on this device already hosts the Connector; it will
+            # pick this Project up via the Desktop's live project updates.
+            return
+        primary = next(entry for entry in entries if entry["project_id"] == own_project_id)
+        extras = [entry for entry in entries if entry is not primary]
         try:
-            self.enable(projects)
+            connector = RemoteConnector(
+                _relay_websocket_url(identity.relay_url),
+                identity=identity,
+                project_id=own_project_id,
+                sidecar=LocalSidecarBridge(primary["base_url"]),
+                sidecars={entry["project_id"]: LocalSidecarBridge(entry["base_url"]) for entry in extras} or None,
+                project_names={entry["project_id"]: entry["name"] for entry in entries},
+            )
         except Exception as exc:  # never let autostart take the sidecar down
+            lease.release()
             with self._lock:
+                if self._owner_lease is lease:
+                    self._owner_lease = None
                 self._last_error = f"Remote Connector autostart failed: {exc}"
             return
-        if pruned_message:
-            self._record_last_error(pruned_message)
-
-    def _prune_unreachable_projects(
-        self, projects: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Drop projects whose sidecar no longer answers; own project is always kept."""
-        own_project_id = workspace_project_id(self._workspace_root)
-        kept: list[dict[str, Any]] = []
-        skipped: list[str] = []
-        for entry in projects:
-            if not isinstance(entry, dict):
-                continue
-            if str(entry.get("project_id", "")).strip() == own_project_id:
-                kept.append(entry)
-                continue
-            base_url = str(entry.get("base_url", "")).strip().rstrip("/")
-            try:
-                self._get_json(f"{base_url}/health", action="Sidecar health check failed")
-            except Exception:
-                skipped.append(str(entry.get("name", "")).strip() or str(entry.get("project_id", "")).strip())
-                continue
-            kept.append(entry)
-        if not skipped:
-            return kept, ""
-        names = ", ".join(name for name in skipped if name)
-        return kept, f"Remote Connector skipped unreachable project sidecars: {names}."
+        stop_event = Event()
+        thread = Thread(
+            target=self._run_connector,
+            args=(connector, stop_event),
+            name="somnia-desktop-remote-connector",
+            daemon=True,
+        )
+        with self._lock:
+            self._stop_event = stop_event
+            self._thread = thread
+            self._connector = connector
+            self._exposed_projects = [
+                {"project_id": entry["project_id"], "name": entry["name"]} for entry in entries
+            ]
+            thread.start()
 
     def shutdown(self) -> None:
         """Stop the Connector and pair-poll threads with the sidecar (keeps enabled state)."""
@@ -492,6 +551,11 @@ class RemoteDeviceManager:
             if self._thread is thread:
                 self._thread = None
                 self._stop_event = None
+                self._connector = None
+            lease = self._owner_lease
+            self._owner_lease = None
+        if lease is not None:
+            lease.release()
 
     def _run_connector(self, connector: RemoteConnector, stop_event: Event) -> None:
         def _on_connect() -> None:
@@ -505,6 +569,11 @@ class RemoteDeviceManager:
 
         try:
             connector.run_forever(stop_event, on_retry=_on_retry, on_connect=_on_connect)
+        except ConnectorReplaced:
+            # Informational, not an error: another sidecar on this device took
+            # over hosting; its live project updates keep this Project exposed.
+            with self._lock:
+                self._last_error = ""
         except Exception as exc:
             with self._lock:
                 if not stop_event.is_set():

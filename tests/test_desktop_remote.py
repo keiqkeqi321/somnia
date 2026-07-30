@@ -106,7 +106,11 @@ class _FakeConnector:
         self.sidecars = sidecars or {}
         self.project_names = project_names or {}
         self.started = Event()
+        self.updated_projects: tuple[dict, dict | None] | None = None
         type(self).instances.append(self)
+
+    def update_projects(self, bridges, names=None) -> None:
+        self.updated_projects = (bridges, names)
 
     def run(self, stop_event: Event) -> None:
         self.started.set()
@@ -197,6 +201,7 @@ class DesktopRemoteTests(unittest.TestCase):
                 "username": "",
                 "enabled": False,
                 "connector_running": False,
+                "connector_hosted_here": False,
                 "pair_pending": False,
                 "last_error": "",
                 "projects": [],
@@ -394,6 +399,32 @@ class DesktopRemoteTests(unittest.TestCase):
         )
         self.assertEqual(persisted["projects"], projects)
 
+    def test_enable_while_running_live_updates_projects_without_restart(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        own_id = workspace_project_id(self.settings.workspace_root)
+        projects = [
+            {"project_id": own_id, "name": "Own Project", "base_url": self.server.base_url},
+            {"project_id": "desktop-late", "name": "Late Project", "base_url": "http://127.0.0.1:59009"},
+        ]
+        status, payload = self._request("POST", "/remote/enable", {"projects": projects})
+        self.assertEqual(status, 200, payload)
+
+        # No new Connector instance: the running one was reconfigured in place.
+        self.assertEqual(len(_FakeConnector.instances), 1)
+        connector = _FakeConnector.instances[0]
+        self.assertIsNotNone(connector.updated_projects)
+        bridges, names = connector.updated_projects
+        self.assertEqual(set(bridges), {own_id, "desktop-late"})
+        self.assertEqual(names["desktop-late"], "Late Project")
+        self.assertEqual(
+            payload["projects"],
+            [
+                {"project_id": own_id, "name": "Own Project"},
+                {"project_id": "desktop-late", "name": "Late Project"},
+            ],
+        )
+
     def test_enable_overrides_a_stale_own_project_base_url(self) -> None:
         self._pair()
         self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
@@ -466,7 +497,7 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertIn("error", payload)
         self.assertEqual(len(_FakeConnector.instances), before)
 
-    def test_autostart_prunes_unreachable_projects(self) -> None:
+    def test_autostart_keeps_unreachable_projects_for_the_retrying_pumps(self) -> None:
         self._pair()
         self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
         status, _ = self._request("POST", "/remote/disable")
@@ -475,7 +506,6 @@ class DesktopRemoteTests(unittest.TestCase):
         own_id = workspace_project_id(self.settings.workspace_root)
         projects = [
             {"project_id": own_id, "name": "Own Project", "base_url": self.server.base_url},
-            # Answers /health (it is this very sidecar) but stands in for another project.
             {"project_id": "desktop-alive", "name": "Alive Project", "base_url": self.server.base_url},
             {"project_id": "desktop-dead", "name": "Dead Project", "base_url": "http://127.0.0.1:1"},
         ]
@@ -483,7 +513,9 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertEqual(set(_FakeConnector.instances[1].sidecars), {"desktop-alive", "desktop-dead"})
 
-        # Simulate a restart: a fresh manager over the same workspace/identity.
+        # Simulate a restart: the old host process is gone (lease released), then
+        # a fresh manager over the same workspace/identity autostarts.
+        self.server.remote_device.shutdown()
         restarted = RemoteDeviceManager(
             workspace_root=self.settings.workspace_root,
             data_dir=self.settings.storage.data_dir,
@@ -496,14 +528,16 @@ class DesktopRemoteTests(unittest.TestCase):
         connector = _FakeConnector.instances[2]
         self.assertTrue(connector.started.wait(5.0))
         self.assertEqual(connector.project_id, own_id)
-        self.assertEqual(set(connector.sidecars), {"desktop-alive"})
+        # No pruning: late sidecars join via the Connector's retrying event pumps.
+        self.assertEqual(set(connector.sidecars), {"desktop-alive", "desktop-dead"})
         restarted_status = restarted.status()
-        self.assertIn("Dead Project", restarted_status["last_error"])
+        self.assertEqual(restarted_status["last_error"], "")
         self.assertEqual(
             restarted_status["projects"],
             [
                 {"project_id": own_id, "name": "Own Project"},
                 {"project_id": "desktop-alive", "name": "Alive Project"},
+                {"project_id": "desktop-dead", "name": "Dead Project"},
             ],
         )
 
@@ -529,7 +563,9 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
         self.assertTrue(_FakeConnector.instances[0].started.wait(5.0))
 
-        # Simulate a restart: a fresh manager over the same workspace/identity.
+        # Simulate a restart: the old host process is gone (lease released),
+        # then a fresh manager over the same workspace/identity starts up.
+        self.server.remote_device.shutdown()
         restarted = RemoteDeviceManager(
             workspace_root=self.settings.workspace_root,
             data_dir=self.settings.storage.data_dir,
@@ -540,6 +576,23 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertEqual(len(_FakeConnector.instances), 2)
         self.assertTrue(_FakeConnector.instances[1].started.wait(5.0))
         self.assertTrue(restarted.status()["connector_running"])
+
+    def test_autostart_skips_when_another_live_host_holds_the_lease(self) -> None:
+        self._pair()
+        self.assertTrue(wait_until(lambda: len(_FakeConnector.instances) == 1))
+        self.assertTrue(_FakeConnector.instances[0].started.wait(5.0))
+
+        # A second sidecar (same machine, same identity) autostarts while the
+        # first host is alive: it must not compete for the Connector (1012).
+        competitor = RemoteDeviceManager(
+            workspace_root=self.settings.workspace_root,
+            data_dir=self.settings.storage.data_dir,
+            sidecar_base_url=self.server.base_url,
+        )
+        self.addCleanup(competitor.shutdown)
+        competitor.autostart_if_enabled()
+        self.assertEqual(len(_FakeConnector.instances), 1)
+        self.assertFalse(competitor.status()["connector_running"])
 
     def test_unpair_stops_connector_and_deletes_identity(self) -> None:
         self._pair()

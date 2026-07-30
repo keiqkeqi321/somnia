@@ -18,7 +18,6 @@ function formatError(error: unknown): string {
 function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectionProps) {
   const { t } = useI18n();
   const [status, setStatus] = useState<RemoteDeviceStatus | null>(null);
-  const [currentProjects, setCurrentProjects] = useState<RemoteProjectTarget[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [relayUrl, setRelayUrl] = useState("");
@@ -38,13 +37,6 @@ function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectio
       setError("");
     } catch (refreshError) {
       setError(formatError(refreshError));
-    }
-    if (collectRef.current) {
-      try {
-        setCurrentProjects(await collectRef.current());
-      } catch {
-        // A project sidecar that does not answer only hides the re-apply hint.
-      }
     }
   }, [baseUrl]);
 
@@ -114,12 +106,6 @@ function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectio
   const pairPending = Boolean(status?.pair_pending);
   const online = Boolean(status?.connector_running);
   const pairFormReady = Boolean(relayUrl.trim());
-  const exposedIds = (status?.projects ?? []).map((project) => project.project_id);
-  const currentIds = currentProjects.map((project) => project.project_id);
-  // Project add/remove only takes effect on the next enable (v2 has no live
-  // reconfiguration), so surface a hint while the running set is stale.
-  const projectsChanged = Boolean(status?.enabled) && currentProjects.length > 0 &&
-    (exposedIds.length !== currentIds.length || exposedIds.some((id) => !currentIds.includes(id)));
 
   return (
     <div className="settings-group remote-settings-group">
@@ -156,7 +142,6 @@ function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectio
               </div>
             ) : null}
           </dl>
-          {projectsChanged ? <p className="remote-settings-hint">{t("settings.remote.reapplyHint")}</p> : null}
           {status.last_error ? <p className="remote-settings-error">{t("settings.remote.lastError", { error: status.last_error })}</p> : null}
           <div className="remote-settings-actions">
             <button className="settings-action-button" type="button" onClick={() => void handleToggle()} disabled={busy}>

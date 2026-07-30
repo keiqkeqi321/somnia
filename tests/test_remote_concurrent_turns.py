@@ -45,6 +45,13 @@ def _scripted_complete(barrier: Barrier, calls: list[int]):
     return complete
 
 
+def _simple_complete(self, system_prompt, messages, tools, text_callback=None, **kwargs):
+    if text_callback is not None:
+        text_callback("late ")
+        text_callback("joined")
+    return AssistantTurn(stop_reason="end_turn", text_blocks=["late joined"])
+
+
 class _StreamTracker:
     """Mimics the web client's strict in-order consumption of the event stream."""
 
@@ -199,6 +206,187 @@ class RemoteConcurrentTurnsIntegrationTests(unittest.TestCase):
                 relay.should_exit = True
                 relay_thread.join(timeout=5.0)
                 connector_thread.join(timeout=5.0)
+
+
+class RemoteLateProjectJoinIntegrationTests(unittest.TestCase):
+    """A Project whose sidecar starts late must join the running Connector
+    without any Relay reconnect or manual re-enable."""
+
+    def test_late_project_joins_the_running_connector(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sidecar_one = SidecarServer.from_settings(remote_tracer_settings(root / "one"), host="127.0.0.1", port=0)
+            relay_port = _free_port()
+            late_port = _free_port()
+            relay_app = create_relay_app(administrators={"admin": "admin-password"})
+            relay = uvicorn.Server(
+                uvicorn.Config(
+                    relay_app,
+                    host="127.0.0.1",
+                    port=relay_port,
+                    log_level="error",
+                    lifespan="off",
+                )
+            )
+            relay_thread = Thread(target=relay.run, name="test-remote-relay", daemon=True)
+            connector_stop = Event()
+            connector_errors: list[Exception] = []
+            identity: DeviceIdentity | None = None
+            connector: RemoteConnector | None = None
+
+            def run_connector() -> None:
+                try:
+                    connector.run(connector_stop)
+                except Exception as exc:
+                    if not connector_stop.is_set():
+                        connector_errors.append(exc)
+
+            sidecar_two: SidecarServer | None = None
+            try:
+                sidecar_one.start_background()
+                self.assertTrue(sidecar_one.wait_until_ready())
+                relay_thread.start()
+                self.assertTrue(wait_until(lambda: relay.started))
+                relay_http_url = f"http://127.0.0.1:{relay_port}"
+                with httpx.Client(base_url=relay_http_url) as auth_client:
+                    login = auth_client.post(
+                        "/api/auth/login",
+                        json={"username": "admin", "password": "admin-password"},
+                    )
+                    self.assertEqual(login.status_code, 200)
+                    code = auth_client.post("/api/pairings", json={"name": "Test Device"}).json()["code"]
+                    identity = DeviceIdentity.load_or_create(root / "device-identity.json")
+                    pair_device(identity, relay_url=relay_http_url, code=code)
+                    browser_cookie = f"somnia_access={auth_client.cookies.get('somnia_access')}"
+
+                connector = RemoteConnector(
+                    f"ws://127.0.0.1:{relay_port}",
+                    identity=identity,
+                    project_id="project-1",
+                    sidecar=LocalSidecarBridge(sidecar_one.base_url),
+                    project_names={"project-1": "First"},
+                )
+                connector_thread = Thread(target=run_connector, name="test-remote-connector", daemon=True)
+                connector_thread.start()
+
+                with (
+                    patch.object(OpenAgentRuntime, "complete", _simple_complete),
+                    connect(
+                        f"ws://127.0.0.1:{relay_port}/ws/client/{identity.device_id}",
+                        origin="http://127.0.0.1:4173",
+                        additional_headers={"Cookie": browser_cookie},
+                    ) as browser,
+                ):
+                    session_one = _request_until_online(browser, request_id="create-1", method="session.create", params={})["id"]
+
+                    # Register the late Project while its sidecar is still down:
+                    # the pump retries in the background instead of dying.
+                    late_base_url = f"http://127.0.0.1:{late_port}"
+                    connector.update_projects(
+                        {
+                            "project-1": LocalSidecarBridge(sidecar_one.base_url),
+                            "project-2": LocalSidecarBridge(late_base_url),
+                        },
+                        {"project-1": "First", "project-2": "Late"},
+                    )
+
+                    # The Relay already sees both Projects via the updated presence.
+                    self.assertTrue(
+                        wait_until(
+                            lambda: {p["project_id"] for p in relay_app.state.relay_hub._project_metadata.get(identity.device_id, [])}
+                            == {"project-1", "project-2"}
+                        )
+                    )
+
+                    # Requests to the late Project fail while its sidecar is down,
+                    # but project-1 keeps working on the same Relay connection.
+                    browser.send(
+                        json.dumps(
+                            {
+                                "kind": "request",
+                                "request_id": "early-2",
+                                "project_id": "project-2",
+                                "method": "session.list",
+                                "params": {},
+                            }
+                        )
+                    )
+                    early = _receive_until(
+                        browser,
+                        lambda message: message.get("kind") == "response" and message.get("request_id") == "early-2",
+                    )
+                    self.assertFalse(early[-1]["ok"])
+
+                    # The late sidecar starts; its pump connects on the next retry.
+                    sidecar_two = SidecarServer.from_settings(
+                        remote_tracer_settings(root / "two"), host="127.0.0.1", port=late_port
+                    )
+                    sidecar_two.start_background()
+                    self.assertTrue(sidecar_two.wait_until_ready())
+                    # Wait until the Connector's pump has actually subscribed to
+                    # the late sidecar's event stream before driving a turn.
+                    self.assertTrue(
+                        wait_until(lambda: sidecar_two is not None and len(sidecar_two._clients) > 0, timeout=10.0),
+                        "Connector pump did not join the late sidecar.",
+                    )
+
+                    session_two = _request_until_online(
+                        browser, request_id="create-2", method="session.create", params={}, project_id="project-2"
+                    )["id"]
+                    browser.send(
+                        json.dumps(
+                            {
+                                "kind": "request",
+                                "request_id": "turn-2",
+                                "project_id": "project-2",
+                                "method": "turn.start",
+                                "params": {"session_id": session_two, "user_input": "hello"},
+                            }
+                        )
+                    )
+                    messages = _receive_until(
+                        browser,
+                        lambda message: message.get("kind") == "event"
+                        and message.get("project_id") == "project-2"
+                        and message.get("event", {}).get("type") == "turn_result",
+                        timeout=20.0,
+                    )
+                    self.assertTrue(
+                        any(
+                            message.get("kind") == "event"
+                            and message.get("project_id") == "project-2"
+                            and message.get("event", {}).get("type") == "assistant_delta"
+                            for message in messages
+                        )
+                    )
+
+                    # project-1 still streams on the same connection afterwards.
+                    browser.send(
+                        json.dumps(
+                            {
+                                "kind": "request",
+                                "request_id": "turn-1",
+                                "project_id": "project-1",
+                                "method": "turn.start",
+                                "params": {"session_id": session_one, "user_input": "hello again"},
+                            }
+                        )
+                    )
+                    _receive_until(
+                        browser,
+                        lambda message: message.get("kind") == "event"
+                        and message.get("project_id") == "project-1"
+                        and message.get("event", {}).get("type") == "turn_result",
+                        timeout=20.0,
+                    )
+                self.assertEqual(connector_errors, [])
+            finally:
+                connector_stop.set()
+                sidecar_one.close()
+                if sidecar_two is not None:
+                    sidecar_two.close()
+                relay.should_exit = True
+                relay_thread.join(timeout=5.0)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,42 @@ class RemoteConnectorTests(unittest.TestCase):
             self.assertEqual(sent[0]["kind"], "stream_snapshot")
             self.assertEqual(sent[0]["sequence"], 2)
 
+    def test_update_projects_diffs_the_served_set_without_a_relay_connection(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=2)
+            other = CountingSidecar()
+
+            connector.update_projects(
+                {"project-1": connector.project_sidecar("project-1"), "project-2": other},
+                {"project-1": "Main", "project-2": "Extra"},
+            )
+
+            self.assertEqual(set(connector._projects), {"project-1", "project-2"})
+            self.assertEqual(connector._project_names["project-2"], "Extra")
+            self.assertEqual(connector._pumps, {})
+
+            presence = connector.presence_message()
+            self.assertEqual(
+                presence["projects"],
+                [{"project_id": "project-1", "name": "Main"}, {"project_id": "project-2", "name": "Extra"}],
+            )
+
+            connector.update_projects({"project-1": connector.project_sidecar("project-1")}, {"project-1": "Main"})
+
+            self.assertEqual(set(connector._projects), {"project-1"})
+            self.assertEqual(connector.presence_message()["projects"], [{"project_id": "project-1", "name": "Main"}])
+
+    def test_update_projects_requires_the_primary_project(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=2)
+
+            with self.assertRaises(ValueError):
+                connector.update_projects({"project-2": CountingSidecar()})
+
     def test_retried_request_id_returns_the_original_result_without_reexecuting(self) -> None:
         with TemporaryDirectory() as temp_dir:
             identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")

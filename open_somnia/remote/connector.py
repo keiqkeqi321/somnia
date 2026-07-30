@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 from collections import OrderedDict, deque
-from contextlib import ExitStack
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
 import time
@@ -25,6 +24,10 @@ RECONNECT_INITIAL_DELAY_SECONDS = 1.0
 RECONNECT_MAX_DELAY_SECONDS = 30.0
 # A connection surviving at least this long counts as stable; the backoff resets after it drops.
 RECONNECT_STABLE_SECONDS = 10.0
+# Project sidecar event streams retry on their own: a sidecar that starts late
+# or restarts mid-session must join/recover without taking the Relay link down.
+SIDECAR_PUMP_INITIAL_DELAY_SECONDS = 1.0
+SIDECAR_PUMP_MAX_DELAY_SECONDS = 5.0
 # Relay close codes that will never succeed on retry (auth rejected / device revoked).
 PERMANENT_CLOSE_CODES = frozenset({4401, 4403})
 
@@ -285,6 +288,63 @@ class LocalSidecarBridge:
         return decoded
 
 
+class _ProjectEventPump:
+    """Streams one Project's sidecar events, retrying independently.
+
+    A Project sidecar may start after the Connector (async Desktop loading) or
+    restart mid-session; the pump reconnects with backoff so late Projects join
+    without disturbing the Relay connection or the other Projects.
+    """
+
+    def __init__(self, connector: "RemoteConnector", project_id: str) -> None:
+        self._connector = connector
+        self.project_id = project_id
+        self._stop = Event()
+        self._outage_reported = False
+        self.thread = Thread(
+            target=self._run,
+            name=f"somnia-connector-events-{connector.device_id}-{project_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self, *, join_timeout: float | None = None) -> None:
+        self._stop.set()
+        if join_timeout is not None and self.thread.is_alive():
+            self.thread.join(timeout=join_timeout)
+
+    def is_alive(self) -> bool:
+        return self.thread.is_alive()
+
+    def _run(self) -> None:
+        delay = SIDECAR_PUMP_INITIAL_DELAY_SECONDS
+        while not self._stop.is_set():
+            sidecar = self._connector.project_sidecar(self.project_id)
+            if sidecar is None:
+                return
+            try:
+                with connect(sidecar.event_url, open_timeout=5, close_timeout=2) as events:
+                    delay = SIDECAR_PUMP_INITIAL_DELAY_SECONDS
+                    self._outage_reported = False
+                    for raw_event in events:
+                        if self._stop.is_set():
+                            break
+                        event = json.loads(raw_event)
+                        if isinstance(event, dict):
+                            self._connector.forward_pumped_event(self.project_id, event)
+            except Exception as exc:
+                if self._stop.is_set():
+                    break
+                if not self._outage_reported:
+                    self._outage_reported = True
+                    self._connector.report_pump_error(self.project_id, exc)
+            if self._stop.wait(delay):
+                break
+            delay = min(delay * 2.0, SIDECAR_PUMP_MAX_DELAY_SECONDS)
+
+
 class RemoteConnector:
     """Maintains one outbound Relay connection for one or more tracer Projects."""
 
@@ -322,6 +382,104 @@ class RemoteConnector:
             key: _nonempty(supplied_names.get(key, key), "project name") for key in self._projects
         }
         self._state_lock = Lock()
+        # Guards the Project set itself (pumps, names, the live send callback);
+        # _state_lock keeps guarding per-Project stream state.
+        self._projects_lock = Lock()
+        self._pumps: dict[str, _ProjectEventPump] = {}
+        self._active_send: Callable[[dict[str, Any]], None] | None = None
+        self._run_active = False
+
+    def project_sidecar(self, project_id: str) -> LocalSidecarBridge | None:
+        with self._projects_lock:
+            project = self._projects.get(project_id)
+            return project.sidecar if project is not None else None
+
+    def forward_pumped_event(self, project_id: str, event: dict[str, Any]) -> None:
+        with self._projects_lock:
+            send = self._active_send
+        if send is None:
+            return
+        envelope = self._record_event(project_id, event)
+        if envelope is not None:
+            send(envelope)
+
+    def report_pump_error(self, project_id: str, exc: Exception) -> None:
+        with self._projects_lock:
+            send = self._active_send
+        if send is None:
+            return
+        send(
+            {
+                "kind": "connector_error",
+                "project_id": project_id,
+                "error": f"Sidecar event stream failed: {exc}",
+            }
+        )
+
+    def update_projects(
+        self,
+        bridges: dict[str, LocalSidecarBridge],
+        names: dict[str, str] | None = None,
+    ) -> None:
+        """Live-reconfigure the served Project set without dropping the Relay link.
+
+        Added Projects start their event pump immediately (when running);
+        removed Projects' pumps stop; renamed/re-pointed Projects update in
+        place. A fresh ``connector_presence`` is announced after any change.
+        """
+        normalized = {_nonempty(key, "project_id"): value for key, value in bridges.items()}
+        if self.project_id not in normalized:
+            raise ValueError("The Connector's primary Project must stay registered.")
+        supplied_names = names or {}
+        stopped_pumps: list[_ProjectEventPump] = []
+        with self._projects_lock:
+            changed = False
+            for project_id in [pid for pid in self._projects if pid not in normalized]:
+                pump = self._pumps.pop(project_id, None)
+                if pump is not None:
+                    pump.stop()
+                    stopped_pumps.append(pump)
+                self._projects.pop(project_id, None)
+                self._project_names.pop(project_id, None)
+                changed = True
+            for project_id, bridge in normalized.items():
+                name = _nonempty(supplied_names.get(project_id, project_id), "project name")
+                existing = self._projects.get(project_id)
+                if existing is None:
+                    self._projects[project_id] = _ProjectStream(
+                        bridge, event_ring=deque(maxlen=self.replay_limit)
+                    )
+                    self._project_names[project_id] = name
+                    self._begin_stream(project_id)
+                    changed = True
+                    continue
+                if getattr(existing.sidecar, "base_url", None) != getattr(bridge, "base_url", None):
+                    existing.sidecar = bridge
+                    pump = self._pumps.pop(project_id, None)
+                    if pump is not None:
+                        pump.stop()
+                        stopped_pumps.append(pump)
+                    changed = True
+                if self._project_names.get(project_id) != name:
+                    self._project_names[project_id] = name
+                    changed = True
+            if self._run_active:
+                for project_id in normalized:
+                    self._start_pump_locked(project_id)
+            send = self._active_send if changed else None
+            presence = self._presence_message_locked() if changed and send is not None else None
+        for pump in stopped_pumps:
+            pump.stop(join_timeout=2.0)
+        if presence is not None and send is not None:
+            send(presence)
+
+    def _start_pump_locked(self, project_id: str) -> None:
+        pump = self._pumps.get(project_id)
+        if pump is not None and pump.is_alive():
+            return
+        pump = _ProjectEventPump(self, project_id)
+        self._pumps[project_id] = pump
+        pump.start()
 
     def run(self, stop_event: Event | None = None, *, on_connect: Callable[[], None] | None = None) -> int | None:
         """Serve one Relay connection until it drops or ``stop_event`` is set.
@@ -330,47 +488,51 @@ class RemoteConnector:
         ``None`` when the stop event ended the run locally.
         """
         external_stop = stop_event or Event()
-        stop = Event()  # internal: halts the sidecar event threads when this run ends
-        for project_id in self._projects:
+        with self._projects_lock:
+            self._run_active = True
+            project_ids = list(self._projects)
+        for project_id in project_ids:
             self._begin_stream(project_id)
+        with self._projects_lock:
+            for project_id in project_ids:
+                self._start_pump_locked(project_id)
         connector_url = f"{self.relay_url.rstrip('/')}/ws/connector/{quote(self.device_id, safe='')}"
-        with ExitStack() as stack:
-            sidecar_events = {
-                project_id: stack.enter_context(connect(project.sidecar.event_url, open_timeout=10, close_timeout=2))
-                for project_id, project in self._projects.items()
-            }
+        try:
             with connect(connector_url, open_timeout=10, close_timeout=2) as relay:
                 self._authenticate_relay(relay)
                 if on_connect is not None:
                     on_connect()
-                relay.send(json.dumps(self.presence_message(), ensure_ascii=False, separators=(",", ":")))
                 send_lock = Lock()
 
                 def send(message: dict[str, Any]) -> None:
                     with send_lock:
                         relay.send(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
 
-                event_threads = [
-                    Thread(target=self._forward_sidecar_events, args=(project_id, events, send, stop), name=f"somnia-connector-events-{self.device_id}-{project_id}", daemon=True)
-                    for project_id, events in sidecar_events.items()
-                ]
-                for event_thread in event_threads:
-                    event_thread.start()
+                with self._projects_lock:
+                    self._active_send = send
                 try:
+                    send(self.presence_message())
                     for raw_message in relay:
                         if external_stop.is_set():
                             break
                         self.handle_relay_message(raw_message, send)
                 finally:
-                    stop.set()
-                    for event_thread in event_threads:
-                        event_thread.join(timeout=2.0)
+                    with self._projects_lock:
+                        self._active_send = None
                 if external_stop.is_set():
                     return None
                 close_reason = str(relay.close_reason or "")
                 if relay.close_code == 1012 and close_reason.startswith("Connector replaced"):
                     raise ConnectorReplaced("Another Connector took over this Device on the Relay.")
                 return relay.close_code
+        finally:
+            with self._projects_lock:
+                self._run_active = False
+                self._active_send = None
+                pumps = list(self._pumps.values())
+                self._pumps = {}
+            for pump in pumps:
+                pump.stop(join_timeout=2.0)
 
     def run_forever(
         self,
@@ -434,12 +596,17 @@ class RemoteConnector:
 
     def presence_message(self) -> dict[str, Any]:
         """Return the Relay-safe metadata for Projects served by this Connector."""
+        with self._projects_lock:
+            return self._presence_message_locked()
+
+    def _presence_message_locked(self) -> dict[str, Any]:
+        projects = [
+            {"project_id": project_id, "name": self._project_names[project_id]}
+            for project_id in self._projects
+        ]
         return {
             "kind": "connector_presence",
-            "projects": [
-                {"project_id": project_id, "name": self._project_names[project_id]}
-                for project_id in self._projects
-            ],
+            "projects": projects,
         }
 
     def handle_relay_message(self, raw_message: str | bytes, send: Callable[[dict[str, Any]], None]) -> None:
@@ -491,6 +658,7 @@ class RemoteConnector:
         send(response)
 
     def _forward_sidecar_events(self, project_id: str, sidecar_events: Any, send: Callable[[dict[str, Any]], None], stop: Event) -> None:
+        """Legacy single-shot forwarder kept for tests; the live path is _ProjectEventPump."""
         try:
             for raw_event in sidecar_events:
                 if stop.is_set():
@@ -520,9 +688,12 @@ class RemoteConnector:
             state.highest_acknowledged = 0
             state.event_ring.clear()
 
-    def _record_event(self, project_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    def _record_event(self, project_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
         with self._state_lock:
-            state = self._projects[project_id]
+            state = self._projects.get(project_id)
+            if state is None:
+                # The Project was removed mid-stream; drop its late events.
+                return None
             if not state.stream_epoch:
                 state.stream_epoch = uuid.uuid4().hex
                 state.next_sequence = 0

@@ -679,6 +679,63 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
   }, [projectLimitNotice, projects.length]);
 
+  // Managed project sidecars come and go (async startup, restarts with fresh
+  // ephemeral ports). While remote control is enabled, push the live project
+  // set to the hosting sidecar so its Connector re-registers Projects in
+  // place — no manual disable/enable cycle, no Relay reconnect.
+  const managedSidecarSignature = projects
+    .map((project) => project.connection?.baseUrl ?? "")
+    .filter((baseUrl) => baseUrl !== "")
+    .sort()
+    .join("|");
+  const remoteReapplyInFlightRef = useRef(false);
+  useEffect(() => {
+    if (remoteMode || !managedSidecarSignature) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        if (remoteReapplyInFlightRef.current) {
+          return;
+        }
+        remoteReapplyInFlightRef.current = true;
+        try {
+          const managed = projects.filter((project) => project.connection !== null);
+          let runningHost: SidecarClient | null = null;
+          let enabledHost: SidecarClient | null = null;
+          for (const project of managed) {
+            const client = new SidecarClient(project.connection?.baseUrl ?? "");
+            try {
+              const remoteStatus = await client.getRemoteStatus();
+              if (remoteStatus.connector_running) {
+                runningHost = client;
+                break;
+              }
+              if (remoteStatus.enabled && enabledHost === null) {
+                enabledHost = client;
+              }
+            } catch {
+              // An unreachable sidecar simply cannot host the Connector.
+            }
+          }
+          const host = runningHost ?? enabledHost;
+          if (!host) {
+            return;
+          }
+          const collected = await collectRemoteProjects();
+          if (collected.length > 0) {
+            await host.enableRemoteDevice(collected);
+          }
+        } catch {
+          // A failed re-apply is retried on the next project-set change.
+        } finally {
+          remoteReapplyInFlightRef.current = false;
+        }
+      })();
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [managedSidecarSignature, remoteMode]);
+
   useLayoutEffect(() => {
     if (!selectedSessionId) {
       return;
