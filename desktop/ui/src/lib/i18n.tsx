@@ -16,10 +16,12 @@ const translations = {
     "titlebar.maximize": "Maximize",
     "titlebar.restore": "Restore",
     "titlebar.close": "Close",
+    "titlebar.menu": "Menu",
 
     /* ── Settings ── */
     "settings.title": "Settings",
     "settings.back": "Back to app",
+    "settings.backToList": "Back to list",
     "settings.section.archived": "Archived threads",
     "settings.section.remote": "Remote",
     "settings.remote.description": "Pair this machine with a Somnia Relay to control it from a browser. Pairing opens a confirmation page in your browser — no credentials needed here.",
@@ -162,6 +164,7 @@ const translations = {
     "sidebar.projects": "Projects",
     "sidebar.total": "{count} total",
     "sidebar.newProject": "New Project",
+    "sidebar.close": "Close",
     "sidebar.projectLimitReached": "You can add up to {count} projects. Remove one project before adding another.",
     "sidebar.noProjects": "No projects yet.",
     "sidebar.noProjectsHint": "Choose a folder to add a project and run its own Somnia sidecar.",
@@ -431,9 +434,11 @@ const translations = {
     "titlebar.maximize": "最大化",
     "titlebar.restore": "还原",
     "titlebar.close": "关闭",
+    "titlebar.menu": "菜单",
 
     /* ── Settings ── */
     "settings.title": "设置",
+    "settings.backToList": "返回列表",
     "settings.back": "返回应用",
     "settings.section.archived": "已归档线程",
     "settings.section.remote": "远程控制",
@@ -577,6 +582,7 @@ const translations = {
     "sidebar.projects": "项目",
     "sidebar.total": "共 {count} 个",
     "sidebar.newProject": "新项目",
+    "sidebar.close": "关闭",
     "sidebar.projectLimitReached": "最多只能添加 {count} 个项目。请先移除一个项目后再添加新项目。",
     "sidebar.noProjects": "暂无项目。",
     "sidebar.noProjectsHint": "选择一个文件夹以添加项目，并运行其独立的 Somnia sidecar。",

@@ -4,6 +4,7 @@ import type { SidecarClient } from "../lib/sidecar";
 import RemoteSettingsSection from "./RemoteSettingsSection";
 import type { McpServerSummary, ModelDescriptor, ProviderDescriptor, RemoteProjectTarget, SettingsConfigScope, SettingsConfigScopeKey, SettingsConfigSectionKey } from "../types";
 import { useEffect, useState } from "react";
+import { useIsMobile } from "../lib/use-media-query";
 
 export type ArchivedSessionEntry = {
   key: string;
@@ -150,6 +151,10 @@ function SettingsView({
   collectRemoteProjects,
 }: SettingsViewProps) {
   const { locale, setLocale, t } = useI18n();
+  const isMobile = useIsMobile();
+  // On mobile, settings uses a single column: the nav list is shown first,
+  // tapping an entry reveals the editor pane. This flag tracks that drill-in.
+  const [mobileEnteredSection, setMobileEnteredSection] = useState(false);
   const visibleSections = remoteClient ? SETTINGS_SECTIONS : SETTINGS_SECTIONS.filter((item) => item.key !== "remote");
   const section = visibleSections.find((item) => item.key === activeSection) ?? visibleSections[0];
   const activeConfigScope = configScopes.find((item) => item.scope === selectedConfigScope) ?? configScopes[0] ?? null;
@@ -229,7 +234,11 @@ function SettingsView({
   }
 
   return (
-    <section className="settings-shell">
+    <section
+      className={`settings-shell ${isMobile ? "mobile" : ""} ${
+        isMobile && mobileEnteredSection ? "mobile-section" : ""
+      }`}
+    >
       <aside className="settings-sidebar">
         <button className="settings-back" type="button" onClick={onClose}>
           <span aria-hidden="true">←</span>
@@ -256,7 +265,10 @@ function SettingsView({
               key={item.key}
               type="button"
               className={`settings-nav-item ${activeSection === item.key ? "selected" : ""}`}
-              onClick={() => onSelectSection(item.key)}
+              onClick={() => {
+                onSelectSection(item.key);
+                setMobileEnteredSection(true);
+              }}
             >
               <span>{t(item.labelKey)}</span>
             </button>
@@ -266,6 +278,16 @@ function SettingsView({
 
       <div className="settings-main">
         <header className="settings-header">
+          {isMobile ? (
+            <button
+              className="settings-back settings-mobile-back"
+              type="button"
+              onClick={() => setMobileEnteredSection(false)}
+            >
+              <span aria-hidden="true">←</span>
+              <span>{t("settings.backToList")}</span>
+            </button>
+          ) : null}
           <h1>{t(section.titleKey)}</h1>
         </header>
 

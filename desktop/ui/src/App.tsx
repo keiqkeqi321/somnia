@@ -39,6 +39,7 @@ import {
 } from "./lib/messages";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
+import { useIsMobile } from "./lib/use-media-query";
 import { normalizeBaseUrl, SidecarClient } from "./lib/sidecar";
 import {
   createConversationState,
@@ -335,7 +336,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const [providerSetupSaving, setProviderSetupSaving] = useState(false);
   const [providerSetupMessage, setProviderSetupMessage] = useState("");
   const [windowMaximized, setWindowMaximized] = useState(false);
-  const [contextPanelOpen, setContextPanelOpen] = useState(true);
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
+  const isMobile = useIsMobile();
   const [todoExpanded, setTodoExpanded] = useState(false);
   const [layout, setLayout] = useState<LayoutState>(() => readStoredLayout());
   const [layoutDragging, setLayoutDragging] = useState<LayoutDragState | null>(null);
@@ -2399,7 +2402,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         persistLastOpenedSession(projectPath, session.id);
       }
       setSidebarSection("sessions");
-      setContextPanelOpen(true);
       setDraft("");
       clearConversationRuntimeState(projectPath, session.id);
     } catch (error) {
@@ -3579,11 +3581,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const contextPercent = normalizeContextPercent(contextUsage?.usage_percent);
   const contextColor = contextUsageColor(contextPercent);
   const contextFill = contextPercent ?? 0;
-  const contextLabel = contextUsage
-    ? contextUsage.max_tokens
-      ? `CTX ${contextPercent?.toFixed(1) ?? "0.0"}%`
-      : `CTX ${formatTokenCount(contextUsage.used_tokens)}`
-    : "CTX --";
   const contextTitle = contextUsage
     ? contextUsage.max_tokens
       ? `Context: ${contextPercent?.toFixed(1) ?? "0.0"}% (${formatTokenCount(contextUsage.used_tokens)} / ${formatTokenCount(
@@ -3746,6 +3743,18 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         onPointerDown={(event) => void handleTitlebarPointerDown(event)}
         onDoubleClick={(event) => void handleTitlebarDoubleClick(event)}
       >
+        {isMobile ? (
+          <button
+            className="titlebar-button titlebar-menu"
+            type="button"
+            onClick={() => setSidebarDrawerOpen((current) => !current)}
+            title={t("titlebar.menu")}
+            aria-label={t("titlebar.menu")}
+            aria-expanded={sidebarDrawerOpen}
+          >
+            <span aria-hidden="true" />
+          </button>
+        ) : null}
         <div className="titlebar-brand" data-tauri-drag-region>
           <img className="titlebar-icon" src={appIconUrl} alt="" aria-hidden="true" data-tauri-drag-region />
           <span data-tauri-drag-region>{t("app.title")}</span>
@@ -3905,16 +3914,39 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       ) : null}
       <main
         ref={workspaceRef}
-        className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"} ${layoutDragging ? "resizing" : ""}`}
+        className={`workspace ${contextPanelOpen ? "context-open" : "context-collapsed"} ${layoutDragging ? "resizing" : ""} ${isMobile ? "mobile" : ""}`}
         style={workspaceStyle}
       >
-        <aside className="panel sidebar-panel">
+        {isMobile && (sidebarDrawerOpen || contextPanelOpen) ? (
+          <div
+            className="drawer-scrim"
+            onClick={() => {
+              setSidebarDrawerOpen(false);
+              if (contextPanelOpen) {
+                setContextPanelOpen(false);
+              }
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
+        <aside className={`panel sidebar-panel ${sidebarDrawerOpen ? "drawer-open" : ""}`}>
           <div className="panel-header">
             <div>
               <h2>{t("sidebar.projects")}</h2>
             </div>
             <div className="panel-header-actions">
               <span className="panel-count">{t("sidebar.total", { count: visibleProjectCount })}</span>
+              {isMobile ? (
+                <button
+                  className="action ghost sidebar-close"
+                  type="button"
+                  onClick={() => setSidebarDrawerOpen(false)}
+                  title={t("sidebar.close")}
+                  aria-label={t("sidebar.close")}
+                >
+                  ×
+                </button>
+              ) : null}
               {remoteMode ? (
                 <button
                   className="action primary sidebar-new"
@@ -4043,7 +4075,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                                 <button
                                   className="session-card-button"
                                   onClick={() => {
-                                    setContextPanelOpen(true);
+                                    setSidebarDrawerOpen(false);
                                     void activateProject(group.path, projectClientsRef.current[group.path]).then(() =>
                                       selectSession(session.id, projectClientsRef.current[group.path], undefined, group.path),
                                     );
@@ -4511,7 +4543,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       disabled={busyAction !== null}
                     >
                       <span className="ctx-ring" />
-                      <span className="ctx-label">{contextLabel}</span>
                     </button>
                     {contextPopoverOpen ? (
                       <div className="ctx-popover" role="dialog" aria-label={t("ctx.windowDetails")}>
