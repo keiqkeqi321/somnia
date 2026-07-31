@@ -4250,7 +4250,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                           ))}
                         </div>
                       ) : null}
-                      {row.id === latestStreamingAssistantRowId ? (
+                      {row.id === latestStreamingAssistantRowId && currentSessionRunning ? (
                         <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
                           <span aria-hidden="true" />
                           <span aria-hidden="true" />
