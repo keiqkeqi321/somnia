@@ -4094,22 +4094,8 @@ button {
   white-space: nowrap;
 }
 
-.model-trigger-caret {
-  flex: none;
-  color: var(--muted);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.model-trigger-meta {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .connection-dot {
+  flex: none;
   width: 9px;
   height: 9px;
   border-radius: 999px;

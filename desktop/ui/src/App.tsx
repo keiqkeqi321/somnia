@@ -3562,13 +3562,10 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const latestConversationRowId = conversationRows.length > 0 ? conversationRows[conversationRows.length - 1].id : "";
   const currentSessionRunning = currentSession ? activeProjectTurnList.some((turn) => turn.sessionId === currentSession.id) : false;
   const projectTurnLimitReached = activeProjectTurnList.length >= 2;
-  const activeProviderLabel = status?.provider ?? selectedProvider ?? t("composer.provider");
   const activeModelLabel = status?.model ?? selectedModel ?? t("composer.model");
-  const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
   // The model trigger shows the model the *current* session will actually use:
   // its per-session pin if set, otherwise the workspace-wide default.
   const sessionModelPinned = Boolean(currentSession?.provider_override && currentSession?.model_override);
-  const sessionProviderLabel = currentSession?.provider_override ?? status?.provider ?? activeProviderLabel;
   const sessionModelLabel = currentSession?.model_override ?? status?.model ?? activeModelLabel;
   // Remote mode surfaces reconnect semantics on the connection indicator;
   // desktop keeps the raw state string.
@@ -4413,17 +4410,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                           : t("composer.modelDefaultTooltip")
                       }
                     >
-                      <span>{`${sessionProviderLabel} / ${sessionModelLabel}`}</span>
-                      <span className="model-trigger-meta">
-                        <span className="model-trigger-caret">
-                          {sessionModelPinned ? `📌 ${activeReasoningLabel}` : activeReasoningLabel}
-                        </span>
-                        <span
-                          className={`connection-dot ${connectionState === "connected" ? "connected" : "attention"}`}
-                          aria-label={connectionStateLabel}
-                          title={connectionStateLabel}
-                        />
-                      </span>
+                      <span>{sessionModelLabel}</span>
+                      <span
+                        className={`connection-dot ${connectionState === "connected" ? "connected" : "attention"}`}
+                        aria-label={connectionStateLabel}
+                        title={connectionStateLabel}
+                      />
                     </button>
                     {modelPickerOpen ? (
                       <div className="model-picker-panel">
