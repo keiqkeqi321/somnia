@@ -105,6 +105,14 @@ class LocalSidecarBridge:
         if method == "session.janitor":
             session_id = _required_text(params, "session_id")
             return self._request("POST", f"/sessions/{quote(session_id, safe='')}/janitor", {})
+        if method == "session.set_model":
+            session_id = _required_text(params, "session_id")
+            body: dict[str, Any] = {}
+            if "provider" in params:
+                body["provider_name"] = params.get("provider")
+            if "model" in params:
+                body["model"] = params.get("model")
+            return self._request("POST", f"/sessions/{quote(session_id, safe='')}/model", body)
         if method == "turn.start":
             session_id = _required_text(params, "session_id")
             if "user_input" not in params:

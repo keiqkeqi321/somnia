@@ -32,6 +32,8 @@ def serialize_session(session: Any) -> dict[str, Any]:
         "latest_turn_id": getattr(session, "latest_turn_id", None),
         "last_turn_file_changes": deepcopy(list(getattr(session, "last_turn_file_changes", []) or [])),
         "undo_stack": deepcopy(list(getattr(session, "undo_stack", []) or [])),
+        "provider_override": getattr(session, "provider_override", None),
+        "model_override": getattr(session, "model_override", None),
     }
 
 
@@ -48,6 +50,8 @@ def serialize_session_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "latest_turn_id": None,
         "last_turn_file_changes": [],
         "undo_stack": [],
+        "provider_override": summary.get("provider_override") or None,
+        "model_override": summary.get("model_override") or None,
         "preview": str(summary.get("preview") or "No visible history yet"),
         "has_visible_exchange": bool(summary.get("has_visible_exchange")),
         "is_summary": True,

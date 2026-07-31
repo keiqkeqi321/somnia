@@ -502,6 +502,17 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       }
     }
 
+    // Seed the picker with the current session's effective model so the
+    // highlighted option matches what the trigger already shows. A pinned
+    // session can differ from the workspace default; without this the picker
+    // would open on the workspace default instead of the session's pin.
+    const pinnedSession = currentSessionRef.current;
+    if (pinnedSession?.provider_override && pinnedSession?.model_override) {
+      setSelectedProvider(pinnedSession.provider_override);
+      setSelectedModel(pinnedSession.model_override);
+      void refreshModels(pinnedSession.provider_override, clientRef.current ?? undefined, pinnedSession.model_override);
+    }
+
     window.addEventListener("mousedown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
@@ -1970,6 +1981,24 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       }
       return;
     }
+    if (event.type === "session_model_updated") {
+      // A session's per-session model pin changed. Refresh the loaded session
+      // so the trigger reflects the new effective model; this is the event the
+      // model picker's "Apply" produces, so we don't need a full status refresh.
+      if (isActiveProject && event.session_id && event.session_id === selectedSessionIdRef.current) {
+        const payloadSession = event.payload?.session as AgentSession | undefined;
+        if (payloadSession) {
+          setCurrentSession(payloadSession);
+        } else if (clientRef.current) {
+          try {
+            setCurrentSession(await clientRef.current.loadSession(event.session_id));
+          } catch {
+            // Best-effort refresh; the trigger falls back to the workspace default.
+          }
+        }
+      }
+      return;
+    }
     if (event.type === "authorization_requested" || event.type === "mode_switch_requested") {
       if (isActiveProject) {
         void refreshInteractions();
@@ -2638,11 +2667,41 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     if (!client || !selectedProvider || !selectedModel) {
       return;
     }
+    const session = currentSessionRef.current;
     setBusyAction("switch-provider");
     try {
-      await client.switchProviderModel(selectedProvider, selectedModel);
-      await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
-      await refreshStatusAndProviders();
+      if (session) {
+        // Pin this session to the chosen model instead of flipping the
+        // workspace-wide default, so other sessions (including any turn that
+        // is mid-flight) keep running on their own model.
+        const result = await client.setSessionModel(session.id, selectedProvider, selectedModel);
+        setCurrentSession(result.session);
+        setBannerMessage(result.message);
+      } else {
+        // No session selected: fall back to changing the workspace default.
+        await client.switchProviderModel(selectedProvider, selectedModel);
+        await client.setReasoningLevel(selectedReasoningLevel === "auto" ? null : selectedReasoningLevel);
+        await refreshStatusAndProviders();
+      }
+      setModelPickerOpen(false);
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleResetSessionModel() {
+    const client = clientRef.current;
+    const session = currentSessionRef.current;
+    if (!client || !session) {
+      return;
+    }
+    setBusyAction("switch-provider");
+    try {
+      const result = await client.setSessionModel(session.id, null, null);
+      setCurrentSession(result.session);
+      setBannerMessage(result.message);
       setModelPickerOpen(false);
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));
@@ -3504,6 +3563,11 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const activeProviderLabel = status?.provider ?? selectedProvider ?? t("composer.provider");
   const activeModelLabel = status?.model ?? selectedModel ?? t("composer.model");
   const activeReasoningLabel = formatReasoningLevel(status?.reasoning_level ?? selectedReasoningLevel);
+  // The model trigger shows the model the *current* session will actually use:
+  // its per-session pin if set, otherwise the workspace-wide default.
+  const sessionModelPinned = Boolean(currentSession?.provider_override && currentSession?.model_override);
+  const sessionProviderLabel = currentSession?.provider_override ?? status?.provider ?? activeProviderLabel;
+  const sessionModelLabel = currentSession?.model_override ?? status?.model ?? activeModelLabel;
   // Remote mode surfaces reconnect semantics on the connection indicator;
   // desktop keeps the raw state string.
   const connectionStateLabel = remoteMode ? t(remoteConnectionStateKey(connectionState)) : connectionState;
@@ -4311,10 +4375,17 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       className={`model-trigger ${modelPickerOpen ? "open" : ""}`}
                       onClick={() => setModelPickerOpen((current) => !current)}
                       disabled={providers.length === 0 || busyAction !== null}
+                      title={
+                        sessionModelPinned
+                          ? t("composer.modelPinnedTooltip")
+                          : t("composer.modelDefaultTooltip")
+                      }
                     >
-                      <span>{`${activeProviderLabel} / ${activeModelLabel}`}</span>
+                      <span>{`${sessionProviderLabel} / ${sessionModelLabel}`}</span>
                       <span className="model-trigger-meta">
-                        <span className="model-trigger-caret">{activeReasoningLabel}</span>
+                        <span className="model-trigger-caret">
+                          {sessionModelPinned ? `📌 ${activeReasoningLabel}` : activeReasoningLabel}
+                        </span>
                         <span
                           className={`connection-dot ${connectionState === "connected" ? "connected" : "attention"}`}
                           aria-label={connectionStateLabel}
@@ -4369,6 +4440,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                               </button>
                             ))}
                           </div>
+                          {sessionModelPinned ? (
+                            <button
+                              className="action secondary picker-reset"
+                              onClick={() => void handleResetSessionModel()}
+                              disabled={busyAction !== null}
+                              title={t("composer.resetModelTooltip")}
+                            >
+                              {t("composer.resetModel")}
+                            </button>
+                          ) : null}
                           <button
                             className="action secondary picker-apply"
                             onClick={() => void handleApplyProviderModel()}
@@ -4377,8 +4458,13 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                               !selectedModel ||
                               busyAction !== null
                             }
+                            title={
+                              currentSession
+                                ? t("composer.applySessionTooltip")
+                                : t("composer.apply")
+                            }
                           >
-                            {t("composer.apply")}
+                            {currentSession ? t("composer.applySession") : t("composer.apply")}
                           </button>
                         </div>
                       </div>

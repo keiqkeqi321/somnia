@@ -751,6 +751,84 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_pins_session_model_independently_of_workspace_default(self) -> None:
+        root = self._stable_test_dir("sidecar-session-model")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = create_payload["session"]["id"]
+            # Sanity: a fresh session follows the workspace default (openai/fake-model).
+            self.assertIsNone(create_payload["session"].get("provider_override"))
+            self.assertIsNone(create_payload["session"].get("model_override"))
+
+            status, pin_payload = self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {"provider_name": "openai", "model": "fake-model-mini"},
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(pin_payload["pinned"])
+            self.assertEqual(pin_payload["provider"], "openai")
+            self.assertEqual(pin_payload["model"], "fake-model-mini")
+            self.assertEqual(pin_payload["session"]["provider_override"], "openai")
+            self.assertEqual(pin_payload["session"]["model_override"], "fake-model-mini")
+
+            # The workspace-wide default is untouched: other sessions keep fake-model.
+            self.assertEqual(server.runtime.settings.provider.name, "openai")
+            self.assertEqual(server.runtime.settings.provider.model, "fake-model")
+
+            # The pin survives a fresh GET /sessions/{id}.
+            _, reload_payload = self._request_json("GET", f"{server.base_url}/sessions/{session_id}")
+            self.assertEqual(reload_payload["session"]["provider_override"], "openai")
+            self.assertEqual(reload_payload["session"]["model_override"], "fake-model-mini")
+
+            # The pin also appears in the session summaries list.
+            _, summaries_payload = self._request_json("GET", f"{server.base_url}/sessions")
+            target = next(s for s in summaries_payload["sessions"] if s["id"] == session_id)
+            self.assertEqual(target["provider_override"], "openai")
+            self.assertEqual(target["model_override"], "fake-model-mini")
+
+            # Clearing the pin (both fields omitted) returns to default-following.
+            status, clear_payload = self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {},
+            )
+            self.assertEqual(status, 200)
+            self.assertFalse(clear_payload["pinned"])
+            self.assertEqual(clear_payload["model"], "fake-model")
+            self.assertIsNone(clear_payload["session"].get("provider_override"))
+            self.assertIsNone(clear_payload["session"].get("model_override"))
+        finally:
+            server.close()
+
+    def test_sidecar_rejects_half_set_session_model_payload(self) -> None:
+        root = self._stable_test_dir("sidecar-session-model-validation")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = create_payload["session"]["id"]
+            # Only provider_name set: ambiguous, must be rejected.
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json(
+                    "POST",
+                    f"{server.base_url}/sessions/{session_id}/model",
+                    {"provider_name": "openai"},
+                )
+            self.assertEqual(context.exception.code, 400)
+            # Unknown model is rejected by the runtime validation.
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json(
+                    "POST",
+                    f"{server.base_url}/sessions/{session_id}/model",
+                    {"provider_name": "openai", "model": "nope"},
+                )
+            self.assertEqual(context.exception.code, 400)
+        finally:
+            server.close()
+
     def test_sidecar_exposes_runtime_status_and_tool_logs(self) -> None:
         root = self._stable_test_dir("sidecar-status")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

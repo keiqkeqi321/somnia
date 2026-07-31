@@ -247,6 +247,12 @@ const translations = {
     "composer.queueForSession": "Queue for this session",
     "composer.projectTurnLimit": "This project already has two sessions running",
     "composer.interrupt": "Interrupt",
+    "composer.applySession": "Apply to this session",
+    "composer.applySessionTooltip": "Pin this session to the selected model. Other sessions keep their own model.",
+    "composer.resetModel": "Reset to default",
+    "composer.resetModelTooltip": "Stop pinning this session and follow the workspace default model.",
+    "composer.modelPinnedTooltip": "This session is pinned to its own model.",
+    "composer.modelDefaultTooltip": "This session follows the workspace default model.",
 
     /* ── Context panel ── */
     "context.kicker": "Context",
@@ -656,6 +662,12 @@ const translations = {
     "composer.queueForSession": "排队此会话",
     "composer.projectTurnLimit": "此项目已有两个会话正在运行",
     "composer.interrupt": "中断",
+    "composer.applySession": "应用到本会话",
+    "composer.applySessionTooltip": "将本会话固定到所选模型，其他会话保持各自的模型不变。",
+    "composer.resetModel": "恢复默认",
+    "composer.resetModelTooltip": "取消本会话的模型固定，改用工作区默认模型。",
+    "composer.modelPinnedTooltip": "本会话已固定使用独立的模型。",
+    "composer.modelDefaultTooltip": "本会话跟随工作区默认模型。",
 
     /* ── Context panel ── */
     "context.kicker": "上下文",

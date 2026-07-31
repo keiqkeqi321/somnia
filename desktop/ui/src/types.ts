@@ -27,10 +27,26 @@ export interface AgentSession {
   latest_turn_id?: string | null;
   last_turn_file_changes?: Array<Record<string, unknown>>;
   undo_stack?: Array<Record<string, unknown>>;
+  /**
+   * Per-session model pin. When set, this session's turns always use this
+   * provider/model regardless of the workspace-wide default. When null, the
+   * session follows whatever the workspace default currently is.
+   */
+  provider_override?: string | null;
+  model_override?: string | null;
   context_window_usage?: ContextWindowUsage | null;
   preview?: string;
   has_visible_exchange?: boolean;
   is_summary?: boolean;
+}
+
+/** Shape returned by POST /sessions/{id}/model. */
+export interface SessionModelUpdateResult {
+  message: string;
+  session: AgentSession;
+  provider: string;
+  model: string;
+  pinned: boolean;
 }
 
 export interface ContextWindowUsage {

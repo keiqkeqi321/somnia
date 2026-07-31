@@ -567,6 +567,32 @@ class OpenAgentRuntime:
     def request_mode_switch(self, target_mode: str, reason: str = "") -> str:
         return self._permission_manager().request_mode_switch(target_mode, reason)
 
+    def set_session_provider_model(self, session: AgentSession, provider_name: str | None, model: str | None) -> str:
+        """Pin one session to a provider/model, or clear the pin to follow the
+        workspace default. Only this session's turns are affected."""
+        normalized_provider = str(provider_name or "").strip().lower()
+        normalized_model = _normalize_model_id(model)
+        if not normalized_provider:
+            session.provider_override = None
+            session.model_override = None
+            self.session_manager.save(session)
+            return f"Session '{session.id}' now follows the workspace default provider/model."
+        if normalized_provider not in self.settings.provider_profiles:
+            raise ValueError(f"Provider '{normalized_provider}' is not configured.")
+        profile = self.settings.provider_profiles[normalized_provider]
+        if normalized_model not in profile.models:
+            raise ValueError(f"Model '{normalized_model}' is not configured for provider '{normalized_provider}'.")
+        session.provider_override = normalized_provider
+        session.model_override = normalized_model
+        self.session_manager.save(session)
+        return f"Session '{session.id}' pinned to provider '{normalized_provider}' with model '{normalized_model}'."
+
+    def session_effective_provider(self, session: AgentSession) -> tuple[str, str]:
+        """The provider/model a turn of this session will actually use."""
+        provider = str(session.provider_override or self.settings.provider.name).strip().lower()
+        model = _normalize_model_id(session.model_override or self.settings.provider.model)
+        return provider, model
+
     def switch_provider_model(self, provider_name: str, model: str) -> str:
         normalized_provider = provider_name.strip().lower()
         normalized_model = _normalize_model_id(model)

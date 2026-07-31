@@ -668,6 +668,45 @@ class SidecarServer:
         self.broadcast_event(make_sidecar_event("session_deleted", payload={"session_id": session_id}, session_id=session_id))
         return {"session_id": session_id, "deleted": True}
 
+    def set_session_provider_model(
+        self,
+        session_id: str,
+        provider_name: str | None,
+        model: str | None,
+    ) -> dict[str, Any]:
+        try:
+            session = self.service.set_session_provider_model(session_id, provider_name, model)
+        except FileNotFoundError as exc:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        # Normalize so clients get the workspace default explicitly, plus a
+        # human-readable message describing what changed.
+        effective_provider, effective_model = self.runtime.session_effective_provider(session)
+        pinned = bool(getattr(session, "provider_override", None))
+        message = (
+            f"Session '{session.id}' pinned to provider '{effective_provider}' "
+            f"with model '{effective_model}'."
+            if pinned
+            else f"Session '{session.id}' now follows the workspace default "
+            f"(provider '{effective_provider}', model '{effective_model}')."
+        )
+        payload = {
+            "message": message,
+            "session": self._serialize_session(session),
+            "provider": effective_provider,
+            "model": effective_model,
+            "pinned": pinned,
+        }
+        self.broadcast_event(
+            make_sidecar_event(
+                "session_model_updated",
+                payload=payload,
+                session_id=session.id,
+            ),
+        )
+        return payload
+
     def _serialize_session(self, session: Any) -> dict[str, Any]:
         payload = serialize_session(session)
         usage = self._context_usage_payload(session)
@@ -1362,6 +1401,19 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return self.sidecar.compact_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "janitor":
             return self.sidecar.janitor_session(path_parts[1]), HTTPStatus.OK
+        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "model":
+            session_id = path_parts[1]
+            raw_provider = body.get("provider_name")
+            raw_model = body.get("model")
+            provider_name = None if raw_provider in {None, "", "none", "auto", "default"} else str(raw_provider).strip()
+            model = None if raw_model in {None, "", "none", "auto", "default"} else str(raw_model).strip()
+            # Either both or neither: a pin with only one field is ambiguous.
+            if (provider_name is None) != (model is None):
+                raise SidecarAPIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "provider_name and model must be set together, or both omitted to follow the default.",
+                )
+            return self.sidecar.set_session_provider_model(session_id, provider_name, model), HTTPStatus.OK
         if path_parts == ["workspace", "images"]:
             data_url = str(body.get("data_url", "")).strip()
             if not data_url:

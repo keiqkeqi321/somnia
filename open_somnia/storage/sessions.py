@@ -94,6 +94,8 @@ class SessionStore:
             "has_visible_exchange": bool(has_user and has_assistant),
             "preview": preview or "[no visible messages]",
             "token_usage": dict(session.get("token_usage", {}) or {}),
+            "provider_override": session.get("provider_override") or None,
+            "model_override": session.get("model_override") or None,
         }
 
     def create(self) -> dict[str, Any]:

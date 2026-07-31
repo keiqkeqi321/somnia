@@ -636,6 +636,63 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_session_provider_model_pin_is_isolated_from_workspace_default(self) -> None:
+        root = self._stable_test_dir("app-service-session-model-pin")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            # Workspace default is openai / fake-model.
+            self.assertEqual((runtime.settings.provider.name, runtime.settings.provider.model), ("openai", "fake-model"))
+
+            session = service.create_session()
+            self.assertIsNone(session.provider_override)
+            self.assertIsNone(session.model_override)
+
+            # Pin this session to a different model than the workspace default.
+            updated = service.set_session_provider_model(session.id, "openai", "fake-model-mini")
+            self.assertEqual(updated.provider_override, "openai")
+            self.assertEqual(updated.model_override, "fake-model-mini")
+
+            # The pin must not leak into the workspace-wide default.
+            self.assertEqual(runtime.settings.provider.name, "openai")
+            self.assertEqual(runtime.settings.provider.model, "fake-model")
+
+            # The effective provider/model for this session reflects the pin.
+            provider, model = runtime.session_effective_provider(updated)
+            self.assertEqual((provider, model), ("openai", "fake-model-mini"))
+
+            # A freshly created session still follows the workspace default.
+            other = service.create_session()
+            other_provider, other_model = runtime.session_effective_provider(other)
+            self.assertEqual((other_provider, other_model), ("openai", "fake-model"))
+
+            # The pin persists across a reload from disk.
+            reloaded = service.load_session(session.id)
+            self.assertEqual(reloaded.provider_override, "openai")
+            self.assertEqual(reloaded.model_override, "fake-model-mini")
+
+            # Clearing the pin restores default-following behavior.
+            cleared = service.set_session_provider_model(session.id, None, None)
+            self.assertIsNone(cleared.provider_override)
+            self.assertIsNone(cleared.model_override)
+            provider, model = runtime.session_effective_provider(cleared)
+            self.assertEqual((provider, model), ("openai", "fake-model"))
+        finally:
+            service.close()
+
+    def test_session_provider_model_pin_rejects_unknown_provider_or_model(self) -> None:
+        root = self._stable_test_dir("app-service-session-model-pin-validation")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            with self.assertRaises(ValueError):
+                service.set_session_provider_model(session.id, "nope", "fake-model")
+            with self.assertRaises(ValueError):
+                service.set_session_provider_model(session.id, "openai", "not-a-real-model")
+        finally:
+            service.close()
+
     def test_run_turn_forwards_loop_injection_callbacks(self) -> None:
         root = self._stable_test_dir("app-service-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))

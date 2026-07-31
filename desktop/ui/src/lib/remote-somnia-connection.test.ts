@@ -36,6 +36,8 @@ function relayResultFor(method: string): unknown {
       return { message: "Context compacted.", session: loadedSession };
     case "session.janitor":
       return { message: "Janitor complete.", session: loadedSession };
+    case "session.set_model":
+      return { message: "Session pinned.", session: loadedSession, provider: "openai", model: "gpt-test", pinned: true };
     case "workspace.paths":
       return { paths: contractWorkspacePaths };
     case "workspace.image.stage":
@@ -135,6 +137,7 @@ describe("Remote Somnia Connection", () => {
     await expect(connection.listProviders()).resolves.toHaveLength(1);
     await expect(connection.listModels("openai")).resolves.toHaveLength(1);
     await expect(connection.switchProviderModel("openai", "gpt-test")).resolves.toBeDefined();
+    await expect(connection.setSessionModel("session-1", "openai", "gpt-test")).resolves.toMatchObject({ pinned: true });
     await expect(connection.setVisionModel("openai", "vision-test")).resolves.toBeDefined();
     await expect(connection.setReasoningLevel("high")).resolves.toBeDefined();
     await expect(connection.listInteractions()).resolves.toEqual([]);

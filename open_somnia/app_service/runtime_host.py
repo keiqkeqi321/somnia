@@ -30,6 +30,7 @@ from open_somnia.app_service.events import (
 )
 from open_somnia.app_service.interaction_service import InteractionService
 from open_somnia.app_service.models import TurnHandle, TurnRunResult
+from open_somnia.config.settings import _materialize_provider
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import decode_embedded_user_message, normalize_tool_result_content_blocks, render_text_content
@@ -156,11 +157,25 @@ class RuntimeHost:
         self._active_turns: dict[str, _ActiveTurn] = {}
         self._primary_runtime_in_use = False
 
-    def _new_turn_runtime(self) -> OpenAgentRuntime:
+    def _new_turn_runtime(self, session: AgentSession) -> OpenAgentRuntime:
+        override_provider = str(getattr(session, "provider_override", "") or "").strip().lower()
+        override_model = str(getattr(session, "model_override", "") or "").strip()
+        if override_provider and override_model:
+            # A session pinned to its own model must never share the primary
+            # runtime: pinning and global switches both mutate runtimes, and a
+            # copied-settings runtime keeps this turn isolated from either.
+            settings = deepcopy(self.runtime.settings)
+            profile = settings.provider_profiles.get(override_provider)
+            if profile is not None and override_model in profile.models:
+                settings.provider = _materialize_provider(profile, override_model)
+                return self._fresh_turn_runtime(settings)
         if not self._primary_runtime_in_use:
             self._primary_runtime_in_use = True
             return self.runtime
-        runtime = OpenAgentRuntime(self.runtime.settings)
+        return self._fresh_turn_runtime(self.runtime.settings)
+
+    def _fresh_turn_runtime(self, settings: Any) -> OpenAgentRuntime:
+        runtime = OpenAgentRuntime(settings)
         runtime.execution_mode = getattr(self.runtime, "execution_mode", getattr(runtime, "execution_mode", None))
         return runtime
 
@@ -187,7 +202,7 @@ class RuntimeHost:
             if any(turn.session.id == session.id for turn in active_turns):
                 raise RuntimeError("This session already has a turn running.")
             turn_id = uuid.uuid4().hex[:8]
-            turn_runtime = self._new_turn_runtime()
+            turn_runtime = self._new_turn_runtime(session)
             event_queue: Queue = Queue()
             done_event = Event()
             interrupt_event = Event()

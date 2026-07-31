@@ -1,4 +1,4 @@
-import type { AgentSession, InteractionRequestState, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { AgentSession, InteractionRequestState, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SessionModelUpdateResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
 import type { SomniaClient } from "./somnia-client";
 import type {
   SessionCreateCommand,
@@ -169,6 +169,14 @@ export class RemoteSomniaConnection implements SomniaClient {
 
   janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
     return this.sendRequest<{ message: string; session: AgentSession }>("session.janitor", { session_id: sessionId });
+  }
+
+  setSessionModel(sessionId: string, providerName: string | null, model: string | null): Promise<SessionModelUpdateResult> {
+    return this.sendRequest<SessionModelUpdateResult>("session.set_model", {
+      session_id: sessionId,
+      provider: providerName ?? "",
+      model: model ?? "",
+    });
   }
 
   listWorkspacePaths(query = "", limit = 30): Promise<WorkspacePathSuggestion[]> {

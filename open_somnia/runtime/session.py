@@ -23,6 +23,9 @@ class AgentSession:
     last_turn_file_changes: list[dict[str, Any]] = field(default_factory=list)
     undo_stack: list[dict[str, Any]] = field(default_factory=list)
     pending_file_changes: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # Per-session model selection; None follows the workspace-wide default.
+    provider_override: str | None = None
+    model_override: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "AgentSession":
@@ -37,6 +40,8 @@ class AgentSession:
             latest_turn_id=payload.get("latest_turn_id"),
             last_turn_file_changes=list(payload.get("last_turn_file_changes", [])),
             undo_stack=list(payload.get("undo_stack", [])),
+            provider_override=payload.get("provider_override") or None,
+            model_override=payload.get("model_override") or None,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -51,6 +56,8 @@ class AgentSession:
             "latest_turn_id": self.latest_turn_id,
             "last_turn_file_changes": self.last_turn_file_changes,
             "undo_stack": self.undo_stack,
+            "provider_override": self.provider_override,
+            "model_override": self.model_override,
         }
 
 

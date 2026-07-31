@@ -9,6 +9,7 @@ import type {
   RemoteDeviceStatus,
   RemoteProjectTarget,
   SaveSettingsConfigSectionResult,
+  SessionModelUpdateResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
@@ -133,6 +134,27 @@ export class SidecarClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: "{}",
+      }),
+    );
+  }
+
+  /**
+   * Pin a session to a specific provider/model, or clear the pin (pass null for
+   * both) so it follows the workspace default. Only this session is affected.
+   */
+  async setSessionModel(
+    sessionId: string,
+    providerName: string | null,
+    model: string | null,
+  ): Promise<SessionModelUpdateResult> {
+    return parseResponse<SessionModelUpdateResult>(
+      await fetch(`${this.baseUrl}/sessions/${sessionId}/model`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider_name: providerName ?? "",
+          model: model ?? "",
+        }),
       }),
     );
   }

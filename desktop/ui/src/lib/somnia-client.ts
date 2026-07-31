@@ -7,6 +7,7 @@ import type {
   ProviderDescriptor,
   ProviderPresetDescriptor,
   SaveSettingsConfigSectionResult,
+  SessionModelUpdateResult,
   SettingsConfigPayload,
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
@@ -56,6 +57,16 @@ export interface SomniaClient extends SomniaConnection {
   deleteSession(sessionId: string): Promise<{ session_id: string; deleted: boolean }>;
   compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
   janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
+  /**
+   * Pin a session to a provider/model (both set) or clear the pin so the
+   * session follows the workspace default (both null). Only this session is
+   * affected; the workspace-wide default and other sessions are untouched.
+   */
+  setSessionModel(
+    sessionId: string,
+    providerName: string | null,
+    model: string | null,
+  ): Promise<SessionModelUpdateResult>;
 
   // Turn control.
   interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }>;
@@ -227,6 +238,14 @@ export class DirectSomniaClient implements SomniaClient {
 
   janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
     return this.rest.janitorSession(sessionId);
+  }
+
+  setSessionModel(
+    sessionId: string,
+    providerName: string | null,
+    model: string | null,
+  ): Promise<SessionModelUpdateResult> {
+    return this.rest.setSessionModel(sessionId, providerName, model);
   }
 
   interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {

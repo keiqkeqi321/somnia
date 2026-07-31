@@ -49,6 +49,14 @@ class AppService:
     def delete_session(self, session_id: str) -> bool:
         return self.session_service.delete_session(session_id)
 
+    def set_session_provider_model(
+        self,
+        session_id: str,
+        provider_name: str | None,
+        model: str | None,
+    ) -> AgentSession:
+        return self.session_service.set_session_provider_model(session_id, provider_name, model)
+
     def run_turn(
         self,
         session: AgentSession,
