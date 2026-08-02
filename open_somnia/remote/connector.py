@@ -159,6 +159,10 @@ class LocalSidecarBridge:
             log_id = _required_text(params, "log_id")
             payload = self._request("GET", f"/tool-logs/{quote(log_id, safe='')}", None)
             return _required_mapping(payload, "tool_log")
+        if method == "subagent_log.get":
+            activity_id = _required_text(params, "activity_id")
+            payload = self._request("GET", f"/subagent-logs/{quote(activity_id, safe='')}", None)
+            return _required_mapping(payload, "subagent_log")
         if method == "thinking_log.get":
             path = _required_text(params, "path")
             payload = self._request("GET", f"/thinking-log?path={quote(path, safe='')}", None)

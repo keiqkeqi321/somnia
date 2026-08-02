@@ -132,6 +132,25 @@ export interface LoopInjectionCancelResponse {
   cancelled: boolean;
 }
 
+export interface SubagentLogEntry {
+  activity_id: string;
+  type: string;
+  timestamp?: number;
+  prompt?: string;
+  agent_type?: string;
+  content?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  output_preview?: string;
+  error?: string;
+}
+
+export interface SubagentLogDetail {
+  activity_id: string;
+  rendered: string;
+  entries: SubagentLogEntry[];
+}
+
 export interface WorkspacePathSuggestion {
   path: string;
   basename: string;

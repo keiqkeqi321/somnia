@@ -135,6 +135,40 @@ class SubagentToolTests(unittest.TestCase):
             self.assertTrue(any("tree .:" in event["text"] for event in events))
             self.assertEqual(events[-1]["text"], "Found the root.")
 
+    def test_subagent_persists_execution_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            turns = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None):
+                turns.append(messages)
+                if len(turns) == 1:
+                    return AssistantTurn(
+                        stop_reason="tool_use",
+                        text_blocks=["Searching files."],
+                        tool_calls=[
+                            ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1}),
+                        ],
+                    )
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["Found the root."], tool_calls=[])
+
+            runtime.complete = fake_complete
+
+            result = runtime.run_subagent("Inspect the workspace", "Explore", activity_id="turn-1")
+
+            self.assertEqual(result, "Found the root.")
+            entries = runtime.subagent_log_store.read("turn-1")
+            types = [entry["type"] for entry in entries]
+            self.assertEqual(types, ["started", "assistant_message", "tool_call", "assistant_message", "summary"])
+            self.assertEqual(entries[0]["prompt"], "Inspect the workspace")
+            self.assertEqual(entries[0]["agent_type"], "Explore")
+            self.assertEqual(entries[1]["content"], "Searching files.")
+            self.assertEqual(entries[2]["tool_name"], "tree")
+            self.assertIn("tool_input", entries[2])
+            self.assertTrue(entries[2]["output_preview"])
+            self.assertEqual(entries[3]["content"], "Found the root.")
+            self.assertEqual(entries[4]["content"], "Found the root.")
+
     def _make_settings(self, root: Path) -> AppSettings:
         data_dir = root / ".open_somnia"
         transcripts_dir = data_dir / "transcripts"

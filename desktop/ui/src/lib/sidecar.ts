@@ -15,6 +15,7 @@ import type {
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
   SidecarStatus,
+  SubagentLogDetail,
   TaskGraphItem,
   TeamMemberActivity,
   TeamLogDetail,
@@ -190,6 +191,13 @@ export class SidecarClient {
         method: "DELETE",
       }),
     );
+  }
+
+  async getSubagentLog(activityId: string): Promise<SubagentLogDetail> {
+    const payload = await parseResponse<{ subagent_log: SubagentLogDetail }>(
+      await fetch(`${this.baseUrl}/subagent-logs/${encodeURIComponent(activityId)}`),
+    );
+    return payload.subagent_log;
   }
 
   async listProviders(): Promise<ProviderDescriptor[]> {

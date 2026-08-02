@@ -232,6 +232,37 @@ def _toml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _compact_subagent_text(text: Any, *, limit: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    return compact if len(compact) <= limit else f"{compact[:limit]}…"
+
+
+def _render_subagent_log(entries: list[dict[str, Any]]) -> str:
+    lines = ["[subagent log]"]
+    for entry in entries:
+        event_type = str(entry.get("type", "event"))
+        if event_type == "started":
+            lines.append(f"- started ({entry.get('agent_type', 'subagent')})")
+            lines.append(f"  prompt: {_compact_subagent_text(entry.get('prompt'), limit=120)}")
+        elif event_type == "assistant_message":
+            lines.append(f"- assistant: {_compact_subagent_text(entry.get('content'), limit=200)}")
+        elif event_type == "tool_call":
+            lines.append(
+                f"- tool {entry.get('tool_name', 'unknown')}: "
+                f"{_compact_subagent_text(entry.get('tool_input', {}), limit=120)}"
+            )
+            lines.append(f"  result: {_compact_subagent_text(entry.get('output_preview', '(no output)'), limit=200)}")
+        elif event_type == "summary":
+            lines.append(f"- summary: {_compact_subagent_text(entry.get('content'), limit=200)}")
+        elif event_type == "error":
+            lines.append(f"- error: {_compact_subagent_text(entry.get('error', 'unknown error'), limit=200)}")
+        else:
+            lines.append(f"- {event_type}")
+    return "\n".join(lines)
+
+
 def _toml_unquote(value: str) -> str:
     stripped = value.strip()
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {'"', "'"}:
@@ -1154,6 +1185,24 @@ class SidecarServer:
             rendered = runtime_renderer(member_name)
         return {"team_log": {"name": member_name, "session_id": session_id, "rendered": rendered, "entries": entries}}
 
+    def get_subagent_log(self, activity_id: str) -> dict[str, Any]:
+        normalized_id = str(activity_id or "").strip()
+        if not normalized_id:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "activity_id is required.")
+        store = getattr(self.runtime, "subagent_log_store", None)
+        if store is None:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Subagent log '{normalized_id}' was not found.")
+        entries = store.read(normalized_id)
+        if not entries:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Subagent log '{normalized_id}' was not found.")
+        return {
+            "subagent_log": {
+                "activity_id": normalized_id,
+                "rendered": _render_subagent_log(entries),
+                "entries": entries,
+            }
+        }
+
     def resolve_authorization(
         self,
         request_id: str,
@@ -1364,6 +1413,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return {"tool_logs": self.sidecar.list_tool_logs(limit=limit)}
         if len(path_parts) == 2 and path_parts[0] == "tool-logs":
             return {"tool_log": self.sidecar.get_tool_log(path_parts[1])}
+        if len(path_parts) == 2 and path_parts[0] == "subagent-logs":
+            return self.sidecar.get_subagent_log(path_parts[1])
         if path_parts == ["thinking-log"]:
             return self.sidecar.get_thinking_log((query.get("path") or [""])[0])
         if path_parts == ["team", "log"]:

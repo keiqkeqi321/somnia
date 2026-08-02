@@ -83,6 +83,8 @@ import type {
   SettingsConfigSectionKey,
   SidecarEvent,
   SidecarStatus,
+  SubagentLogDetail,
+  SubagentLogEntry,
   TaskGraphItem,
   TeamMemberActivity,
   TeamLogEntry,
@@ -253,10 +255,19 @@ type SelectedWorkerView = {
   name: string;
   sessionId: string | null;
 };
+type SelectedSubagentView = {
+  conversationKey: string;
+  activityId: string;
+};
 type WorkerLogState = {
   loading: boolean;
   error: string | null;
   log: TeamLogDetail | null;
+};
+type SubagentLogState = {
+  loading: boolean;
+  error: string | null;
+  log: SubagentLogDetail | null;
 };
 
 const DEFAULT_CONVERSATION_PROJECT_KEY = "__default_project__";
@@ -349,6 +360,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const [toolImagePreview, setToolImagePreview] = useState<ToolImagePreviewState | null>(null);
   const [selectedWorkerView, setSelectedWorkerView] = useState<SelectedWorkerView | null>(null);
   const [workerLogState, setWorkerLogState] = useState<WorkerLogState>({ loading: false, error: null, log: null });
+  const [selectedSubagentView, setSelectedSubagentView] = useState<SelectedSubagentView | null>(null);
+  const [subagentLogState, setSubagentLogState] = useState<SubagentLogState>({ loading: false, error: null, log: null });
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionsState>(() => readStoredArchivedSessions());
   const [selectedArchivedSessionKeys, setSelectedArchivedSessionKeys] = useState<string[]>([]);
   const [bannerMessage, setBannerMessage] = useState("Point the UI at a running sidecar and start a session.");
@@ -3667,6 +3680,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         .map((member) => `${String(member.name)}:${String(member.status ?? "")}:${String(member.activity ?? "")}:${String(member.current_tool_name ?? "")}:${String(member.current_task_id ?? "")}:${(member.recent_interactions ?? []).join("\u0001")}`)
         .join("\u0002")
     : "";
+  const selectedSubagentActive =
+    selectedSubagentView !== null && activeConversationKey !== null && selectedSubagentView.conversationKey === activeConversationKey;
+  const selectedSubagentItem = selectedSubagentActive
+    ? activeSubagentItems.find((item) => item.id === selectedSubagentView.activityId) ?? null
+    : null;
+  const subagentRefreshKey = selectedSubagentActive
+    ? activeSubagentItems
+        .map((item) => `${String(item.id)}:${item.facts.join("\u0001")}:${String(item.lastActivityAt ?? item.startedAt)}`)
+        .join("\u0002")
+    : "";
 
   conversationVirtualCountRef.current =
     conversationRows.length + (activeQueuedPrompts.length > 0 ? 1 : 0) + (currentSessionInteraction ? 1 : 0) + 1;
@@ -3707,6 +3730,22 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }, [activeConversationKey, activeTeamItems, selectedWorkerView]);
 
   useEffect(() => {
+    if (!selectedSubagentView) {
+      return;
+    }
+    if (!activeConversationKey || selectedSubagentView.conversationKey !== activeConversationKey) {
+      setSelectedSubagentView(null);
+      setSubagentLogState({ loading: false, error: null, log: null });
+      return;
+    }
+    const stillActive = activeSubagentItems.some((item) => item.id === selectedSubagentView.activityId);
+    if (!stillActive) {
+      setSelectedSubagentView(null);
+      setSubagentLogState({ loading: false, error: null, log: null });
+    }
+  }, [activeConversationKey, activeSubagentItems, selectedSubagentView]);
+
+  useEffect(() => {
     if (!selectedWorkerActive || !selectedWorkerView) {
       return;
     }
@@ -3732,6 +3771,33 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       cancelled = true;
     };
   }, [selectedWorkerActive, selectedWorkerView?.name, selectedWorkerView?.sessionId, workerRefreshKey]);
+
+  useEffect(() => {
+    if (!selectedSubagentActive || !selectedSubagentView) {
+      return;
+    }
+    const client = clientRef.current;
+    if (!client) {
+      return;
+    }
+    let cancelled = false;
+    setSubagentLogState((previous) => ({ ...previous, loading: true, error: null }));
+    client
+      .getSubagentLog(selectedSubagentView.activityId)
+      .then((log) => {
+        if (!cancelled) {
+          setSubagentLogState({ loading: false, error: null, log });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setSubagentLogState({ loading: false, error: error instanceof Error ? error.message : String(error), log: null });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSubagentActive, selectedSubagentView?.activityId, subagentRefreshKey]);
 
   if (remoteMode && !remoteConnected) {
     if (remoteRestorePending) {
@@ -4203,13 +4269,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
               )}
             </div>
             <div className="status-cluster">
-              {selectedWorkerActive ? (
+              {selectedWorkerActive || selectedSubagentActive ? (
                 <button
                   className="action ghost"
                   type="button"
                   onClick={() => {
                     setSelectedWorkerView(null);
                     setWorkerLogState({ loading: false, error: null, log: null });
+                    setSelectedSubagentView(null);
+                    setSubagentLogState({ loading: false, error: null, log: null });
                   }}
                   title={t("worker.backToLead")}
                   aria-label={t("worker.backToLead")}
@@ -4228,7 +4296,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             </div>
           </div>
 
-          {!selectedWorkerActive ? (
+          {!selectedWorkerActive && !selectedSubagentActive ? (
             <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
           ) : null}
 
@@ -4236,6 +4304,10 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             {selectedWorkerActive ? (
               <div className="conversation-content">
                 <WorkerOutputView member={selectedWorkerMember} workerName={selectedWorkerView?.name ?? ""} state={workerLogState} />
+              </div>
+            ) : selectedSubagentActive ? (
+              <div className="conversation-content">
+                <SubagentOutputView activity={selectedSubagentItem} state={subagentLogState} />
               </div>
             ) : conversationRows.length === 0 && activeQueuedPrompts.length === 0 && !currentSessionInteraction ? (
               <div className="conversation-content">
@@ -4348,7 +4420,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             )}
           </div>
 
-          {!selectedWorkerActive ? (
+          {!selectedWorkerActive && !selectedSubagentActive ? (
           <div className="composer">
             <textarea
               ref={composerTextareaRef}
@@ -4698,15 +4770,26 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       subagents={activeSubagentItems}
                       teamMembers={activeTeamItems}
                       selectedTeamMemberName={selectedWorkerActive ? selectedWorkerView?.name ?? null : null}
+                      selectedSubagentId={selectedSubagentActive ? selectedSubagentView?.activityId ?? null : null}
                       onSelectTeamMember={(member) => {
                         if (!activeConversationKey) {
                           return;
                         }
+                        setSelectedSubagentView(null);
+                        setSubagentLogState({ loading: false, error: null, log: null });
                         setSelectedWorkerView({
                           conversationKey: activeConversationKey,
                           name: String(member.name),
                           sessionId: typeof member.session_id === "string" ? member.session_id : currentSession?.id ?? null,
                         });
+                      }}
+                      onSelectSubagent={(item) => {
+                        if (!activeConversationKey) {
+                          return;
+                        }
+                        setSelectedWorkerView(null);
+                        setWorkerLogState({ loading: false, error: null, log: null });
+                        setSelectedSubagentView({ conversationKey: activeConversationKey, activityId: item.id });
                       }}
                     />
                   ) : null}
@@ -4935,12 +5018,16 @@ function ExecutionActivityPanel({
   subagents,
   teamMembers,
   selectedTeamMemberName,
+  selectedSubagentId,
   onSelectTeamMember,
+  onSelectSubagent,
 }: {
   subagents: SubagentActivity[];
   teamMembers: TeamMemberActivity[];
   selectedTeamMemberName?: string | null;
+  selectedSubagentId?: string | null;
   onSelectTeamMember?: (member: TeamMemberActivity) => void;
+  onSelectSubagent?: (item: SubagentActivity) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -4952,16 +5039,25 @@ function ExecutionActivityPanel({
       {subagents.length > 0 ? (
         <div className="activity-group">
           <strong>{t("activity.subagents")}</strong>
-          {subagents.map((item) => (
-            <div key={item.id} className="activity-item">
-              <div className="activity-item-head">
-                <span>{item.agentType}</span>
-                <em>{formatElapsedSeconds(item.startedAt)}</em>
-              </div>
-              <p>{compactInlineText(item.prompt || t("common.working"), 120)}</p>
-              {item.facts.length > 0 ? <small>{item.facts[item.facts.length - 1]}</small> : null}
-            </div>
-          ))}
+          {subagents.map((item) => {
+            const isSelected = selectedSubagentId === item.id;
+            return (
+              <button
+                key={item.id}
+                className={`activity-item activity-item-button ${isSelected ? "selected" : ""}`}
+                type="button"
+                onClick={() => onSelectSubagent?.(item)}
+                aria-pressed={isSelected}
+              >
+                <div className="activity-item-head">
+                  <span>{item.agentType}</span>
+                  <em>{formatElapsedSeconds(item.startedAt)}</em>
+                </div>
+                <p>{compactInlineText(item.prompt || t("common.working"), 120)}</p>
+                {item.facts.length > 0 ? <small>{item.facts[item.facts.length - 1]}</small> : null}
+              </button>
+            );
+          })}
         </div>
       ) : null}
       {teamMembers.length > 0 ? (
@@ -5036,6 +5132,86 @@ function WorkerOutputView({
       ) : null}
     </section>
   );
+}
+
+function SubagentOutputView({
+  activity,
+  state,
+}: {
+  activity: SubagentActivity | null;
+  state: SubagentLogState;
+}) {
+  const { t } = useI18n();
+  const rendered = state.log?.rendered?.trim() ?? "";
+  const entries = state.log?.entries ?? [];
+  return (
+    <section className="worker-output">
+      <header className="worker-output-header">
+        <div>
+          <p className="panel-kicker">{activity?.agentType ?? t("activity.subagents")}</p>
+          <h3>{activity ? compactInlineText(activity.prompt || t("common.working"), 160) : t("activity.subagents")}</h3>
+        </div>
+        <span>
+          {activity ? `${t("subagent.running")} · ${formatElapsedSeconds(activity.startedAt)}` : t("common.active")}
+        </span>
+      </header>
+      {state.error ? <div className="empty-card">{state.error}</div> : null}
+      {state.loading && entries.length === 0 ? (
+        <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
+          <span />
+          <span />
+          <span />
+        </span>
+      ) : null}
+      {entries.length > 0 ? (
+        <div className="worker-log-events">
+          {entries.map((entry, index) => (
+            <SubagentLogEntryCard key={index} entry={entry} index={index} />
+          ))}
+        </div>
+      ) : rendered ? (
+        <pre className="worker-output-log">{rendered}</pre>
+      ) : !state.loading && !state.error ? (
+        <div className="empty-card">{t("subagent.noOutput")}</div>
+      ) : null}
+    </section>
+  );
+}
+
+function SubagentLogEntryCard({ entry, index }: { entry: SubagentLogEntry; index: number }) {
+  const { t } = useI18n();
+  const eventType = String(entry.type ?? "event");
+  if (eventType === "assistant_message" || eventType === "summary") {
+    return (
+      <article className={`bubble assistant worker-log-bubble ${eventType === "summary" ? "worker-log-summary" : ""}`}>
+        <div className="worker-log-meta">
+          <span>{eventType === "summary" ? t("subagent.summary") : "assistant"}</span>
+          <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+        </div>
+        <MarkdownMessage text={String(entry.content ?? "")} />
+      </article>
+    );
+  }
+  if (eventType === "tool_call") {
+    return (
+      <article className="worker-log-tool" key={index}>
+        <div className="worker-log-meta">
+          <span>tool / {String(entry.tool_name ?? "tool")}</span>
+          <em>{formatWorkerLogTimestamp(entry.timestamp)}</em>
+        </div>
+        <pre className="worker-log-tool-input">{stringifyToolValue(entry.tool_input ?? {})}</pre>
+        <pre className="worker-log-tool-output">{String(entry.output_preview ?? "(no output)")}</pre>
+      </article>
+    );
+  }
+  if (eventType === "error") {
+    return (
+      <div className="empty-card" key={index}>
+        {String(entry.error ?? "subagent failed")}
+      </div>
+    );
+  }
+  return null;
 }
 
 function WorkerLogEntryCard({ entry, index }: { entry: TeamLogEntry; index: number }) {

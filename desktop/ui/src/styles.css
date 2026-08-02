@@ -2725,6 +2725,11 @@ button {
 .conversation-body {
   flex: 1;
   min-height: 0;
+  /* Worker/subagent output views have no virtua VList of their own; without
+     an overflow container their long logs would be clipped by .shell's
+     overflow: hidden. The main conversation uses the VList's internal scroll
+     and stays unaffected. */
+  overflow-y: auto;
 }
 
 .conversation-content {
@@ -4803,6 +4808,31 @@ button {
 
 .worker-log-tool {
   max-width: min(100%, 58rem);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(8, 10, 14, 0.5);
+}
+
+.worker-log-tool-input,
+.worker-log-tool-output {
+  margin: 0;
+  color: #dbeafe;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.worker-log-tool-output {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  color: var(--text-subtle);
+}
+
+.worker-log-summary {
+  border: 1px solid rgba(143, 180, 255, 0.25);
 }
 
 .worker-log-event {

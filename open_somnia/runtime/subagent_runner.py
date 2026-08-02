@@ -57,62 +57,86 @@ class SubagentRunner:
         )
         final_text = "(subagent failed)"
         pending_tool_repair_hints: list[dict[str, Any]] = []
-        for _ in range(self.runtime.settings.runtime.max_subagent_rounds):
-            if pending_tool_repair_hints:
-                repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
-                pending_tool_repair_hints = []
-                if repair_message:
-                    messages.append(make_user_text_message(repair_message))
-            payload_messages = self.runtime._build_payload_messages(messages, session=None)
-            consume_ephemeral_image_blocks(messages)
-            turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
-            messages.append(turn.as_message())
-            turn_text = "\n".join(turn.text_blocks).strip()
-            if turn_text:
-                self._emit_activity(
-                    activity_id=activity_id,
-                    agent_type=agent_type,
-                    prompt=prompt,
-                    kind="assistant",
-                    text=turn_text,
-                )
-            if not turn.has_tool_calls():
-                return turn_text or "(no summary)"
-            results: list[dict[str, Any]] = []
-            ctx = ToolExecutionContext(
-                runtime=self.runtime,
-                session=None,
-                actor="subagent",
-                trace_id=f"subagent-{uuid.uuid4().hex[:8]}",
-            )
-            for tool_call in turn.tool_calls:
-                try:
-                    output = registry.execute(ctx, tool_call.name, tool_call.input)
-                except TurnInterrupted:
-                    raise
-                except Exception as exc:
-                    output = tool_error_from_exception(tool_call.name, exc)
-                repair_hint = extract_transient_repair_hint(output)
-                if repair_hint is not None:
-                    pending_tool_repair_hints.append(repair_hint)
-                persisted_output = sanitize_tool_output_for_persistence(output)
-                self._emit_activity(
-                    activity_id=activity_id,
-                    agent_type=agent_type,
-                    prompt=prompt,
-                    kind="tool_result",
-                    text=self._format_tool_activity(tool_call.name, tool_call.input, persisted_output),
-                )
-                results.append(
-                    make_tool_result_item(
-                        tool_call.id,
-                        persisted_output,
-                        rendered_output=serialize_tool_output(persisted_output),
+        log_store = getattr(self.runtime, "subagent_log_store", None)
+
+        def log(payload: dict[str, Any]) -> None:
+            if log_store is not None:
+                log_store.append(activity_id, payload)
+
+        log({"type": "started", "prompt": prompt, "agent_type": agent_type})
+        try:
+            for _ in range(self.runtime.settings.runtime.max_subagent_rounds):
+                if pending_tool_repair_hints:
+                    repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
+                    pending_tool_repair_hints = []
+                    if repair_message:
+                        messages.append(make_user_text_message(repair_message))
+                payload_messages = self.runtime._build_payload_messages(messages, session=None)
+                consume_ephemeral_image_blocks(messages)
+                turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
+                messages.append(turn.as_message())
+                turn_text = "\n".join(turn.text_blocks).strip()
+                if turn_text:
+                    self._emit_activity(
+                        activity_id=activity_id,
+                        agent_type=agent_type,
+                        prompt=prompt,
+                        kind="assistant",
+                        text=turn_text,
                     )
+                    log({"type": "assistant_message", "content": turn_text})
+                if not turn.has_tool_calls():
+                    log({"type": "summary", "content": turn_text or "(no summary)"})
+                    return turn_text or "(no summary)"
+                results: list[dict[str, Any]] = []
+                ctx = ToolExecutionContext(
+                    runtime=self.runtime,
+                    session=None,
+                    actor="subagent",
+                    trace_id=f"subagent-{uuid.uuid4().hex[:8]}",
                 )
-            messages.append(make_tool_result_message(results))
-            final_text = turn_text or final_text
-        return final_text
+                for tool_call in turn.tool_calls:
+                    try:
+                        output = registry.execute(ctx, tool_call.name, tool_call.input)
+                    except TurnInterrupted:
+                        raise
+                    except Exception as exc:
+                        output = tool_error_from_exception(tool_call.name, exc)
+                    repair_hint = extract_transient_repair_hint(output)
+                    if repair_hint is not None:
+                        pending_tool_repair_hints.append(repair_hint)
+                    persisted_output = sanitize_tool_output_for_persistence(output)
+                    self._emit_activity(
+                        activity_id=activity_id,
+                        agent_type=agent_type,
+                        prompt=prompt,
+                        kind="tool_result",
+                        text=self._format_tool_activity(tool_call.name, tool_call.input, persisted_output),
+                    )
+                    log(
+                        {
+                            "type": "tool_call",
+                            "tool_name": tool_call.name,
+                            "tool_input": tool_call.input,
+                            "output_preview": self._compact_text(serialize_tool_output(persisted_output), limit=600),
+                        }
+                    )
+                    results.append(
+                        make_tool_result_item(
+                            tool_call.id,
+                            persisted_output,
+                            rendered_output=serialize_tool_output(persisted_output),
+                        )
+                    )
+                messages.append(make_tool_result_message(results))
+                final_text = turn_text or final_text
+            log({"type": "summary", "content": final_text})
+            return final_text
+        except TurnInterrupted:
+            raise
+        except Exception as exc:
+            log({"type": "error", "error": str(exc)})
+            raise
 
     def _emit_activity(
         self,

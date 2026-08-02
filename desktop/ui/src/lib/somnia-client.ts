@@ -13,6 +13,7 @@ import type {
   SettingsConfigScopeKey,
   SettingsConfigSectionKey,
   SidecarStatus,
+  SubagentLogDetail,
   TaskGraphItem,
   TeamLogDetail,
   TeamMemberActivity,
@@ -77,7 +78,7 @@ export interface SomniaClient extends SomniaConnection {
     userInput: string | Record<string, unknown>,
   ): Promise<LoopInjectionResponse>;
   cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse>;
-
+  getSubagentLog(activityId: string): Promise<SubagentLogDetail>;
   // Provider and model controls.
   listProviders(): Promise<ProviderDescriptor[]>;
   listProviderPresets(): Promise<ProviderPresetDescriptor[]>;
@@ -264,6 +265,10 @@ export class DirectSomniaClient implements SomniaClient {
 
   cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse> {
     return this.rest.cancelLoopInjection(turnId, injectionId);
+  }
+
+  getSubagentLog(activityId: string): Promise<SubagentLogDetail> {
+    return this.rest.getSubagentLog(activityId);
   }
 
   listProviders(): Promise<ProviderDescriptor[]> {

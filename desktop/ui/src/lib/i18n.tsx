@@ -303,6 +303,9 @@ const translations = {
     "worker.backToLead": "Lead",
     "worker.label": "Worker",
     "worker.noOutput": "No worker output yet.",
+    "subagent.running": "running",
+    "subagent.summary": "summary",
+    "subagent.noOutput": "No subagent output yet.",
 
     /* ── Interaction decision card ── */
     "decision.authorizationRequest": "Authorization request",
@@ -725,6 +728,9 @@ const translations = {
     "worker.backToLead": "Lead",
     "worker.label": "Worker",
     "worker.noOutput": "暂无 worker 输出。",
+    "subagent.running": "运行中",
+    "subagent.summary": "总结",
+    "subagent.noOutput": "暂无 subagent 输出。",
 
     /* ── Interaction decision card ── */
     "decision.authorizationRequest": "授权请求",

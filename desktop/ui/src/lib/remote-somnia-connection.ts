@@ -1,4 +1,4 @@
-import type { AgentSession, InteractionRequestState, LoopInjectionCancelResponse, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SessionModelUpdateResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { AgentSession, InteractionRequestState, LoopInjectionCancelResponse, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SessionModelUpdateResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, SubagentLogDetail, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
 import type { SomniaClient } from "./somnia-client";
 import type {
   SessionCreateCommand,
@@ -299,6 +299,10 @@ export class RemoteSomniaConnection implements SomniaClient {
 
   cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse> {
     return this.sendRequest("turn.inject.cancel", { turn_id: turnId, injection_id: injectionId });
+  }
+
+  getSubagentLog(activityId: string): Promise<SubagentLogDetail> {
+    return this.sendRequest("subagent_log.get", { activity_id: activityId });
   }
 
   subscribe(listener: SomniaConnectionListener): () => void {

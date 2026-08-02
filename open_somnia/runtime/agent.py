@@ -87,6 +87,7 @@ from open_somnia.storage.inbox import InboxStore
 from open_somnia.storage.jobs import JobStore
 from open_somnia.storage.sessions import SessionStore
 from open_somnia.storage.common import atomic_write_text
+from open_somnia.storage.subagent_logs import SubagentLogStore
 from open_somnia.storage.tasks import TaskStore
 from open_somnia.storage.team import TeamStore
 from open_somnia.storage.tool_logs import ToolLogStore
@@ -272,6 +273,7 @@ class OpenAgentRuntime:
         self.task_store = TaskStore(settings.storage.tasks_dir)
         self.job_store = JobStore(settings.storage.jobs_dir)
         self.tool_log_store = ToolLogStore(settings.storage.logs_dir)
+        self.subagent_log_store = SubagentLogStore(settings.storage.logs_dir)
         self.inbox_store = InboxStore(settings.storage.inbox_dir)
         self.bus = MessageBus(self.inbox_store)
         self.team_store = TeamStore(settings.storage.team_dir)
