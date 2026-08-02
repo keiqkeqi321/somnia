@@ -18,8 +18,8 @@ import appIconUrl from "../src-tauri/icons/32x32.png";
 
 import {
   chooseProjectFolder,
-  closeMainWindow,
   ensureManagedSidecar,
+  hideMainWindow,
   isMainWindowMaximized,
   minimizeMainWindow,
   onMainWindowResized,
@@ -3345,7 +3345,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         await toggleMaximizeMainWindow();
         setWindowMaximized(await isMainWindowMaximized());
       } else {
-        await closeMainWindow();
+        await hideMainWindow();
       }
     } catch (error) {
       setBannerMessage(formatErrorMessage(error));

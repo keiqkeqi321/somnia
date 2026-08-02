@@ -74,12 +74,14 @@ async function onMainWindowResized(callback: () => void): Promise<UnlistenFn | n
   return getCurrentWindow().onResized(callback);
 }
 
-async function closeMainWindow(): Promise<void> {
+/// Close-to-tray: the titlebar X hides the window while the sidecar keeps
+/// running. The real exit happens from the tray menu ("退出"), which shuts the
+/// sidecar down on app exit.
+async function hideMainWindow(): Promise<void> {
   if (!isTauriEnvironment()) {
     return;
   }
-  await stopManagedSidecar();
-  await getCurrentWindow().close();
+  await getCurrentWindow().hide();
 }
 
 async function startMainWindowDrag(): Promise<void> {
@@ -90,9 +92,9 @@ async function startMainWindowDrag(): Promise<void> {
 }
 
 export {
-  closeMainWindow,
   chooseProjectFolder,
   ensureManagedSidecar,
+  hideMainWindow,
   isMainWindowMaximized,
   isTauriEnvironment,
   minimizeMainWindow,
