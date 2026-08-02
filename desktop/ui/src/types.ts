@@ -126,6 +126,12 @@ export interface LoopInjectionResponse {
   queued: boolean;
 }
 
+export interface LoopInjectionCancelResponse {
+  turn_id: string;
+  injection_id: string;
+  cancelled: boolean;
+}
+
 export interface WorkspacePathSuggestion {
   path: string;
   basename: string;

@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   InteractionRequestState,
+  LoopInjectionCancelResponse,
   LoopInjectionResponse,
   ModelDescriptor,
   McpServerSummary,
@@ -179,6 +180,14 @@ export class SidecarClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ injection_id: injectionId, user_input: userInput }),
+      }),
+    );
+  }
+
+  async cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse> {
+    return parseResponse<LoopInjectionCancelResponse>(
+      await fetch(`${this.baseUrl}/turns/${turnId}/loop-injections/${encodeURIComponent(injectionId)}`, {
+        method: "DELETE",
       }),
     );
   }

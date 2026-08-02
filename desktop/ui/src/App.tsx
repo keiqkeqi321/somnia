@@ -2572,6 +2572,33 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
   }
 
+  async function handleCancelQueuedPrompt(prompt: QueuedPrompt) {
+    const projectPath = selectedProjectPathRef.current;
+    const client = clientRef.current;
+    if (!prompt.injectionRequested) {
+      // Still only on the local queue: dropping it here is enough.
+      removeQueuedPrompt(projectPath, prompt.sessionId, prompt.id);
+      setBannerMessage(t("queue.cancelled"));
+      return;
+    }
+    const activeTurn = projectPath
+      ? (activeProjectTurns[projectPath] ?? []).find((turn) => turn.sessionId === prompt.sessionId)
+      : null;
+    if (!client || !activeTurn?.turnId) {
+      removeQueuedPrompt(projectPath, prompt.sessionId, prompt.id);
+      setBannerMessage(t("queue.cancelled"));
+      return;
+    }
+    try {
+      await client.cancelLoopInjection(activeTurn.turnId, prompt.id);
+      removeQueuedPrompt(projectPath, prompt.sessionId, prompt.id);
+      setBannerMessage(t("queue.cancelled"));
+    } catch (error) {
+      // 404: already drained into the agent loop — nothing left to cancel.
+      setBannerMessage(formatErrorMessage(error));
+    }
+  }
+
   async function handleSendPrompt() {
     const commandTarget = pendingUiCommandTarget(draft, pendingImages);
     if (commandTarget) {
@@ -4296,6 +4323,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       canInject={currentSessionRunning}
                       busy={busyAction !== null}
                       onInject={handleQueuePromptInjection}
+                      onCancel={handleCancelQueuedPrompt}
                     />
                   </div>
                 ) : null}
@@ -5135,11 +5163,13 @@ function PromptQueueCard({
   canInject,
   busy,
   onInject,
+  onCancel,
 }: {
   prompts: QueuedPrompt[];
   canInject: boolean;
   busy: boolean;
   onInject: (prompt: QueuedPrompt) => Promise<void>;
+  onCancel: (prompt: QueuedPrompt) => Promise<void>;
 }) {
   const { t } = useI18n();
   return (
@@ -5152,14 +5182,24 @@ function PromptQueueCard({
         {prompts.map((prompt) => (
           <li key={prompt.id}>
             <span>{prompt.userText}</span>
-            <button
-              className="queue-inject-button"
-              onClick={() => void onInject(prompt)}
-              disabled={!canInject || busy || prompt.injectionRequested}
-              title={prompt.injectionRequested ? t("queue.waitingNextLoop") : t("queue.injectOnNextLoop")}
-            >
-              {prompt.injectionRequested ? t("queue.nextLoop") : t("queue.injectNextLoop")}
-            </button>
+            <div className="queue-actions">
+              <button
+                className="queue-inject-button"
+                onClick={() => void onInject(prompt)}
+                disabled={!canInject || busy || prompt.injectionRequested}
+                title={prompt.injectionRequested ? t("queue.waitingNextLoop") : t("queue.injectOnNextLoop")}
+              >
+                {prompt.injectionRequested ? t("queue.nextLoop") : t("queue.injectNextLoop")}
+              </button>
+              <button
+                className="queue-cancel-button"
+                onClick={() => void onCancel(prompt)}
+                disabled={busy}
+                title={t("queue.cancelPrompt")}
+              >
+                {t("queue.cancel")}
+              </button>
+            </div>
           </li>
         ))}
       </ol>

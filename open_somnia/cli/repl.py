@@ -784,6 +784,7 @@ class TurnQueueRunner:
         self._queued_previews: list[tuple[int, str]] = []
         self._ready_loop_injections: list[str] = []
         self._ready_loop_injection_previews: list[str] = []
+        self._ready_loop_injection_ids: list[int] = []
         self._loop_injection_requests = 0
         self._interrupt_requested = False
         self._authorization_requests: list[AuthorizationRequest] = []
@@ -998,6 +999,7 @@ class TurnQueueRunner:
             ]
             self._ready_loop_injections.append(task.payload)
             self._ready_loop_injection_previews.append(task.preview)
+            self._ready_loop_injection_ids.append(task.id)
         self._invalidate_ui()
         return True
 
@@ -1008,6 +1010,8 @@ class TurnQueueRunner:
             payload = self._ready_loop_injections.pop(0)
             if self._ready_loop_injection_previews:
                 self._ready_loop_injection_previews.pop(0)
+            if self._ready_loop_injection_ids:
+                self._ready_loop_injection_ids.pop(0)
         if payload:
             print_user_message(payload)
         self._invalidate_ui()
@@ -1043,11 +1047,54 @@ class TurnQueueRunner:
             if self._ready_loop_injections:
                 self._ready_loop_injections = []
                 self._ready_loop_injection_previews = []
+                self._ready_loop_injection_ids = []
             self._loop_injection_requests = 0
         if dropped or ready_dropped:
             dropped += ready_dropped
             self._invalidate_ui()
         return dropped
+
+    def cancel_task(self, task_id: int) -> bool:
+        """Drop a queued prompt by its queue id (shown next to each queue entry).
+
+        Handles both stages: tasks still in the pending queue and tasks already
+        promoted for injection on the next agent loop. Returns False when the
+        id is unknown or the task is already running.
+        """
+        cancelled_ready = False
+        with self._lock:
+            if task_id in self._ready_loop_injection_ids:
+                index = self._ready_loop_injection_ids.index(task_id)
+                self._ready_loop_injection_ids.pop(index)
+                self._ready_loop_injections.pop(index)
+                self._ready_loop_injection_previews.pop(index)
+                cancelled_ready = True
+        if not cancelled_ready:
+            with self._queue.mutex:
+                queue_items = self._queue.queue
+                for item in list(queue_items):
+                    if isinstance(item, QueueTask) and item.id == task_id:
+                        queue_items.remove(item)
+                        if self._queue.unfinished_tasks > 0:
+                            self._queue.unfinished_tasks -= 1
+                            if self._queue.unfinished_tasks == 0:
+                                self._queue.all_tasks_done.notify_all()
+                        self._queue.not_full.notify()
+                        break
+                else:
+                    return False
+        with self._lock:
+            if not cancelled_ready:
+                # Only pending-queue tasks still count toward _queued; ready
+                # tasks were already deducted when they were promoted.
+                self._queued = max(0, self._queued - 1)
+            self._queued_previews = [
+                (preview_id, preview)
+                for preview_id, preview in self._queued_previews
+                if preview_id != task_id
+            ]
+        self._invalidate_ui()
+        return True
 
     def _pending_turn_count(self) -> int:
         with self._queue.mutex:
@@ -1552,8 +1599,14 @@ class TurnQueueRunner:
 
     def _queue_preview_lines(self) -> list[str]:
         with self._lock:
-            ready = [f"[next] {preview}" for preview in self._ready_loop_injection_previews]
-            queued = [preview for _, preview in self._queued_previews]
+            ready = [
+                f"[next] {preview}  (/cancel {task_id})"
+                for task_id, preview in zip(self._ready_loop_injection_ids, self._ready_loop_injection_previews)
+            ]
+            queued = [
+                f"{preview}  (/cancel {preview_id})"
+                for preview_id, preview in self._queued_previews
+            ]
         return [*ready, *queued]
 
     def _queue_notice(self) -> str:
@@ -2982,6 +3035,21 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     continue
                 if stripped == "/bg":
                     print(runtime.background_manager.check())
+                    continue
+                if stripped == "/cancel" or stripped.startswith("/cancel "):
+                    cancel_payload = stripped[len("/cancel") :].strip()
+                    if not cancel_payload:
+                        print("[usage: /cancel <queue-id> — queue ids are shown after each queued prompt]")
+                        continue
+                    try:
+                        cancel_id = int(cancel_payload)
+                    except ValueError:
+                        print(f"[unknown queue id: {cancel_payload}]")
+                        continue
+                    if runner.cancel_task(cancel_id):
+                        print(f"[queued prompt #{cancel_id} cancelled]")
+                    else:
+                        print(f"[queue id #{cancel_id} not found — already running or no such item]")
                     continue
                 if stripped == "/help":
                     print("\n".join(f"{command} - {description}" for command, description in COMMAND_SPECS))

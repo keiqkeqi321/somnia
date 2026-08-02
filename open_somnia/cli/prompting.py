@@ -51,6 +51,7 @@ VISIBLE_COMMAND_SPECS = [
     ("/checkpoint", "Save a named checkpoint of the current session state"),
     ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),
     ("/compact", "Compact the current session context"),
+    ("/cancel", "Cancel a queued prompt by its queue id (shown next to each queued prompt)"),
     ("/janitor", "Run semantic janitor on the current payload"),
     ("/reloadplugin", "Reload MCP tools, skills, and project instructions"),
     ("/skills", "Choose a skill to apply to the next prompt"),

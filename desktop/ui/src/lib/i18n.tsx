@@ -324,6 +324,9 @@ const translations = {
     "queue.injectNextLoop": "Inject next loop",
     "queue.waitingNextLoop": "Waiting for the next agent loop",
     "queue.injectOnNextLoop": "Inject on next agent loop",
+    "queue.cancelPrompt": "Cancel this queued prompt",
+    "queue.cancel": "Cancel",
+    "queue.cancelled": "Queued prompt cancelled.",
 
     /* ── Mermaid ── */
     "mermaid.title": "Mermaid",
@@ -742,6 +745,9 @@ const translations = {
     "queue.injectNextLoop": "插入下一轮循环",
     "queue.waitingNextLoop": "等待下一个 agent 循环",
     "queue.injectOnNextLoop": "在下一个 agent 循环时插入",
+    "queue.cancelPrompt": "取消这条排队中的提示",
+    "queue.cancel": "取消",
+    "queue.cancelled": "排队中的提示已取消。",
 
     /* ── Mermaid ── */
     "mermaid.title": "Mermaid",

@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   InteractionRequestState,
+  LoopInjectionCancelResponse,
   LoopInjectionResponse,
   McpServerSummary,
   ModelDescriptor,
@@ -75,6 +76,7 @@ export interface SomniaClient extends SomniaConnection {
     injectionId: string,
     userInput: string | Record<string, unknown>,
   ): Promise<LoopInjectionResponse>;
+  cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse>;
 
   // Provider and model controls.
   listProviders(): Promise<ProviderDescriptor[]>;
@@ -258,6 +260,10 @@ export class DirectSomniaClient implements SomniaClient {
     userInput: string | Record<string, unknown>,
   ): Promise<LoopInjectionResponse> {
     return this.rest.queueLoopInjection(turnId, injectionId, userInput);
+  }
+
+  cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse> {
+    return this.rest.cancelLoopInjection(turnId, injectionId);
   }
 
   listProviders(): Promise<ProviderDescriptor[]> {

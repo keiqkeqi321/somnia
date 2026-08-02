@@ -770,6 +770,42 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_service_can_cancel_queued_loop_injection(self) -> None:
+        root = self._stable_test_dir("app-service-cancel-loop-injection")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+
+        def fake_run_turn(session, user_input, **kwargs):
+            # Give the test thread time to queue and cancel before the boundary.
+            time.sleep(0.5)
+            self.assertTrue(kwargs["prepare_next_loop_user_message"]())
+            self.assertEqual(kwargs["take_next_loop_user_message"](), "again")
+            return AgentLoopResult("Done.", status="completed")
+
+        runtime.run_turn = fake_run_turn
+        try:
+            session = service.create_session()
+            handle = service.run_turn(session, "initial")
+            self._collect_events_until(handle, lambda event: event.type == "turn_started")
+
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "follow-up", injection_id="inject-1"))
+            self.assertTrue(service.cancel_loop_injection(handle.turn_id, "inject-1"))
+            # Cancelling an already-cancelled or unknown id reports failure.
+            self.assertFalse(service.cancel_loop_injection(handle.turn_id, "inject-1"))
+            # A cancelled id is free to be queued again.
+            self.assertTrue(service.queue_loop_injection(handle.turn_id, "again", injection_id="inject-1"))
+
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.text, "Done.")
+            events = handle.drain_events()
+            injected_events = [event for event in events if event.type == "loop_user_message_injected"]
+            self.assertEqual(len(injected_events), 1)
+            self.assertEqual(injected_events[0].payload["injection_id"], "inject-1")
+            self.assertEqual(injected_events[0].payload["text"], "again")
+        finally:
+            service.close()
+
     def test_service_merges_multiple_next_loop_injections(self) -> None:
         root = self._stable_test_dir("app-service-merged-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))

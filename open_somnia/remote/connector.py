@@ -135,6 +135,14 @@ class LocalSidecarBridge:
                 f"/turns/{quote(turn_id, safe='')}/loop-injections",
                 {"injection_id": injection_id, "user_input": params["user_input"]},
             )
+        if method == "turn.inject.cancel":
+            turn_id = _required_text(params, "turn_id")
+            injection_id = _required_text(params, "injection_id")
+            return self._request(
+                "DELETE",
+                f"/turns/{quote(turn_id, safe='')}/loop-injections/{quote(injection_id, safe='')}",
+                None,
+            )
         if method == "stream.snapshot":
             sessions = self._request("GET", "/sessions", None)
             runtime = self._request("GET", "/runtime/status", None)

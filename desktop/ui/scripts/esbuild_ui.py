@@ -25,24 +25,31 @@ def resolve_esbuild_binary() -> Path:
     return candidates[0]
 
 
-def write_dist_html() -> None:
+def write_dist_html(*, dev: bool = False) -> None:
     source = SOURCE_HTML.read_text(encoding="utf-8")
     source_tag = '<script type="module" src="/src/main.tsx"></script>'
     if source_tag not in source:
         raise RuntimeError(f"Expected to find {source_tag!r} in {SOURCE_HTML}.")
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    replacement = _asset_tags()
+    replacement = _asset_tags(dev=dev)
     shutil.copy2(ROOT / "src-tauri" / "icons" / "32x32.png", ASSET_DIR / "favicon.png")
     (DIST_DIR / "index.html").write_text(source.replace(source_tag, replacement), encoding="utf-8")
 
 
-def _asset_tags() -> str:
+def _asset_tags(*, dev: bool = False) -> str:
     """Reference the hashed production bundles when they exist (build mode).
 
     Dev mode writes the HTML before the watch build produces any assets, so it
-    falls back to the fixed un-hashed names used there.
+    always uses the fixed un-hashed names. A stale hashed bundle left behind by
+    a previous production build must never be referenced here: the dev server
+    serves its fresh in-memory build under the un-hashed names.
     """
+    if dev:
+        return (
+            '    <link rel="stylesheet" href="./assets/app.css" />\n'
+            '    <script type="module" src="./assets/app.js"></script>'
+        )
     js_assets = sorted(ASSET_DIR.glob("app-*.js"))
     css_assets = sorted(ASSET_DIR.glob("app-*.css"))
     if not js_assets and not css_assets:
@@ -94,7 +101,7 @@ def run_build() -> int:
 
 
 def run_dev() -> int:
-    write_dist_html()
+    write_dist_html(dev=True)
     command = base_build_args(hashed=False) + [
         "--sourcemap",
         '--define:process.env.NODE_ENV="development"',

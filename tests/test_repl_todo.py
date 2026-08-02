@@ -464,6 +464,41 @@ class ReplTodoTests(unittest.TestCase):
 
         self.assertIn("compacting context", rendered)
 
+    def test_cancel_task_drops_pending_queued_prompts(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner.enqueue("first")
+        runner.enqueue("second")
+        runner.enqueue("third")
+
+        self.assertEqual(runner.stats(), (False, 3))
+
+        self.assertTrue(runner.cancel_task(2))
+        self.assertEqual(runner.stats(), (False, 2))
+        # Cancelling an already-cancelled or unknown id reports failure.
+        self.assertFalse(runner.cancel_task(2))
+        self.assertFalse(runner.cancel_task(99))
+
+        # Preview lines advertise the cancel command for each queued item.
+        lines = runner._queue_preview_lines()
+        self.assertTrue(any("/cancel 3" in line for line in lines))
+
+    def test_cancel_task_drops_ready_loop_injection(self) -> None:
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner.enqueue("first")
+        runner.enqueue("second")
+
+        # Promote the head queued prompt to the ready stage for the next loop.
+        runner._active = True
+        self.assertTrue(runner.request_loop_injection())
+        self.assertTrue(runner.prepare_next_loop_injection())
+        self.assertEqual(runner.stats(), (True, 1))
+
+        self.assertTrue(runner.cancel_task(1))
+        self.assertIsNone(runner.take_next_loop_injection())
+        self.assertEqual(runner._ready_loop_injection_ids, [])
+        # The still-pending second prompt remains listed with its cancel hint.
+        self.assertEqual(runner._queue_preview_lines(), ["second  (/cancel 2)"])
+
     def test_prompt_message_shows_recent_janitor_hint_before_mode_and_prompt(self) -> None:
         runtime = SimpleNamespace(
             recent_context_governance_label=lambda session: "janitor reduced 2 tool result(s)",

@@ -1043,6 +1043,15 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Active turn '{turn_id}' was not found.")
         return {"turn_id": str(turn_id).strip(), "injection_id": str(injection_id or "").strip(), "queued": True}
 
+    def cancel_loop_injection(self, turn_id: str, injection_id: str) -> dict[str, Any]:
+        cancelled = self.service.cancel_loop_injection(turn_id, injection_id)
+        if not cancelled:
+            raise SidecarAPIError(
+                HTTPStatus.NOT_FOUND,
+                f"Queued prompt '{injection_id}' on turn '{turn_id}' was not found or is already being processed.",
+            )
+        return {"turn_id": str(turn_id).strip(), "injection_id": str(injection_id).strip(), "cancelled": True}
+
     def pending_interactions(self) -> list[dict[str, Any]]:
         return [serialize_interaction(interaction) for interaction in self.service.pending_interactions()]
 
@@ -1526,6 +1535,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
 
     def _route_delete(self, parsed) -> tuple[dict[str, Any], int]:
         path_parts = [part for part in parsed.path.split("/") if part]
+        if len(path_parts) == 4 and path_parts[0] == "turns" and path_parts[2] == "loop-injections":
+            return self.sidecar.cancel_loop_injection(path_parts[1], path_parts[3]), HTTPStatus.OK
         if len(path_parts) == 2 and path_parts[0] == "sessions":
             return self.sidecar.delete_session(path_parts[1]), HTTPStatus.OK
         raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Unknown route: {parsed.path}")

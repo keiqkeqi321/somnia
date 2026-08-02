@@ -1,4 +1,4 @@
-import type { AgentSession, InteractionRequestState, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SessionModelUpdateResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
+import type { AgentSession, InteractionRequestState, LoopInjectionCancelResponse, LoopInjectionResponse, McpServerSummary, ModelDescriptor, ProviderDescriptor, ProviderPresetDescriptor, SaveSettingsConfigSectionResult, SessionModelUpdateResult, SettingsConfigPayload, SettingsConfigScopeKey, SettingsConfigSectionKey, SidecarEvent, SidecarStatus, TaskGraphItem, TeamLogDetail, TeamMemberActivity, ThinkingLogDetail, ToolLogDetail, ToolLogIndexEntry, TurnStartResponse, WorkspacePathSuggestion } from "../types";
 import type { SomniaClient } from "./somnia-client";
 import type {
   SessionCreateCommand,
@@ -295,6 +295,10 @@ export class RemoteSomniaConnection implements SomniaClient {
 
   queueLoopInjection(turnId: string, injectionId: string, userInput: string | Record<string, unknown>): Promise<LoopInjectionResponse> {
     return this.sendRequest("turn.inject", { turn_id: turnId, injection_id: injectionId, user_input: userInput });
+  }
+
+  cancelLoopInjection(turnId: string, injectionId: string): Promise<LoopInjectionCancelResponse> {
+    return this.sendRequest("turn.inject.cancel", { turn_id: turnId, injection_id: injectionId });
   }
 
   subscribe(listener: SomniaConnectionListener): () => void {

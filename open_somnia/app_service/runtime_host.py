@@ -275,6 +275,33 @@ class RuntimeHost:
             active_turn.pending_loop_injections.append(injection)
         return True
 
+    def cancel_loop_injection(self, turn_id: str, injection_id: str) -> bool:
+        with self._state_lock:
+            active_turn = self._active_turns.get(str(turn_id).strip())
+            if active_turn is None or active_turn.done_event.is_set():
+                return False
+        normalized_injection_id = str(injection_id or "").strip()
+        if not normalized_injection_id:
+            return False
+        with active_turn.loop_injection_lock:
+            before = len(active_turn.pending_loop_injections) + len(active_turn.ready_loop_injections)
+            active_turn.pending_loop_injections = [
+                injection
+                for injection in active_turn.pending_loop_injections
+                if str(injection.get("id", "")) != normalized_injection_id
+            ]
+            active_turn.ready_loop_injections = [
+                injection
+                for injection in active_turn.ready_loop_injections
+                if str(injection.get("id", "")) != normalized_injection_id
+            ]
+            remaining = len(active_turn.pending_loop_injections) + len(active_turn.ready_loop_injections)
+            if remaining == before:
+                # Already drained into the running agent loop, or never queued.
+                return False
+            active_turn.accepted_loop_injection_ids.discard(normalized_injection_id)
+            return True
+
     def _prepare_next_loop_user_message(self, active_turn: _ActiveTurn) -> bool:
         with active_turn.loop_injection_lock:
             if active_turn.ready_loop_injections:

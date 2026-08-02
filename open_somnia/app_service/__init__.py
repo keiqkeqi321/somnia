@@ -78,6 +78,9 @@ class AppService:
     def queue_loop_injection(self, turn_id: str, user_input: str | dict[str, Any], *, injection_id: str | None = None) -> bool:
         return self.turn_service.queue_loop_injection(turn_id, user_input, injection_id=injection_id)
 
+    def cancel_loop_injection(self, turn_id: str, injection_id: str) -> bool:
+        return self.turn_service.cancel_loop_injection(turn_id, injection_id)
+
     def compact_session(self, session: AgentSession) -> str:
         self.runtime.compact_session(session)
         return "Context compacted."
