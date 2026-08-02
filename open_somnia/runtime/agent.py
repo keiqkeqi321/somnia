@@ -2829,8 +2829,20 @@ class OpenAgentRuntime:
                 raise value
             return value
 
-    def run_subagent(self, prompt: str, agent_type: str = "Explore", *, activity_id: str | None = None) -> str:
-        return self._subagent_runner().run_subagent(prompt, agent_type, activity_id=activity_id)
+    def run_subagent(
+        self,
+        prompt: str,
+        agent_type: str = "Explore",
+        *,
+        activity_id: str | None = None,
+        should_interrupt=None,
+    ) -> str:
+        return self._subagent_runner().run_subagent(
+            prompt,
+            agent_type,
+            activity_id=activity_id,
+            should_interrupt=should_interrupt,
+        )
 
     def interrupt_active_teammates(self, reason: str = "lead_interrupt") -> int:
         manager = getattr(self, "team_manager", None)

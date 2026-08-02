@@ -39,8 +39,16 @@ class SubagentRunner:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
 
-    def run_subagent(self, prompt: str, agent_type: str = "Explore", *, activity_id: str | None = None) -> str:
+    def run_subagent(
+        self,
+        prompt: str,
+        agent_type: str = "Explore",
+        *,
+        activity_id: str | None = None,
+        should_interrupt=None,
+    ) -> str:
         activity_id = str(activity_id or f"subagent-{uuid.uuid4().hex[:8]}")
+        self._raise_if_interrupted(should_interrupt)
         registry = self._build_registry(agent_type)
         capability_guidance = (
             "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, `web_fetch`, and `load_skill`. "
@@ -66,6 +74,7 @@ class SubagentRunner:
         log({"type": "started", "prompt": prompt, "agent_type": agent_type})
         try:
             for _ in range(self.runtime.settings.runtime.max_subagent_rounds):
+                self._raise_if_interrupted(should_interrupt)
                 if pending_tool_repair_hints:
                     repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
                     pending_tool_repair_hints = []
@@ -73,7 +82,12 @@ class SubagentRunner:
                         messages.append(make_user_text_message(repair_message))
                 payload_messages = self.runtime._build_payload_messages(messages, session=None)
                 consume_ephemeral_image_blocks(messages)
-                turn = self.runtime.complete(system_prompt, payload_messages, registry.schemas())
+                turn = self.runtime.complete(
+                    system_prompt,
+                    payload_messages,
+                    registry.schemas(),
+                    should_interrupt=should_interrupt,
+                )
                 messages.append(turn.as_message())
                 turn_text = "\n".join(turn.text_blocks).strip()
                 if turn_text:
@@ -94,8 +108,10 @@ class SubagentRunner:
                     session=None,
                     actor="subagent",
                     trace_id=f"subagent-{uuid.uuid4().hex[:8]}",
+                    should_interrupt=should_interrupt,
                 )
                 for tool_call in turn.tool_calls:
+                    ctx.raise_if_interrupted()
                     try:
                         output = registry.execute(ctx, tool_call.name, tool_call.input)
                     except TurnInterrupted:
@@ -137,6 +153,10 @@ class SubagentRunner:
         except Exception as exc:
             log({"type": "error", "error": str(exc)})
             raise
+
+    def _raise_if_interrupted(self, should_interrupt) -> None:
+        if should_interrupt is not None and should_interrupt():
+            raise TurnInterrupted("Interrupted by user.")
 
     def _emit_activity(
         self,

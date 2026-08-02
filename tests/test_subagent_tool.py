@@ -3,9 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from open_somnia.config.models import AgentSettings, AppSettings, ProviderSettings, RuntimeSettings, StorageSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.tools.registry import ToolRegistry
 from open_somnia.tools.subagent import register_subagent_tool
@@ -25,7 +27,7 @@ class SubagentToolTests(unittest.TestCase):
             runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
             seen = {}
 
-            def fake_complete(system_prompt, messages, tools, text_callback=None):
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen["tool_names"] = [tool["name"] for tool in tools]
                 return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
 
@@ -54,7 +56,7 @@ class SubagentToolTests(unittest.TestCase):
             runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
             seen = {}
 
-            def fake_complete(system_prompt, messages, tools, text_callback=None):
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen["tool_names"] = [tool["name"] for tool in tools]
                 return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
 
@@ -86,7 +88,7 @@ class SubagentToolTests(unittest.TestCase):
             runtime.execution_mode = "accept_edits"
             steps = []
 
-            def fake_complete(system_prompt, messages, tools, text_callback=None):
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 steps.append(messages)
                 if len(steps) == 1:
                     return AssistantTurn(
@@ -113,7 +115,7 @@ class SubagentToolTests(unittest.TestCase):
             runtime.subagent_activity_handler = events.append
             turns = []
 
-            def fake_complete(system_prompt, messages, tools, text_callback=None):
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 turns.append(messages)
                 if len(turns) == 1:
                     return AssistantTurn(
@@ -140,7 +142,7 @@ class SubagentToolTests(unittest.TestCase):
             runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
             turns = []
 
-            def fake_complete(system_prompt, messages, tools, text_callback=None):
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 turns.append(messages)
                 if len(turns) == 1:
                     return AssistantTurn(
@@ -168,6 +170,68 @@ class SubagentToolTests(unittest.TestCase):
             self.assertTrue(entries[2]["output_preview"])
             self.assertEqual(entries[3]["content"], "Found the root.")
             self.assertEqual(entries[4]["content"], "Found the root.")
+
+    def test_subagent_stops_when_interrupt_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            interrupt_state = {"armed": False}
+            turns = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                turns.append(messages)
+                if should_interrupt is not None and should_interrupt():
+                    raise TurnInterrupted("Interrupted by user.")
+                interrupt_state["armed"] = True
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Searching."],
+                    tool_calls=[ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1})],
+                )
+
+            runtime.complete = fake_complete
+
+            with self.assertRaises(TurnInterrupted):
+                runtime.run_subagent("Inspect the workspace", "Explore", activity_id="turn-1", should_interrupt=lambda: interrupt_state["armed"])
+
+            entries = runtime.subagent_log_store.read("turn-1")
+            self.assertEqual(entries[0]["type"], "started")
+            self.assertNotEqual(entries[-1]["type"], "error")
+
+    def test_subagent_checks_interrupt_before_each_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            calls = {"complete": 0, "tool": 0}
+            interrupt_state = {"armed": False}
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                calls["complete"] += 1
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Searching."],
+                    tool_calls=[ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1})],
+                )
+
+            runtime.complete = fake_complete
+
+            def fake_execute(ctx, name, payload):
+                calls["tool"] += 1
+                return {"status": "ok"}
+
+            runtime.subagent_runner._build_registry = lambda agent_type: SimpleNamespace(
+                schemas=lambda: [],
+                execute=fake_execute,
+            )
+
+            # Interrupt armed before the tool runs: the pre-tool check must raise.
+            interrupt_state["armed"] = True
+            with self.assertRaises(TurnInterrupted):
+                runtime.run_subagent(
+                    "Inspect the workspace",
+                    "Explore",
+                    activity_id="turn-2",
+                    should_interrupt=lambda: interrupt_state["armed"],
+                )
+            self.assertEqual(calls["tool"], 0)
 
     def _make_settings(self, root: Path) -> AppSettings:
         data_dir = root / ".open_somnia"

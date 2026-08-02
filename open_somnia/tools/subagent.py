@@ -11,6 +11,7 @@ def register_subagent_tool(registry) -> None:
             payload["prompt"],
             payload.get("agent_type", "Explore"),
             activity_id=getattr(ctx, "trace_id", None),
+            should_interrupt=getattr(ctx, "should_interrupt", None),
         )
 
     registry.register(
