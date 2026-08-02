@@ -129,7 +129,7 @@ def _user_input_text(user_input: str | dict[str, Any]) -> str:
 @dataclass(slots=True)
 class _ActiveTurn:
     id: str
-    runtime: OpenAgentRuntime
+    runtime: OpenAgentRuntime | None
     session: AgentSession
     user_input: str | dict[str, Any]
     event_queue: Queue
@@ -156,6 +156,7 @@ class RuntimeHost:
         self._state_lock = Lock()
         self._active_turns: dict[str, _ActiveTurn] = {}
         self._primary_runtime_in_use = False
+        self._turn_runtime_cache: dict[tuple[str, str], OpenAgentRuntime] = {}
 
     def _new_turn_runtime(self, session: AgentSession) -> OpenAgentRuntime:
         override_provider = str(getattr(session, "provider_override", "") or "").strip().lower()
@@ -164,15 +165,38 @@ class RuntimeHost:
             # A session pinned to its own model must never share the primary
             # runtime: pinning and global switches both mutate runtimes, and a
             # copied-settings runtime keeps this turn isolated from either.
+            # Fresh runtimes are expensive to build (provider SDK + SSL
+            # initialization), so they are cached per (provider, model) and
+            # reused across turns instead of rebuilt every time.
             settings = deepcopy(self.runtime.settings)
             profile = settings.provider_profiles.get(override_provider)
             if profile is not None and override_model in profile.models:
                 settings.provider = _materialize_provider(profile, override_model)
-                return self._fresh_turn_runtime(settings)
-        if not self._primary_runtime_in_use:
-            self._primary_runtime_in_use = True
-            return self.runtime
-        return self._fresh_turn_runtime(self.runtime.settings)
+                return self._cached_turn_runtime(override_provider, override_model, settings)
+        with self._state_lock:
+            if not self._primary_runtime_in_use:
+                self._primary_runtime_in_use = True
+                return self.runtime
+        provider_name = str(getattr(self.runtime.settings.provider, "name", "")).strip().lower()
+        model_name = str(getattr(self.runtime.settings.provider, "model", "")).strip()
+        return self._cached_turn_runtime(provider_name, model_name, self.runtime.settings)
+
+    def _cached_turn_runtime(self, provider_name: str, model_name: str, settings: Any) -> OpenAgentRuntime:
+        cache_key = (provider_name, model_name)
+        with self._state_lock:
+            cached = self._turn_runtime_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        # Construction is slow (provider SDK import + SSL context); never hold
+        # the state lock while building, or concurrent turn starts would stall.
+        runtime = self._fresh_turn_runtime(settings)
+        with self._state_lock:
+            existing = self._turn_runtime_cache.get(cache_key)
+            if existing is not None:
+                runtime.close()
+                return existing
+            self._turn_runtime_cache[cache_key] = runtime
+            return runtime
 
     def _fresh_turn_runtime(self, settings: Any) -> OpenAgentRuntime:
         runtime = OpenAgentRuntime(settings)
@@ -184,8 +208,14 @@ class RuntimeHost:
             active_turns = list(self._active_turns.values())
         for active_turn in active_turns:
             active_turn.interrupt_event.set()
-            if active_turn.runtime is not self.runtime:
-                active_turn.runtime.close()
+            runtime = active_turn.runtime
+            if runtime is not None and runtime is not self.runtime:
+                runtime.close()
+        with self._state_lock:
+            for runtime in self._turn_runtime_cache.values():
+                if runtime is not self.runtime:
+                    runtime.close()
+            self._turn_runtime_cache.clear()
 
     def run_turn(
         self,
@@ -202,7 +232,6 @@ class RuntimeHost:
             if any(turn.session.id == session.id for turn in active_turns):
                 raise RuntimeError("This session already has a turn running.")
             turn_id = uuid.uuid4().hex[:8]
-            turn_runtime = self._new_turn_runtime(session)
             event_queue: Queue = Queue()
             done_event = Event()
             interrupt_event = Event()
@@ -214,7 +243,7 @@ class RuntimeHost:
             )
             active_turn = _ActiveTurn(
                 id=turn_id,
-                runtime=turn_runtime,
+                runtime=None,
                 session=session,
                 user_input=user_input,
                 event_queue=event_queue,
@@ -500,6 +529,33 @@ class RuntimeHost:
 
     def _run_turn_worker(self, active_turn: _ActiveTurn) -> None:
         turn_result: TurnRunResult | None = None
+        # Runtime construction (provider SDK, SSL context) is expensive and used
+        # to block the HTTP turn request for seconds. Build it here instead so
+        # the turn starts immediately and the composer stays usable.
+        try:
+            runtime = self._new_turn_runtime(active_turn.session)
+        except Exception as exc:
+            self._emit_for_turn(
+                active_turn,
+                ERROR,
+                message=str(exc),
+                exception_type=type(exc).__name__,
+            )
+            active_turn.handle._set_result(
+                TurnRunResult(
+                    session=active_turn.session,
+                    text="",
+                    status="failed",
+                    open_todo_count=_open_todo_count(active_turn.session),
+                    error=str(exc),
+                )
+            )
+            active_turn.done_event.set()
+            with self._state_lock:
+                self._active_turns.pop(active_turn.id, None)
+            return
+        with self._state_lock:
+            active_turn.runtime = runtime
         self._emit_for_turn(
             active_turn,
             TURN_STARTED,
@@ -507,7 +563,7 @@ class RuntimeHost:
             text=_user_input_text(active_turn.user_input),
         )
         try:
-            with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=active_turn.runtime):
+            with self.interaction_service.bind_turn(session_id=active_turn.session.id, turn_id=active_turn.id, runtime=runtime):
                 with (
                     self._patched_context_usage_events(active_turn),
                     self._patched_tool_logging(active_turn),
