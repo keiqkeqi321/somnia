@@ -10,6 +10,7 @@ const translations = {
   "en-US": {
     /* ── App title ── */
     "app.title": "Somnia Desktop",
+    "app.titleRemote": "SomniaRemote",
 
     /* ── Title bar ── */
     "titlebar.minimize": "Minimize",
@@ -431,6 +432,7 @@ const translations = {
   "zh-CN": {
     /* ── App title ── */
     "app.title": "Somnia Desktop",
+    "app.titleRemote": "SomniaRemote",
 
     /* ── Title bar ── */
     "titlebar.minimize": "最小化",

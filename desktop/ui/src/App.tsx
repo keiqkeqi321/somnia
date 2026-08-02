@@ -433,6 +433,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The remote workspace page runs in a plain browser tab, so it gets its own
+  // tab title instead of the desktop shell's.
+  useEffect(() => {
+    document.title = t(remoteMode ? "app.titleRemote" : "app.title");
+  }, [remoteMode, t]);
+
   // Remote mode: keep the URL hash converged on the route matching the
   // current auth/connection state (empty or hand-edited hashes redirect too).
   useEffect(() => {
@@ -3763,7 +3769,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     <div className="shell">
       <header
         className="app-titlebar"
-        data-tauri-drag-region
+        data-tauri-drag-region={remoteMode ? undefined : ""}
         onPointerDown={(event) => void handleTitlebarPointerDown(event)}
         onDoubleClick={(event) => void handleTitlebarDoubleClick(event)}
       >
@@ -3779,9 +3785,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             <span aria-hidden="true" />
           </button>
         ) : null}
-        <div className="titlebar-brand" data-tauri-drag-region>
-          <img className="titlebar-icon" src={appIconUrl} alt="" aria-hidden="true" data-tauri-drag-region />
-          <span data-tauri-drag-region>{t("app.title")}</span>
+        <div className="titlebar-brand" data-tauri-drag-region={remoteMode ? undefined : ""}>
+          <img className="titlebar-icon" src={appIconUrl} alt="" aria-hidden="true" data-tauri-drag-region={remoteMode ? undefined : ""} />
+          <span data-tauri-drag-region={remoteMode ? undefined : ""}>{t(remoteMode ? "app.titleRemote" : "app.title")}</span>
         </div>
         <div className="titlebar-controls">
           <button className="titlebar-button" type="button" onClick={handleOpenSettings} title={t("settings.title")} aria-label={t("settings.title")}>
