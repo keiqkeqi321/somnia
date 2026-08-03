@@ -68,10 +68,18 @@ On first run with no providers, the CLI bootstraps an interactive provider setup
 
 ## Persistence Model
 
-All state lives under `.open_somnia/` in the workspace root:
+State is split between the workspace and a centralized per-project store:
 
-- `sessions/`, `transcripts/`, `tasks/`, `inbox/`, `team/`, `jobs/`, `logs/`
-- `permissions.json` — workspace-scoped tool authorizations
+- Workspace `.open_somnia/` keeps project-level config only: `open_somnia.toml`,
+  `permissions.json` (workspace-scoped tool authorizations), `skills/`, hooks,
+  `temp/` (clipboard staging), `sidecar.lock`, `remote/settings.json`.
+- Session-like state lives under `~/.open_somnia/projects/<project-key>/`
+  (`config/settings.py::central_state_dir`, key = readable slug + sha1 of the
+  normalized workspace path): `sessions/`, `transcripts/`, `tasks/`, `inbox/`,
+  `team/`, `jobs/`, `requests/`, `logs/`, `repl_history.txt`, plus a
+  `project.json` marker recording the workspace path.
+- `StorageSettings.data_dir` is the workspace dir; `StorageSettings.state_dir`
+  is the centralized dir. The 8 store sub-dirs derive from `state_dir`.
 
 Do not change storage shape without updating load/save paths.
 

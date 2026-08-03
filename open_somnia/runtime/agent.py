@@ -3755,6 +3755,7 @@ class OpenAgentRuntime:
             f"configured_providers: {', '.join(sorted(self.settings.provider_profiles))}",
             f"skills_dir: {'present' if (self.settings.workspace_root / 'skills').exists() else 'missing'}",
             f"data_dir: {self.settings.storage.data_dir}",
+            f"state_dir: {self.settings.storage.state_dir}",
         ]
         if self.settings.mcp_servers:
             lines.append("mcp:")

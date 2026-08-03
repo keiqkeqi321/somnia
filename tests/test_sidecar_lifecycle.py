@@ -52,6 +52,7 @@ def _make_settings(root: Path) -> AppSettings:
             jobs_dir=data_dir / "jobs",
             requests_dir=data_dir / "requests",
             logs_dir=data_dir / "logs",
+            state_dir=data_dir / "state",
         ),
         provider_profiles={
             "openai": ProviderProfileSettings(

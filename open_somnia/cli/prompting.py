@@ -420,7 +420,9 @@ class OpenAgentCompleter(Completer):
 
 
 def _history_file(workspace_root: Path) -> Path:
-    history_dir = workspace_root / ".open_somnia"
+    from open_somnia.config.settings import central_state_dir
+
+    history_dir = central_state_dir(workspace_root)
     history_dir.mkdir(parents=True, exist_ok=True)
     return history_dir / "repl_history.txt"
 

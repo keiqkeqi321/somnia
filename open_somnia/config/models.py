@@ -123,6 +123,7 @@ class StorageSettings:
     jobs_dir: Path
     requests_dir: Path
     logs_dir: Path
+    state_dir: Path
 
 
 @dataclass(slots=True)

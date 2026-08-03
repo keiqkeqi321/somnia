@@ -17,6 +17,7 @@ def remote_tracer_settings(root: Path) -> AppSettings:
         "jobs_dir": data_dir / "jobs",
         "requests_dir": data_dir / "requests",
         "logs_dir": data_dir / "logs",
+        "state_dir": data_dir / "state",
     }
     for path in [data_dir, *paths.values()]:
         path.mkdir(parents=True, exist_ok=True)

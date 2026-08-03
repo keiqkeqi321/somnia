@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from open_somnia.config.settings import central_state_dir
+
 
 ALPHA_INPUT = """Alpha feature note
 
@@ -195,7 +197,7 @@ def wait_for(label: str, predicate, timeout: int, interval: float = 2.0) -> Any:
 
 
 def task_path(workspace: Path, task_id: int) -> Path:
-    return workspace / ".open_somnia" / "tasks" / f"task_{task_id}.json"
+    return central_state_dir(workspace) / "tasks" / f"task_{task_id}.json"
 
 
 def task_data(workspace: Path, task_id: int) -> dict[str, Any]:
@@ -203,7 +205,7 @@ def task_data(workspace: Path, task_id: int) -> dict[str, Any]:
 
 
 def team_data(workspace: Path) -> dict[str, Any]:
-    return read_json(workspace / ".open_somnia" / "team" / "team.json", {"members": []}) or {"members": []}
+    return read_json(central_state_dir(workspace) / "team" / "team.json", {"members": []}) or {"members": []}
 
 
 def team_member(workspace: Path, name: str) -> dict[str, Any] | None:
@@ -214,7 +216,7 @@ def team_member(workspace: Path, name: str) -> dict[str, Any] | None:
 
 
 def tool_index(workspace: Path) -> list[dict[str, Any]]:
-    return read_jsonl(workspace / ".open_somnia" / "logs" / "tool_logs" / "index.jsonl")
+    return read_jsonl(central_state_dir(workspace) / "logs" / "tool_logs" / "index.jsonl")
 
 
 def tool_seen(workspace: Path, actor: str | None, tool_name: str) -> bool:
@@ -312,7 +314,7 @@ def main() -> int:
         stdout_path=main_workspace / "artifacts" / "phase1_stdout.txt",
     )
     task4 = task_data(main_workspace, 4)
-    jobs = read_json(main_workspace / ".open_somnia" / "jobs" / "jobs.json", {}) or {}
+    jobs = read_json(central_state_dir(main_workspace) / "jobs" / "jobs.json", {}) or {}
     append_check(
         checks,
         "task_board_created",
@@ -342,7 +344,7 @@ def main() -> int:
     )
     planner_plan = wait_for(
         "planner_plan_request",
-        lambda: read_json(main_workspace / ".open_somnia" / "requests" / "plan_requests.json", {}),
+        lambda: read_json(central_state_dir(main_workspace) / "requests" / "plan_requests.json", {}),
         timeout=args.wait_timeout,
     )
     append_check(
@@ -372,7 +374,7 @@ def main() -> int:
     approved_plan = wait_for(
         "approved_plan",
         lambda: (
-            read_json(main_workspace / ".open_somnia" / "requests" / "plan_requests.json", {})
+            read_json(central_state_dir(main_workspace) / "requests" / "plan_requests.json", {})
             or {}
         ),
         timeout=args.wait_timeout,
@@ -432,7 +434,7 @@ def main() -> int:
         and tool_seen(main_workspace, "Writer", "idle")
         and (
             tool_seen(main_workspace, "Writer", "claim_task")
-            or log_contains(main_workspace / ".open_somnia" / "team" / "logs" / "Writer.jsonl", '"source": "auto_claimed"')
+            or log_contains(central_state_dir(main_workspace) / "team" / "logs" / "Writer.jsonl", '"source": "auto_claimed"')
         ),
         f"writer_claimed={bool(writer_claimed)}, task_2.owner={task_data(main_workspace, 2).get('owner')}, writer_claim_tool_seen={tool_seen(main_workspace, 'Writer', 'claim_task')}",
     )
@@ -481,7 +483,7 @@ def main() -> int:
         timeout=args.run_timeout,
         stdout_path=shutdown_workspace / "artifacts" / "shutdown_stdout.txt",
     )
-    shutdown_requests = read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}
+    shutdown_requests = read_json(central_state_dir(shutdown_workspace) / "requests" / "shutdown_requests.json", {}) or {}
     sleeper = team_member(shutdown_workspace, "Sleeper") or {}
     if not any(req.get("status") == "accepted" for req in shutdown_requests.values()):
         for cycle in range(1, 3):
@@ -490,11 +492,11 @@ def main() -> int:
                 f"shutdown_continue_{cycle}",
                 lambda: any(
                     req.get("status") == "accepted"
-                    for req in (read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}).values()
+                    for req in (read_json(central_state_dir(shutdown_workspace) / "requests" / "shutdown_requests.json", {}) or {}).values()
                 ),
                 timeout=min(args.wait_timeout, 20),
             )
-            shutdown_requests = read_json(shutdown_workspace / ".open_somnia" / "requests" / "shutdown_requests.json", {}) or {}
+            shutdown_requests = read_json(central_state_dir(shutdown_workspace) / "requests" / "shutdown_requests.json", {}) or {}
             sleeper = team_member(shutdown_workspace, "Sleeper") or {}
             if any(req.get("status") == "accepted" for req in shutdown_requests.values()):
                 break

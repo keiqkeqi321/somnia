@@ -896,6 +896,7 @@ class HookSystemTests(unittest.TestCase):
                 jobs_dir=jobs_dir,
                 requests_dir=requests_dir,
                 logs_dir=logs_dir,
+                state_dir=data_dir / "state",
             ),
             hooks=list(hooks or []),
         )

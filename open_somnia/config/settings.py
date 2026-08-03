@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -138,6 +141,20 @@ def global_config_path() -> Path:
 
 def global_hooks_root() -> Path:
     return Path.home() / APP_DIRNAME / HOOKS_DIRNAME
+
+
+def project_state_key(workspace_root: Path) -> str:
+    resolved = Path(os.path.normcase(str(workspace_root.resolve())))
+    digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:10]
+    drive = resolved.drive.rstrip(":").rstrip("\\").lower()
+    parts = [part for part in resolved.parts if part not in (resolved.anchor, resolved.drive)]
+    slug_source = "-".join([drive, *parts[-2:]]) if drive else "-".join(parts[-2:])
+    slug = re.sub(r"[^a-z0-9]+", "-", slug_source.lower()).strip("-") or "root"
+    return f"{slug}-{digest}"
+
+
+def central_state_dir(workspace_root: Path) -> Path:
+    return Path.home() / APP_DIRNAME / "projects" / project_state_key(workspace_root)
 
 
 def workspace_config_path(workspace_root: Path) -> Path:
@@ -832,16 +849,18 @@ def _load_mcp_servers(root: Path, raw: dict) -> list[MCPServerSettings]:
 
 def _storage_settings(workspace_root: Path) -> StorageSettings:
     data_dir = workspace_root / APP_DIRNAME
+    state_dir = central_state_dir(workspace_root)
     return StorageSettings(
         data_dir=data_dir,
-        transcripts_dir=data_dir / "transcripts",
-        sessions_dir=data_dir / "sessions",
-        tasks_dir=data_dir / "tasks",
-        inbox_dir=data_dir / "inbox",
-        team_dir=data_dir / "team",
-        jobs_dir=data_dir / "jobs",
-        requests_dir=data_dir / "requests",
-        logs_dir=data_dir / "logs",
+        transcripts_dir=state_dir / "transcripts",
+        sessions_dir=state_dir / "sessions",
+        tasks_dir=state_dir / "tasks",
+        inbox_dir=state_dir / "inbox",
+        team_dir=state_dir / "team",
+        jobs_dir=state_dir / "jobs",
+        requests_dir=state_dir / "requests",
+        logs_dir=state_dir / "logs",
+        state_dir=state_dir,
     )
 
 
@@ -1245,6 +1264,7 @@ def ensure_storage_dirs(settings: AppSettings) -> None:
     ensure_app_dir_ignored(settings.storage.data_dir)
     for path in (
         settings.storage.data_dir,
+        settings.storage.state_dir,
         settings.storage.transcripts_dir,
         settings.storage.sessions_dir,
         settings.storage.tasks_dir,
@@ -1255,3 +1275,7 @@ def ensure_storage_dirs(settings: AppSettings) -> None:
         settings.storage.logs_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
+    marker = settings.storage.state_dir / "project.json"
+    workspace = str(settings.storage.data_dir.parent.resolve())
+    if not marker.exists() or marker.read_text(encoding="utf-8", errors="ignore").find(workspace) < 0:
+        atomic_write_text(marker, json.dumps({"workspace": workspace}, ensure_ascii=False, indent=2) + "\n")
