@@ -30,6 +30,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
     }
 )
 FILE_EDIT_TOOL_NAMES = frozenset({"write_file", "edit_file"})
+BACKGROUND_JOB_TOOL_NAMES = frozenset({"background_run"})
 TASK_MUTATION_TOOL_NAMES = frozenset(
     {
         "task_create_batch",
@@ -115,6 +116,7 @@ EXECUTION_MODES: dict[str, ExecutionModeSpec] = {
             "- You may edit workspace files with write_file and edit_file.\n"
             "- You may also create, update, and claim persistent tasks.\n"
             "- You may also use agent-team collaboration tools such as teammate spawn, inbox, and messaging.\n"
+            "- You may also run shell commands in the background with background_run.\n"
             "- Treat blocked non-edit tools as one-off exceptions that require request_authorization.\n"
             "- Use request_mode_switch only to move back to shortcuts, plan, or remain in accept_edits.\n"
         ),
@@ -175,6 +177,8 @@ def tool_block_message(mode: str | None, tool_name: str) -> str | None:
     if spec.key == "accept_edits" and tool_name in TASK_MUTATION_TOOL_NAMES:
         return None
     if spec.key == "accept_edits" and tool_name in TEAM_COLLAB_TOOL_NAMES:
+        return None
+    if spec.key == "accept_edits" and tool_name in BACKGROUND_JOB_TOOL_NAMES:
         return None
     if tool_name in FILE_EDIT_TOOL_NAMES:
         return (
