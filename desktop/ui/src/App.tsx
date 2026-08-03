@@ -398,6 +398,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const conversationListRef = useRef<VListHandle | null>(null);
   const conversationVirtualCountRef = useRef(0);
   const conversationPinnedToBottomRef = useRef(true);
+  const conversationLastScrollOffsetRef = useRef(0);
   const conversationScrollFrameRef = useRef<number | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
@@ -411,13 +412,24 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       window.cancelAnimationFrame(conversationScrollFrameRef.current);
     }
     conversationScrollFrameRef.current = window.requestAnimationFrame(() => {
-      conversationScrollFrameRef.current = null;
       const list = conversationListRef.current;
       const count = conversationVirtualCountRef.current;
       if (!list || count <= 0) {
+        conversationScrollFrameRef.current = null;
         return;
       }
       list.scrollToIndex(count - 1, { align: "end" });
+      // Streaming rows keep growing after this scroll; virtua re-measures them
+      // via ResizeObserver after paint, so a single scrollToIndex can land short
+      // of the real bottom. Re-scroll on the next frame to settle.
+      conversationScrollFrameRef.current = window.requestAnimationFrame(() => {
+        conversationScrollFrameRef.current = null;
+        const settledList = conversationListRef.current;
+        if (!settledList || !conversationPinnedToBottomRef.current) {
+          return;
+        }
+        settledList.scrollToIndex(count - 1, { align: "end" });
+      });
     });
   }
 
@@ -774,6 +786,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       return;
     }
     conversationPinnedToBottomRef.current = true;
+    conversationLastScrollOffsetRef.current = 0;
     scrollConversationBodyToBottom();
   }, [selectedSessionId]);
 
@@ -4326,8 +4339,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                   if (!list) {
                     return;
                   }
-                  conversationPinnedToBottomRef.current =
-                    list.scrollSize - list.viewportSize - list.scrollOffset <= CONVERSATION_BOTTOM_STICKY_THRESHOLD;
+                  const distanceToBottom = list.scrollSize - list.viewportSize - list.scrollOffset;
+                  if (distanceToBottom <= CONVERSATION_BOTTOM_STICKY_THRESHOLD) {
+                    conversationPinnedToBottomRef.current = true;
+                  } else if (list.scrollOffset < conversationLastScrollOffsetRef.current) {
+                    // Only an upward scroll unpins. Content growth and our own
+                    // programmatic scrolls move the bottom away without any user
+                    // intent, and must not break the stick-to-bottom behavior.
+                    conversationPinnedToBottomRef.current = false;
+                  }
+                  conversationLastScrollOffsetRef.current = list.scrollOffset;
                 }}
               >
                 {conversationRows.map((row, index) => (
