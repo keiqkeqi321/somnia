@@ -104,19 +104,15 @@ def _to_anthropic_system(system_prompt: Any) -> str | list[dict[str, Any]]:
     return [_with_cache_control({"type": "text", "text": text})]
 
 
-def _to_anthropic_tools(tools: list[dict[str, Any]], *, system_has_cache_control: bool) -> list[dict[str, Any]]:
+def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Anthropic cache prefixes are built tools -> system -> messages, so the
+    # last tool always carries a breakpoint: tool definitions stay cache-read
+    # even when later system sections or messages change. Total breakpoints per
+    # request: tools tier + stable-system tier + last message = 3 of the max 4.
     converted = [dict(tool) for tool in tools]
-    if converted and not system_has_cache_control:
+    if converted:
         converted[-1] = _with_cache_control(converted[-1])
     return converted
-
-
-def _has_cache_control(value: Any) -> bool:
-    if isinstance(value, dict) and isinstance(value.get("cache_control"), dict):
-        return True
-    if isinstance(value, list):
-        return any(_has_cache_control(item) for item in value)
-    return False
 
 
 def _add_message_cache_control(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -336,7 +332,7 @@ class AnthropicProvider(LLMProvider):
             model=self.settings.model,
             system=system,
             messages=_to_anthropic_messages(messages, cache_last_message=True),
-            tools=_to_anthropic_tools(tools, system_has_cache_control=_has_cache_control(system)),
+            tools=_to_anthropic_tools(tools),
             timeout=self.settings.timeout_seconds,
         )
         return int(response.input_tokens)
@@ -378,7 +374,7 @@ class AnthropicProvider(LLMProvider):
             "model": self.settings.model,
             "system": system,
             "messages": _to_anthropic_messages(messages, cache_last_message=True),
-            "tools": _to_anthropic_tools(tools, system_has_cache_control=_has_cache_control(system)),
+            "tools": _to_anthropic_tools(tools),
             "max_tokens": max_tokens,
             "stream": stream,
         }

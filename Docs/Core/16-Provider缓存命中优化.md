@@ -26,20 +26,21 @@
 - `parse_rendered_prompt_sections(text)`
 - `cache_optimized_system_prompt(system_prompt)`
 
-当前规则：
+当前规则（稳定段前置布局）：
 
-- `A. Core System Prompt` 视为稳定层。
-- Runtime Injection、Skill、MCP、Repo Prompt 等后续段视为动态层。
-- OpenAI 链路继续使用纯字符串 system prompt。
+- 段顺序固定为 `A. Core System Prompt` → `B. Runtime Injection` → `C. MCP Prompt` → `D. Skill Prompt` → `E. Repo Prompt`。
+- A/B/C 为会话内稳定段（core 规则、运行时身份与环境、静态 MCP 指引），D/E 为动态段（skill 索引随 `load_skill` 变化，repo 指引每轮从磁盘重读）。
+- 渲染后还原 sections 时按标题前缀判定稳定性（`STABLE_SECTION_TITLE_PREFIXES`），与 `SystemPromptBuilder` 的段位约定一致。
+- OpenAI 链路继续使用纯字符串 system prompt，但共享同一稳定段前置顺序，让服务端自动前缀缓存保留最长未变前缀。
 - Anthropic 链路在 provider 调用前拿到结构化 section 列表。
 
 ### Anthropic Prompt Cache
 
-`open_somnia/providers/anthropic_provider.py` 负责把通用 section 结构翻译为 Anthropic text blocks，并放置最多两个 breakpoint：
+Anthropic 缓存前缀按 `tools → system → messages` 顺序构建，因此 adapter 每次请求放置三个 breakpoint（上限四个）：
 
-1. 第一个 breakpoint 放在最后一个稳定 system block 上。
-2. 如果 system 为空，则第一个 breakpoint 退回放在最后一个 tool schema 上。
-3. 第二个 breakpoint 放在最后一条非 transient 消息的最后一个 content block 上。
+1. 第一个 breakpoint 固定在最后一个 tool schema 上：工具定义独立于 system/messages 变化保持 cache-read。
+2. 第二个 breakpoint 放在最后一个稳定 system block（当前为 C. MCP Prompt）上：D/E 段变化只使尾部失效，不伤及 tools 与 A-C 前缀。
+3. 第三个 breakpoint 放在最后一条非 transient 消息的最后一个 content block 上。
 
 Runtime 生成的 `<runtime-notice>` 会带 `transient=true` 元数据。Anthropic adapter 只用它选择 cache breakpoint，发送给 provider 前会剥离该字段，避免动态提醒成为缓存断点。
 
@@ -97,4 +98,3 @@ python -m unittest tests.test_cli_resume tests.test_process_output tests.test_re
 1. 在 provider payload dump 中展示 cache hit rate。
 2. 为 DeepSeek、MiniMax、MiMo 等兼容厂商补充 cache usage 字段映射和价格统计。
 3. 让压缩策略显式考虑“前缀稳定性”，尽量只改写固定摘要块。
-4. 继续细分 system prompt 中稳定规则层和动态运行态层。

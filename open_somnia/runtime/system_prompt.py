@@ -105,21 +105,24 @@ class SystemPromptBuilder:
             "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
             "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters."
         )
+        # Sections are ordered stable-first: session-stable content (A-C) leads and
+        # volatile content (skills, repo instructions) trails, so prompt-cache
+        # prefixes survive mid-session skill loads and instruction-file edits.
         sections = (
             PromptSection("core", "A. Core System Prompt", self.base_system_prompt(), dynamic=False),
             PromptSection(
                 "runtime",
                 "B. Runtime Injection",
                 f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}",
-                dynamic=True,
+                dynamic=False,
             ),
-            PromptSection("skills", "C. Skill Prompt", f"Available skills:\n{skill_descriptions}", dynamic=True),
             PromptSection(
                 "mcp",
-                "D. MCP Prompt",
+                "C. MCP Prompt",
                 mcp_guidance,
-                dynamic=True,
+                dynamic=False,
             ),
+            PromptSection("skills", "D. Skill Prompt", f"Available skills:\n{skill_descriptions}", dynamic=True),
             PromptSection("repo", "E. Repo Prompt", project_instructions, dynamic=True),
         )
         return PromptBundle(sections)

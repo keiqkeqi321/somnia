@@ -40,6 +40,16 @@ class PromptBundle:
         return [section.to_payload() for section in self.sections if section.content.strip()]
 
 
+# Title prefixes of session-stable sections, in emission order. SystemPromptBuilder
+# emits these sections first (stable-first layout for prompt caching); any other
+# section is treated as dynamic when a rendered prompt is parsed back into sections.
+STABLE_SECTION_TITLE_PREFIXES = ("A.", "B.", "C.")
+
+
+def section_title_is_stable(title: str) -> bool:
+    return str(title or "").strip().startswith(STABLE_SECTION_TITLE_PREFIXES)
+
+
 def parse_rendered_prompt_sections(text: str) -> list[dict[str, object]]:
     matches = list(re.finditer(r"(?m)^## ([^\n]+)\n", str(text or "")))
     if not matches:
@@ -57,7 +67,7 @@ def parse_rendered_prompt_sections(text: str) -> list[dict[str, object]]:
             {
                 "id": section_id,
                 "title": title,
-                "dynamic": not title.startswith("A."),
+                "dynamic": not section_title_is_stable(title),
                 "content": content,
             }
         )

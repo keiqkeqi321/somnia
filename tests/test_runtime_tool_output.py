@@ -664,16 +664,17 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         sections = OpenAgentRuntime.build_system_prompt_sections(runtime)
 
-        self.assertEqual([section["id"] for section in sections], ["core", "runtime", "skills", "mcp", "repo"])
+        self.assertEqual([section["id"] for section in sections], ["core", "runtime", "mcp", "skills", "repo"])
+        self.assertEqual([section["dynamic"] for section in sections], [False, False, False, True, True])
         self.assertEqual(sections[0]["title"], "A. Core System Prompt")
         self.assertEqual(sections[1]["title"], "B. Runtime Injection")
         self.assertNotIn("Active working file cache:", sections[1]["content"])
-        self.assertIn("Available skills:", sections[2]["content"])
-        self.assertIn("short skill index", sections[2]["content"])
-        self.assertNotIn("long skill description", sections[2]["content"])
-        self.assertIn("MCP tools are provided through the tool schema", sections[3]["content"])
-        self.assertNotIn("gitnexus", sections[3]["content"].lower())
-        self.assertNotIn("playwright", sections[3]["content"].lower())
+        self.assertIn("MCP tools are provided through the tool schema", sections[2]["content"])
+        self.assertNotIn("gitnexus", sections[2]["content"].lower())
+        self.assertNotIn("playwright", sections[2]["content"].lower())
+        self.assertIn("Available skills:", sections[3]["content"])
+        self.assertIn("short skill index", sections[3]["content"])
+        self.assertNotIn("long skill description", sections[3]["content"])
         self.assertIn("Use repo guidance.", sections[4]["content"])
         self.assertIn("Use app guidance.", sections[4]["content"])
 
@@ -710,7 +711,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         turn = OpenAgentRuntime.complete(
             runtime,
-            "## A. Core System Prompt\nStable.\n\n## B. Runtime Injection\nDynamic.",
+            "## A. Core System Prompt\nStable.\n\n## B. Runtime Injection\nAlso stable.\n\n## D. Skill Prompt\nVolatile.",
             [{"role": "user", "content": "hello"}],
             [],
         )
@@ -718,7 +719,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(turn.text_blocks, ["done"])
         self.assertIsInstance(seen["system_prompt"], list)
         self.assertEqual(seen["system_prompt"][0]["dynamic"], False)
-        self.assertEqual(seen["system_prompt"][1]["dynamic"], True)
+        self.assertEqual(seen["system_prompt"][1]["dynamic"], False)
+        self.assertEqual(seen["system_prompt"][2]["dynamic"], True)
 
     def test_complete_keeps_openai_system_prompt_as_string(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -4526,22 +4528,88 @@ class RuntimeToolOutputTests(unittest.TestCase):
             "## A. Core System Prompt\n"
             "Stable rules.\n\n"
             "## B. Runtime Injection\n"
-            "Dynamic runtime details."
+            "Stable runtime details.\n\n"
+            "## C. MCP Prompt\n"
+            "Stable MCP guidance.\n\n"
+            "## D. Skill Prompt\n"
+            "Volatile skills.\n\n"
+            "## E. Repo Prompt\n"
+            "Volatile repo instructions."
         )
+        tools = [
+            {"name": "read_file", "description": "read", "input_schema": {"type": "object", "properties": {}}},
+            {"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {}}},
+        ]
 
         payload = provider.debug_request_payload(
             system_prompt,
             [{"role": "user", "content": "hello"}],
-            [{"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {}}}],
+            tools,
             4096,
             stream=False,
         )
 
         self.assertIsInstance(payload["system"], list)
-        self.assertEqual(payload["system"][0]["cache_control"], {"type": "ephemeral"})
-        self.assertNotIn("cache_control", payload["system"][1])
+        # Breakpoint 1: last tool (tools tier leads the cache prefix).
         self.assertNotIn("cache_control", payload["tools"][0])
+        self.assertEqual(payload["tools"][-1]["cache_control"], {"type": "ephemeral"})
+        # Breakpoint 2: last stable system section (C); volatile D/E carry none.
+        self.assertNotIn("cache_control", payload["system"][0])
+        self.assertNotIn("cache_control", payload["system"][1])
+        self.assertEqual(payload["system"][2]["cache_control"], {"type": "ephemeral"})
+        self.assertNotIn("cache_control", payload["system"][3])
+        self.assertNotIn("cache_control", payload["system"][4])
+        # Breakpoint 3: last non-transient message.
         self.assertEqual(payload["messages"][-1]["content"][-1]["cache_control"], {"type": "ephemeral"})
+
+    def test_anthropic_provider_dynamic_system_sections_leave_tools_and_stable_prefix_untouched(self) -> None:
+        provider = AnthropicProvider(
+            ProviderSettings(
+                name="anthropic",
+                provider_type="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="test-key",
+                base_url="https://api.anthropic.com",
+                timeout_seconds=30,
+            )
+        )
+        stable_sections = (
+            "## A. Core System Prompt\n"
+            "Stable rules.\n\n"
+            "## B. Runtime Injection\n"
+            "Stable runtime details.\n\n"
+            "## C. MCP Prompt\n"
+            "Stable MCP guidance.\n\n"
+        )
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [
+            {"name": "bash", "description": "run", "input_schema": {"type": "object", "properties": {}}},
+        ]
+
+        payload_one = provider.debug_request_payload(
+            stable_sections + "## D. Skill Prompt\nSkills v1.\n\n## E. Repo Prompt\nRepo v1.",
+            messages,
+            tools,
+            4096,
+            stream=False,
+        )
+        payload_two = provider.debug_request_payload(
+            stable_sections + "## D. Skill Prompt\nSkills v2 changed.\n\n## E. Repo Prompt\nRepo v2 changed.",
+            messages,
+            tools,
+            4096,
+            stream=False,
+        )
+
+        # Skill/repo edits (D/E) leave the tools tier byte-identical and cacheable.
+        self.assertEqual(payload_one["tools"], payload_two["tools"])
+        self.assertEqual(payload_one["tools"][-1]["cache_control"], {"type": "ephemeral"})
+        # The stable system prefix (A-C) is byte-identical with its breakpoint
+        # intact; only the trailing dynamic sections differ.
+        self.assertEqual(payload_one["system"][:3], payload_two["system"][:3])
+        self.assertEqual(payload_one["system"][2]["cache_control"], {"type": "ephemeral"})
+        self.assertNotEqual(payload_one["system"][3], payload_two["system"][3])
+        self.assertNotEqual(payload_one["system"][4], payload_two["system"][4])
 
     def test_anthropic_provider_cache_control_skips_transient_last_message(self) -> None:
         provider = AnthropicProvider(
