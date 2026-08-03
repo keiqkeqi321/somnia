@@ -399,6 +399,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   const conversationVirtualCountRef = useRef(0);
   const conversationPinnedToBottomRef = useRef(true);
   const conversationLastScrollOffsetRef = useRef(0);
+  const conversationTouchStartYRef = useRef<number | null>(null);
   const conversationScrollFrameRef = useRef<number | null>(null);
 
   selectedSessionIdRef.current = selectedSessionId;
@@ -421,14 +422,18 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       list.scrollToIndex(count - 1, { align: "end" });
       // Streaming rows keep growing after this scroll; virtua re-measures them
       // via ResizeObserver after paint, so a single scrollToIndex can land short
-      // of the real bottom. Re-scroll on the next frame to settle.
+      // of the real bottom. Re-check on the next frame and only scroll again
+      // when still off bottom, to avoid a redundant re-layout on every flush.
       conversationScrollFrameRef.current = window.requestAnimationFrame(() => {
         conversationScrollFrameRef.current = null;
         const settledList = conversationListRef.current;
         if (!settledList || !conversationPinnedToBottomRef.current) {
           return;
         }
-        settledList.scrollToIndex(count - 1, { align: "end" });
+        const distanceToBottom = settledList.scrollSize - settledList.viewportSize - settledList.scrollOffset;
+        if (distanceToBottom > CONVERSATION_BOTTOM_STICKY_THRESHOLD) {
+          settledList.scrollToIndex(count - 1, { align: "end" });
+        }
       });
     });
   }
@@ -4313,7 +4318,21 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
             <TodoStatusBar summary={todoSummary} expanded={todoExpanded} onToggleExpanded={() => setTodoExpanded((current) => !current)} />
           ) : null}
 
-          <div className="conversation-body">
+          <div
+            className="conversation-body"
+            onTouchStart={(event) => {
+              conversationTouchStartYRef.current = event.touches[0]?.clientY ?? null;
+            }}
+            onTouchMove={(event) => {
+              // Finger dragging down scrolls the content up: release the
+              // stick-to-bottom so streaming updates do not fight the gesture.
+              const startY = conversationTouchStartYRef.current;
+              const currentY = event.touches[0]?.clientY;
+              if (startY !== null && currentY !== undefined && currentY > startY + 4) {
+                conversationPinnedToBottomRef.current = false;
+              }
+            }}
+          >
             {selectedWorkerActive ? (
               <div className="conversation-content">
                 <WorkerOutputView member={selectedWorkerMember} workerName={selectedWorkerView?.name ?? ""} state={workerLogState} />
@@ -4334,6 +4353,13 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                 ref={conversationListRef}
                 className="conversation-virtual-list"
                 bufferSize={400}
+                onWheel={(event) => {
+                  // Release stick-to-bottom the moment the user scrolls up, so
+                  // streaming updates never fight an in-progress wheel gesture.
+                  if (event.deltaY < 0) {
+                    conversationPinnedToBottomRef.current = false;
+                  }
+                }}
                 onScroll={() => {
                   const list = conversationListRef.current;
                   if (!list) {
