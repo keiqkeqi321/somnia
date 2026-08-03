@@ -74,7 +74,6 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 
 
 READ_ONLY_COMMAND_PREFIXES = (
-    "/scan",
     "/symbols",
     "/janitor",
     "/reloadplugin",
@@ -2092,23 +2091,6 @@ def _build_init_query(runtime, command: str) -> str | None:
     return init_prompt.prompt
 
 
-def _handle_scan_command(runtime, session, command: str) -> None:
-    args = command.split()[1:]
-    if args and args[0] == "--refresh":
-        args = args[1:]
-    target_path = " ".join(args).strip() or "."
-    output = runtime.invoke_tool(
-        session,
-        "project_scan",
-        {
-            "path": target_path,
-            "depth": 2,
-            "limit": 8,
-        },
-    )
-    print(output)
-
-
 def _handle_symbols_command(runtime, session, command: str) -> None:
     query = command.split(maxsplit=1)[1].strip() if " " in command else ""
     if not query:
@@ -2880,12 +2862,6 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     else:
                         print(runtime.run_semantic_janitor(session))
                     print("[janitor complete]")
-                    continue
-                if stripped == "/scan" or stripped.startswith("/scan "):
-                    if runner.has_inflight_work():
-                        print("[busy; wait for queued responses before /scan]")
-                        continue
-                    _handle_scan_command(runtime, session, stripped)
                     continue
                 if stripped == "/symbols" or stripped.startswith("/symbols "):
                     if runner.has_inflight_work():

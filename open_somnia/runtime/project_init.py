@@ -229,7 +229,7 @@ def _render_init_prompt(
         "Initialize project instructions for this workspace.",
         "",
         "You must run a real repository inspection loop before writing the file.",
-        "Use tools such as project_scan, tree, read_file, glob, grep, and find_symbol to inspect actual code, manifests, tests, and entry points.",
+        "Use tools such as tree, read_file, glob, grep, and find_symbol to inspect actual code, manifests, tests, and entry points.",
         "Do not rely only on the snapshot below; treat it as a starting hint.",
         "",
         f"Target file: {target.name}",

@@ -17,7 +17,6 @@ from open_somnia.tools.filesystem import (
     find_symbol,
     glob_search,
     grep_search,
-    project_scan,
     read_image,
     read_file,
     tree_view,
@@ -51,7 +50,7 @@ class SubagentRunner:
         self._raise_if_interrupted(should_interrupt)
         registry = self._build_registry(agent_type)
         capability_guidance = (
-            "You are in Explore mode. Use read-only tools only: `bash`, `project_scan`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, `web_fetch`, and `load_skill`. "
+            "You are in Explore mode. Use read-only tools only: `bash`, `tree`, `find_symbol`, `glob`, `grep`, `read_file`, `read_image`, `web_fetch`, and `load_skill`. "
             "Do not attempt workspace edits."
             if agent_type == "Explore"
             else "You are in general-purpose mode. In addition to read-only tools, you may use `write_file` and `edit_file` when needed."
@@ -219,21 +218,6 @@ class SubagentRunner:
     def _build_registry(self, agent_type: str) -> ToolRegistry:
         registry = ToolRegistry()
         register_shell_tool(registry)
-        registry.register(
-            ToolDefinition(
-                name="project_scan",
-                description="Build a concise project map before diving into files.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "depth": {"type": "integer"},
-                        "limit": {"type": "integer"},
-                    },
-                },
-                handler=project_scan,
-            )
-        )
         registry.register(
             ToolDefinition(
                 name="tree",

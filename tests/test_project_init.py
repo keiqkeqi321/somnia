@@ -36,7 +36,7 @@ class ProjectInitTests(unittest.TestCase):
             self.assertEqual(init_prompt.target_path, root / "AGENTS.md")
             self.assertEqual(init_prompt.line_limit, 60)
             self.assertIn("You must run a real repository inspection loop", init_prompt.prompt)
-            self.assertIn("Use tools such as project_scan", init_prompt.prompt)
+            self.assertIn("Use tools such as tree", init_prompt.prompt)
             self.assertIn("Write AGENTS.md using write_file or edit_file", init_prompt.prompt)
             self.assertIn("verify the line count", init_prompt.prompt)
             self.assertIn("Demo package", init_prompt.prompt)

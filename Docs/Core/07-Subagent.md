@@ -40,7 +40,6 @@ Subagent（子代理）是 Somnia 的隔离执行单元，允许主 Agent 在独
 | 工具 | 说明 |
 |------|------|
 | `bash` | Shell 命令 |
-| `project_scan` | 项目扫描 |
 | `tree` | 目录树 |
 | `find_symbol` | 符号查找 |
 | `glob` | 文件模式匹配 |

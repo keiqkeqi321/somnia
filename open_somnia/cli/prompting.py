@@ -38,7 +38,6 @@ from open_somnia.path_completion import (
 
 VISIBLE_COMMAND_SPECS = [
     ("/init", "Generate AGENTS.md project instructions with an agent inspection loop"),
-    ("/scan", "Scan the repo or a subdirectory"),
     ("/symbols", "Find symbols and inspect matching source locations"),
     ("/image", "Send a local image to the active multimodal model"),
     ("/paste-image", "Read an image from the system clipboard"),

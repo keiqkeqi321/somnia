@@ -39,7 +39,6 @@ class SubagentToolTests(unittest.TestCase):
                 seen["tool_names"],
                 [
                     "bash",
-                    "project_scan",
                     "tree",
                     "find_symbol",
                     "glob",
@@ -68,7 +67,6 @@ class SubagentToolTests(unittest.TestCase):
                 seen["tool_names"],
                 [
                     "bash",
-                    "project_scan",
                     "tree",
                     "find_symbol",
                     "glob",

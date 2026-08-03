@@ -13,7 +13,6 @@ from open_somnia.tools.filesystem import (
     find_symbol,
     glob_search,
     grep_search,
-    project_scan,
     read_file,
     safe_path,
     tree_view,
@@ -875,36 +874,6 @@ class FilesystemToolTests(unittest.TestCase):
         result = find_symbol(ctx, {"query": "a|b|c|d|e|f|g|h|i|j|k"})
 
         self.assertEqual(result, "Error: query supports at most 10 terms separated by '|'.")
-
-    def test_project_scan_summarizes_guidance_source_roots_and_languages(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            (root / "Assets" / "Scripts").mkdir(parents=True)
-            (root / "Packages").mkdir()
-            (root / "Assets" / "Scripts" / "PaperComponent.cs").write_text("public class PaperComponent {}\n", encoding="utf-8")
-            (root / "AGENTS.md").write_text("rules\n", encoding="utf-8")
-            (root / "README.md").write_text("intro\n", encoding="utf-8")
-            (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-            ctx = SimpleNamespace(
-                runtime=SimpleNamespace(
-                    settings=SimpleNamespace(
-                        workspace_root=root,
-                        runtime=SimpleNamespace(max_tool_output_chars=50000),
-                    )
-                ),
-                session=None,
-            )
-
-            result = project_scan(ctx, {"path": ".", "depth": 2})
-
-        self.assertIn("Guidance files:", result)
-        self.assertIn("AGENTS.md", result)
-        self.assertIn("Manifests:", result)
-        self.assertIn("pyproject.toml", result)
-        self.assertIn("Likely source roots:", result)
-        self.assertIn("Assets/", result)
-        self.assertIn("Languages/files:", result)
-        self.assertIn(".cs: 1", result)
 
     def test_read_file_auto_resolves_unique_missing_filename_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

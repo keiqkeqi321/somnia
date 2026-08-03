@@ -62,7 +62,7 @@
 
 ### 常规流程
 
-1. 用 `project_scan` / `tree` 建立目录地图
+1. 用 `tree` 建立目录地图
 2. 用 `find_symbol`、`grep` 或报错栈定位文件和行号
 3. 用 `read_file` 只读必要范围
 

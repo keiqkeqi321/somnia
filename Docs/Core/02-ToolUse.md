@@ -48,8 +48,7 @@ class ToolExecutionContext:
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
-| 文件系统 | `project_scan` | 项目结构扫描 |
-| | `tree` | 目录树渲染 |
+| 文件系统 | `tree` | 目录树渲染 |
 | | `find_symbol` | 符号查找 |
 | | `glob` | 文件模式匹配 |
 | | `grep` | 内容搜索 |

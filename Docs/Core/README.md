@@ -9,7 +9,7 @@
 | 01 | [Agent Loop](./01-AgentLoop.md) | Agent 核心执行循环：提示构建、模型调用、工具执行、上下文治理 |
 | 02 | [Tool Use](./02-ToolUse.md) | 工具系统架构：ToolRegistry、工具分类、执行流程、日志 |
 | 03 | [TodoWrite](./03-TodoWrite.md) | 会话级待办清单：数据模型、状态、约束规则 |
-| 04 | [探索能力](./04-探索能力.md) | 即时探索能力：`/scan`、`/symbols` 及其他探索工具 |
+| 04 | [探索能力](./04-探索能力.md) | 即时探索能力：`/symbols` 及其他探索工具 |
 | 05 | [上下文回滚](./05-上下文回滚.md) | Checkpoint / Rollback 机制：会话状态检查点与回滚 |
 | 06 | [上下文治理与压缩](./06-上下文治理与压缩.md) | Payload Normalization + Semantic Janitor + Auto Compact 三层上下文治理 |
 | 07 | [Subagent](./07-Subagent.md) | 隔离子代理：Explore / general-purpose 模式、权限控制 |

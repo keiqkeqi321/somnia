@@ -626,7 +626,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("establish the exact path through the most specific available evidence", prompt)
         self.assertIn("always wrap replacements as `edits=[{old_text,new_text}, ...]`", prompt)
         self.assertNotIn("Use `grep` instead of shell content search commands", prompt)
-        self.assertNotIn("Use `project_scan` or a focused `tree`", prompt)
         self.assertIn("Use `TodoWrite` to break down meaningful work", prompt)
         self.assertIn("Problem solving workflow:", prompt)
         self.assertIn("understand local evidence, plan the smallest coherent change", prompt)
@@ -869,7 +868,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 "id": "session-1",
                 "messages": [],
                 "exploration_cache": {
-                    "last_project_scan": {"path": "."},
+                    "last_scan": {"path": "."},
                 },
             }
         )

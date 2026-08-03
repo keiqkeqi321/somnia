@@ -8,7 +8,6 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import json
-from collections import Counter
 import os
 from pathlib import Path
 import re
@@ -66,43 +65,6 @@ CODE_FILE_EXTENSIONS = {
     ".swift",
     ".ts",
     ".tsx",
-}
-GUIDANCE_FILENAMES = {"AGENTS.md", "CLAUDE.md", "README.md", "README"}
-MANIFEST_FILENAMES = {
-    "pyproject.toml",
-    "package.json",
-    "Cargo.toml",
-    "go.mod",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "ProjectSettings.asset",
-    "Packages/manifest.json",
-}
-ENTRY_FILE_NAMES = {
-    "app.py",
-    "main.py",
-    "Program.cs",
-    "Main.cs",
-    "cli.py",
-    "index.ts",
-    "index.tsx",
-    "main.ts",
-    "main.tsx",
-    "server.ts",
-    "server.js",
-}
-SOURCE_ROOT_HINTS = {
-    "assets",
-    "editor",
-    "lib",
-    "package",
-    "packages",
-    "runtime",
-    "scripts",
-    "src",
-    "test",
-    "tests",
 }
 SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
     ".py": [
@@ -780,113 +742,6 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     return "\n".join(results)[: ctx.runtime.settings.runtime.max_tool_output_chars]
 
 
-def project_scan(ctx: Any, payload: dict[str, Any]) -> str:
-    workspace_root = ctx.runtime.settings.workspace_root
-    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
-    if not base_path.exists():
-        return f"Error: Path not found: {payload.get('path', '.')}"
-    if not base_path.is_dir():
-        return f"Error: Path is not a directory: {payload.get('path', '.')}"
-
-    include_hidden = bool(payload.get("include_hidden", False))
-    depth = max(1, int(payload.get("depth", 2)))
-    max_results = max(1, int(payload.get("limit", 8)))
-    ext_counts: Counter[str] = Counter()
-    guidance_files: list[str] = []
-    manifest_files: list[str] = []
-    entry_candidates: list[str] = []
-    file_count = 0
-    dir_count = 0
-
-    for current_root, dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx):
-        _raise_if_tool_interrupted(ctx)
-        current_path = Path(current_root)
-        rel_parts = current_path.relative_to(base_path).parts if current_path != base_path else ()
-        dir_count += len(dir_names)
-        for file_name in file_names:
-            _raise_if_tool_interrupted(ctx)
-            file_count += 1
-            relative = _relative_label(workspace_root, current_path / file_name)
-            suffix = Path(file_name).suffix.lower()
-            if suffix:
-                ext_counts[suffix] += 1
-            if file_name in GUIDANCE_FILENAMES and len(guidance_files) < max_results:
-                guidance_files.append(relative)
-            manifest_key = relative if relative in MANIFEST_FILENAMES else file_name
-            if manifest_key in MANIFEST_FILENAMES and len(manifest_files) < max_results:
-                manifest_files.append(relative)
-            if file_name in ENTRY_FILE_NAMES and len(entry_candidates) < max_results:
-                entry_candidates.append(relative)
-
-    top_level_dirs: list[str] = []
-    top_level_files: list[str] = []
-    top_level_entries = []
-    for entry in base_path.iterdir():
-        _raise_if_tool_interrupted(ctx)
-        top_level_entries.append(entry)
-    for entry in sorted(top_level_entries, key=lambda item: (0 if item.is_dir() else 1, item.name.lower())):
-        _raise_if_tool_interrupted(ctx)
-        if _should_skip_name(entry.name, include_hidden=include_hidden):
-            continue
-        relative = _relative_label(workspace_root, entry)
-        if entry.is_dir():
-            top_level_dirs.append(relative + "/")
-        else:
-            top_level_files.append(relative)
-
-    source_roots = [
-        item
-        for item in top_level_dirs
-        if item.rstrip("/").split("/")[-1].lower() in SOURCE_ROOT_HINTS
-    ][:max_results]
-
-    stack_hints: list[str] = []
-    if any(item.endswith(".cs") for item in ext_counts):
-        stack_hints.append("C#")
-    if any(item.endswith(".py") for item in ext_counts):
-        stack_hints.append("Python")
-    if any(item.endswith(".ts") or item.endswith(".tsx") or item.endswith(".js") for item in ext_counts):
-        stack_hints.append("JavaScript/TypeScript")
-    if any(path.endswith("Assets/") for path in top_level_dirs) and any(path.endswith("Packages/") for path in top_level_dirs):
-        stack_hints.append("Unity")
-
-    lines = [
-        f"Project root: {_relative_label(workspace_root, base_path)}",
-        f"Counts: {file_count} files, {dir_count} dirs",
-    ]
-    if stack_hints:
-        lines.append(f"Likely stack: {', '.join(stack_hints)}")
-    if guidance_files:
-        lines.append("Guidance files:")
-        lines.extend(f"- {item}" for item in guidance_files)
-    if manifest_files:
-        lines.append("Manifests:")
-        lines.extend(f"- {item}" for item in manifest_files)
-    if source_roots:
-        lines.append("Likely source roots:")
-        lines.extend(f"- {item}" for item in source_roots)
-    if entry_candidates:
-        lines.append("Entry candidates:")
-        lines.extend(f"- {item}" for item in entry_candidates)
-    if ext_counts:
-        lines.append("Languages/files:")
-        for extension, count in ext_counts.most_common(max_results):
-            lines.append(f"- {extension}: {count}")
-    lines.append("Tree:")
-    lines.append(
-        tree_view(
-            ctx,
-            {
-                "path": str(payload.get("path", ".")),
-                "depth": depth,
-                "limit": max(20, max_results * 12),
-                "include_hidden": include_hidden,
-            },
-        )
-    )
-    return "\n".join(lines)[: ctx.runtime.settings.runtime.max_tool_output_chars]
-
-
 def _format_glob_no_matches(
     workspace_root: Path,
     base_path: Path,
@@ -1536,22 +1391,6 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
 
 
 def register_filesystem_tools(registry) -> None:
-    registry.register(
-        ToolDefinition(
-            name="project_scan",
-            description="Build a concise project map: likely stacks, guidance files, manifests, source roots, entry candidates, language/file counts, and a shallow tree. Prefer this at the start of repository exploration.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "depth": {"type": "integer"},
-                    "limit": {"type": "integer"},
-                    "include_hidden": {"type": "boolean"},
-                },
-            },
-            handler=project_scan,
-        )
-    )
     registry.register(
         ToolDefinition(
             name="tree",

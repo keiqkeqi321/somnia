@@ -139,7 +139,7 @@ class OpenAgentRuntime:
     EXPLORATION_SOFT_LIMIT = 10
     EXPLORATION_HARD_STREAK_LIMIT = 14
     EXPLORATION_HARD_TOTAL_LIMIT = 0
-    EXPLORATION_TOOL_NAMES = frozenset({"project_scan", "tree", "glob", "grep", "read_file", "find_symbol"})
+    EXPLORATION_TOOL_NAMES = frozenset({"tree", "glob", "grep", "read_file", "find_symbol"})
     EXPLORATION_GITNEXUS_TOOL_NAMES = frozenset(
         {
             "api_impact",
@@ -1031,7 +1031,7 @@ class OpenAgentRuntime:
             return "skill"
         if name in {"TodoWrite"} or name.startswith("task_"):
             return "task"
-        if name in {"bash", "project_scan", "tree", "glob", "grep", "read_file", "read_image", "write_file", "edit_file", "find_symbol"}:
+        if name in {"bash", "tree", "glob", "grep", "read_file", "read_image", "write_file", "edit_file", "find_symbol"}:
             return "filesystem"
         if name.startswith("background_"):
             return "background"

@@ -110,7 +110,7 @@ turn = self.provider.complete(
 
 ### 探索预算
 
-Agent Loop 会把 `project_scan`、`tree`、`glob`、`grep`、`read_file`、`find_symbol` 以及只读型 shell 查询识别为探索工具：
+Agent Loop 会把 `tree`、`glob`、`grep`、`read_file`、`find_symbol` 以及只读型 shell 查询识别为探索工具：
 
 - 达到 `runtime.exploration_soft_limit`（默认 10）后，下一轮 payload 会临时注入总结提醒，要求先给出阶段性结论
 - 如果模型在被提醒后输出了可见阶段性结论，这会被视为一次探索段落边界：`exploration_streak` 会清零，后续 `read/search` 从新的连续探索段重新计数；`exploration_total` 不清零，但默认不启用总量硬停

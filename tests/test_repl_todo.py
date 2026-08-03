@@ -23,7 +23,6 @@ from open_somnia.cli.repl import (
     _expand_skill_command,
     _handle_hooks_command,
     _handle_reloadplugin_command,
-    _handle_scan_command,
     _handle_symbols_command,
     _is_exit_command,
     _handle_mcp_command,
@@ -886,24 +885,6 @@ class ReplTodoTests(unittest.TestCase):
             _handle_reasoning_command(runtime, "/reasoning turbo")
 
         mock_print.assert_called_once_with("[usage: /reasoning <auto|low|medium|high|deep>]")
-
-    def test_scan_command_scans_current_target_path(self) -> None:
-        invoked: list[dict[str, object]] = []
-
-        def _invoke_tool(session, name, payload):
-            invoked.append(payload)
-            return "Project root: .\nCounts: 2 files, 1 dirs"
-
-        runtime = SimpleNamespace(
-            invoke_tool=_invoke_tool,
-        )
-        session = SimpleNamespace()
-
-        with patch("builtins.print") as mock_print:
-            _handle_scan_command(runtime, session, "/scan src")
-
-        self.assertEqual(invoked, [{"path": "src", "depth": 2, "limit": 8}])
-        mock_print.assert_any_call("Project root: .\nCounts: 2 files, 1 dirs")
 
     def test_symbols_command_chooses_match_and_previews_source(self) -> None:
         parsed_matches = [

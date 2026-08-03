@@ -103,9 +103,6 @@ class ToolEventRenderer:
         if tool_name == "tree":
             path = str(tool_input.get("path", ".")).strip() or "."
             return f"Tree({path})"
-        if tool_name == "project_scan":
-            path = str(tool_input.get("path", ".")).strip() or "."
-            return f"ProjectScan({path})"
         if tool_name == "find_symbol":
             query = str(tool_input.get("query", "")).strip() or "(missing query)"
             return f"FindSymbol({query})"
