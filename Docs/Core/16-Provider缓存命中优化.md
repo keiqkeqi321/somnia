@@ -53,10 +53,12 @@ Runtime 生成的 `<runtime-notice>` 会带 `transient=true` 元数据。Anthrop
 
 ### 延迟加载工具定义（tool_search 试点）
 
-`[runtime] tool_search = true` 开启后，任务/团队两族 15 个工具转为延迟加载，机制与缓存语义：
+`[runtime] tool_search = true` 开启后，延迟工具转为"名单常驻、schema 按需"。延迟集策略：
+默认 = 任务/团队两族 15 个内置工具 + 全部 MCP 工具；配置 `[runtime] tool_search_resident`
+白名单后 = 名单之外全部延迟（`tool_search` 恒常驻）。机制与缓存语义：
 
 - **客户端省略**：未加载的延迟工具不进 tools 数组（实测 Anthropic 兼容端点不识别 `defer_loading` flag，客户端省略是唯一可靠方案）。
-- **名单常驻**：系统提示词 B 段列出"名称 + 一行描述"，内容静态，不伤稳定段缓存。
+- **名单常驻**：系统提示词 B 段列出"名称 + 一行描述"；内置工具名单静态，MCP server 热刷新会更新名单（罕见，影响限于 B 段及之后）。
 - **尾部追加**：`tool_search` 加载的工具按加载顺序追加到 tools 数组尾部，绝不重排——
   - DeepSeek 等分段缓存端点：追加后前缀命中保持 ~93%（MVP 实测）。
   - 严格前缀端点（官方 Anthropic）：加载当轮是接受范围内的一次性 tools 层重建（ticket 设计决策），靠单轮批量加载摊薄；后续轮命中扩大后的完整 tools 层。

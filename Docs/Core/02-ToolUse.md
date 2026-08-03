@@ -66,11 +66,17 @@ class ToolExecutionContext:
 
 #### 延迟加载（tool_search 试点）
 
-`[runtime] tool_search = true` 开启后（默认关闭），任务与团队两族共 15 个工具
-（`ToolDefinition.deferred=True`）进入延迟加载：
+`[runtime] tool_search = true` 开启后（默认关闭），延迟加载生效。延迟集的判定策略：
+
+- **默认策略**：任务/团队两族 15 个内置工具 + **全部 MCP 工具**（`mcp__` 前缀）延迟。
+- **白名单模式**：配置 `[runtime] tool_search_resident = [...]` 后，名单之外的所有工具
+  （含 MCP）一律延迟；`tool_search` 自身恒常驻。
+
+机制细节：
 
 - tools 数组只含常驻工具 + `tool_search` 元工具 + 已加载工具；未加载的延迟工具不进数组。
-- 系统提示词 B 段（稳定段）列出延迟工具的"名称 + 一行描述"名单，逐轮字节不变。
+- 系统提示词 B 段（稳定段）列出延迟工具的"名称 + 一行描述"名单；MCP server 热刷新会
+  改变名单内容（罕见事件），内置工具的名单逐轮字节不变。
 - 模型调用 `tool_search`（`queries=[{"name": ...}]`，可批量）→ handler 把工具按加载顺序
   追加到 `session.loaded_tools`（持久化）并返回完整 schema → 下一轮起 tools 数组**尾部追加**
   这些定义，绝不重排（缓存前缀安全，见 `Docs/Core/16-Provider缓存命中优化.md`）。

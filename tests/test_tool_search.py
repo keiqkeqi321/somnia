@@ -18,14 +18,14 @@ def _handler(ctx, payload):
     return "ok"
 
 
-def _tool(name: str, description: str = "tool", *, deferred: bool = False) -> ToolDefinition:
-    return ToolDefinition(name, description, {"type": "object", "properties": {}}, _handler, deferred=deferred)
+def _tool(name: str, description: str = "tool") -> ToolDefinition:
+    return ToolDefinition(name, description, {"type": "object", "properties": {}}, _handler)
 
 
-def _make_runtime(*, gate: bool) -> OpenAgentRuntime:
+def _make_runtime(*, gate: bool, resident: list[str] | None = None) -> OpenAgentRuntime:
     runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
     runtime.settings = SimpleNamespace(
-        runtime=SimpleNamespace(tool_search=gate),
+        runtime=SimpleNamespace(tool_search=gate, tool_search_resident=resident),
         workspace_root=Path("D:/workspace"),
         agent=SimpleNamespace(system_prompt=None, name="Somnia"),
         provider=SimpleNamespace(name="openai", model="gpt-5"),
@@ -33,8 +33,8 @@ def _make_runtime(*, gate: bool) -> OpenAgentRuntime:
     registry = ToolRegistry()
     registry.register(_tool("bash", "run commands"))
     registry.register(_tool("read_file", "read files"))
-    registry.register(_tool("task_list", "List all tasks.", deferred=True))
-    registry.register(_tool("send_message", "Send a message to a teammate.", deferred=True))
+    registry.register(_tool("task_list", "List all tasks."))
+    registry.register(_tool("send_message", "Send a message to a teammate."))
     runtime.registry = registry
     runtime.worker_registry = ToolRegistry()
     return runtime
@@ -79,6 +79,37 @@ class ToolSearchCompositionTests(unittest.TestCase):
 
         self.assertNotIn("ghost_tool", _names(schemas))
         self.assertEqual(_names(schemas)[-1], "task_list")
+
+    def test_gate_on_defers_mcp_tools_by_default(self) -> None:
+        runtime = _make_runtime(gate=True)
+        OpenAgentRuntime._register_tool_search_tool(runtime, runtime.registry)
+        runtime.registry.register(_tool("mcp__alpha__query", "Query metrics."))
+        session = AgentSession(id="s1")
+
+        schemas = OpenAgentRuntime._tool_schemas_for_model(runtime, "lead", session=session)
+        self.assertNotIn("mcp__alpha__query", _names(schemas))
+
+        session.loaded_tools.append("mcp__alpha__query")
+        schemas_after = OpenAgentRuntime._tool_schemas_for_model(runtime, "lead", session=session)
+        self.assertEqual(_names(schemas_after)[-1], "mcp__alpha__query")
+
+    def test_custom_resident_allowlist_defers_everything_else(self) -> None:
+        runtime = _make_runtime(gate=True, resident=["bash", "task_list"])
+        OpenAgentRuntime._register_tool_search_tool(runtime, runtime.registry)
+        runtime.registry.register(_tool("mcp__alpha__query", "Query metrics."))
+        session = AgentSession(id="s1")
+
+        schemas = OpenAgentRuntime._tool_schemas_for_model(runtime, "lead", session=session)
+
+        # Allowlist mode: everything not listed (incl. read_file, send_message,
+        # MCP tools) is deferred; tool_search always stays resident.
+        self.assertEqual(_names(schemas), ["bash", "task_list", "tool_search"])
+
+    def test_custom_resident_none_falls_back_to_default_policy(self) -> None:
+        runtime = _make_runtime(gate=True, resident=None)
+        deferred = OpenAgentRuntime._deferred_tool_names(runtime)
+
+        self.assertEqual(deferred, {"task_list", "send_message"})
 
 
 class ToolSearchHandlerTests(unittest.TestCase):

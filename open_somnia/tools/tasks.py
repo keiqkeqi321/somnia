@@ -122,7 +122,6 @@ def register_task_tools(registry, task_store) -> None:
                 },
                 "required": ["tasks"],
             },
-            deferred=True,
             handler=create_task_batch,
         )
     )
@@ -135,7 +134,6 @@ def register_task_tools(registry, task_store) -> None:
                 "properties": {"task_id": {"type": "integer"}},
                 "required": ["task_id"],
             },
-            deferred=True,
             handler=get_task,
         )
     )
@@ -155,7 +153,6 @@ def register_task_tools(registry, task_store) -> None:
                 },
                 "required": ["task_id"],
             },
-            deferred=True,
             handler=update_task,
         )
     )
@@ -164,7 +161,6 @@ def register_task_tools(registry, task_store) -> None:
             name="task_list",
             description="List all tasks.",
             input_schema={"type": "object", "properties": {}},
-            deferred=True,
             handler=list_tasks,
         )
     )
@@ -177,7 +173,6 @@ def register_task_tools(registry, task_store) -> None:
                 "properties": {"task_id": {"type": "integer"}},
                 "required": ["task_id"],
             },
-            deferred=True,
             handler=claim_task,
         )
     )

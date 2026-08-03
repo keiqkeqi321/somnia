@@ -43,7 +43,9 @@ class SystemPromptBuilder:
         if not bool(getattr(runtime_settings, "tool_search", False)):
             return ""
         registry = getattr(self.runtime, "registry", None)
-        deferred_getter = getattr(registry, "deferred_tools", None)
+        if registry is None:
+            return ""
+        deferred_getter = getattr(self.runtime, "_deferred_tools", None)
         if not callable(deferred_getter):
             return ""
         deferred = deferred_getter()

@@ -31,10 +31,6 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, Any]
     handler: ToolHandler
-    # Deferred-loading pilot: when the runtime tool_search gate is on, deferred
-    # tools are advertised name-only and their schemas load on demand. Never
-    # emitted on the wire — see schema().
-    deferred: bool = False
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -67,8 +63,8 @@ class ToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.schema() for tool in self._tools.values()]
 
-    def deferred_tools(self) -> dict[str, ToolDefinition]:
-        return {name: tool for name, tool in self._tools.items() if tool.deferred}
+    def get(self, name: str) -> ToolDefinition | None:
+        return self._tools.get(name)
 
     def execute(self, ctx: Any, name: str, payload: dict[str, Any]) -> Any:
         tool = self._tools.get(name)

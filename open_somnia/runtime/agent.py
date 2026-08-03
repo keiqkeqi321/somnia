@@ -140,6 +140,28 @@ class OpenAgentRuntime:
     EXPLORATION_HARD_STREAK_LIMIT = 14
     EXPLORATION_HARD_TOTAL_LIMIT = 0
     EXPLORATION_TOOL_NAMES = frozenset({"tree", "glob", "grep", "read_file", "find_symbol"})
+    # Default deferred set for the tool_search gate when no `tool_search_resident`
+    # allowlist is configured: the task/team collaboration families. All MCP
+    # tools are deferred by default as well (matched by the mcp__ prefix).
+    DEFAULT_DEFERRED_TOOL_NAMES = frozenset(
+        {
+            "task_create_batch",
+            "task_get",
+            "task_update",
+            "task_list",
+            "claim_task",
+            "spawn_teammate",
+            "list_teammates",
+            "send_message",
+            "read_inbox",
+            "wait_for_inbox",
+            "broadcast",
+            "shutdown_request",
+            "plan_approval",
+            "authorization_approval",
+            "idle",
+        }
+    )
     EXPLORATION_GITNEXUS_TOOL_NAMES = frozenset(
         {
             "api_impact",
@@ -814,7 +836,7 @@ class OpenAgentRuntime:
     def _tool_schemas_for_model(self, actor: str, session: AgentSession | None = None) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
         if actor == "lead" and self._tool_search_enabled():
-            deferred = registry.deferred_tools()
+            deferred = self._deferred_tools()
             base = [schema for schema in registry.schemas() if schema["name"] not in deferred]
             base_sorted = sorted(
                 self._augment_tool_schemas_with_importance(base),
@@ -2373,6 +2395,33 @@ class OpenAgentRuntime:
         runtime_settings = getattr(getattr(self, "settings", None), "runtime", None)
         return bool(getattr(runtime_settings, "tool_search", False))
 
+    def _tool_search_resident_config(self) -> list[str] | None:
+        runtime_settings = getattr(getattr(self, "settings", None), "runtime", None)
+        resident = getattr(runtime_settings, "tool_search_resident", None)
+        if resident is None:
+            return None
+        return [str(name) for name in resident]
+
+    def _deferred_tool_names(self) -> set[str]:
+        names = set(self.registry.names())
+        names.discard("tool_search")
+        resident = self._tool_search_resident_config()
+        if resident is None:
+            return {
+                name
+                for name in names
+                if name in self.DEFAULT_DEFERRED_TOOL_NAMES or name.startswith("mcp__")
+            }
+        return {name for name in names if name not in set(resident)}
+
+    def _deferred_tools(self) -> dict[str, ToolDefinition]:
+        deferred: dict[str, ToolDefinition] = {}
+        for name in sorted(self._deferred_tool_names()):
+            tool = self.registry.get(name)
+            if tool is not None:
+                deferred[name] = tool
+        return deferred
+
     def _register_tool_search_tool(self, registry: ToolRegistry) -> None:
         registry.register(
             ToolDefinition(
@@ -2400,7 +2449,7 @@ class OpenAgentRuntime:
         )
 
     def _execute_tool_search(self, ctx: Any, payload: dict[str, Any]) -> str:
-        deferred = self.registry.deferred_tools()
+        deferred = self._deferred_tools()
         available = sorted(deferred)
         session = getattr(ctx, "session", None)
         loaded: list[str] = []
@@ -3232,7 +3281,7 @@ class OpenAgentRuntime:
     def _deferred_tool_unloaded(self, tool_name: str, session: AgentSession | None) -> bool:
         if not self._tool_search_enabled():
             return False
-        if tool_name not in self.registry.deferred_tools():
+        if tool_name not in self._deferred_tool_names():
             return False
         return tool_name not in set(getattr(session, "loaded_tools", None) or [])
 

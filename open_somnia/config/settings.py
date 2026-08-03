@@ -1236,6 +1236,11 @@ def _load_settings_once(
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
         tool_search=bool(runtime_raw.get("tool_search", False)),
+        tool_search_resident=(
+            [str(item) for item in runtime_raw["tool_search_resident"]]
+            if isinstance(runtime_raw.get("tool_search_resident"), list)
+            else None
+        ),
     )
 
     mcp_servers = _load_mcp_servers(root, raw)

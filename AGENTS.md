@@ -103,9 +103,12 @@ Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode 
 ## Deferred Tool Loading (tool_search pilot)
 
 - Off by default; enable with `[runtime] tool_search = true`.
-- Task/team families (15 tools, `ToolDefinition.deferred=True`) are advertised
-  name-only in the stable system-prompt run; their schemas stay out of the
-  tools array until loaded.
+- Deferred set policy: by default the task/team families (15 tools) and all
+  MCP tools are deferred. Setting `[runtime] tool_search_resident = [...]`
+  switches to allowlist mode — every tool not listed is deferred
+  (`tool_search` itself always stays resident).
+- Deferred tools are advertised name-only in the stable system-prompt run;
+  their schemas stay out of the tools array until loaded.
 - Lead-only `tool_search` meta tool loads definitions on demand; loaded names
   persist in `AgentSession.loaded_tools` and append to the tools-array tail in
   load order — never re-sorted — keeping provider cache prefixes stable.

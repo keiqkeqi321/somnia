@@ -107,6 +107,10 @@ class RuntimeSettings:
     # Deferred-loading pilot gate: advertise deferred tools name-only and load
     # their schemas on demand via the tool_search meta tool.
     tool_search: bool = False
+    # Optional resident allowlist. None = default policy (task/team builtins and
+    # all MCP tools are deferred). When set, EVERY registered tool whose name is
+    # not listed here is deferred (tool_search itself always stays resident).
+    tool_search_resident: list[str] | None = None
 
 
 @dataclass(slots=True)

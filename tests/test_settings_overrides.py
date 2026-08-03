@@ -453,6 +453,33 @@ class SettingsOverrideTests(unittest.TestCase):
 
         self.assertFalse(settings.runtime.tool_search)
 
+    def test_load_settings_reads_runtime_tool_search_resident_allowlist(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [providers]
+                default = "openai"
+
+                [providers.openai]
+                provider_type = "openai"
+                models = ["gpt-4.1"]
+                default_model = "gpt-4.1"
+                api_key = "openai-test-key"
+
+                [runtime]
+                tool_search = true
+                tool_search_resident = ["bash", "read_file"]
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root)
+
+        self.assertEqual(settings.runtime.tool_search_resident, ["bash", "read_file"])
+
     def test_load_settings_provider_model_traits_override_global_model_traits(self) -> None:
         with self._tempdir() as tmpdir:
             root = Path(tmpdir)
