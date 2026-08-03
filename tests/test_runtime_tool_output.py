@@ -5229,7 +5229,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._messages_for_model = lambda messages, **kwargs: messages
         runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
         runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=0, max_tokens=1000)
@@ -5273,7 +5273,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._messages_for_model = (
             lambda messages, **kwargs: json.loads(json.dumps(messages, ensure_ascii=False))
         )
@@ -5412,7 +5412,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
         runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._messages_for_model = lambda messages, **kwargs: messages
         runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
@@ -5468,7 +5468,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
         runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._messages_for_model = lambda messages, **kwargs: messages
         runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
@@ -6395,7 +6395,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.build_system_prompt = lambda session=None, actor=None, role=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
         runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._messages_for_model = (
             lambda messages, session=None, system_prompt=None, tools=None: json.loads(
                 json.dumps(messages, ensure_ascii=False)
@@ -6614,7 +6614,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
         runtime.context_window_usage = lambda session: ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        runtime._tool_schemas_for_model = lambda actor: []
+        runtime._tool_schemas_for_model = lambda actor, session=None: []
         runtime._dump_provider_payload_if_enabled = lambda **kwargs: None
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None

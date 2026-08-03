@@ -1235,6 +1235,7 @@ def _load_settings_once(
         exploration_hard_total_limit=int(runtime_raw.get("exploration_hard_total_limit", 0)),
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 30)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
+        tool_search=bool(runtime_raw.get("tool_search", False)),
     )
 
     mcp_servers = _load_mcp_servers(root, raw)

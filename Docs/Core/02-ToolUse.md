@@ -64,6 +64,19 @@ class ToolExecutionContext:
 | 本地 | `load_skill` / `request_authorization` / `request_mode_switch` / `compress` / `request_original_context` | 运行时本地工具 |
 | MCP | `mcp__{server}__{tool}` | MCP 远程工具 |
 
+#### 延迟加载（tool_search 试点）
+
+`[runtime] tool_search = true` 开启后（默认关闭），任务与团队两族共 15 个工具
+（`ToolDefinition.deferred=True`）进入延迟加载：
+
+- tools 数组只含常驻工具 + `tool_search` 元工具 + 已加载工具；未加载的延迟工具不进数组。
+- 系统提示词 B 段（稳定段）列出延迟工具的"名称 + 一行描述"名单，逐轮字节不变。
+- 模型调用 `tool_search`（`queries=[{"name": ...}]`，可批量）→ handler 把工具按加载顺序
+  追加到 `session.loaded_tools`（持久化）并返回完整 schema → 下一轮起 tools 数组**尾部追加**
+  这些定义，绝不重排（缓存前缀安全，见 `Docs/Core/16-Provider缓存命中优化.md`）。
+- 未加载直接调用 → 守卫返回"先 tool_search"引导错误，不执行 handler。
+- 仅 lead actor 生效；worker/subagent/teammate 注册表不受影响。gate 关闭时行为与旧版完全一致。
+
 ### Worker 工具（子 Agent / Teammate 可用）
 
 注册于 `register_worker_tools()`：

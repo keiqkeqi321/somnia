@@ -179,6 +179,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 },
                 "required": ["name", "role", "prompt"],
             },
+            deferred=True,
             handler=spawn_teammate,
         )
     )
@@ -187,6 +188,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             name="list_teammates",
             description="List all teammates.",
             input_schema={"type": "object", "properties": {}},
+            deferred=True,
             handler=list_teammates,
         )
     )
@@ -203,6 +205,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 },
                 "required": ["to", "content"],
             },
+            deferred=True,
             handler=send_message,
         )
     )
@@ -211,6 +214,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             name="read_inbox",
             description="Read and drain the current actor inbox.",
             input_schema={"type": "object", "properties": {}},
+            deferred=True,
             handler=read_inbox,
         )
     )
@@ -230,6 +234,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                     }
                 },
             },
+            deferred=True,
             handler=wait_for_inbox,
         )
     )
@@ -242,6 +247,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 "properties": {"content": {"type": "string"}},
                 "required": ["content"],
             },
+            deferred=True,
             handler=broadcast,
         )
     )
@@ -254,6 +260,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 "properties": {"teammate": {"type": "string"}},
                 "required": ["teammate"],
             },
+            deferred=True,
             handler=shutdown_request,
         )
     )
@@ -270,6 +277,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 },
                 "required": ["request_id", "approve"],
             },
+            deferred=True,
             handler=plan_approval,
         )
     )
@@ -291,6 +299,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
                 },
                 "required": ["request_id", "approve"],
             },
+            deferred=True,
             handler=authorization_approval,
         )
     )
@@ -299,6 +308,7 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             name="idle",
             description="Enter idle state.",
             input_schema={"type": "object", "properties": {}},
+            deferred=True,
             handler=idle,
         )
     )

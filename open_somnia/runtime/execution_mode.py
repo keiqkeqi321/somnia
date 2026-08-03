@@ -18,6 +18,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "web_fetch",
         "load_skill",
         "compress",
+        "tool_search",
         AUTHORIZATION_TOOL_NAME,
         MODE_SWITCH_TOOL_NAME,
         "TodoWrite",

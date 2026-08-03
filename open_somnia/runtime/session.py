@@ -26,6 +26,10 @@ class AgentSession:
     # Per-session model selection; None follows the workspace-wide default.
     provider_override: str | None = None
     model_override: str | None = None
+    # Deferred-loading pilot: deferred tools whose schemas have been loaded on
+    # demand (via tool_search), in load order. Persisted so resumed sessions
+    # keep them callable.
+    loaded_tools: list[str] = field(default_factory=list)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "AgentSession":
@@ -42,6 +46,7 @@ class AgentSession:
             undo_stack=list(payload.get("undo_stack", [])),
             provider_override=payload.get("provider_override") or None,
             model_override=payload.get("model_override") or None,
+            loaded_tools=list(payload.get("loaded_tools", [])),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -58,6 +63,7 @@ class AgentSession:
             "undo_stack": self.undo_stack,
             "provider_override": self.provider_override,
             "model_override": self.model_override,
+            "loaded_tools": self.loaded_tools,
         }
 
 

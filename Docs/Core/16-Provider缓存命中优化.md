@@ -51,8 +51,19 @@ Runtime 生成的 `<runtime-notice>` 会带 `transient=true` 元数据。Anthrop
 {"cache_control": {"type": "ephemeral"}}
 ```
 
-### OpenAI 兼容链路
+### 延迟加载工具定义（tool_search 试点）
 
+`[runtime] tool_search = true` 开启后，任务/团队两族 15 个工具转为延迟加载，机制与缓存语义：
+
+- **客户端省略**：未加载的延迟工具不进 tools 数组（实测 Anthropic 兼容端点不识别 `defer_loading` flag，客户端省略是唯一可靠方案）。
+- **名单常驻**：系统提示词 B 段列出"名称 + 一行描述"，内容静态，不伤稳定段缓存。
+- **尾部追加**：`tool_search` 加载的工具按加载顺序追加到 tools 数组尾部，绝不重排——
+  - DeepSeek 等分段缓存端点：追加后前缀命中保持 ~93%（MVP 实测）。
+  - 严格前缀端点（官方 Anthropic）：加载当轮是接受范围内的一次性 tools 层重建（ticket 设计决策），靠单轮批量加载摊薄；后续轮命中扩大后的完整 tools 层。
+- **断点位置**：tools 层断点恒在最后一个工具上，稳态下整个扩大后的 tools 层可缓存。
+- **不发 tool_reference 块**：`tool_search` 的 tool_result 已携带完整 schema 与"Loaded and now callable"文本，额外标记只会增加 transcript 噪声。
+
+### OpenAI 兼容链路
 OpenAI、DeepSeek、MiMo 等兼容链路主要依赖服务端自动前缀缓存，不支持 Anthropic 风格的显式 breakpoint。Somnia 对 OpenAI 链路的优化重点是：
 
 - 保持 system/instructions 字节级稳定。
@@ -79,18 +90,19 @@ Usage 解析已补充 cache token 字段：
 
 ## 验证
 
-覆盖测试位于 `tests/test_runtime_tool_output.py`：
+覆盖测试位于 `tests/test_runtime_tool_output.py` 与 `tests/test_tool_search.py`：
 
 - Anthropic system/message/tool breakpoint 形状。
 - Runtime 在 provider 调用前准备 Anthropic 结构化 system prompt。
 - OpenAI 链路保持 system prompt 字符串。
 - 主 agent tools schema canonical sort。
 - Anthropic/OpenAI cache usage 字段解析。
+- 延迟加载：deferred 隐藏/追加顺序、tool_search handler、未加载守卫、roster 静态性、gate 关闭 parity、加载后 tools 层缓存形状（`tests/test_tool_search.py`）。
 
 关键回归命令：
 
 ```bash
-python -m unittest tests.test_cli_resume tests.test_process_output tests.test_repl_todo tests.test_runtime_tool_output
+python -m unittest tests.test_cli_resume tests.test_process_output tests.test_repl_todo tests.test_runtime_tool_output tests.test_tool_search
 ```
 
 ## 后续方向
@@ -98,3 +110,4 @@ python -m unittest tests.test_cli_resume tests.test_process_output tests.test_re
 1. 在 provider payload dump 中展示 cache hit rate。
 2. 为 DeepSeek、MiniMax、MiMo 等兼容厂商补充 cache usage 字段映射和价格统计。
 3. 让压缩策略显式考虑“前缀稳定性”，尽量只改写固定摘要块。
+4. 为 tool_search 增加 runtime 检索器（BM25/embedding）预加载，减少弱模型发现工具的往返；视试点效果推广到 MCP 工具。

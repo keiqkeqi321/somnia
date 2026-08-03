@@ -35,6 +35,29 @@ class SystemPromptBuilder:
             f"- {bash_hint}"
         )
 
+    def deferred_tool_roster(self) -> str:
+        """Static name-and-one-line roster of deferred tools for the stable
+        system-prompt run. Byte-stable across turns given a fixed registry, so
+        prompt-cache prefixes are unaffected; empty when the gate is off."""
+        runtime_settings = getattr(self.runtime.settings, "runtime", None)
+        if not bool(getattr(runtime_settings, "tool_search", False)):
+            return ""
+        registry = getattr(self.runtime, "registry", None)
+        deferred_getter = getattr(registry, "deferred_tools", None)
+        if not callable(deferred_getter):
+            return ""
+        deferred = deferred_getter()
+        if not deferred:
+            return ""
+        lines = [
+            'Deferred tools (NOT loaded; call tool_search with queries=[{"name": "<name>"}] to load a tool before use):',
+        ]
+        for name in sorted(deferred):
+            description = str(deferred[name].description or "").strip()
+            first_line = description.splitlines()[0] if description else ""
+            lines.append(f"- {name}: {first_line}")
+        return "\n".join(lines)
+
     def build_prompt_bundle(self, actor: str = "lead", role: str = "lead coding agent", session=None) -> PromptBundle:
         del session
         working_file_path_getter = getattr(self.runtime, "current_working_file_path", None)
@@ -97,6 +120,10 @@ class SystemPromptBuilder:
             "While idle you may be resumed by inbox messages or unclaimed tasks."
         )
         runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance
+        deferred_roster = self.deferred_tool_roster()
+        runtime_injection = f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}"
+        if deferred_roster:
+            runtime_injection = f"{runtime_injection}\n{deferred_roster}"
         skill_prompt_getter = getattr(self.runtime.skill_loader, "prompt_index", None)
         skill_descriptions = skill_prompt_getter() if callable(skill_prompt_getter) else self.runtime.skill_loader.descriptions()
         mcp_guidance = (
@@ -113,7 +140,7 @@ class SystemPromptBuilder:
             PromptSection(
                 "runtime",
                 "B. Runtime Injection",
-                f"{runtime_identity}\n{runtime_guidance}\n{tool_selection_guidance}\n{workflow_guidance}",
+                runtime_injection,
                 dynamic=False,
             ),
             PromptSection(

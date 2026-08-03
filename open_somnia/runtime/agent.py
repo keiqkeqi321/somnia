@@ -811,8 +811,24 @@ class OpenAgentRuntime:
             augmented.append(clone)
         return augmented
 
-    def _tool_schemas_for_model(self, actor: str) -> list[dict[str, Any]]:
+    def _tool_schemas_for_model(self, actor: str, session: AgentSession | None = None) -> list[dict[str, Any]]:
         registry = self.registry if actor == "lead" else self.worker_registry
+        if actor == "lead" and self._tool_search_enabled():
+            deferred = registry.deferred_tools()
+            base = [schema for schema in registry.schemas() if schema["name"] not in deferred]
+            base_sorted = sorted(
+                self._augment_tool_schemas_with_importance(base),
+                key=lambda schema: (
+                    str(schema.get("name", "")),
+                    json.dumps(schema, ensure_ascii=False, sort_keys=True, default=str),
+                ),
+            )
+            # Loaded deferred tools append in load order and are never re-sorted:
+            # the tools array only grows at the tail, keeping provider cache
+            # prefixes byte-stable (see Docs/Core/16-Provider缓存命中优化.md).
+            loaded_names = list(getattr(session, "loaded_tools", None) or [])
+            loaded = [deferred[name].schema() for name in loaded_names if name in deferred]
+            return base_sorted + self._augment_tool_schemas_with_importance(loaded)
         return sorted(
             self._augment_tool_schemas_with_importance(registry.schemas()),
             key=lambda schema: (
@@ -826,8 +842,8 @@ class OpenAgentRuntime:
         self._payload_message_cache = {}
         self._recent_context_usage = {}
 
-    def _context_usage_tools(self, actor: str) -> list[dict[str, Any]]:
-        return self._tool_schemas_for_model(actor)
+    def _context_usage_tools(self, actor: str, session: AgentSession | None = None) -> list[dict[str, Any]]:
+        return self._tool_schemas_for_model(actor, session=session)
 
     def _tool_importance_preservation_score(self, importance: str | None) -> int:
         normalized = str(importance or "").strip().lower()
@@ -1601,7 +1617,7 @@ class OpenAgentRuntime:
             system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
+        tools = self._context_usage_tools(actor, session=session)
         cache_key = self._payload_message_cache_key(
             session,
             actor=actor,
@@ -1656,7 +1672,7 @@ class OpenAgentRuntime:
             system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
+        tools = self._context_usage_tools(actor, session=session)
         cache_key = self._payload_message_cache_key(
             session,
             actor=actor,
@@ -1717,7 +1733,7 @@ class OpenAgentRuntime:
             except TypeError:
                 system_prompt = self.build_system_prompt()
         if tools is None:
-            tools = self._context_usage_tools(actor)
+            tools = self._context_usage_tools(actor, session=session)
 
         cache_key = self._payload_message_cache_key(
             session,
@@ -1825,7 +1841,7 @@ class OpenAgentRuntime:
             system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
+        tools = self._context_usage_tools(actor, session=session)
         payload_messages = self._messages_for_model(
             messages,
             session=session,
@@ -2353,7 +2369,69 @@ class OpenAgentRuntime:
         register_task_tools(registry, self.task_store)
         self._register_worker_local_tools(registry)
 
+    def _tool_search_enabled(self) -> bool:
+        runtime_settings = getattr(getattr(self, "settings", None), "runtime", None)
+        return bool(getattr(runtime_settings, "tool_search", False))
+
+    def _register_tool_search_tool(self, registry: ToolRegistry) -> None:
+        registry.register(
+            ToolDefinition(
+                name="tool_search",
+                description=(
+                    "Load the full definitions of deferred tools by name so they become callable. "
+                    "Batch every tool you need into one call."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"name": {"type": "string"}},
+                                "required": ["name"],
+                            },
+                        },
+                    },
+                    "required": ["queries"],
+                },
+                handler=lambda ctx, payload: self._execute_tool_search(ctx, payload),
+            )
+        )
+
+    def _execute_tool_search(self, ctx: Any, payload: dict[str, Any]) -> str:
+        deferred = self.registry.deferred_tools()
+        available = sorted(deferred)
+        session = getattr(ctx, "session", None)
+        loaded: list[str] = []
+        errors: list[str] = []
+        results: list[dict[str, Any]] = []
+        for query in list(payload.get("queries") or []):
+            name = str(query.get("name", "")).strip() if isinstance(query, dict) else ""
+            if not name:
+                errors.append("query missing 'name'")
+                continue
+            tool = deferred.get(name)
+            if tool is None:
+                errors.append(f"no such deferred tool: {name}")
+                results.append({"name": name, "error": f"no such deferred tool: {name}", "available": available})
+                continue
+            results.append(tool.schema())
+            if session is not None and name not in session.loaded_tools:
+                session.loaded_tools.append(name)
+                loaded.append(name)
+        lines = [json.dumps(results, ensure_ascii=False, indent=1), ""]
+        if loaded:
+            lines.append("Loaded and now callable: " + ", ".join(loaded))
+        else:
+            lines.append("No new tools were loaded (already loaded or unknown).")
+        if errors:
+            lines.append("Errors: " + "; ".join(errors))
+        return "\n".join(lines)
+
     def _register_local_tools(self, registry: ToolRegistry) -> None:
+        if self._tool_search_enabled():
+            self._register_tool_search_tool(registry)
         registry.register(
             ToolDefinition(
                 name="load_skill",
@@ -2880,7 +2958,7 @@ class OpenAgentRuntime:
             system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
         except TypeError:
             system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
+        tools = self._context_usage_tools(actor, session=session)
         cache_key = self._payload_message_cache_key(
             session,
             actor=actor,
@@ -3151,6 +3229,13 @@ class OpenAgentRuntime:
         except Exception:
             return set()
 
+    def _deferred_tool_unloaded(self, tool_name: str, session: AgentSession | None) -> bool:
+        if not self._tool_search_enabled():
+            return False
+        if tool_name not in self.registry.deferred_tools():
+            return False
+        return tool_name not in set(getattr(session, "loaded_tools", None) or [])
+
     def _malformed_tool_name_reason(self, tool_name: str) -> str | None:
         normalized = str(tool_name or "").strip()
         if not normalized:
@@ -3305,7 +3390,7 @@ class OpenAgentRuntime:
                     system_prompt = self.build_system_prompt(session=session)
                 except TypeError:
                     system_prompt = self.build_system_prompt()
-                tool_schemas = self._tool_schemas_for_model("lead")
+                tool_schemas = self._tool_schemas_for_model("lead", session=session)
                 transient_notices: list[str] = []
                 if session.rounds_without_todo >= 3 and self.todo_manager.has_open_items(session):
                     transient_notices.append(self.TODO_STALE_STATUS_REMINDER_TEXT)
@@ -3584,6 +3669,19 @@ class OpenAgentRuntime:
                                 (
                                     f"Unknown tool: {tool_name}. "
                                     f"Available tools: {', '.join(sorted(known_tool_names))}."
+                                ),
+                            )
+                        elif self._deferred_tool_unloaded(tool_name, session=session):
+                            key = ("deferred_tool_unloaded", tool_name)
+                            if key in reported_invalid_tool_names:
+                                continue
+                            reported_invalid_tool_names.add(key)
+                            output = make_tool_error(
+                                tool_name,
+                                "deferred_tool_unloaded",
+                                (
+                                    f"Tool '{tool_name}' is NOT loaded. Call tool_search with "
+                                    f'queries=[{{"name": "{tool_name}"}}] to load its definition first, then call it.'
                                 ),
                             )
                         elif is_exploration_tool:

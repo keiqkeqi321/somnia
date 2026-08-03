@@ -100,6 +100,20 @@ Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode 
 - Runtime injects a transient reminder on every turn while todos remain open; this reminder is NOT persisted
 - Tool event box is suppressed in terminal output; internal logs still recorded
 
+## Deferred Tool Loading (tool_search pilot)
+
+- Off by default; enable with `[runtime] tool_search = true`.
+- Task/team families (15 tools, `ToolDefinition.deferred=True`) are advertised
+  name-only in the stable system-prompt run; their schemas stay out of the
+  tools array until loaded.
+- Lead-only `tool_search` meta tool loads definitions on demand; loaded names
+  persist in `AgentSession.loaded_tools` and append to the tools-array tail in
+  load order — never re-sorted — keeping provider cache prefixes stable.
+- Calling an unloaded deferred tool returns a guard error pointing at
+  `tool_search`. Worker/subagent/teammate registries are unaffected; gate off
+  restores the exact previous behavior.
+- Cache semantics and rationale: `Docs/Core/16-Provider缓存命中优化.md`.
+
 ## Shell Tool (`bash`)
 
 Platform-aware: Unix uses system shell; Windows uses PowerShell. Common Unix commands are auto-translated on Windows. Untranslatable commands return guidance instead of cryptic errors.
