@@ -779,6 +779,8 @@ class OpenAgentRuntime:
             "skill_count": len(getattr(self.skill_loader, "skills", {}) or {}),
             "project_instruction_count": len(project_instructions),
             "mcp_errors": dict(getattr(self.mcp_registry, "errors", {}) or {}),
+            "tool_warnings": list(getattr(self.registry, "registration_warnings", []) or []),
+            "mcp_warnings": list(getattr(self.mcp_registry, "warnings", []) or []),
         }
 
     def set_hook_enabled(self, hook: HookSettings, enabled: bool) -> str:

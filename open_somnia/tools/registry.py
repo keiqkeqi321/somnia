@@ -15,6 +15,16 @@ from open_somnia.tools.tool_errors import (
 ToolHandler = Callable[[Any, dict[str, Any]], Any]
 
 
+def _tool_origin(tool: "ToolDefinition") -> str:
+    if tool.name.startswith("mcp__"):
+        parts = tool.name.split("__", 2)
+        if len(parts) == 3 and parts[1]:
+            return f"MCP server '{parts[1]}'"
+        return "an MCP server"
+    module = str(getattr(tool.handler, "__module__", "") or "").strip()
+    return f"builtin registration ({module or 'unknown module'})"
+
+
 @dataclass(slots=True)
 class ToolDefinition:
     name: str
@@ -33,8 +43,15 @@ class ToolDefinition:
 class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, ToolDefinition] = {}
+        self.registration_warnings: list[str] = []
 
     def register(self, tool: ToolDefinition) -> None:
+        previous = self._tools.get(tool.name)
+        if previous is not None:
+            self.registration_warnings.append(
+                f"Tool name collision: '{tool.name}' from {_tool_origin(tool)} "
+                f"overwrites {_tool_origin(previous)}."
+            )
         self._tools[tool.name] = tool
 
     def unregister_prefix(self, prefix: str) -> int:

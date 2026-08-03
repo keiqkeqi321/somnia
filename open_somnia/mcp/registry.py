@@ -159,11 +159,16 @@ class MCPRegistry:
         self.servers = [server for server in servers if server.enabled]
         self.clients: dict[str, MCPClient] = {}
         self.errors: dict[str, str] = {}
+        self.warnings: list[str] = []
         self.server_tools: dict[str, list[str]] = {}
         self.server_tool_details: dict[str, list[dict[str, Any]]] = {}
 
     def register_tools(self, registry) -> None:
         for server in self.servers:
+            if server.name in self.clients:
+                self.warnings.append(
+                    f"Duplicate MCP server name '{server.name}': tools from the earlier entry are replaced by the later one."
+                )
             try:
                 client = MCPClient(server)
                 tools = client.list_tools()
@@ -279,6 +284,7 @@ class MCPRegistry:
                 lines.append(f"{server.name}: connected [{server.transport}] {target} tools={tool_count}")
             else:
                 lines.append(f"{server.name}: error - {self.errors.get(server.name, 'not initialized')}")
+        lines.extend(f"warning: {warning}" for warning in self.warnings)
         return lines
 
     def describe_servers(self) -> str:
@@ -298,6 +304,7 @@ class MCPRegistry:
             tools = self.server_tools.get(server.name, [])
             if tools:
                 lines.append(f"  tools: {', '.join(tools)}")
+        lines.extend(f"- warning: {warning}" for warning in self.warnings)
         return "\n".join(lines)
 
     def server_summaries(self) -> list[dict[str, Any]]:

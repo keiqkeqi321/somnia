@@ -2404,6 +2404,14 @@ def _format_reload_plugin_summary(summary: dict[str, object]) -> str:
         if isinstance(mcp_errors, dict):
             for name, error in sorted(mcp_errors.items()):
                 lines.append(f"- {name}: {error}")
+    tool_warnings: list[str] = []
+    for key in ("tool_warnings", "mcp_warnings"):
+        value = summary.get(key)
+        if isinstance(value, list):
+            tool_warnings.extend(str(item) for item in value)
+    if tool_warnings:
+        lines.append(f"Tool warnings: {len(tool_warnings)}")
+        lines.extend(f"- {item}" for item in tool_warnings)
     return "\n".join(lines)
 
 
