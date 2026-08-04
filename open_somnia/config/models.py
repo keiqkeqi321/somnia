@@ -64,6 +64,23 @@ class MCPServerSettings:
     timeout_seconds: int = 30
     startup_timeout_seconds: int = 30
     protocol_version: str = "2025-11-25"
+    # Per-tool subsetting. None = key absent (all tools enabled by default).
+    # An explicitly empty include_tools list means "no tools enabled" — the
+    # distinction matters when UIs toggle tools one by one. When both are set,
+    # exclude wins.
+    include_tools: list[str] | None = None
+    exclude_tools: list[str] | None = None
+
+    def tool_enabled(self, tool_name: str) -> bool:
+        if self.include_tools is not None:
+            if tool_name not in self.include_tools:
+                return False
+            if self.exclude_tools and tool_name in self.exclude_tools:
+                return False
+            return True
+        if self.exclude_tools:
+            return tool_name not in self.exclude_tools
+        return True
 
 
 @dataclass(slots=True)

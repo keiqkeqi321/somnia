@@ -219,6 +219,17 @@ class LocalSidecarBridge:
             if not isinstance(enabled, bool):
                 raise ValueError("enabled must be a boolean.")
             return self._request("POST", f"/mcp/servers/{quote(name, safe='')}/enabled", {"enabled": enabled})
+        if method == "mcp.set_tool_enabled":
+            name = _required_text(params, "name")
+            tool = _required_text(params, "tool")
+            enabled = params.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be a boolean.")
+            return self._request(
+                "POST",
+                f"/mcp/servers/{quote(name, safe='')}/tools/{quote(tool, safe='')}/enabled",
+                {"enabled": enabled},
+            )
         if method == "vision.set":
             provider = str(params.get("provider", "")).strip()
             model = str(params.get("model", "")).strip()

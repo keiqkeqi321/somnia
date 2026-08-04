@@ -18,6 +18,7 @@ from open_somnia.config.settings import (
     _infer_context_window_tokens,
     load_settings,
     persist_initial_provider_setup,
+    persist_mcp_tool_enabled,
     persist_provider_profile,
     persist_provider_reasoning_level,
     persist_provider_selection,
@@ -403,6 +404,137 @@ class SettingsOverrideTests(unittest.TestCase):
         self.assertEqual(settings.provider.prompt_cache_key, "somnia-main")
         self.assertEqual(settings.provider.prompt_cache_retention, "24h")
         self.assertEqual(settings.provider_profiles["openai"].prompt_cache_key, "somnia-main")
+
+    def test_load_settings_reads_mcp_tool_filters_both_forms(self) -> None:
+        # Table form and array-of-tables form cannot coexist in one TOML
+        # document, so each form gets its own workspace.
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [mcp_servers.alpha]
+                transport = "http"
+                url = "http://localhost:1/mcp"
+                include_tools = ["read_file"]
+                exclude_tools = ["write_file"]
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root, allow_missing_provider=True)
+
+        server = settings.mcp_servers[0]
+        self.assertEqual(server.include_tools, ["read_file"])
+        self.assertEqual(server.exclude_tools, ["write_file"])
+        self.assertTrue(server.tool_enabled("read_file"))
+        self.assertFalse(server.tool_enabled("write_file"))
+        self.assertFalse(server.tool_enabled("unlisted_tool"))
+
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [[mcp_servers]]
+                name = "beta"
+                transport = "http"
+                url = "http://localhost:2/mcp"
+                exclude_tools = ["delete_file"]
+                """,
+            )
+
+            with self._patched_home(home):
+                settings = load_settings(root, allow_missing_provider=True)
+
+        server = settings.mcp_servers[0]
+        self.assertEqual(server.exclude_tools, ["delete_file"])
+        self.assertIsNone(server.include_tools)
+        self.assertFalse(server.tool_enabled("delete_file"))
+        self.assertTrue(server.tool_enabled("read_file"))
+
+    def test_persist_mcp_tool_enabled_exclude_round_trip(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [mcp_servers.alpha]
+                transport = "http"
+                url = "http://localhost:1/mcp"
+                """,
+            )
+
+            with self._patched_home(home):
+                persist_mcp_tool_enabled(root, "alpha", "delete_file", False)
+                settings = load_settings(root, allow_missing_provider=True)
+                server = settings.mcp_servers[0]
+                self.assertEqual(server.exclude_tools, ["delete_file"])
+                self.assertFalse(server.tool_enabled("delete_file"))
+
+                persist_mcp_tool_enabled(root, "alpha", "delete_file", True)
+                settings = load_settings(root, allow_missing_provider=True)
+                server = settings.mcp_servers[0]
+                self.assertIsNone(server.exclude_tools)
+                self.assertTrue(server.tool_enabled("delete_file"))
+                text = (root / ".open_somnia" / "open_somnia.toml").read_text(encoding="utf-8")
+                self.assertNotIn("exclude_tools", text)
+
+    def test_persist_mcp_tool_enabled_updates_include_list_when_present(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [mcp_servers.alpha]
+                transport = "http"
+                url = "http://localhost:1/mcp"
+                include_tools = ["read_file", "write_file"]
+                """,
+            )
+
+            with self._patched_home(home):
+                persist_mcp_tool_enabled(root, "alpha", "write_file", False)
+                settings = load_settings(root, allow_missing_provider=True)
+                server = settings.mcp_servers[0]
+                self.assertEqual(server.include_tools, ["read_file"])
+                self.assertIsNone(server.exclude_tools)
+                self.assertFalse(server.tool_enabled("write_file"))
+
+                persist_mcp_tool_enabled(root, "alpha", "write_file", True)
+                settings = load_settings(root, allow_missing_provider=True)
+                self.assertEqual(settings.mcp_servers[0].include_tools, ["read_file", "write_file"])
+
+    def test_persist_mcp_tool_enabled_handles_array_table_form(self) -> None:
+        with self._tempdir() as tmpdir:
+            root = Path(tmpdir)
+            home = root / "home"
+            self._write_workspace_config(
+                root,
+                """
+                [[mcp_servers]]
+                name = "beta"
+                transport = "http"
+                url = "http://localhost:2/mcp"
+
+                [[mcp_servers]]
+                name = "gamma"
+                transport = "http"
+                url = "http://localhost:3/mcp"
+                """,
+            )
+
+            with self._patched_home(home):
+                persist_mcp_tool_enabled(root, "gamma", "nuke", False)
+                settings = load_settings(root, allow_missing_provider=True)
+
+        servers = {server.name: server for server in settings.mcp_servers}
+        self.assertEqual(servers["gamma"].exclude_tools, ["nuke"])
+        self.assertIsNone(servers["beta"].exclude_tools)
 
     def test_load_settings_provider_model_traits_override_global_model_traits(self) -> None:
         with self._tempdir() as tmpdir:

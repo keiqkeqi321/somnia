@@ -2329,7 +2329,11 @@ def _handle_mcp_command(runtime) -> None:
         items = []
         for summary in summaries:
             status = summary["status"]
-            suffix = f"tools={summary['tool_count']}" if status == "connected" else (summary["error"] or status)
+            if status == "connected":
+                enabled_count = summary.get("enabled_tool_count", summary["tool_count"])
+                suffix = f"tools={enabled_count}/{summary['tool_count']}"
+            else:
+                suffix = summary["error"] or status
             items.append(
                 (
                     summary["name"],
@@ -2338,16 +2342,18 @@ def _handle_mcp_command(runtime) -> None:
             )
         selected_server = choose_item_interactively(
             "MCP Servers",
-            "Choose an MCP server to inspect its registered tools.",
+            "Choose an MCP server to inspect or manage its tools.",
             items,
         )
         if not selected_server:
             return
 
-        server_summary = next((item for item in summaries if item["name"] == selected_server), None)
-        if server_summary is None:
-            return
         while True:
+            registry = getattr(runtime, "mcp_registry", None) or registry
+            summaries = registry.server_summaries()
+            server_summary = next((item for item in summaries if item["name"] == selected_server), None)
+            if server_summary is None:
+                break
             tool_summaries = registry.tool_summaries(selected_server)
             subtitle_lines = [
                 f"Server: {selected_server}",
@@ -2357,12 +2363,12 @@ def _handle_mcp_command(runtime) -> None:
             ]
             if server_summary["error"]:
                 subtitle_lines.append(f"Error: {server_summary['error']}")
-            subtitle_lines.append("Choose a tool to inspect, or go back.")
+            subtitle_lines.append("Choose a tool to inspect or enable/disable, or go back.")
             tool_items = [("__back__", "Back to MCP servers")]
             tool_items.extend(
                 (
                     tool["name"],
-                    f"{tool['name']} | {tool['description'] or '(no description)'}",
+                    f"[{'x' if tool.get('enabled', True) else ' '}] {tool['name']} | {tool['description'] or '(no description)'}",
                 )
                 for tool in tool_summaries
             )
@@ -2374,19 +2380,38 @@ def _handle_mcp_command(runtime) -> None:
             if not selected_tool or selected_tool == "__back__":
                 break
 
-            tool_summary = next((item for item in tool_summaries if item["name"] == selected_tool), None)
-            if tool_summary is None:
-                continue
-            choose_item_interactively(
-                "MCP Tool Details",
-                (
-                    f"Server: {selected_server}\n"
-                    f"Tool: {tool_summary['name']}\n"
-                    f"Description: {tool_summary['description'] or '(no description)'}\n"
-                    f"Input schema:\n{json.dumps(tool_summary['input_schema'], ensure_ascii=False, indent=2)}"
-                ),
-                [("__back__", "Back to tools list")],
-            )
+            while True:
+                registry = getattr(runtime, "mcp_registry", None) or registry
+                tool_summaries = registry.tool_summaries(selected_server)
+                tool_summary = next((item for item in tool_summaries if item["name"] == selected_tool), None)
+                if tool_summary is None:
+                    break
+                tool_enabled = bool(tool_summary.get("enabled", True))
+                action = choose_item_interactively(
+                    "MCP Tool Details",
+                    (
+                        f"Server: {selected_server}\n"
+                        f"Tool: {tool_summary['name']}\n"
+                        f"State: {'enabled' if tool_enabled else 'disabled'}\n"
+                        f"Description: {tool_summary['description'] or '(no description)'}\n"
+                        f"Input schema:\n{json.dumps(tool_summary['input_schema'], ensure_ascii=False, indent=2)}"
+                    ),
+                    [
+                        ("__toggle__", "Disable this tool" if tool_enabled else "Enable this tool"),
+                        ("__back__", "Back to tools list"),
+                    ],
+                )
+                if action != "__toggle__":
+                    break
+                new_state = not tool_enabled
+                try:
+                    result = runtime.set_mcp_tool_enabled(selected_server, selected_tool, new_state)
+                    print(
+                        f"{'Enabled' if new_state else 'Disabled'} tool '{selected_tool}' on server "
+                        f"'{selected_server}' (saved to {result['config_path']})."
+                    )
+                except Exception as exc:
+                    print(f"Failed to update tool state: {exc}")
 
 
 def _format_reload_plugin_summary(summary: dict[str, object]) -> str:

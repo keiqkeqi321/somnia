@@ -245,6 +245,16 @@ export class SidecarClient {
     );
   }
 
+  async setMcpToolEnabled(serverName: string, toolName: string, enabled: boolean): Promise<{ server: McpServerSummary; tool: string; enabled: boolean; config_path: string }> {
+    return parseResponse<{ server: McpServerSummary; tool: string; enabled: boolean; config_path: string }>(
+      await fetch(`${this.baseUrl}/mcp/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}/enabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+    );
+  }
+
   async saveSettingsConfigSection(
     scope: SettingsConfigScopeKey,
     section: SettingsConfigSectionKey,

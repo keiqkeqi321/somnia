@@ -44,6 +44,7 @@ type SettingsViewProps = {
   onSaveConfigSection: () => void | Promise<void>;
   onDebugMcpServer: (serverName: string) => Promise<number>;
   onSetMcpServerEnabled: (serverName: string, enabled: boolean) => Promise<number>;
+  onSetMcpToolEnabled: (serverName: string, toolName: string, enabled: boolean) => Promise<void>;
   onReloadConfig: () => void | Promise<void>;
   providers: ProviderDescriptor[];
   visionModels: ModelDescriptor[];
@@ -139,6 +140,7 @@ function SettingsView({
   onSaveConfigSection,
   onDebugMcpServer,
   onSetMcpServerEnabled,
+  onSetMcpToolEnabled,
   onReloadConfig,
   providers,
   visionModels,
@@ -165,6 +167,7 @@ function SettingsView({
   const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(null);
   const [debuggingMcpServer, setDebuggingMcpServer] = useState<string | null>(null);
   const [togglingMcpServer, setTogglingMcpServer] = useState<string | null>(null);
+  const [togglingMcpTool, setTogglingMcpTool] = useState<string | null>(null);
   const [mcpDebugMessage, setMcpDebugMessage] = useState("");
   const archivedProjectGroups = groupArchivedEntriesByProject(archivedEntries);
 
@@ -215,6 +218,24 @@ function SettingsView({
       setMcpDebugMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setTogglingMcpServer(null);
+    }
+  }
+
+  async function handleToggleTool(serverName: string, toolName: string, enabled: boolean) {
+    setExpandedMcpServer(serverName);
+    setTogglingMcpTool(`${serverName}/${toolName}`);
+    setMcpDebugMessage("");
+    try {
+      await onSetMcpToolEnabled(serverName, toolName, enabled);
+      setMcpDebugMessage(
+        enabled
+          ? t("settings.config.mcpToolEnabled", { name: serverName, tool: toolName })
+          : t("settings.config.mcpToolDisabled", { name: serverName, tool: toolName }),
+      );
+    } catch (error) {
+      setMcpDebugMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTogglingMcpTool(null);
     }
   }
 
@@ -482,7 +503,12 @@ function SettingsView({
                                 <span className={`mcp-status-dot ${server.status}`} aria-hidden="true" />
                                 <strong>{server.name}</strong>
                                 <span>{server.transport}</span>
-                                <span>{server.tool_count} {t("settings.config.tools")}</span>
+                                <span>
+                                  {typeof server.enabled_tool_count === "number" && server.enabled_tool_count !== server.tool_count
+                                    ? `${server.enabled_tool_count}/${server.tool_count}`
+                                    : server.tool_count}{" "}
+                                  {t("settings.config.tools")}
+                                </span>
                                 <div className="mcp-server-actions" onClick={(event) => event.stopPropagation()}>
                                   <label className="mcp-toggle" title={t(server.enabled ? "settings.config.disableMcp" : "settings.config.enableMcp")}>
                                     <input
@@ -525,13 +551,27 @@ function SettingsView({
                                   ) : (
                                     <div className="mcp-tool-list">
                                       {server.tools.map((tool) => (
-                                        <details key={tool.name} className="mcp-tool-card">
-                                          <summary>
-                                            <strong>{tool.name}</strong>
-                                            <span>{tool.description || t("settings.config.noDescription")}</span>
-                                          </summary>
-                                          <pre>{JSON.stringify(tool.input_schema ?? {}, null, 2)}</pre>
-                                        </details>
+                                        <div key={tool.name} className={`mcp-tool-card ${tool.enabled ? "" : "disabled"}`}>
+                                          <details>
+                                            <summary>
+                                              <strong>{tool.name}</strong>
+                                              <span>{tool.description || t("settings.config.noDescription")}</span>
+                                            </summary>
+                                            <pre>{JSON.stringify(tool.input_schema ?? {}, null, 2)}</pre>
+                                          </details>
+                                          <label className="mcp-toggle mcp-toggle-small" title={t(tool.enabled ? "settings.config.disableMcpTool" : "settings.config.enableMcpTool")}>
+                                            <input
+                                              type="checkbox"
+                                              aria-label={t(tool.enabled ? "settings.config.disableMcpTool" : "settings.config.enableMcpTool")}
+                                              checked={tool.enabled}
+                                              disabled={togglingMcpTool === `${server.name}/${tool.name}`}
+                                              onChange={(event) => void handleToggleTool(server.name, tool.name, event.currentTarget.checked)}
+                                            />
+                                            <span className="mcp-toggle-track" aria-hidden="true">
+                                              <span className="mcp-toggle-thumb" />
+                                            </span>
+                                          </label>
+                                        </div>
                                       ))}
                                     </div>
                                   )}

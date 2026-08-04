@@ -34,6 +34,7 @@ from open_somnia.config.settings import (
     global_config_path,
     load_settings,
     persist_hook_enabled,
+    persist_mcp_tool_enabled,
     persist_provider_reasoning_level,
     persist_provider_selection,
     persist_vision_model,
@@ -790,6 +791,26 @@ class OpenAgentRuntime:
         kind = "builtin" if hook.managed_by == BUILTIN_NOTIFY_MANAGER else "custom"
         scope = getattr(hook, "config_scope", None) or "config"
         return f"{state.capitalize()} {kind} hook for {hook.event} in {scope} config: {config_path}"
+
+    def set_mcp_tool_enabled(self, server_name: str, tool_name: str, enabled: bool) -> dict[str, Any]:
+        """Persist one MCP tool's enabled state and reload the plugin config so
+        the registry reflects it. Shared by the CLI /mcp command and the
+        desktop sidecar endpoint."""
+        config_path = persist_mcp_tool_enabled(self.settings.workspace_root, server_name, tool_name, enabled)
+        summary = self.reload_plugin_configuration()
+        registry = getattr(self, "mcp_registry", None)
+        tool_summaries = registry.tool_summaries(server_name) if registry is not None else []
+        tool_summary = next((item for item in tool_summaries if item.get("name") == tool_name), None)
+        return {
+            "server": server_name,
+            "tool": tool_name,
+            "enabled": enabled,
+            "config_path": str(config_path),
+            "tool_summary": tool_summary,
+            "enabled_tool_count": sum(1 for item in tool_summaries if item.get("enabled")),
+            "tool_count": len(tool_summaries),
+            "reload": summary,
+        }
 
     def _augment_tool_schemas_with_importance(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         augmented: list[dict[str, Any]] = []

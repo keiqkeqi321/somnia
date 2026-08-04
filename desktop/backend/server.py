@@ -51,6 +51,7 @@ from open_somnia.config.settings import (
     _merge_config,
     _read_toml,
     global_config_path,
+    persist_mcp_tool_enabled,
     workspace_config_path,
 )
 from open_somnia.mcp.registry import MCPRegistry
@@ -864,6 +865,30 @@ class SidecarServer:
             "config_path": str(config_path),
         }
 
+    def set_mcp_tool_enabled(self, server_name: str, tool_name: str, enabled: bool) -> dict[str, Any]:
+        normalized_server = str(server_name or "").strip()
+        normalized_tool = str(tool_name or "").strip()
+        if not normalized_server or not normalized_tool:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "server name and tool name are required.")
+        try:
+            config_path = persist_mcp_tool_enabled(self.settings.workspace_root, normalized_server, normalized_tool, bool(enabled))
+            self.reload_mcp_runtime()
+        except Exception as exc:
+            action = "enable" if enabled else "disable"
+            raise SidecarAPIError(
+                HTTPStatus.BAD_GATEWAY,
+                f"MCP {action} failed for tool '{normalized_tool}' on '{normalized_server}': {exc}",
+            ) from exc
+        server = next((item for item in self.mcp_servers_payload()["servers"] if item.get("name") == normalized_server), None)
+        if server is None:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"MCP server '{normalized_server}' was not found after updating {config_path}.")
+        return {
+            "server": server,
+            "tool": normalized_tool,
+            "enabled": bool(enabled),
+            "config_path": str(config_path),
+        }
+
     def save_config_section(self, *, scope: str, section: str, content: str) -> dict[str, Any]:
         normalized_scope = str(scope or "").strip().lower()
         normalized_section = str(section or "").strip().lower()
@@ -1550,6 +1575,19 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             if "enabled" not in body:
                 raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "enabled is required.")
             return self.sidecar.set_mcp_server_enabled(path_parts[2], bool(body.get("enabled"))), HTTPStatus.OK
+        if (
+            len(path_parts) == 6
+            and path_parts[0] == "mcp"
+            and path_parts[1] == "servers"
+            and path_parts[3] == "tools"
+            and path_parts[5] == "enabled"
+        ):
+            if "enabled" not in body:
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "enabled is required.")
+            return (
+                self.sidecar.set_mcp_tool_enabled(path_parts[2], path_parts[4], bool(body.get("enabled"))),
+                HTTPStatus.OK,
+            )
         if path_parts == ["settings", "config"]:
             return (
                 self.sidecar.save_config_section(

@@ -1569,6 +1569,20 @@ button {
   opacity: 0.58;
 }
 
+.mcp-toggle-small .mcp-toggle-track {
+  width: 26px;
+  height: 15px;
+}
+
+.mcp-toggle-small .mcp-toggle-thumb {
+  width: 9px;
+  height: 9px;
+}
+
+.mcp-toggle-small input:checked + .mcp-toggle-track .mcp-toggle-thumb {
+  transform: translateX(11px);
+}
+
 .mcp-status-dot {
   width: 9px;
   height: 9px;
@@ -1623,9 +1637,20 @@ button {
 }
 
 .mcp-tool-card {
+  position: relative;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   background: rgba(9, 11, 15, 0.58);
+}
+
+.mcp-tool-card > .mcp-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.mcp-tool-card.disabled > details {
+  opacity: 0.55;
 }
 
 .mcp-tool-card summary {
@@ -1633,7 +1658,7 @@ button {
   grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-  padding: 10px 12px;
+  padding: 10px 48px 10px 12px;
   cursor: pointer;
 }
 

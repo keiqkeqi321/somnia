@@ -80,8 +80,27 @@ export const contractProviderPresets: ProviderPresetDescriptor[] = [
 ];
 
 export const contractMcpServers: McpServerSummary[] = [
-  { name: "docs", transport: "stdio", target: "docs-server", enabled: true, status: "connected", tool_count: 2, tools: [] },
+  {
+    name: "docs",
+    transport: "stdio",
+    target: "docs-server",
+    enabled: true,
+    status: "connected",
+    tool_count: 2,
+    enabled_tool_count: 1,
+    tools: [
+      { name: "search", description: "Search the docs.", input_schema: {}, enabled: true },
+      { name: "fetch", description: "Fetch a doc page.", input_schema: {}, enabled: false },
+    ],
+  },
 ];
+
+export const contractSetMcpToolEnabledResult: { server: McpServerSummary; tool: string; enabled: boolean; config_path: string } = {
+  server: contractMcpServers[0],
+  tool: "fetch",
+  enabled: true,
+  config_path: "C:/workspace/open_somnia.toml",
+};
 
 export const contractToolLogs: ToolLogIndexEntry[] = [
   { id: "log-1", timestamp: 1700000000, actor: "agent", tool_name: "bash", category: "shell", path: "tool-logs/log-1.json" },
@@ -161,6 +180,7 @@ export function describeSomniaConnectionContract(
       await expect(connection.saveSettingsConfigSection("project", "hooks", "[hooks]")).resolves.toEqual(contractSettingsSaveResult);
       await expect(connection.listProviderPresets()).resolves.toEqual(contractProviderPresets);
       await expect(connection.listMcpServers()).resolves.toEqual(contractMcpServers);
+      await expect(connection.setMcpToolEnabled("docs", "fetch", true)).resolves.toEqual(contractSetMcpToolEnabledResult);
     });
 
     it("resolves authorization interactions and reads tool logs", async () => {

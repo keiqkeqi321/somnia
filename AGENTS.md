@@ -62,7 +62,7 @@ Primary config files:
 - `open_somnia.toml` — project-level settings
 - `~/.open_somnia/open_somnia.toml` — global shared settings
 
-Key sections: `[agent]`, `[providers]`, `[providers.<name>]`, `[runtime]`, `[mcp_servers.<name>]` / `[[mcp_servers]]`, `[hooks]`
+Key sections: `[agent]`, `[providers]`, `[providers.<name>]`, `[runtime]`, `[mcp_servers.<name>]` / `[[mcp_servers]]` (per-server `include_tools`/`exclude_tools` subset the registered tools; exclude wins; manageable live from CLI `/mcp` and the desktop MCP panel, persisted back to TOML), `[hooks]`
 
 On first run with no providers, the CLI bootstraps an interactive provider setup flow and saves to global config.
 

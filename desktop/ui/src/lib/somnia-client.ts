@@ -113,6 +113,11 @@ export interface SomniaClient extends SomniaConnection {
     serverName: string,
     enabled: boolean,
   ): Promise<{ server: McpServerSummary; enabled: boolean; tool_count: number }>;
+  setMcpToolEnabled(
+    serverName: string,
+    toolName: string,
+    enabled: boolean,
+  ): Promise<{ server: McpServerSummary; tool: string; enabled: boolean; config_path: string }>;
 
   // Interaction requests.
   listInteractions(): Promise<InteractionRequestState[]>;
@@ -337,6 +342,14 @@ export class DirectSomniaClient implements SomniaClient {
     enabled: boolean,
   ): Promise<{ server: McpServerSummary; enabled: boolean; tool_count: number }> {
     return this.rest.setMcpServerEnabled(serverName, enabled);
+  }
+
+  setMcpToolEnabled(
+    serverName: string,
+    toolName: string,
+    enabled: boolean,
+  ): Promise<{ server: McpServerSummary; tool: string; enabled: boolean; config_path: string }> {
+    return this.rest.setMcpToolEnabled(serverName, toolName, enabled);
   }
 
   listInteractions(): Promise<InteractionRequestState[]> {

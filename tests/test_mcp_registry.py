@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from open_somnia.config.models import MCPServerSettings
 from open_somnia.mcp.registry import MCPRegistry
 from open_somnia.tools.registry import ToolRegistry
 
@@ -92,6 +93,66 @@ class MCPRegistryTests(unittest.TestCase):
 
         self.assertEqual(tool_registry.registration_warnings, [])
         self.assertEqual(registry.warnings, [])
+
+
+class MCPToolFilterTests(unittest.TestCase):
+    def _register(self, server: MCPServerSettings) -> tuple[MCPRegistry, ToolRegistry]:
+        registry = MCPRegistry([server])
+        tool_registry = ToolRegistry()
+        fake_client = SimpleNamespace(
+            list_tools=lambda: [
+                {"name": "read_file", "description": "Read.", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "write_file", "description": "Write.", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "delete_file", "description": "Delete.", "inputSchema": {"type": "object", "properties": {}}},
+            ],
+        )
+        with patch("open_somnia.mcp.registry.MCPClient", return_value=fake_client):
+            registry.register_tools(tool_registry)
+        return registry, tool_registry
+
+    def _server(self, **kwargs) -> MCPServerSettings:
+        return MCPServerSettings(name="fs", transport="stdio", command="python", **kwargs)
+
+    def test_absent_filters_register_everything(self) -> None:
+        _, tool_registry = self._register(self._server())
+
+        self.assertEqual(
+            sorted(tool_registry.names()),
+            ["mcp__fs__delete_file", "mcp__fs__read_file", "mcp__fs__write_file"],
+        )
+
+    def test_include_tools_limits_registration(self) -> None:
+        _, tool_registry = self._register(self._server(include_tools=["read_file"]))
+
+        self.assertEqual(tool_registry.names(), ["mcp__fs__read_file"])
+
+    def test_exclude_tools_skips_listed(self) -> None:
+        _, tool_registry = self._register(self._server(exclude_tools=["delete_file"]))
+
+        self.assertEqual(sorted(tool_registry.names()), ["mcp__fs__read_file", "mcp__fs__write_file"])
+
+    def test_exclude_wins_on_overlap(self) -> None:
+        _, tool_registry = self._register(
+            self._server(include_tools=["read_file", "write_file"], exclude_tools=["write_file"])
+        )
+
+        self.assertEqual(tool_registry.names(), ["mcp__fs__read_file"])
+
+    def test_empty_include_list_disables_all_tools(self) -> None:
+        _, tool_registry = self._register(self._server(include_tools=[]))
+
+        self.assertEqual(tool_registry.names(), [])
+
+    def test_summaries_carry_enabled_state(self) -> None:
+        registry, _ = self._register(self._server(exclude_tools=["delete_file"]))
+
+        summaries = {tool["name"]: tool for tool in registry.tool_summaries("fs")}
+
+        self.assertTrue(summaries["read_file"]["enabled"])
+        self.assertFalse(summaries["delete_file"]["enabled"])
+        server_summary = registry.server_summaries()[0]
+        self.assertEqual(server_summary["tool_count"], 3)
+        self.assertEqual(server_summary["enabled_tool_count"], 2)
 
 
 if __name__ == "__main__":

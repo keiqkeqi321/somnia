@@ -153,6 +153,13 @@ def _render_mcp_result(
     return text
 
 
+def _server_tool_enabled(server: Any, tool_name: str) -> bool:
+    tool_enabled = getattr(server, "tool_enabled", None)
+    if callable(tool_enabled):
+        return bool(tool_enabled(tool_name))
+    return True
+
+
 class MCPRegistry:
     def __init__(self, servers: list[MCPServerSettings]):
         self.all_servers = servers
@@ -188,6 +195,8 @@ class MCPRegistry:
         server_cwd = getattr(server, "cwd", None)
         for tool in tools:
             remote_name = tool["name"]
+            if server is not None and not _server_tool_enabled(server, remote_name):
+                continue
             local_name = f"mcp__{server_name}__{remote_name}"
             input_schema = tool.get("inputSchema") or tool.get("input_schema") or {
                 "type": "object",
@@ -318,6 +327,11 @@ class MCPRegistry:
                 status = "connected"
             else:
                 status = "error"
+            enabled_count = sum(
+                1
+                for tool in tools
+                if _server_tool_enabled(server, str(tool.get("name", "")))
+            )
             summaries.append(
                 {
                     "name": server.name,
@@ -327,20 +341,24 @@ class MCPRegistry:
                     "status": status,
                     "error": self.errors.get(server.name, ""),
                     "tool_count": len(tools),
+                    "enabled_tool_count": enabled_count,
                 }
             )
         return summaries
 
     def tool_summaries(self, server_name: str) -> list[dict[str, Any]]:
         tools = self.server_tool_details.get(server_name, [])
+        server = next((item for item in self.all_servers if item.name == server_name), None)
         summaries: list[dict[str, Any]] = []
         for tool in tools:
             input_schema = tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+            tool_name = str(tool.get("name", ""))
             summaries.append(
                 {
-                    "name": str(tool.get("name", "")),
+                    "name": tool_name,
                     "description": str(tool.get("description", "")).strip(),
                     "input_schema": input_schema,
+                    "enabled": _server_tool_enabled(server, tool_name),
                 }
             )
         return summaries

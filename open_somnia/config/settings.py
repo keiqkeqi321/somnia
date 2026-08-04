@@ -546,6 +546,16 @@ def _build_mcp_server(root: Path, name: str, item: dict) -> MCPServerSettings:
         timeout_seconds=int(item.get("timeout_seconds", item.get("request_timeout_sec", 30))),
         startup_timeout_seconds=int(item.get("startup_timeout_sec", item.get("timeout_seconds", 30))),
         protocol_version=str(item.get("protocol_version", "2025-11-25")),
+        include_tools=(
+            [str(tool) for tool in item["include_tools"] if str(tool).strip()]
+            if isinstance(item.get("include_tools"), list)
+            else None
+        ),
+        exclude_tools=(
+            [str(tool) for tool in item["exclude_tools"] if str(tool).strip()]
+            if isinstance(item.get("exclude_tools"), list)
+            else None
+        ),
     )
 
 
@@ -845,6 +855,158 @@ def _load_mcp_servers(root: Path, raw: dict) -> list[MCPServerSettings]:
                 continue
             mcp_servers.append(_build_mcp_server(root, str(name), item))
     return mcp_servers
+
+
+_MCP_NAME_LINE = re.compile(r'^name\s*=\s*["\'](.+)["\']\s*$')
+
+
+def _find_mcp_array_entry(lines: list[str], server_name: str) -> tuple[int | None, int | None]:
+    """Bounds of the [[mcp_servers]] entry whose `name` matches server_name."""
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == "[[mcp_servers]]":
+            end = index + 1
+            name_value: str | None = None
+            while end < len(lines):
+                stripped = lines[end].strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    break
+                match = _MCP_NAME_LINE.match(stripped)
+                if match:
+                    name_value = match.group(1)
+                end += 1
+            if name_value == server_name:
+                return index, end
+            index = end
+        else:
+            index += 1
+    return None, None
+
+
+def _upsert_value_in_bounds(lines: list[str], start: int, end: int, key: str, value: str) -> None:
+    assignment = f"{key} = {value}"
+    for index in range(start + 1, end):
+        if lines[index].strip().startswith(f"{key} ="):
+            lines[index] = assignment
+            return
+    insert_at = start + 1
+    while insert_at < end and not lines[insert_at].strip():
+        insert_at += 1
+    lines.insert(insert_at, assignment)
+
+
+def _remove_value_in_bounds(lines: list[str], start: int, end: int, key: str) -> None:
+    for index in range(start + 1, end):
+        if lines[index].strip().startswith(f"{key} ="):
+            del lines[index]
+            return
+
+
+def _mcp_server_block(lines: list[str], server_name: str) -> tuple[int | None, int | None]:
+    """Bounds of a server's config block, covering both TOML forms."""
+    start, end = _find_section_bounds(lines, f"mcp_servers.{server_name}")
+    if start is not None:
+        return start, end
+    return _find_mcp_array_entry(lines, server_name)
+
+
+def _current_mcp_tool_lists(data: dict, server_name: str) -> tuple[list[str] | None, list[str] | None]:
+    servers_raw = data.get("mcp_servers", {})
+    item: dict | None = None
+    if isinstance(servers_raw, dict):
+        candidate = servers_raw.get(server_name)
+        item = candidate if isinstance(candidate, dict) else None
+    elif isinstance(servers_raw, list):
+        item = next(
+            (entry for entry in servers_raw if isinstance(entry, dict) and entry.get("name") == server_name),
+            None,
+        )
+    if item is None:
+        return None, None
+    include = item.get("include_tools")
+    exclude = item.get("exclude_tools")
+    return (
+        [str(tool) for tool in include] if isinstance(include, list) else None,
+        [str(tool) for tool in exclude] if isinstance(exclude, list) else None,
+    )
+
+
+def persist_mcp_tool_enabled(workspace_root: Path, server_name: str, tool_name: str, enabled: bool) -> Path:
+    """Persist one MCP tool's enabled state to TOML and return the written path.
+
+    Mirrors the server-level enabled flow: project config first, global config
+    as fallback, line-level edits that preserve comments and unknown keys.
+    Writes `exclude_tools` by default; updates `include_tools` instead when the
+    server already uses one. An include list left empty means "no tools
+    enabled" (deliberate, distinct from the key being absent).
+    """
+    workspace_path = workspace_config_path(workspace_root)
+    global_path = global_config_path()
+    target_path: Path | None = None
+    lines: list[str] = []
+    for candidate in (workspace_path, global_path):
+        if not candidate.exists():
+            continue
+        candidate_lines = candidate.read_text(encoding="utf-8").splitlines()
+        start, _end = _mcp_server_block(candidate_lines, server_name)
+        if start is not None:
+            target_path = candidate
+            lines = candidate_lines
+            break
+    if target_path is None:
+        target_path = workspace_path
+        lines = workspace_path.read_text(encoding="utf-8").splitlines() if workspace_path.exists() else []
+
+    try:
+        data = tomllib.loads("\n".join(lines)) if lines else {}
+    except tomllib.TOMLDecodeError:
+        data = {}
+    include, exclude = _current_mcp_tool_lists(data, server_name)
+
+    new_include = include
+    new_exclude = exclude
+    if enabled:
+        if include is not None:
+            new_include = include if tool_name in include else [*include, tool_name]
+        elif exclude:
+            new_exclude = [tool for tool in exclude if tool != tool_name]
+        else:
+            new_include, new_exclude = None, None  # already enabled; nothing to write
+    else:
+        if include is not None:
+            new_include = [tool for tool in include if tool != tool_name]
+        else:
+            new_exclude = list(exclude or [])
+            if tool_name not in new_exclude:
+                new_exclude.append(tool_name)
+
+    start, end = _mcp_server_block(lines, server_name)
+    if start is None:
+        if new_include is None and not new_exclude:
+            return target_path  # toggle-on with defaults already enabling the tool
+        # Server not present in this file: append a minimal table recording the toggle.
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(_section_header(f"mcp_servers.{server_name}"))
+        start = len(lines) - 1
+        end = len(lines)
+    assert end is not None
+
+    if new_include is None:
+        _remove_value_in_bounds(lines, start, end, "include_tools")
+    else:
+        _upsert_value_in_bounds(lines, start, end, "include_tools", _toml_array(new_include))
+    # Bounds may have shifted after the include edit; recompute before touching exclude.
+    start, end = _mcp_server_block(lines, server_name)
+    assert start is not None and end is not None
+    if new_exclude:
+        _upsert_value_in_bounds(lines, start, end, "exclude_tools", _toml_array(new_exclude))
+    else:
+        _remove_value_in_bounds(lines, start, end, "exclude_tools")
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    write_config_text(target_path, "\n".join(lines) + "\n")
+    return target_path
 
 
 def _storage_settings(workspace_root: Path) -> StorageSettings:

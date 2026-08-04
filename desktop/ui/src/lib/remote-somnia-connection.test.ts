@@ -5,6 +5,7 @@ import {
   contractMcpServers,
   contractProviderPresets,
   contractRuntimeStatus,
+  contractSetMcpToolEnabledResult,
   contractSettingsConfig,
   contractSettingsSaveResult,
   contractTasks,
@@ -60,6 +61,8 @@ function relayResultFor(method: string): unknown {
       return { presets: contractProviderPresets };
     case "mcp.list":
       return { servers: contractMcpServers };
+    case "mcp.set_tool_enabled":
+      return contractSetMcpToolEnabledResult;
     case "interaction.resolve_authorization":
       return { resolved: true };
     case "tool_log.list":
@@ -208,6 +211,7 @@ describe("Remote Somnia Connection", () => {
       connection.listMcpServers(),
       connection.debugMcpServer("docs"),
       connection.setMcpServerEnabled("docs", false),
+      connection.setMcpToolEnabled("docs", "fetch", true),
       connection.resolveAuthorization("interaction-1", { scope: "workspace", approved: true, reason: "ok" }),
       connection.resolveModeSwitch("interaction-2", { approved: true, activeMode: "yolo", reason: "" }),
       connection.setExecutionMode("yolo"),
@@ -225,6 +229,7 @@ describe("Remote Somnia Connection", () => {
       ["mcp.list", {}],
       ["mcp.debug", { name: "docs" }],
       ["mcp.set_enabled", { name: "docs", enabled: false }],
+      ["mcp.set_tool_enabled", { name: "docs", tool: "fetch", enabled: true }],
       ["interaction.resolve_authorization", { interaction_id: "interaction-1", scope: "workspace", approved: true, reason: "ok" }],
       ["interaction.resolve_mode_switch", { interaction_id: "interaction-2", approved: true, active_mode: "yolo", reason: "" }],
       ["execution.mode", { mode: "yolo" }],

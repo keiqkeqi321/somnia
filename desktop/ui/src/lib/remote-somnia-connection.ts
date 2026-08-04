@@ -239,6 +239,10 @@ export class RemoteSomniaConnection implements SomniaClient {
     return this.sendRequest("mcp.set_enabled", { name: serverName, enabled });
   }
 
+  setMcpToolEnabled(serverName: string, toolName: string, enabled: boolean): Promise<{ server: McpServerSummary; tool: string; enabled: boolean; config_path: string }> {
+    return this.sendRequest("mcp.set_tool_enabled", { name: serverName, tool: toolName, enabled });
+  }
+
   setVisionModel(visionProvider: string | null, visionModel: string | null, scope: "user" | "project" = "project"): Promise<{ message: string; provider: string; model: string; vision_provider?: string | null; vision_model?: string | null }> {
     return this.sendRequest("vision.set", { provider: visionProvider ?? "", model: visionModel ?? "", scope });
   }

@@ -3346,6 +3346,22 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     return result.tool_count;
   }
 
+  async function handleSetMcpToolEnabled(serverName: string, toolName: string, enabled: boolean): Promise<void> {
+    const client = clientRef.current;
+    if (!client) {
+      throw new Error("Connect to a sidecar before changing MCP tools.");
+    }
+    const result = await client.setMcpToolEnabled(serverName, toolName, enabled);
+    setSettingsMcpServers((previous) => {
+      const nextServer = result.server;
+      if (!previous.some((server) => server.name === nextServer.name)) {
+        return [...previous, nextServer];
+      }
+      return previous.map((server) => (server.name === nextServer.name ? nextServer : server));
+    });
+    await refreshSettingsConfig();
+  }
+
   async function handleDebugProviderModel(providerName: string, model: string): Promise<{ ok: boolean; message: string }> {
     const client = clientRef.current;
     if (!client) {
@@ -3946,6 +3962,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
           onSaveConfigSection={handleSaveSettingsConfigSection}
           onDebugMcpServer={handleDebugMcpServer}
           onSetMcpServerEnabled={handleSetMcpServerEnabled}
+          onSetMcpToolEnabled={handleSetMcpToolEnabled}
           onDebugProviderModel={handleDebugProviderModel}
           onReloadConfig={refreshSettingsConfig}
           providers={providers}

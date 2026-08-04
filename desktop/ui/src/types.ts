@@ -274,6 +274,7 @@ export interface McpToolSummary {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
+  enabled: boolean;
 }
 
 export interface McpServerSummary {
@@ -284,6 +285,7 @@ export interface McpServerSummary {
   status: string;
   error?: string;
   tool_count: number;
+  enabled_tool_count?: number;
   tools: McpToolSummary[];
 }
 

@@ -415,6 +415,57 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_mcp_tool_enabled_endpoint_persists_to_workspace_config(self) -> None:
+        root = self._stable_test_dir("sidecar-mcp-tool")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        server.runtime.mcp_registry = SimpleNamespace(
+            server_summaries=lambda: [
+                {
+                    "name": "filesystem",
+                    "transport": "stdio",
+                    "target": "npx",
+                    "enabled": True,
+                    "status": "connected",
+                    "error": "",
+                    "tool_count": 1,
+                    "enabled_tool_count": 1,
+                }
+            ],
+            tool_summaries=lambda server_name: [
+                {
+                    "name": "read_file",
+                    "description": "Read a file.",
+                    "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    "enabled": True,
+                }
+            ]
+            if server_name == "filesystem"
+            else [],
+            close=lambda: None,
+        )
+        # Skip the full runtime reload; this test covers routing, persistence,
+        # and the response contract, not the reload machinery.
+        server.reload_mcp_runtime = lambda: None
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+
+            status, payload = self._request_json(
+                "POST",
+                f"{server.base_url}/mcp/servers/filesystem/tools/read_file/enabled",
+                {"enabled": False},
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["tool"], "read_file")
+            self.assertFalse(payload["enabled"])
+            self.assertEqual(payload["server"]["name"], "filesystem")
+            config_text = (root / ".open_somnia" / "open_somnia.toml").read_text(encoding="utf-8")
+            self.assertIn("[mcp_servers.filesystem]", config_text)
+            self.assertIn('exclude_tools = ["read_file"]', config_text)
+        finally:
+            server.close()
+
     def test_workspace_image_endpoint_serves_only_workspace_images(self) -> None:
         root = self._stable_test_dir("sidecar-image")
         image_bytes = base64.b64decode(

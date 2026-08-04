@@ -6,6 +6,7 @@ import {
   contractMcpServers,
   contractProviderPresets,
   contractRuntimeStatus,
+  contractSetMcpToolEnabledResult,
   contractSettingsConfig,
   contractSettingsSaveResult,
   contractTasks,
@@ -65,6 +66,7 @@ function stubSidecarFetch(): void {
     if (url.endsWith("/settings/config") && method === "POST") return jsonResponse(contractSettingsSaveResult);
     if (url.endsWith("/provider-presets")) return jsonResponse({ presets: contractProviderPresets });
     if (url.endsWith("/mcp/servers")) return jsonResponse({ servers: contractMcpServers });
+    if (url.includes("/mcp/servers/") && url.includes("/tools/") && method === "POST") return jsonResponse(contractSetMcpToolEnabledResult);
     if (url.includes("/authorization")) return jsonResponse({ resolved: true });
     if (url.includes("/tool-logs/log-1")) return jsonResponse({ tool_log: contractToolLogDetail });
     if (url.includes("/tool-logs")) return jsonResponse({ tool_logs: contractToolLogs });
