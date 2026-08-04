@@ -28,6 +28,22 @@ class CommandResult:
         return f"{self.stdout}{self.stderr}"
 
 
+def drop_windows_extended_prefix(path: Path) -> Path:
+    """Strip the Windows extended-length prefix (``\\?\\``) from a path.
+
+    Workspace paths coming from the desktop side (Tauri/Rust canonicalize)
+    carry this prefix. PowerShell tolerates it as a working directory, but
+    cmd.exe — the interpreter behind ``shell=True`` — rejects it as an
+    unsupported UNC path and the command fails before it even runs.
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + text[len("\\\\?\\UNC\\"):])
+    if text.startswith("\\\\?\\"):
+        return Path(text[len("\\\\?\\"):])
+    return path
+
+
 def _candidate_encodings() -> list[str]:
     encodings = ["utf-8", "utf-8-sig", locale.getpreferredencoding(False)]
     if os.name == "nt":
@@ -116,7 +132,7 @@ def run_command(
     process = subprocess.Popen(
         command,
         shell=shell,
-        cwd=cwd,
+        cwd=drop_windows_extended_prefix(cwd),
         env=dict(env) if env is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

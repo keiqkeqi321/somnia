@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -11,7 +12,7 @@ from unittest.mock import patch
 
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.tools.background import BackgroundManager
-from open_somnia.tools.process import CommandResult, decode_output, run_command
+from open_somnia.tools.process import CommandResult, decode_output, drop_windows_extended_prefix, run_command
 from open_somnia.tools.shell import run_shell
 
 
@@ -285,6 +286,36 @@ class ProcessOutputTests(unittest.TestCase):
 
         self.assertEqual(store.jobs["job1"]["status"], "completed")
         self.assertEqual(store.jobs["job1"]["result"], "submit git chinese infor")
+
+    def test_drop_windows_extended_prefix_strips_drive_prefix(self) -> None:
+        self.assertEqual(
+            drop_windows_extended_prefix(Path("\\\\?\\D:\\Project\\Git\\somnia")),
+            Path("D:\\Project\\Git\\somnia"),
+        )
+
+    def test_drop_windows_extended_prefix_strips_unc_variant(self) -> None:
+        self.assertEqual(
+            drop_windows_extended_prefix(Path("\\\\?\\UNC\\server\\share\\work")),
+            Path("\\\\server\\share\\work"),
+        )
+
+    def test_drop_windows_extended_prefix_leaves_plain_paths_untouched(self) -> None:
+        plain = Path("D:\\Project\\Git\\somnia")
+        self.assertEqual(drop_windows_extended_prefix(plain), plain)
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe cwd handling is Windows-only")
+    def test_run_command_strips_extended_prefix_cwd_for_cmd(self) -> None:
+        # Regression: the desktop side hands over workspace paths with the
+        # \\?\ prefix (Tauri canonicalize). cmd.exe rejects such a cwd as an
+        # unsupported UNC path, which silently broke shell=True background
+        # jobs; run_command must normalize the cwd before spawning.
+        root = Path.cwd().resolve()
+        prefixed = Path("\\\\?\\" + str(root))
+
+        result = run_command("cd", shell=True, cwd=prefixed, timeout=10)
+
+        self.assertNotIn("UNC", result.combined_output())
+        self.assertIn(str(root), result.stdout)
 
 
 if __name__ == "__main__":
