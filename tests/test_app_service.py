@@ -694,6 +694,109 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_session_provider_model_pin_applies_reasoning_level(self) -> None:
+        root = self._stable_test_dir("app-service-session-model-pin-reasoning")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            profile = runtime.settings.provider_profiles["openai"]
+            self.assertIsNone(profile.model_traits["fake-model-mini"].reasoning_level)
+
+            updated = service.set_session_provider_model(
+                session.id,
+                "openai",
+                "fake-model-mini",
+                reasoning_level="high",
+            )
+            self.assertEqual(updated.model_override, "fake-model-mini")
+            # The level lands on the pinned model's traits and is persisted.
+            self.assertEqual(profile.model_traits["fake-model-mini"].reasoning_level, "high")
+            config_text = (root / ".open_somnia" / "open_somnia.toml").read_text(encoding="utf-8")
+            self.assertIn('reasoning_level = "high"', config_text)
+            # The workspace default model is untouched.
+            self.assertEqual(runtime.settings.provider.model, "fake-model")
+            self.assertIsNone(runtime.settings.provider.reasoning_level)
+
+            # Clearing the level writes auto (traits None) back.
+            service.set_session_provider_model(session.id, "openai", "fake-model-mini", reasoning_level="auto")
+            self.assertIsNone(profile.model_traits["fake-model-mini"].reasoning_level)
+        finally:
+            service.close()
+
+    def test_session_provider_model_pin_reasoning_level_validation(self) -> None:
+        root = self._stable_test_dir("app-service-session-model-pin-reasoning-validation")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            profile = runtime.settings.provider_profiles["openai"]
+            # A level without a pin has no model to attach to.
+            with self.assertRaises(ValueError):
+                service.set_session_provider_model(session.id, None, None, reasoning_level="high")
+            # Unknown levels are rejected without applying the pin either.
+            with self.assertRaises(ValueError):
+                service.set_session_provider_model(session.id, "openai", "fake-model-mini", reasoning_level="extreme")
+            self.assertIsNone(session.provider_override)
+            self.assertIsNone(session.model_override)
+            # Omitting the level leaves the stored traits alone.
+            service.set_session_provider_model(session.id, "openai", "fake-model-mini")
+            self.assertIsNone(profile.model_traits["fake-model-mini"].reasoning_level)
+        finally:
+            service.close()
+
+    def test_session_provider_model_pin_reasoning_level_invalidates_cached_turn_runtime(self) -> None:
+        root = self._stable_test_dir("app-service-session-pin-reasoning-cache")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+
+        closed: list[str] = []
+
+        class _StubRuntime:
+            def close(self) -> None:
+                closed.append("closed")
+
+        try:
+            session = service.create_session()
+            cache_key = ("openai", "fake-model-mini")
+            service.runtime_host._turn_runtime_cache[cache_key] = _StubRuntime()
+
+            service.set_session_provider_model(session.id, "openai", "fake-model-mini", reasoning_level="deep")
+            self.assertNotIn(cache_key, service.runtime_host._turn_runtime_cache)
+            self.assertEqual(closed, ["closed"])
+
+            # Without a reasoning level the cached runtime stays valid.
+            service.runtime_host._turn_runtime_cache[cache_key] = _StubRuntime()
+            service.set_session_provider_model(session.id, "openai", "fake-model-mini")
+            self.assertIn(cache_key, service.runtime_host._turn_runtime_cache)
+        finally:
+            service.close()
+
+    def test_set_reasoning_level_invalidates_cached_turn_runtime_for_default_pair(self) -> None:
+        root = self._stable_test_dir("app-service-reasoning-cache-invalidation")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+
+        class _StubRuntime:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        try:
+            cache_key = ("openai", "fake-model")
+            stub = _StubRuntime()
+            service.runtime_host._turn_runtime_cache[cache_key] = stub
+
+            service.set_reasoning_level("medium")
+
+            self.assertNotIn(cache_key, service.runtime_host._turn_runtime_cache)
+            self.assertTrue(stub.closed)
+            self.assertEqual(runtime.settings.provider.reasoning_level, "medium")
+        finally:
+            service.close()
+
     def test_run_turn_forwards_loop_injection_callbacks(self) -> None:
         root = self._stable_test_dir("app-service-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))

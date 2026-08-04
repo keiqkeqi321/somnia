@@ -181,6 +181,21 @@ class RuntimeHost:
         model_name = str(getattr(self.runtime.settings.provider, "model", "")).strip()
         return self._cached_turn_runtime(provider_name, model_name, self.runtime.settings)
 
+    def invalidate_turn_runtime(self, provider_name: str, model: str) -> None:
+        """Drop the cached turn runtime for one (provider, model) pair.
+
+        Cached runtimes snapshot their settings at build time, so a traits
+        change (e.g. reasoning level) never reaches them. Callers that mutate
+        a model's traits must invalidate the pair or pinned sessions keep
+        running on the stale runtime until the sidecar restarts. The primary
+        runtime is never cached, so every dropped entry is safe to close.
+        """
+        cache_key = (str(provider_name).strip().lower(), str(model).strip().lower())
+        with self._state_lock:
+            cached = self._turn_runtime_cache.pop(cache_key, None)
+        if cached is not None and cached is not self.runtime:
+            cached.close()
+
     def _cached_turn_runtime(self, provider_name: str, model_name: str, settings: Any) -> OpenAgentRuntime:
         cache_key = (provider_name, model_name)
         with self._state_lock:

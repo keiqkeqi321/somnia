@@ -2120,6 +2120,10 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     setModels(nextModels);
     const activeModel = preferredModel ?? nextModels.find((model) => model.is_active)?.name ?? nextModels[0]?.name ?? "";
     setSelectedModel(activeModel);
+    // The picker shows the reasoning level of the provider+model pair being
+    // viewed, not the workspace default's, so a pinned session displays its
+    // own model's stored level.
+    setSelectedReasoningLevel(normalizeReasoningLevel(nextModels.find((model) => model.name === activeModel)?.reasoning_level));
   }
 
   async function refreshVisionModels(providerName: string, client = clientRef.current, preferredModel?: string) {
@@ -2711,7 +2715,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
 
   async function handleProviderChange(nextProvider: string) {
     setSelectedProvider(nextProvider);
-    setSelectedReasoningLevel(normalizeReasoningLevel(providers.find((provider) => provider.name === nextProvider)?.reasoning_level));
     try {
       await refreshModels(nextProvider);
     } catch (error) {
@@ -2739,8 +2742,14 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       if (session) {
         // Pin this session to the chosen model instead of flipping the
         // workspace-wide default, so other sessions (including any turn that
-        // is mid-flight) keep running on their own model.
-        const result = await client.setSessionModel(session.id, selectedProvider, selectedModel);
+        // is mid-flight) keep running on their own model. The reasoning level
+        // rides along: it is stored on the pinned model's traits.
+        const result = await client.setSessionModel(
+          session.id,
+          selectedProvider,
+          selectedModel,
+          selectedReasoningLevel === "auto" ? null : selectedReasoningLevel,
+        );
         setCurrentSession(result.session);
         setBannerMessage(result.message);
       } else {
@@ -4612,7 +4621,10 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                                 <button
                                   key={model.name}
                                   className={`picker-option ${selectedModel === model.name ? "selected" : ""}`}
-                                  onClick={() => setSelectedModel(model.name)}
+                                  onClick={() => {
+                                    setSelectedModel(model.name);
+                                    setSelectedReasoningLevel(normalizeReasoningLevel(model.reasoning_level));
+                                  }}
                                   disabled={busyAction !== null}
                                 >
                                   {model.name}

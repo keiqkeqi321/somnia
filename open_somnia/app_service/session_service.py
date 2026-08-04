@@ -28,13 +28,17 @@ class SessionService:
         session_id: str,
         provider_name: str | None,
         model: str | None,
+        *,
+        reasoning_level: str | None = None,
     ) -> AgentSession:
         """Pin one session to a provider/model, or clear the pin.
 
         Pass ``None``/empty values to make the session follow the workspace
         default. Only this session's future turns are affected; other sessions
         and the global default keep running on their own model.
+        ``reasoning_level`` (when not ``None``) updates the pinned model's
+        stored reasoning level; ``"auto"`` clears it.
         """
         session = self.runtime.load_session(session_id)
-        self.runtime.set_session_provider_model(session, provider_name, model)
+        self.runtime.set_session_provider_model(session, provider_name, model, reasoning_level=reasoning_level)
         return session

@@ -148,6 +148,46 @@ describe("Remote Somnia Connection", () => {
     connection.close();
   });
 
+  it("forwards the reasoning level with session model pins", async () => {
+    let seenParams: Record<string, unknown> | undefined;
+    class CapturingSocket extends FakeRelaySocket {
+      send(rawMessage: string) {
+        const request = JSON.parse(rawMessage) as { method?: string; params?: Record<string, unknown> };
+        if (request.method === "session.set_model") {
+          seenParams = request.params;
+        }
+        super.send(rawMessage);
+      }
+    }
+    const socket = new CapturingSocket();
+    const connection = new RemoteSomniaConnection({
+      relayUrl: "ws://relay.test",
+      deviceId: "device-1",
+      projectId: "project-1",
+      socketFactory: () => socket,
+    });
+    connection.subscribe(() => undefined);
+    socket.open();
+
+    await connection.setSessionModel("session-1", "openai", "gpt-test", "deep");
+    expect(seenParams).toMatchObject({
+      session_id: "session-1",
+      provider: "openai",
+      model: "gpt-test",
+      reasoning_level: "deep",
+    });
+
+    // An explicit null clears the stored level and must be forwarded.
+    await connection.setSessionModel("session-1", "openai", "gpt-test", null);
+    expect(seenParams).toMatchObject({ reasoning_level: null });
+
+    // Omitting the argument leaves the stored level untouched: no key sent.
+    await connection.setSessionModel("session-1", null, null);
+    expect(seenParams).toMatchObject({ session_id: "session-1", provider: "", model: "" });
+    expect(seenParams !== undefined && "reasoning_level" in seenParams).toBe(false);
+    connection.close();
+  });
+
   it("delivers turn_result even when the authoritative Session reload fails", async () => {
     class FailingLoadSocket extends FakeRelaySocket {
       send(rawMessage: string) {

@@ -112,6 +112,10 @@ class LocalSidecarBridge:
                 body["provider_name"] = params.get("provider")
             if "model" in params:
                 body["model"] = params.get("model")
+            # Tri-state pass-through: absent leaves the stored level untouched,
+            # null/"auto" clears it, a concrete level sets it.
+            if "reasoning_level" in params:
+                body["reasoning_level"] = params.get("reasoning_level")
             return self._request("POST", f"/sessions/{quote(session_id, safe='')}/model", body)
         if method == "turn.start":
             session_id = _required_text(params, "session_id")

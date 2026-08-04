@@ -570,12 +570,27 @@ class OpenAgentRuntime:
     def request_mode_switch(self, target_mode: str, reason: str = "") -> str:
         return self._permission_manager().request_mode_switch(target_mode, reason)
 
-    def set_session_provider_model(self, session: AgentSession, provider_name: str | None, model: str | None) -> str:
+    def set_session_provider_model(
+        self,
+        session: AgentSession,
+        provider_name: str | None,
+        model: str | None,
+        *,
+        reasoning_level: str | None = None,
+    ) -> str:
         """Pin one session to a provider/model, or clear the pin to follow the
-        workspace default. Only this session's turns are affected."""
+        workspace default. Only this session's turns are affected.
+
+        ``reasoning_level`` is tri-state: ``None`` leaves the pinned model's
+        stored level untouched, ``"auto"``/``"none"``/``""`` clears it, and a
+        concrete level (low/medium/high/deep) is written to that model's
+        traits and persisted. Clearing the pin takes no reasoning level.
+        """
         normalized_provider = str(provider_name or "").strip().lower()
         normalized_model = _normalize_model_id(model)
         if not normalized_provider:
+            if reasoning_level is not None:
+                raise ValueError("A reasoning level requires a provider/model pin to attach to.")
             session.provider_override = None
             session.model_override = None
             self.session_manager.save(session)
@@ -585,10 +600,39 @@ class OpenAgentRuntime:
         profile = self.settings.provider_profiles[normalized_provider]
         if normalized_model not in profile.models:
             raise ValueError(f"Model '{normalized_model}' is not configured for provider '{normalized_provider}'.")
+        # Validate the level before mutating anything, so a rejected call
+        # leaves both the pin and the traits untouched.
+        normalized_level: str | None = None
+        if reasoning_level is not None:
+            raw_level = reasoning_level.strip().lower()
+            normalized_level = None if raw_level in {"", "auto", "none"} else normalize_reasoning_level(raw_level)
+            if raw_level and raw_level not in {"auto", "none"} and normalized_level is None:
+                raise ValueError("Reasoning level must be one of: auto, low, medium, high, deep.")
         session.provider_override = normalized_provider
         session.model_override = normalized_model
         self.session_manager.save(session)
-        return f"Session '{session.id}' pinned to provider '{normalized_provider}' with model '{normalized_model}'."
+        message = f"Session '{session.id}' pinned to provider '{normalized_provider}' with model '{normalized_model}'."
+        if reasoning_level is None:
+            return message
+        model_traits = profile.model_traits.get(normalized_model, ModelTraits())
+        model_traits.reasoning_level = normalized_level
+        profile.model_traits[normalized_model] = model_traits
+        persist_provider_reasoning_level(self.settings, normalized_provider, normalized_model, normalized_level)
+        if (
+            normalized_provider == str(self.settings.provider.name).strip().lower()
+            and normalized_model == _normalize_model_id(self.settings.provider.model)
+        ):
+            # The pinned pair is the workspace default: refresh the live
+            # provider too so status/turns reflect the new level immediately.
+            self.settings.provider = _materialize_provider(profile, normalized_model)
+            self.provider = self._instantiate_provider(self.settings.provider)
+            self.compact_manager.provider = self.provider
+            self.compact_manager.model_max_tokens = self.settings.provider.max_tokens
+            self._context_usage_cache = {}
+            self._payload_message_cache = {}
+            self._recent_context_usage = {}
+            self._janitor_state = {}
+        return f"{message} Reasoning level set to '{normalized_level or 'auto'}'."
 
     def session_effective_provider(self, session: AgentSession) -> tuple[str, str]:
         """The provider/model a turn of this session will actually use."""

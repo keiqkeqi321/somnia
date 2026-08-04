@@ -143,11 +143,14 @@ export class SidecarClient {
   /**
    * Pin a session to a specific provider/model, or clear the pin (pass null for
    * both) so it follows the workspace default. Only this session is affected.
+   * `reasoningLevel` is tri-state: `undefined` leaves the model's stored level
+   * untouched, `null` clears it to auto, a string sets a concrete level.
    */
   async setSessionModel(
     sessionId: string,
     providerName: string | null,
     model: string | null,
+    reasoningLevel?: string | null,
   ): Promise<SessionModelUpdateResult> {
     return parseResponse<SessionModelUpdateResult>(
       await fetch(`${this.baseUrl}/sessions/${sessionId}/model`, {
@@ -156,6 +159,7 @@ export class SidecarClient {
         body: JSON.stringify({
           provider_name: providerName ?? "",
           model: model ?? "",
+          ...(reasoningLevel !== undefined ? { reasoning_level: reasoningLevel } : {}),
         }),
       }),
     );

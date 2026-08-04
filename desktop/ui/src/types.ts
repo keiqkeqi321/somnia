@@ -47,6 +47,8 @@ export interface SessionModelUpdateResult {
   provider: string;
   model: string;
   pinned: boolean;
+  /** The pinned model's stored reasoning level after the update (null = auto). */
+  reasoning_level?: string | null;
 }
 
 export interface ContextWindowUsage {

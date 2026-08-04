@@ -63,11 +63,14 @@ export interface SomniaClient extends SomniaConnection {
    * Pin a session to a provider/model (both set) or clear the pin so the
    * session follows the workspace default (both null). Only this session is
    * affected; the workspace-wide default and other sessions are untouched.
+   * `reasoningLevel` is tri-state: `undefined` leaves the model's stored level
+   * untouched, `null` clears it to auto, a string sets a concrete level.
    */
   setSessionModel(
     sessionId: string,
     providerName: string | null,
     model: string | null,
+    reasoningLevel?: string | null,
   ): Promise<SessionModelUpdateResult>;
 
   // Turn control.
@@ -252,8 +255,9 @@ export class DirectSomniaClient implements SomniaClient {
     sessionId: string,
     providerName: string | null,
     model: string | null,
+    reasoningLevel?: string | null,
   ): Promise<SessionModelUpdateResult> {
-    return this.rest.setSessionModel(sessionId, providerName, model);
+    return this.rest.setSessionModel(sessionId, providerName, model, reasoningLevel);
   }
 
   interruptTurn(turnId: string): Promise<{ turn_id: string; interrupted: boolean }> {

@@ -881,6 +881,56 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_session_model_pin_accepts_reasoning_level(self) -> None:
+        root = self._stable_test_dir("sidecar-session-model-reasoning")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = create_payload["session"]["id"]
+            traits = server.runtime.settings.provider_profiles["openai"].model_traits["fake-model-mini"]
+
+            # Pin with a concrete level: stored on the pinned model's traits.
+            status, payload = self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {"provider_name": "openai", "model": "fake-model-mini", "reasoning_level": "high"},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["reasoning_level"], "high")
+            self.assertEqual(traits.reasoning_level, "high")
+            config_text = (root / ".open_somnia" / "open_somnia.toml").read_text(encoding="utf-8")
+            self.assertIn('reasoning_level = "high"', config_text)
+
+            # Key omitted: the stored level is untouched.
+            _, payload = self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {"provider_name": "openai", "model": "fake-model-mini"},
+            )
+            self.assertEqual(payload["reasoning_level"], "high")
+            self.assertEqual(traits.reasoning_level, "high")
+
+            # An explicit null clears the level back to auto.
+            _, payload = self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {"provider_name": "openai", "model": "fake-model-mini", "reasoning_level": None},
+            )
+            self.assertIsNone(payload["reasoning_level"])
+            self.assertIsNone(traits.reasoning_level)
+
+            # A level without a pin has no model to attach to: rejected.
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json(
+                    "POST",
+                    f"{server.base_url}/sessions/{session_id}/model",
+                    {"reasoning_level": "high"},
+                )
+            self.assertEqual(context.exception.code, 400)
+        finally:
+            server.close()
+
     def test_sidecar_exposes_runtime_status_and_tool_logs(self) -> None:
         root = self._stable_test_dir("sidecar-status")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

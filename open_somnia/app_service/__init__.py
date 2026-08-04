@@ -54,8 +54,21 @@ class AppService:
         session_id: str,
         provider_name: str | None,
         model: str | None,
+        *,
+        reasoning_level: str | None = None,
     ) -> AgentSession:
-        return self.session_service.set_session_provider_model(session_id, provider_name, model)
+        session = self.session_service.set_session_provider_model(
+            session_id,
+            provider_name,
+            model,
+            reasoning_level=reasoning_level,
+        )
+        if reasoning_level is not None:
+            # The pinned model's traits changed; any cached turn runtime for
+            # that pair still runs on the old snapshot.
+            provider, effective_model = self.runtime.session_effective_provider(session)
+            self.runtime_host.invalidate_turn_runtime(provider, effective_model)
+        return session
 
     def run_turn(
         self,
@@ -95,7 +108,14 @@ class AppService:
         return self.provider_service.set_vision_model(vision_provider, vision_model, scope=scope)
 
     def set_reasoning_level(self, reasoning_level: str | None) -> str:
-        return self.provider_service.set_reasoning_level(reasoning_level)
+        message = self.provider_service.set_reasoning_level(reasoning_level)
+        # A cached turn runtime for the default pair (used while the primary
+        # runtime is busy) still holds the previous reasoning level.
+        self.runtime_host.invalidate_turn_runtime(
+            self.runtime.settings.provider.name,
+            self.runtime.settings.provider.model,
+        )
+        return message
 
     def recent_tool_logs(self, limit: int = 10) -> str:
         return self.runtime.recent_tool_logs(limit=limit)

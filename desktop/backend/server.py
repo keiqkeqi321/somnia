@@ -63,6 +63,7 @@ from open_somnia.path_completion import (
     scan_path_completion_candidates,
     sort_path_completion_candidates,
 )
+from open_somnia.reasoning import normalize_reasoning_level
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import execution_mode_spec, normalize_execution_mode
 from open_somnia.runtime.messages import guess_image_media_type, parse_image_data_url
@@ -705,9 +706,15 @@ class SidecarServer:
         session_id: str,
         provider_name: str | None,
         model: str | None,
+        reasoning_level: str | None = None,
     ) -> dict[str, Any]:
         try:
-            session = self.service.set_session_provider_model(session_id, provider_name, model)
+            session = self.service.set_session_provider_model(
+                session_id,
+                provider_name,
+                model,
+                reasoning_level=reasoning_level,
+            )
         except FileNotFoundError as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         except ValueError as exc:
@@ -723,12 +730,19 @@ class SidecarServer:
             else f"Session '{session.id}' now follows the workspace default "
             f"(provider '{effective_provider}', model '{effective_model}')."
         )
+        effective_reasoning_level = None
+        profile = self.runtime.settings.provider_profiles.get(effective_provider)
+        if profile is not None:
+            traits = profile.model_traits.get(effective_model)
+            if traits is not None:
+                effective_reasoning_level = normalize_reasoning_level(traits.reasoning_level)
         payload = {
             "message": message,
             "session": self._serialize_session(session),
             "provider": effective_provider,
             "model": effective_model,
             "pinned": pinned,
+            "reasoning_level": effective_reasoning_level,
         }
         self.broadcast_event(
             make_sidecar_event(
@@ -1498,7 +1512,13 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "provider_name and model must be set together, or both omitted to follow the default.",
                 )
-            return self.sidecar.set_session_provider_model(session_id, provider_name, model), HTTPStatus.OK
+            # Tri-state: key absent leaves the model's stored level untouched,
+            # null/"auto" clears it, anything else sets a concrete level.
+            reasoning_level: str | None = None
+            if "reasoning_level" in body:
+                raw_level = body.get("reasoning_level")
+                reasoning_level = "auto" if raw_level in {None, "", "none", "auto"} else str(raw_level).strip()
+            return self.sidecar.set_session_provider_model(session_id, provider_name, model, reasoning_level), HTTPStatus.OK
         if path_parts == ["workspace", "images"]:
             data_url = str(body.get("data_url", "")).strip()
             if not data_url:
