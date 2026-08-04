@@ -158,6 +158,26 @@ class RuntimeHost:
         self._primary_runtime_in_use = False
         self._turn_runtime_cache: dict[tuple[str, str], OpenAgentRuntime] = {}
 
+    def peek_turn_runtime(self, session: AgentSession) -> OpenAgentRuntime:
+        """The runtime whose provider matches this session's effective model.
+
+        Read-only counterpart of ``_new_turn_runtime``: it never marks the
+        primary runtime as in use and never consults the busy-fallback branch.
+        Pinned sessions run turns on a cached per-pair runtime; read paths
+        (e.g. context-window usage) must consult the same runtime, otherwise
+        they compute with the workspace default model's provider and report
+        its context window instead of the pinned model's.
+        """
+        override_provider = str(getattr(session, "provider_override", "") or "").strip().lower()
+        override_model = str(getattr(session, "model_override", "") or "").strip()
+        if override_provider and override_model:
+            settings = deepcopy(self.runtime.settings)
+            profile = settings.provider_profiles.get(override_provider)
+            if profile is not None and override_model in profile.models:
+                settings.provider = _materialize_provider(profile, override_model)
+                return self._cached_turn_runtime(override_provider, override_model, settings)
+        return self.runtime
+
     def _new_turn_runtime(self, session: AgentSession) -> OpenAgentRuntime:
         override_provider = str(getattr(session, "provider_override", "") or "").strip().lower()
         override_model = str(getattr(session, "model_override", "") or "").strip()

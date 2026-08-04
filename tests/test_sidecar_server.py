@@ -881,6 +881,28 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_session_context_usage_uses_pinned_model_window(self) -> None:
+        root = self._stable_test_dir("sidecar-session-context-usage-pin")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = create_payload["session"]["id"]
+            # The workspace default (fake-model) has a 64k window; the pin target
+            # (fake-model-mini) has 128k. The session payload must report the
+            # pinned model's window, not the default's.
+            self._request_json(
+                "POST",
+                f"{server.base_url}/sessions/{session_id}/model",
+                {"provider_name": "openai", "model": "fake-model-mini"},
+            )
+            _, payload = self._request_json("GET", f"{server.base_url}/sessions/{session_id}")
+            usage = payload["session"].get("context_window_usage")
+            self.assertIsNotNone(usage)
+            self.assertEqual(usage["max_tokens"], 128_000)
+        finally:
+            server.close()
+
     def test_sidecar_session_model_pin_accepts_reasoning_level(self) -> None:
         root = self._stable_test_dir("sidecar-session-model-reasoning")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

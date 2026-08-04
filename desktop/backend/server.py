@@ -761,9 +761,19 @@ class SidecarServer:
         return payload
 
     def _context_usage_payload(self, session: Any) -> dict[str, Any] | None:
+        # A pinned session runs turns on its own cached runtime; computing
+        # usage with the primary runtime would report the workspace default
+        # model's context window (and token counter) instead of the pinned one.
+        runtime = self.runtime
+        host = getattr(self.service, "runtime_host", None)
+        if host is not None:
+            try:
+                runtime = host.peek_turn_runtime(session)
+            except Exception:
+                runtime = self.runtime
         usage = None
         for method_name in ("recent_context_window_usage", "context_window_usage"):
-            getter = getattr(self.runtime, method_name, None)
+            getter = getattr(runtime, method_name, None)
             if not callable(getter):
                 continue
             try:

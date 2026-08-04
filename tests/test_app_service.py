@@ -797,6 +797,27 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_peek_turn_runtime_matches_session_pin(self) -> None:
+        root = self._stable_test_dir("app-service-peek-turn-runtime")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            # An unpinned session peeks the primary runtime.
+            self.assertIs(service.runtime_host.peek_turn_runtime(session), runtime)
+
+            # A pinned session peeks the cached turn runtime for its pair,
+            # built from the pinned model's traits (context window included).
+            pinned = service.set_session_provider_model(session.id, "openai", "fake-model-mini")
+            peeked = service.runtime_host.peek_turn_runtime(pinned)
+            self.assertIsNot(peeked, runtime)
+            self.assertEqual(peeked.settings.provider.model, "fake-model-mini")
+            self.assertEqual(peeked.settings.provider.context_window_tokens, 128_000)
+            # Repeated peeks share the one cached runtime turns would use.
+            self.assertIs(service.runtime_host.peek_turn_runtime(pinned), peeked)
+        finally:
+            service.close()
+
     def test_run_turn_forwards_loop_injection_callbacks(self) -> None:
         root = self._stable_test_dir("app-service-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))
