@@ -3,14 +3,9 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import (
-    consume_ephemeral_image_blocks,
-    make_tool_result_item,
-    make_tool_result_message,
-    make_user_text_message,
-)
+from open_somnia.runtime.messages import make_user_text_message
+from open_somnia.runtime.round_runner import RoundHooks, SessionlessRoundRunner, ToolCallRecord
 from open_somnia.tools.filesystem import (
     GREP_TOOL_DESCRIPTION,
     edit_file,
@@ -24,13 +19,7 @@ from open_somnia.tools.filesystem import (
 )
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
 from open_somnia.tools.shell import register_shell_tool
-from open_somnia.tools.tool_errors import (
-    extract_transient_repair_hint,
-    render_transient_repair_hint_message,
-    sanitize_tool_output_for_persistence,
-    serialize_tool_output,
-    tool_error_from_exception,
-)
+from open_somnia.tools.tool_errors import serialize_tool_output
 from open_somnia.tools.web_fetch import register_web_fetch_tool
 
 
@@ -70,81 +59,54 @@ class SubagentRunner:
             if log_store is not None:
                 log_store.append(activity_id, payload)
 
+        def on_assistant_message(assistant_message: dict[str, Any], turn_text: str) -> None:
+            if not turn_text:
+                return
+            self._emit_activity(
+                activity_id=activity_id,
+                agent_type=agent_type,
+                prompt=prompt,
+                kind="assistant",
+                text=turn_text,
+            )
+            log({"type": "assistant_message", "content": turn_text})
+
+        def on_tool_record(record: ToolCallRecord) -> None:
+            self._emit_activity(
+                activity_id=activity_id,
+                agent_type=agent_type,
+                prompt=prompt,
+                kind="tool_result",
+                text=self._format_tool_activity(record.tool_call.name, record.tool_call.input, record.persisted_output),
+            )
+            log(
+                {
+                    "type": "tool_call",
+                    "tool_name": record.tool_call.name,
+                    "tool_input": record.tool_call.input,
+                    "output_preview": self._compact_text(record.rendered_output, limit=600),
+                }
+            )
+
+        hooks = RoundHooks(on_assistant_message=on_assistant_message, on_tool_record=on_tool_record)
+        runner = SessionlessRoundRunner(self.runtime)
         log({"type": "started", "prompt": prompt, "agent_type": agent_type})
         try:
             for _ in range(self.runtime.settings.runtime.max_subagent_rounds):
-                self._raise_if_interrupted(should_interrupt)
-                if pending_tool_repair_hints:
-                    repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
-                    pending_tool_repair_hints = []
-                    if repair_message:
-                        messages.append(make_user_text_message(repair_message))
-                payload_messages = self.runtime._build_payload_messages(messages, session=None)
-                consume_ephemeral_image_blocks(messages)
-                turn = self.runtime.complete(
-                    system_prompt,
-                    payload_messages,
-                    registry.schemas(),
-                    should_interrupt=should_interrupt,
-                )
-                messages.append(turn.as_message())
-                turn_text = "\n".join(turn.text_blocks).strip()
-                if turn_text:
-                    self._emit_activity(
-                        activity_id=activity_id,
-                        agent_type=agent_type,
-                        prompt=prompt,
-                        kind="assistant",
-                        text=turn_text,
-                    )
-                    log({"type": "assistant_message", "content": turn_text})
-                if not turn.has_tool_calls():
-                    log({"type": "summary", "content": turn_text or "(no summary)"})
-                    return turn_text or "(no summary)"
-                results: list[dict[str, Any]] = []
-                ctx = ToolExecutionContext(
-                    runtime=self.runtime,
-                    session=None,
+                result = runner.run_round(
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    registry=registry,
+                    pending_repair_hints=pending_tool_repair_hints,
                     actor="subagent",
                     trace_id=f"subagent-{uuid.uuid4().hex[:8]}",
                     should_interrupt=should_interrupt,
+                    hooks=hooks,
                 )
-                for tool_call in turn.tool_calls:
-                    ctx.raise_if_interrupted()
-                    try:
-                        output = registry.execute(ctx, tool_call.name, tool_call.input)
-                    except TurnInterrupted:
-                        raise
-                    except Exception as exc:
-                        output = tool_error_from_exception(tool_call.name, exc)
-                    repair_hint = extract_transient_repair_hint(output)
-                    if repair_hint is not None:
-                        pending_tool_repair_hints.append(repair_hint)
-                    persisted_output = sanitize_tool_output_for_persistence(output)
-                    self._emit_activity(
-                        activity_id=activity_id,
-                        agent_type=agent_type,
-                        prompt=prompt,
-                        kind="tool_result",
-                        text=self._format_tool_activity(tool_call.name, tool_call.input, persisted_output),
-                    )
-                    log(
-                        {
-                            "type": "tool_call",
-                            "tool_name": tool_call.name,
-                            "tool_input": tool_call.input,
-                            "output_preview": self._compact_text(serialize_tool_output(persisted_output), limit=600),
-                        }
-                    )
-                    results.append(
-                        make_tool_result_item(
-                            tool_call.id,
-                            persisted_output,
-                            rendered_output=serialize_tool_output(persisted_output),
-                        )
-                    )
-                messages.append(make_tool_result_message(results))
-                final_text = turn_text or final_text
+                if not result.has_tool_calls:
+                    log({"type": "summary", "content": result.turn_text or "(no summary)"})
+                    return result.turn_text or "(no summary)"
+                final_text = result.turn_text or final_text
             log({"type": "summary", "content": final_text})
             return final_text
         except TurnInterrupted:

@@ -69,13 +69,13 @@ from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
     consume_ephemeral_image_blocks,
     decode_embedded_user_message,
-    make_tool_result_item,
     make_tool_result_message,
     make_user_text_message,
     render_text_content,
 )
 from open_somnia.runtime.permissions import PermissionManager
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
+from open_somnia.runtime.round_runner import execute_tool_call, finalize_tool_call
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
@@ -103,12 +103,8 @@ from open_somnia.tools.subagent import register_subagent_tool
 from open_somnia.tools.tasks import register_task_tools
 from open_somnia.tools.team import register_team_tools
 from open_somnia.tools.tool_errors import (
-    extract_transient_repair_hint,
     make_tool_error,
     render_transient_repair_hint_message,
-    sanitize_tool_output_for_persistence,
-    serialize_tool_output,
-    tool_error_from_exception,
 )
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 from open_somnia.tools.web_fetch import register_web_fetch_tool
@@ -3677,28 +3673,27 @@ class OpenAgentRuntime:
                         manual_compact = True
                     if output is None:
                         self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
-                        try:
-                            output = self.registry.execute(ctx, tool_name, tool_call.input)
-                        except TurnInterrupted:
-                            raise
-                        except Exception as exc:
-                            output = tool_error_from_exception(tool_name, exc)
-                    repair_hint = extract_transient_repair_hint(output)
-                    if repair_hint is not None:
-                        pending_tool_repair_hints.append(repair_hint)
-                    persisted_output = sanitize_tool_output_for_persistence(output)
-                    rendered_output = serialize_tool_output(persisted_output)
-                    log_id = self.print_tool_event("lead", tool_name, tool_call.input, persisted_output)
+                        record = execute_tool_call(
+                            self.registry,
+                            ctx,
+                            tool_call,
+                            max_content_chars=self.settings.runtime.max_tool_output_chars,
+                        )
+                    else:
+                        record = finalize_tool_call(
+                            tool_call,
+                            output,
+                            max_content_chars=self.settings.runtime.max_tool_output_chars,
+                        )
+                    if record.repair_hint is not None:
+                        pending_tool_repair_hints.append(record.repair_hint)
+                    output = record.persisted_output
+                    log_id = self.print_tool_event("lead", tool_name, tool_call.input, record.persisted_output)
+                    result = record.result_item
+                    result["raw_output"] = record.persisted_output
+                    result["log_id"] = log_id
                     executed_tool_calls.append(tool_call)
                     reported_tool_calls += 1
-                    result = make_tool_result_item(
-                        tool_call.id,
-                        persisted_output,
-                        rendered_output=rendered_output,
-                        max_content_chars=self.settings.runtime.max_tool_output_chars,
-                        raw_output=persisted_output,
-                        log_id=log_id,
-                    )
                     tool_results.append(result)
                     self._append_transcript_entry(
                         session.id,

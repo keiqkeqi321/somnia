@@ -4,22 +4,10 @@ import json
 import threading
 import time
 
-from open_somnia.runtime.events import ToolExecutionContext
-from open_somnia.runtime.interrupts import TurnInterrupted
-from open_somnia.runtime.messages import (
-    consume_ephemeral_image_blocks,
-    make_tool_result_item,
-    make_tool_result_message,
-)
+from open_somnia.runtime.compact import should_auto_compact
+from open_somnia.runtime.round_runner import RoundHooks, SessionlessRoundRunner, ToolCallRecord
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.registry import ToolRegistry
-from open_somnia.tools.tool_errors import (
-    extract_transient_repair_hint,
-    render_transient_repair_hint_message,
-    sanitize_tool_output_for_persistence,
-    serialize_tool_output,
-    tool_error_from_exception,
-)
 
 UNSET = object()
 
@@ -661,6 +649,60 @@ class TeammateRuntimeManager:
         self.runtime.register_worker_tools(registry)
         system_prompt = self.runtime.build_system_prompt(actor=name, role=role)
         stop_event = self._reset_stop_request(name, session_id=normalized_session_id)
+        runner = SessionlessRoundRunner(self.runtime)
+
+        def before_execute(tool_call):
+            if tool_call.name == "idle":
+                self._update_member(name, status="working", activity="preparing_for_idle", session_id=normalized_session_id)
+                return "Entering idle phase."
+            self._update_member(name, status="working", activity=f"running_tool:{tool_call.name}", session_id=normalized_session_id)
+            return None
+
+        def after_execute(tool_call, output):
+            if tool_call.name == "claim_task":
+                task_id = int(tool_call.input["task_id"])
+                self._update_member(name, current_task_id=task_id, session_id=normalized_session_id)
+            elif tool_call.name == "task_update":
+                self._sync_completed_task_state(
+                    name,
+                    tool_call.input,
+                    output,
+                    normalized_session_id,
+                )
+
+        def on_execute_error(exc):
+            self._update_member(name, last_error=str(exc), session_id=normalized_session_id)
+
+        def on_tool_record(record: ToolCallRecord) -> None:
+            log_id = self.runtime.print_tool_event(name, record.tool_call.name, record.tool_call.input, record.persisted_output)
+            self._update_member(name, current_tool_log_id=log_id, session_id=normalized_session_id)
+            self._append_log(
+                name,
+                "tool_call",
+                {
+                    "tool_name": record.tool_call.name,
+                    "tool_input": record.tool_call.input,
+                    "output_preview": self.runtime._compact_preview(record.rendered_output, limit=120),
+                    "tool_log_id": log_id,
+                },
+                session_id=normalized_session_id,
+            )
+
+        def on_assistant_message(assistant_message: dict, _turn_text: str) -> None:
+            self._append_log(name, "assistant_message", {"content": assistant_message.get("content")}, session_id=normalized_session_id)
+
+        def on_repair_hint(repair_message: str) -> None:
+            self._append_log(name, "user_message", {"content": repair_message, "source": "tool_repair_hint"}, session_id=normalized_session_id)
+
+        hooks = RoundHooks(
+            before_execute=before_execute,
+            after_execute=after_execute,
+            on_execute_error=on_execute_error,
+            on_tool_record=on_tool_record,
+            should_stop_after_round=lambda record: record.tool_call.name == "idle",
+            on_assistant_message=on_assistant_message,
+            on_repair_hint=on_repair_hint,
+        )
         self._update_member(name, status="working", activity="starting_work_loop", session_id=normalized_session_id)
         if resumed:
             self._append_log(name, "session_resumed", {"reason": "runtime_restore", "message_count": len(messages)}, session_id=normalized_session_id)
@@ -674,20 +716,9 @@ class TeammateRuntimeManager:
                 for _ in range(self.runtime.settings.runtime.max_agent_rounds):
                     if self._shutdown_if_stop_requested(name, session_id=normalized_session_id):
                         return
-                    if pending_tool_repair_hints:
-                        repair_message = render_transient_repair_hint_message(pending_tool_repair_hints)
-                        pending_tool_repair_hints = []
-                        if repair_message:
-                            messages.append({"role": "user", "content": repair_message})
-                            self._append_log(
-                                name,
-                                "user_message",
-                                {"content": repair_message, "source": "tool_repair_hint"},
-                                session_id=normalized_session_id,
-                            )
+                    self._compact_context_if_needed(name, system_prompt, messages, registry, session_id=normalized_session_id)
                     self._update_member(name, status="working", activity="checking_inbox", session_id=normalized_session_id)
-                    member_session_id = normalized_session_id
-                    inbox = self.bus.read_inbox(name, session_id=member_session_id)
+                    inbox = self.bus.read_inbox(name, session_id=normalized_session_id)
                     for message in inbox:
                         if self._handle_control_message(name, message, session_id=normalized_session_id):
                             return
@@ -695,90 +726,24 @@ class TeammateRuntimeManager:
                         self._append_log(name, "user_message", {"content": message, "source": "inbox"}, session_id=normalized_session_id)
 
                     self._update_member(name, status="working", activity="waiting_for_model", session_id=normalized_session_id)
-                    payload_builder = getattr(self.runtime, "_build_payload_messages", None)
-                    if callable(payload_builder):
-                        payload_messages = payload_builder(messages, session=None)
-                    else:
-                        payload_messages = messages
-                    consume_ephemeral_image_blocks(messages)
-                    turn = self.runtime.complete(
-                        system_prompt,
-                        payload_messages,
-                        registry.schemas(),
-                        should_interrupt=lambda: self._stop_reason(name, session_id=normalized_session_id) is not None,
-                    )
-                    if self._shutdown_if_stop_requested(name, activity="interrupted_after_model", session_id=normalized_session_id):
-                        return
-                    assistant_message = turn.as_message()
-                    messages.append(assistant_message)
-                    self._append_log(name, "assistant_message", {"content": assistant_message.get("content")}, session_id=normalized_session_id)
-                    if not turn.has_tool_calls():
-                        break
-                    ctx = ToolExecutionContext(
-                        runtime=self.runtime,
-                        session=None,
+                    result = runner.run_round(
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        registry=registry,
+                        pending_repair_hints=pending_tool_repair_hints,
                         actor=name,
                         trace_id=f"{name}-{int(time.time())}",
                         should_interrupt=lambda: self._stop_reason(name, session_id=normalized_session_id) is not None,
+                        hooks=hooks,
                     )
-                    tool_results: list[dict] = []
-                    idle_requested = False
-                    for tool_call in turn.tool_calls:
-                        if self._shutdown_if_stop_requested(name, activity="interrupted_before_tool", session_id=normalized_session_id):
-                            return
-                        if tool_call.name == "idle":
-                            idle_requested = True
-                            self._update_member(name, status="working", activity="preparing_for_idle", session_id=normalized_session_id)
-                            output = "Entering idle phase."
-                        else:
-                            self._update_member(name, status="working", activity=f"running_tool:{tool_call.name}", session_id=normalized_session_id)
-                            try:
-                                output = registry.execute(ctx, tool_call.name, tool_call.input)
-                                if tool_call.name == "claim_task":
-                                    task_id = int(tool_call.input["task_id"])
-                                    self._update_member(name, current_task_id=task_id, session_id=normalized_session_id)
-                                elif tool_call.name == "task_update":
-                                    self._sync_completed_task_state(
-                                        name,
-                                        tool_call.input,
-                                        output,
-                                        normalized_session_id,
-                                    )
-                            except TurnInterrupted:
-                                if self._shutdown_if_stop_requested(name, activity="interrupted_during_tool", session_id=normalized_session_id):
-                                    return
-                                raise
-                            except Exception as exc:
-                                output = tool_error_from_exception(tool_call.name, exc)
-                                self._update_member(name, last_error=str(exc), session_id=normalized_session_id)
-                        repair_hint = extract_transient_repair_hint(output)
-                        if repair_hint is not None:
-                            pending_tool_repair_hints.append(repair_hint)
-                        persisted_output = sanitize_tool_output_for_persistence(output)
-                        rendered_output = serialize_tool_output(persisted_output)
-                        log_id = self.runtime.print_tool_event(name, tool_call.name, tool_call.input, persisted_output)
-                        self._update_member(name, current_tool_log_id=log_id, session_id=normalized_session_id)
+                    if result.records:
                         self._append_log(
                             name,
-                            "tool_call",
-                            {
-                                "tool_name": tool_call.name,
-                                "tool_input": tool_call.input,
-                                "output_preview": self.runtime._compact_preview(rendered_output, limit=120),
-                                "tool_log_id": log_id,
-                            },
+                            "tool_result_message",
+                            {"content": [record.result_item for record in result.records]},
                             session_id=normalized_session_id,
                         )
-                        tool_results.append(
-                            make_tool_result_item(
-                                tool_call.id,
-                                persisted_output,
-                                rendered_output=rendered_output,
-                            )
-                        )
-                    messages.append(make_tool_result_message(tool_results))
-                    self._append_log(name, "tool_result_message", {"content": tool_results}, session_id=normalized_session_id)
-                    if idle_requested:
+                    if not result.has_tool_calls or result.stop_after_round:
                         break
 
                 initial_owned_open = []
@@ -919,6 +884,29 @@ class TeammateRuntimeManager:
                 session_id=normalized_session_id,
             )
             return
+
+    def _compact_context_if_needed(self, name: str, system_prompt: str, messages: list[dict], registry: ToolRegistry, session_id: str | None = None) -> None:
+        """Auto-compact the working message list once it crosses the 0.82 usage ratio.
+
+        This is the teammate loop's only context governance: the semantic
+        janitor chain depends on session state that teammates do not have, so
+        it is deliberately not reproduced here. Compaction failures are logged
+        and swallowed — a teammate thread must not die from a counting or
+        summarization error.
+        """
+        try:
+            usage = self.runtime._count_payload_usage(system_prompt, messages, registry.schemas())
+        except Exception:
+            return
+        if not should_auto_compact(usage):
+            return
+        try:
+            compacted = self.runtime.compact_manager.auto_compact(f"teammate-{name}", list(messages))
+        except Exception as exc:
+            self._append_log(name, "context_compact_failed", {"error": str(exc)}, session_id=session_id)
+            return
+        messages[:] = compacted
+        self._append_log(name, "context_compacted", {"message_count": len(messages)}, session_id=session_id)
 
     def _owned_open_tasks(self, name: str, session_id: str | None | object = UNSET) -> list[dict]:
         list_owned_open = getattr(self.task_store, "list_owned_open", None)
