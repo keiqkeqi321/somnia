@@ -241,7 +241,10 @@ class RemoteAuthenticationTests(unittest.TestCase):
                         "params": {},
                     }
                     browser.send_json(request)
-                    self.assertEqual(connector.receive_json(), request)
+                    forwarded = connector.receive_json()
+                    # The Relay stamps the requesting client for targeted replies.
+                    self.assertTrue(forwarded.pop("client_id", None))
+                    self.assertEqual(forwarded, request)
 
                 with self.assertRaises(WebSocketDisconnect) as cross_account:
                     with other.websocket_connect(

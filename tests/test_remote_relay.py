@@ -72,6 +72,47 @@ class RemoteRelayTests(unittest.TestCase):
         self.assertIsNone(closed)
         self.assertTrue(clients)
 
+    def test_client_targeted_messages_reach_only_the_requesting_client(self) -> None:
+        async def scenario() -> tuple[list, list]:
+            app = create_relay_app(administrators={"admin": "admin-password"}, client_send_timeout_seconds=0.5)
+            hub: RelayHub = app.state.relay_hub
+            account = app.state.remote_auth.authenticate_password("admin", "admin-password", source="test")
+            tokens = app.state.remote_auth.issue_browser_tokens(account.id)
+            first_socket = _DelaySocket(0.0)
+            second_socket = _DelaySocket(0.0)
+            hub._clients["device-1"] = {
+                "first": _Peer(
+                    socket=first_socket,
+                    account_id=account.id,
+                    access_token=tokens.access_token,
+                    send_timeout_seconds=0.5,
+                ),
+                "second": _Peer(
+                    socket=second_socket,
+                    account_id=account.id,
+                    access_token=tokens.access_token,
+                    send_timeout_seconds=0.5,
+                ),
+            }
+            hub._connectors["device-1"] = _Peer(
+                socket=SimpleNamespace(),
+                account_id=account.id,
+                send_timeout_seconds=0.5,
+            )
+
+            # A stream_resume answer stamped for "first" must not reach "second"
+            # (broadcasting it pushed every other client through a spurious resync).
+            await hub._broadcast_to_clients("device-1", {"kind": "stream_replay", "client_id": "first", "events": []})
+            await hub._broadcast_to_clients("device-1", {"kind": "event", "seq": 1})
+            # An answer whose client already disconnected is dropped silently.
+            await hub._broadcast_to_clients("device-1", {"kind": "stream_replay", "client_id": "gone", "events": []})
+            await asyncio.sleep(0.1)
+            return first_socket.received, second_socket.received
+
+        first_received, second_received = asyncio.run(scenario())
+        self.assertEqual(first_received, [{"kind": "stream_replay", "events": []}, {"kind": "event", "seq": 1}])
+        self.assertEqual(second_received, [{"kind": "event", "seq": 1}])
+
     def test_health_endpoint_reports_ready_without_storing_state(self) -> None:
         with TestClient(create_relay_app()) as client:
             response = client.get("/health")
@@ -98,7 +139,11 @@ class RemoteRelayTests(unittest.TestCase):
                     "params": {"session_id": "session-1", "user_input": "hello"},
                 }
                 browser.send_json(request)
-                self.assertEqual(connector.receive_json(), request)
+                forwarded = connector.receive_json()
+                # The Relay stamps the requesting client for targeted replies;
+                # the payload itself passes through untouched.
+                self.assertTrue(forwarded.pop("client_id", None))
+                self.assertEqual(forwarded, request)
 
                 response = {
                     "kind": "response",

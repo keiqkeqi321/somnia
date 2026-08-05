@@ -209,7 +209,7 @@ class RelayHub:
                     await socket.close(code=4403, reason="Device access denied.")
                     break
                 if isinstance(message, dict):
-                    await self._forward_to_connector(device_id, peer, message)
+                    await self._forward_to_connector(device_id, peer, message, client_id=client_id)
         except WebSocketDisconnect:
             pass
         finally:
@@ -259,7 +259,7 @@ class RelayHub:
         async with self._lock:
             self._project_metadata[device_id] = projects
 
-    async def _forward_to_connector(self, device_id: str, client: _Peer, message: dict[str, Any]) -> None:
+    async def _forward_to_connector(self, device_id: str, client: _Peer, message: dict[str, Any], *, client_id: str) -> None:
         claimed_device = str(message.get("device_id", device_id)).strip()
         request_id = str(message.get("request_id", "")).strip()
         if claimed_device != device_id:
@@ -286,8 +286,12 @@ class RelayHub:
                     }
                 )
             return
+        # Stamp the originating client so per-client answers (stream replay /
+        # snapshot for a stream_resume) can be routed back to it alone instead
+        # of being broadcast to every connected browser.
+        forwarded = {**message, "client_id": client_id}
         try:
-            await connector.send(message)
+            await connector.send(forwarded)
         except (TimeoutError, asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
             # Control frames (stream_resume/stream_ack) carry no request_id; an
             # error response would have no pending request to land on, so the
@@ -303,16 +307,27 @@ class RelayHub:
                 )
 
     async def _broadcast_to_clients(self, device_id: str, message: dict[str, Any]) -> None:
+        # A message stamped with client_id answers one specific client's
+        # request (e.g. a stream_resume replay/snapshot): deliver it only to
+        # that client. Broadcasting it would push every other client through a
+        # spurious resync and make them skip/re-apply events they already have.
+        target_client_id = str(message.get("client_id", "")).strip()
+        payload = {key: value for key, value in message.items() if key != "client_id"} if target_client_id else message
         async with self._lock:
-            clients = list(self._clients.get(device_id, {}).values())
+            clients = self._clients.get(device_id, {})
+            if target_client_id:
+                target = clients.get(target_client_id)
+                recipients = [target] if target is not None else []
+            else:
+                recipients = list(clients.values())
             connector = self._connectors.get(device_id)
-        for client in clients:
+        for client in recipients:
             if connector is None or client.account_id != connector.account_id:
                 continue
             if self.auth.resolve_access(client.access_token) is None:
                 await self._disconnect_expired_client(device_id, client)
                 continue
-            task = asyncio.create_task(self._deliver_to_client(device_id, client, message))
+            task = asyncio.create_task(self._deliver_to_client(device_id, client, payload))
             self._delivery_tasks.add(task)
             task.add_done_callback(self._delivery_tasks.discard)
 

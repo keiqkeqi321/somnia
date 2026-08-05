@@ -188,7 +188,58 @@ class RemoteConnectorTests(unittest.TestCase):
 
             self.assertTrue(done.wait(timeout=5.0), "Snapshot resume deadlocked while recording live events.")
             self.assertEqual(sent[0]["kind"], "stream_snapshot")
-            self.assertEqual(sent[0]["sequence"], 2)
+            # The snapshot only claims coverage up to the pre-fetch sequence (1);
+            # the event recorded mid-fetch arrives as a live frame and must not
+            # be skipped by the client.
+            self.assertEqual(sent[0]["sequence"], 1)
+
+    def test_stream_replay_echoes_the_requesting_client_for_relay_targeting(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=10)
+            connector.publish_sidecar_event({"type": "first", "payload": {}})
+            sent: list[dict] = []
+
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": None,
+                        "after_sequence": 0,
+                        "client_id": "browser-1",
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_replay")
+            self.assertEqual(sent[0]["client_id"], "browser-1")
+
+    def test_stream_snapshot_echoes_the_requesting_client_for_relay_targeting(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            identity = DeviceIdentity.load_or_create(Path(temp_dir) / "identity.json")
+            identity.complete_pairing(device_id="device-1", device_name="Workstation", relay_url="https://relay.example.com")
+            connector = RemoteConnectorForTest(identity, replay_limit=1)
+            connector.publish_sidecar_event({"type": "only", "payload": {}})
+            sent: list[dict] = []
+
+            connector.handle_relay_message(
+                json.dumps(
+                    {
+                        "kind": "stream_resume",
+                        "project_id": "project-1",
+                        "stream_epoch": "old-epoch",
+                        "after_sequence": 0,
+                        "client_id": "browser-1",
+                    }
+                ),
+                sent.append,
+            )
+
+            self.assertEqual(sent[0]["kind"], "stream_snapshot")
+            self.assertEqual(sent[0]["client_id"], "browser-1")
 
     def test_update_projects_diffs_the_served_set_without_a_relay_connection(self) -> None:
         with TemporaryDirectory() as temp_dir:

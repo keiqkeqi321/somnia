@@ -1305,6 +1305,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }
 
   async function resyncAfterRemoteSnapshot(projectPath: string, client: SomniaClient) {
+    // The reloaded sessions below are the authoritative state again. Any
+    // streaming state accumulated locally so far (partial assistant text,
+    // tool/thinking runtime items, optimistic turns) overlaps with it and
+    // would render the same output twice, so every conversation of this
+    // project restarts from the reloaded sessions plus post-resync live events.
+    clearProjectConversationRuntimeState(projectPath);
     try {
       const sessionList = sortSessions(await client.listSessions());
       setProjects((previous) =>
@@ -1387,6 +1393,25 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       delete next[key];
       return next;
     });
+  }
+
+  function clearProjectConversationRuntimeState(projectPath: string) {
+    // Drop every conversation-keyed piece of streaming state for the project.
+    // Used by the remote snapshot resync, where the reloaded sessions replace
+    // whatever was streamed locally (see resyncAfterRemoteSnapshot).
+    const prefix = `${projectPath}\n`;
+    const withoutProjectKeys = <T,>(record: Record<string, T>): Record<string, T> => {
+      if (!Object.keys(record).some((key) => key.startsWith(prefix))) {
+        return record;
+      }
+      return Object.fromEntries(Object.entries(record).filter(([key]) => !key.startsWith(prefix)));
+    };
+    pendingAssistantDeltasRef.current = withoutProjectKeys(pendingAssistantDeltasRef.current);
+    conversationCoreStateRef.current = withoutProjectKeys(conversationCoreStateRef.current);
+    setRuntimeConversationItems((previous) => withoutProjectKeys(previous));
+    setPendingTurns((previous) => withoutProjectKeys(previous));
+    setActiveSubagents((previous) => withoutProjectKeys(previous));
+    setTeamActivity((previous) => withoutProjectKeys(previous));
   }
 
   function clearPendingTurn(projectPath: string | null | undefined, sessionId: string | null | undefined, pendingTurnId: string) {

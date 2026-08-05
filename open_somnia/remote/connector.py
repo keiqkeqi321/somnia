@@ -816,6 +816,10 @@ class RemoteConnector:
         project = self._projects.get(project_id)
         if project is None:
             return
+        # The Relay stamps the requesting client on the forwarded frame; echo it
+        # on the answer so the Relay routes the replay/snapshot back to that
+        # client alone instead of broadcasting it to every connected browser.
+        client_id = str(message.get("client_id", "")).strip()
         try:
             after_sequence = int(message.get("after_sequence", 0))
         except (TypeError, ValueError):
@@ -843,48 +847,53 @@ class RemoteConnector:
             )
         if replay_available or fresh_replay_available:
             replay_from = after_sequence if replay_available else 0
-            send(
-                {
-                    "kind": "stream_replay",
-                    "protocol_version": PROTOCOL_VERSION,
-                    "device_id": self.device_id,
-                    "project_id": project_id,
-                    "stream_epoch": epoch,
-                    "after_sequence": replay_from,
-                    "events": [event for event in events if event["sequence"] > replay_from],
-                }
-            )
+            response: dict[str, Any] = {
+                "kind": "stream_replay",
+                "protocol_version": PROTOCOL_VERSION,
+                "device_id": self.device_id,
+                "project_id": project_id,
+                "stream_epoch": epoch,
+                "after_sequence": replay_from,
+                "events": [event for event in events if event["sequence"] > replay_from],
+            }
+            if client_id:
+                response["client_id"] = client_id
+            send(response)
             return
         # The snapshot round-trip must not hold the state lock: recording live
         # events would stall behind it and freeze the whole event pipeline.
         try:
             snapshot = project.sidecar.execute("stream.snapshot", {})
         except Exception as exc:
-            send(
-                {
-                    "kind": "snapshot_required",
-                    "protocol_version": PROTOCOL_VERSION,
-                    "device_id": self.device_id,
-                    "project_id": project_id,
-                    "stream_epoch": epoch,
-                    "sequence": latest_sequence,
-                    "reason": f"Snapshot resync failed: {exc}",
-                }
-            )
-            return
-        with self._state_lock:
-            latest_sequence = project.next_sequence
-        send(
-            {
-                "kind": "stream_snapshot",
+            response = {
+                "kind": "snapshot_required",
                 "protocol_version": PROTOCOL_VERSION,
                 "device_id": self.device_id,
                 "project_id": project_id,
                 "stream_epoch": epoch,
                 "sequence": latest_sequence,
-                "snapshot": snapshot,
+                "reason": f"Snapshot resync failed: {exc}",
             }
-        )
+            if client_id:
+                response["client_id"] = client_id
+            send(response)
+            return
+        # Keep the pre-fetch sequence: events recorded while the snapshot was
+        # being built are not necessarily reflected in it, and they arrive as
+        # live frames anyway — tagging the snapshot past them would make the
+        # client skip them.
+        response = {
+            "kind": "stream_snapshot",
+            "protocol_version": PROTOCOL_VERSION,
+            "device_id": self.device_id,
+            "project_id": project_id,
+            "stream_epoch": epoch,
+            "sequence": latest_sequence,
+            "snapshot": snapshot,
+        }
+        if client_id:
+            response["client_id"] = client_id
+        send(response)
 
     def _response(self, request_id: str, *, project_id: str, ok: bool, result: Any = None, error: str = "") -> dict[str, Any]:
         response: dict[str, Any] = {
