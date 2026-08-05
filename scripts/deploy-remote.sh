@@ -9,6 +9,7 @@
 #   DEPLOY_USER   SSH user                 (default: root)
 #   DEPLOY_HOST   Server                   (default: 47.109.202.44)
 #   WEB_DIR       Web root on server       (default: /var/www/somnia)
+#   HOME_DIR      Homepage dir on server   (default: /var/www/somnia-home, setup only)
 #   DATA_DIR      Relay data dir on server (default: /var/lib/somnia)
 #   SERVER_NAME   Public origin, no scheme (default: $DEPLOY_HOST)
 #   SERVER_PYTHON Python on the server used for pip install (default: python3; must be >=3.11)
@@ -32,6 +33,7 @@ fi
 DEPLOY_USER="${DEPLOY_USER:-root}"
 DEPLOY_HOST="${DEPLOY_HOST:-47.109.202.44}"
 WEB_DIR="${WEB_DIR:-/var/www/somnia}"
+HOME_DIR="${HOME_DIR:-/var/www/somnia-home}"
 DATA_DIR="${DATA_DIR:-/var/lib/somnia}"
 SERVER_NAME="${SERVER_NAME:-$DEPLOY_HOST}"
 SERVER_PYTHON="${SERVER_PYTHON:-python3}"
@@ -88,6 +90,7 @@ if [ "$SETUP" -eq 1 ]; then
 
     sed -e "s|@SERVER_NAME@|$SERVER_NAME|g" \
         -e "s|@WEB_DIR@|$WEB_DIR|g" \
+        -e "s|@HOME_DIR@|$HOME_DIR|g" \
         -e "s|@TLS_CERT@|$TLS_CERT|g" \
         -e "s|@TLS_KEY@|$TLS_KEY|g" \
         "$REPO/scripts/deploy/nginx-somnia.conf" | ssh "$TARGET" "cat > /etc/nginx/conf.d/somnia.conf"
@@ -99,4 +102,4 @@ else
 fi
 
 rm -rf "$REPO/.tmp-deploy"
-echo "==> Deploy finished: https://$SERVER_NAME/?remote=1"
+echo "==> Deploy finished: https://$SERVER_NAME/app/?remote=1"

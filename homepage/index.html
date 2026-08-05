@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Somnia® — 让 AI Agent 真正为你工作</title>
+<link rel="icon" type="image/png" href="home-assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#f7f6f1;
+  --paper-2:#efeee8;
+  --ink:#141412;
+  --ink-2:#55534c;
+  --ink-3:#8f8c82;
+  --line:#dcd9cf;
+  --line-dark:#141412;
+  --accent:#2b3bff;
+  --screen:#171714;
+  --screen-dot:#f4f2ea;
+  --radius:6px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:'Inter','Noto Sans SC',sans-serif;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+::selection{background:var(--ink);color:var(--paper)}
+.serif{font-family:'Noto Serif SC',serif}
+.grotesk{font-family:'Space Grotesk','Noto Sans SC',sans-serif}
+.mono{font-family:'JetBrains Mono',monospace}
+.wrap{max-width:1240px;margin:0 auto;padding:0 clamp(20px,5vw,56px)}
+
+/* ---------- top bar ---------- */
+header.topbar{border-bottom:1px solid var(--line-dark);position:sticky;top:0;z-index:50;background:var(--paper)}
+.topbar-in{display:flex;align-items:stretch;justify-content:space-between;height:64px}
+.brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--ink);border-right:1px solid var(--line);padding-right:28px}
+.brand img{width:30px;height:30px;border-radius:8px;mix-blend-mode:multiply}
+.brand b{font-family:'Space Grotesk';font-size:20px;letter-spacing:.5px}
+.brand sup{font-size:10px;color:var(--ink-3)}
+nav.menu{display:flex;align-items:center}
+nav.menu a{color:var(--ink-2);text-decoration:none;font-size:13.5px;padding:0 22px;height:64px;display:flex;align-items:center;border-left:1px solid var(--line);transition:.25s}
+nav.menu a:hover{background:var(--ink);color:var(--paper)}
+nav.menu a.solid{background:var(--ink);color:var(--paper)}
+nav.menu a.solid:hover{background:var(--accent)}
+.top-meta{display:flex;align-items:center;font-size:11px;letter-spacing:2px;color:var(--ink-3);text-transform:uppercase;padding:0 24px}
+@media(max-width:960px){.top-meta{display:none}nav.menu a{padding:0 14px}}
+
+/* ---------- hero ---------- */
+.hero{border-bottom:1px solid var(--line-dark)}
+.hero-grid{display:grid;grid-template-columns:1.15fr .85fr;min-height:calc(100vh - 64px)}
+.hero-l{padding:clamp(40px,6vh,80px) clamp(24px,4vw,56px) clamp(40px,6vh,72px) 0;border-right:1px solid var(--line);display:flex;flex-direction:column}
+.hero-kicker{display:flex;gap:14px;align-items:baseline;font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--ink-3);margin-bottom:auto}
+.hero-kicker .rule{flex:1;height:1px;background:var(--line)}
+.hero h1{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(40px,4.9vw,74px);line-height:1.16;letter-spacing:.01em;margin:40px 0 0;white-space:nowrap}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.hero-sub{margin-top:28px;font-size:15.5px;line-height:2;color:var(--ink-2);max-width:480px}
+.hero-tags{display:flex;flex-wrap:wrap;gap:0;margin-top:30px;border:1px solid var(--line-dark);width:max-content;max-width:100%}
+.hero-tags span{font-size:12.5px;padding:9px 16px;border-right:1px solid var(--line-dark);letter-spacing:1px}
+.hero-tags span:last-child{border-right:none}
+.hero-cta{display:flex;gap:14px;margin-top:38px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:10px;text-decoration:none;font-weight:600;font-size:14px;
+  padding:15px 30px;border-radius:0;border:1px solid var(--ink);transition:.25s;cursor:pointer;letter-spacing:.5px}
+.btn-ink{background:var(--ink);color:var(--paper)}
+.btn-ink:hover{background:var(--accent);border-color:var(--accent)}
+.btn-line{background:transparent;color:var(--ink)}
+.btn-line:hover{background:var(--ink);color:var(--paper)}
+.hero-stats{display:flex;margin-top:48px;border-top:1px solid var(--line);padding-top:22px;gap:0}
+.stat{flex:1;border-left:1px solid var(--line);padding-left:18px}
+.stat:first-child{border-left:none;padding-left:0}
+.stat b{display:block;font-family:'Space Grotesk';font-size:26px;font-weight:600}
+.stat span{font-size:12px;color:var(--ink-3);letter-spacing:1px}
+
+/* dot-matrix screen */
+.hero-r{display:flex;align-items:center;justify-content:center;padding:clamp(28px,4vw,56px);background:
+  repeating-linear-gradient(0deg,transparent 0 31px,rgba(20,20,18,.035) 31px 32px),
+  repeating-linear-gradient(90deg,transparent 0 31px,rgba(20,20,18,.035) 31px 32px)}
+.matrix-frame{width:min(100%,440px);background:var(--screen);border-radius:10px;padding:26px 26px 18px;
+  box-shadow:0 30px 60px rgba(20,20,18,.18), inset 0 0 0 1px #000;position:relative}
+.matrix-frame::before{content:'';position:absolute;inset:8px;border:1px solid rgba(244,242,234,.12);border-radius:6px;pointer-events:none}
+#matrix{display:block;width:100%;height:auto}
+.matrix-caption{display:flex;justify-content:space-between;margin-top:14px;font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:2px;color:rgba(244,242,234,.45);text-transform:uppercase}
+.matrix-caption .live{color:#8bff9e}
+.matrix-caption .live::before{content:'●';margin-right:7px;animation:blink 1.6s infinite}
+@keyframes blink{50%{opacity:.2}}
+@media(max-width:960px){
+  .hero-grid{grid-template-columns:1fr;min-height:0}
+  .hero-l{border-right:none;border-bottom:1px solid var(--line);padding-right:0;padding-bottom:56px}
+  .hero-kicker{margin-bottom:0}
+  .hero h1{white-space:normal}
+}
+
+/* ticker */
+.ticker{border-bottom:1px solid var(--line-dark);overflow:hidden;padding:13px 0;background:var(--paper)}
+.ticker-track{display:flex;gap:0;width:max-content;animation:tk 28s linear infinite}
+.ticker-track span{font-family:'Space Grotesk';font-size:12.5px;letter-spacing:3px;text-transform:uppercase;color:var(--ink-2);white-space:nowrap;padding-right:48px}
+.ticker-track span i{font-style:normal;color:var(--accent);padding-right:48px}
+@keyframes tk{to{transform:translateX(-50%)}}
+
+/* ---------- sections ---------- */
+section.chapter{border-bottom:1px solid var(--line-dark)}
+.chapter-head{display:flex;align-items:baseline;gap:26px;padding:64px 0 40px;flex-wrap:wrap}
+.ch-num{font-family:'Space Grotesk';font-size:15px;color:var(--accent);letter-spacing:2px}
+.ch-title{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(30px,3.6vw,50px);line-height:1.15}
+.ch-note{margin-left:auto;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--ink-3);max-width:280px;line-height:1.9}
+@media(max-width:720px){.ch-note{margin-left:0}}
+
+/* capability index list */
+.cap-list{border-top:1px solid var(--line-dark)}
+.cap-row{display:grid;grid-template-columns:80px 1fr 1.2fr auto;gap:28px;align-items:center;
+  padding:34px 0;border-bottom:1px solid var(--line);text-decoration:none;color:inherit;position:relative;transition:background .3s}
+.cap-row:hover{background:var(--paper-2)}
+.cap-idx{font-family:'Space Grotesk';font-size:14px;color:var(--ink-3);transition:.3s}
+.cap-row:hover .cap-idx{color:var(--accent)}
+.cap-name{font-family:'Noto Serif SC',serif;font-weight:700;font-size:clamp(22px,2.4vw,32px);transition:transform .3s}
+.cap-row:hover .cap-name{transform:translateX(8px)}
+.cap-name small{display:block;font-family:'Space Grotesk';font-weight:500;font-size:12px;letter-spacing:2px;color:var(--ink-3);text-transform:uppercase;margin-top:6px}
+.cap-desc{font-size:14px;line-height:1.9;color:var(--ink-2);max-width:460px}
+.cap-arrow{font-family:'Space Grotesk';font-size:22px;transition:transform .3s,color .3s;color:var(--ink-3)}
+.cap-row:hover .cap-arrow{transform:translateX(6px);color:var(--accent)}
+@media(max-width:860px){.cap-row{grid-template-columns:50px 1fr;gap:16px}.cap-desc{grid-column:2}.cap-arrow{display:none}}
+
+/* platforms */
+.plat-grid{display:grid;grid-template-columns:repeat(2,1fr);border-top:1px solid var(--line-dark);border-left:1px solid var(--line-dark)}
+.plat{border-right:1px solid var(--line-dark);border-bottom:1px solid var(--line-dark);padding:34px 30px 30px;background:var(--paper);transition:background .3s}
+.plat:hover{background:var(--paper-2)}
+.plat-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
+.plat-top h3{font-family:'Noto Serif SC',serif;font-size:23px;font-weight:700}
+.plat-tag{font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:2px;color:var(--ink-3);text-transform:uppercase}
+.plat-sub{font-size:12.5px;color:var(--ink-3);letter-spacing:1px;margin-bottom:22px}
+.term{border:1px solid var(--line-dark);background:#fdfcf9;padding:16px 18px;font-family:'JetBrains Mono';font-size:12.5px;line-height:2.05;min-height:132px}
+.term .t-line{display:block;white-space:pre-wrap;word-break:break-all}
+.t-p{color:var(--accent)} .t-c{color:var(--ink)} .t-ok{color:#0a7d3b} .t-d{color:var(--ink-3)}
+.caret{display:inline-block;width:7px;height:13px;background:var(--ink);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+.plat-desc{margin-top:20px;font-size:13.5px;line-height:1.9;color:var(--ink-2)}
+@media(max-width:860px){.plat-grid{grid-template-columns:1fr}}
+
+/* open source */
+.os-grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line-dark)}
+.os-l{border-right:1px solid var(--line);padding:44px 44px 48px 0}
+.os-l p{font-size:15px;line-height:2;color:var(--ink-2);max-width:440px;margin:18px 0 30px}
+.gh-line{display:flex;align-items:center;gap:14px;border:1px solid var(--ink);padding:16px 20px;font-family:'JetBrains Mono';font-size:13px;margin-bottom:26px}
+.gh-line svg{flex-shrink:0}
+.os-l .hero-cta{margin-top:0}
+.os-r{padding:44px 0 48px 44px}
+.ver-row{display:grid;grid-template-columns:110px 1fr auto;gap:18px;align-items:baseline;padding:20px 0;border-bottom:1px solid var(--line)}
+.ver-row:first-child{padding-top:0}
+.ver-no{font-family:'Space Grotesk';font-size:17px;font-weight:600}
+.ver-row.latest .ver-no{color:var(--accent)}
+.ver-what{font-size:13.5px;line-height:1.8;color:var(--ink-2)}
+.ver-date{font-family:'JetBrains Mono';font-size:11.5px;color:var(--ink-3)}
+.ver-badge{font-family:'JetBrains Mono';font-size:10px;letter-spacing:1px;border:1px solid var(--accent);color:var(--accent);padding:3px 9px;margin-left:10px;vertical-align:2px}
+@media(max-width:860px){.os-grid{grid-template-columns:1fr}.os-l{border-right:none;padding-right:0}.os-r{padding-left:0}}
+
+/* big statement / cta */
+.statement{padding:110px 0;text-align:left}
+.statement h2{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(36px,5vw,72px);line-height:1.25;max-width:900px}
+.statement h2 .dotlogo-inline{display:inline-block;width:1.02em;height:1.02em;vertical-align:-.18em;border-radius:.22em;mix-blend-mode:multiply}
+.statement p{margin:30px 0 40px;font-size:15.5px;line-height:2;color:var(--ink-2);max-width:520px}
+
+footer{padding:34px 0 44px}
+.foot-in{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-3)}
+.foot-in .f-brand{display:flex;align-items:center;gap:10px}
+.foot-in img{width:22px;height:22px;border-radius:6px;mix-blend-mode:multiply}
+.foot-in a{color:var(--ink-2);text-decoration:none;margin-left:22px;transition:.25s}
+.foot-in a:hover{color:var(--accent)}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .7s ease,transform .7s ease}
+.reveal.in{opacity:1;transform:none}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="#top"><img src="home-assets/logo.png" alt="Somnia"><b>Somnia<sup>®</sup></b></a>
+    <div style="display:flex;align-items:stretch">
+      <div class="top-meta">Vol. 01 — Open Source AI Agent</div>
+      <nav class="menu">
+        <a href="#capabilities">能力</a>
+        <a href="#platforms">多端</a>
+        <a href="#opensource">开源</a>
+        <a href="https://github.com/keiqkeqi321/somnia" target="_blank" rel="noopener">GitHub</a>
+        <a class="solid" href="#download">立即下载</a>
+      </nav>
+    </div>
+  </div>
+</header>
+
+<!-- HERO -->
+<div class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-l">
+      <div class="hero-kicker reveal in"><span>Somnia — A Universal AI Agent</span><span class="rule"></span><span>EST. 2025</span></div>
+      <h1>让 <em>AI Agent</em><br>真正为你工作。</h1>
+      <p class="hero-sub">Somnia 是一个开源的通用 AI Agent 工作台 —— 集 MCP 工具生态、可插拔 Skills、Subagent 分工与 Agent Team 协同于一身。从终端到桌面，再到浏览器远程，随时把任务交给 Agent 完成。</p>
+      <div class="hero-tags"><span>通用能力</span><span>MCP</span><span>Skills</span><span>Subagent</span><span>Agent Team</span></div>
+      <div class="hero-cta">
+        <a class="btn btn-ink" href="#download">下载桌面版</a>
+        <a class="btn btn-line" href="https://github.com/keiqkeqi321/somnia" target="_blank" rel="noopener">查看源代码 ↗</a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><b>04</b><span>运行端</span></div>
+        <div class="stat"><b>MCP</b><span>工具生态</span></div>
+        <div class="stat"><b>100%</b><span>开源免费</span></div>
+      </div>
+    </div>
+    <div class="hero-r">
+      <div class="matrix-frame">
+        <canvas id="matrix" width="832" height="936"></canvas>
+        <div class="matrix-caption"><span>Somnia · Standing By</span><span class="live">Live</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TICKER -->
+<div class="ticker"><div class="ticker-track" id="ticker">
+  <span><i>◆</i>Universal Agent</span><span><i>◆</i>MCP Protocol</span><span><i>◆</i>Pluggable Skills</span><span><i>◆</i>Subagent</span><span><i>◆</i>Agent Team</span><span><i>◆</i>CLI</span><span><i>◆</i>Desktop</span><span><i>◆</i>Web Remote</span><span><i>◆</i>Open Source</span>
+</div></div>
+
+<!-- 01 CAPABILITIES -->
+<section class="chapter" id="capabilities">
+  <div class="wrap">
+    <div class="chapter-head reveal">
+      <span class="ch-num">01 /</span>
+      <h2 class="ch-title">能力索引</h2>
+      <p class="ch-note">从通用对话到复杂工程任务，一套分层的能力架构，把「能聊天」变成「能交付」。</p>
+    </div>
+    <div class="cap-list reveal">
+      <a class="cap-row" href="#download">
+        <span class="cap-idx">C—01</span>
+        <span class="cap-name">通用能力<small>General Agent</small></span>
+        <span class="cap-desc">开箱即用的通用智能体：理解自然语言指令，自主规划步骤、读写文件、执行命令、浏览网络，覆盖研发、写作、分析等日常任务。</span>
+        <span class="cap-arrow">→</span>
+      </a>
+      <a class="cap-row" href="#download">
+        <span class="cap-idx">C—02</span>
+        <span class="cap-name">MCP 工具生态<small>Model Context Protocol</small></span>
+        <span class="cap-desc">原生支持 MCP 协议，一键接入数据库、浏览器、设计工具、内部 API 等成百上千的 MCP Server，让 Agent 伸进你的整个工具链。</span>
+        <span class="cap-arrow">→</span>
+      </a>
+      <a class="cap-row" href="#download">
+        <span class="cap-idx">C—03</span>
+        <span class="cap-name">Skills 技能插件<small>Pluggable Skills</small></span>
+        <span class="cap-desc">可插拔的技能包机制，把领域知识、工作流与最佳实践封装成 Skill，即装即用，也可以自己编写并分享给团队。</span>
+        <span class="cap-arrow">→</span>
+      </a>
+      <a class="cap-row" href="#download">
+        <span class="cap-idx">C—04</span>
+        <span class="cap-name">Subagent 分工<small>Parallel Subagents</small></span>
+        <span class="cap-desc">主 Agent 派生专职子 Agent，各自拥有独立上下文，并行处理子任务、互不污染，结果自动汇总交付。</span>
+        <span class="cap-arrow">→</span>
+      </a>
+      <a class="cap-row" href="#download">
+        <span class="cap-idx">C—05</span>
+        <span class="cap-name">Agent Team 协同<small>Agent Team</small></span>
+        <span class="cap-desc">把多个 Agent 编成一支团队：架构师、开发者、测试、评审各司其职，像真实团队一样协作交付复杂项目。</span>
+        <span class="cap-arrow">→</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- 02 PLATFORMS -->
+<section class="chapter" id="platforms">
+  <div class="wrap">
+    <div class="chapter-head reveal">
+      <span class="ch-num">02 /</span>
+      <h2 class="ch-title">多端，随处可用</h2>
+      <p class="ch-note">终端里的极客模式、桌面端的完整体验、浏览器里的远程接管 —— 同一套能力，四种打开方式。</p>
+    </div>
+    <div class="plat-grid reveal">
+      <div class="plat">
+        <div class="plat-top"><h3>CLI</h3><span class="plat-tag">Terminal</span></div>
+        <div class="plat-sub">终端原生命令行</div>
+        <div class="term" id="term1"></div>
+        <p class="plat-desc">开发者最熟悉的主场。一条命令唤起 Agent，脚本化、可管道、可嵌入 CI，与 Git 工作流无缝融合。</p>
+      </div>
+      <div class="plat">
+        <div class="plat-top"><h3>Desktop</h3><span class="plat-tag">Windows / macOS</span></div>
+        <div class="plat-sub">原生桌面客户端</div>
+        <div class="term" id="term2"></div>
+        <p class="plat-desc">图形化工作台：会话管理、Skill 市场、MCP 配置、任务看板一应俱全，双端原生体验。</p>
+      </div>
+      <div class="plat">
+        <div class="plat-top"><h3>Web Remote</h3><span class="plat-tag">Browser</span></div>
+        <div class="plat-sub">Desktop 的远程入口 · <a href="https://somnia.top/app/#/connect" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">somnia.top/app/#/connect ↗</a></div>
+        <div class="term" id="term3"></div>
+        <p class="plat-desc">桌面端开启远程服务后，打开 <a href="https://somnia.top/app/#/connect" target="_blank" rel="noopener" style="color:var(--accent)">somnia.top/app/#/connect</a> 登录托管入口，即可从任何浏览器安全接入同一台 Agent 主机 —— 出门在外，任务照跑。</p>
+      </div>
+      <div class="plat">
+        <div class="plat-top"><h3>状态同步</h3><span class="plat-tag">Seamless</span></div>
+        <div class="plat-sub">跨端连续工作</div>
+        <div class="term" id="term4"></div>
+        <p class="plat-desc">在 CLI 里发起的任务，回到桌面端继续查看；路上用 Web Remote 跟进进度。上下文连续，工作不中断。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 OPEN SOURCE -->
+<section class="chapter" id="opensource">
+  <div class="wrap">
+    <div class="chapter-head reveal">
+      <span class="ch-num">03 /</span>
+      <h2 class="ch-title">开源与版本档案</h2>
+      <p class="ch-note">代码完全开放，每一次迭代、每一个历史版本，都在 GitHub 上公开可溯。</p>
+    </div>
+    <div class="os-grid reveal">
+      <div class="os-l">
+        <div class="gh-line">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          github.com/keiqkeqi321/somnia
+        </div>
+        <p>核心引擎、CLI、桌面端与 Web Remote 全部开源，MIT 协议。欢迎 Star、提 Issue、贡献 Skill 或提交 PR —— 一起把 Agent 做得更好用。</p>
+        <div class="hero-cta">
+          <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia" target="_blank" rel="noopener">访问仓库 ↗</a>
+          <a class="btn btn-line" href="https://github.com/keiqkeqi321/somnia/releases" target="_blank" rel="noopener">历史版本</a>
+        </div>
+      </div>
+      <div class="os-r">
+        <div class="ver-row latest">
+          <span class="ver-no">v0.5.3<span class="ver-badge">LATEST</span></span>
+          <span class="ver-what">SSE MCP 传输支持；独立视觉模型配置；Windows 路径安全校验；工具图片内联展示。</span>
+          <span class="ver-date">2026-05-25</span>
+        </div>
+        <div class="ver-row">
+          <span class="ver-no">v0.5.2</span>
+          <span class="ver-what">桌面端支持多项目会话；聊天发送反馈与交互优化；macOS / Windows 安装包发布。</span>
+          <span class="ver-date">2026-04-26</span>
+        </div>
+        <div class="ver-row">
+          <span class="ver-no">v0.5.0</span>
+          <span class="ver-what">多模态图像读取；CLI 剪贴板贴图；工具执行中断响应优化；多行粘贴合并输入。</span>
+          <span class="ver-date">2026-04-24</span>
+        </div>
+        <div class="ver-row">
+          <span class="ver-no">v0.4.9</span>
+          <span class="ver-what">可配置推理档位与自动模式；Windows 中文提示符光标修复；符号搜索增强。</span>
+          <span class="ver-date">2026-04-22</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATEMENT / CTA -->
+<section class="statement" id="download">
+  <div class="wrap reveal">
+    <h2>现在，就把任务交给 <img class="dotlogo-inline" src="home-assets/logo.png" alt="S"> Somnia。</h2>
+    <p>免费、开源（MIT）、多端可用。从 GitHub Releases 下载桌面版，或用 pip 装上 CLI —— 再通过 <a href="https://somnia.top/app/#/connect" target="_blank" rel="noopener" style="color:var(--accent)">somnia.top</a> 远程接管。</p>
+    <div class="hero-cta">
+      <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">下载 for macOS · dmg</a>
+      <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">下载 for Windows · msi</a>
+      <a class="btn btn-line" href="https://pypi.org/project/somnia/" target="_blank" rel="noopener">pip install somnia ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <div class="f-brand"><img src="home-assets/logo.png" alt=""><span>© 2026 Somnia — Open source under MIT.</span></div>
+    <div>
+      <a href="https://github.com/keiqkeqi321/somnia" target="_blank" rel="noopener">GitHub</a>
+      <a href="#capabilities">能力</a>
+      <a href="#platforms">多端</a>
+      <a href="#download">下载</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* ============ DOT-MATRIX LOGO SCREEN ============ */
+const MASK={"cols":16,"rows":18,"pts":[[6,1],[7,1],[8,1],[9,1],[10,1],[4,2],[5,2],[6,2],[7,2],[8,2],[9,2],[10,2],[11,2],[12,2],[4,3],[5,3],[6,3],[7,3],[10,3],[11,3],[12,3],[3,4],[4,4],[5,4],[11,4],[12,4],[13,4],[3,5],[4,5],[12,5],[13,5],[3,6],[4,6],[8,6],[9,6],[10,6],[3,7],[4,7],[8,7],[9,7],[10,7],[11,7],[12,7],[3,8],[4,8],[5,8],[10,8],[11,8],[12,8],[4,9],[5,9],[6,9],[12,9],[13,9],[5,10],[6,10],[7,10],[8,10],[12,10],[13,10],[6,11],[7,11],[8,11],[9,11],[12,11],[13,11],[3,12],[4,12],[12,12],[13,12],[3,13],[4,13],[5,13],[11,13],[12,13],[13,13],[4,14],[5,14],[6,14],[7,14],[10,14],[11,14],[12,14],[4,15],[5,15],[6,15],[7,15],[8,15],[9,15],[10,15],[11,15],[12,15],[6,16],[7,16],[8,16],[9,16],[10,16]]};
+
+(function(){
+  const cv=document.getElementById('matrix'),ctx=cv.getContext('2d');
+  const C=MASK.cols,R=MASK.rows;
+  const cell=Math.min(cv.width/C,cv.height/R);
+  const ox=(cv.width-cell*C)/2, oy=(cv.height-cell*R)/2;
+  const rad=cell*0.30;
+  const onSet=new Set(MASK.pts.map(p=>p[0]+','+p[1]));
+
+  // per-dot state for the S dots: random boot order + flicker params
+  const sDots=MASK.pts.map((p,i)=>({
+    x:p[0],y:p[1],
+    boot:Math.random(),          // boot order 0..1
+    ph:Math.random()*Math.PI*2,  // shimmer phase
+    fq:1.5+Math.random()*2       // shimmer freq
+  })).sort((a,b)=>a.boot-b.boot);
+  const total=sDots.length;
+
+  const BOOT_NOISE=1400, ASSEMBLE=1700, T0=performance.now();
+  let glitchAt=T0+BOOT_NOISE+ASSEMBLE+4500+Math.random()*3000;
+
+  function diamond(cx,cy,r){
+    ctx.beginPath();
+    ctx.moveTo(cx,cy-r);ctx.lineTo(cx+r,cy);ctx.lineTo(cx,cy+r);ctx.lineTo(cx-r,cy);
+    ctx.closePath();ctx.fill();
+  }
+
+  function frame(now){
+    const t=now-T0;
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.fillStyle='#f4f2ea';
+
+    /* phase 1: full-matrix strobe noise */
+    if(t<BOOT_NOISE){
+      for(let y=0;y<R;y++)for(let x=0;x<C;x++){
+        if(Math.random()<0.22){
+          ctx.globalAlpha=0.15+Math.random()*0.65;
+          diamond(ox+(x+.5)*cell,oy+(y+.5)*cell,rad);
+        }
+      }
+      ctx.globalAlpha=1;
+      requestAnimationFrame(frame);return;
+    }
+
+    /* idle grid: very faint ghost dots + occasional random twinkle */
+    for(let y=0;y<R;y++)for(let x=0;x<C;x++){
+      const key=x+','+y;
+      if(onSet.has(key))continue;
+      let a=0.05;
+      if(Math.random()<0.004)a=0.25+Math.random()*0.4;   // stray flicker
+      ctx.globalAlpha=a;
+      diamond(ox+(x+.5)*cell,oy+(y+.5)*cell,rad);
+    }
+
+    /* the S: assemble then hold with shimmer */
+    const asm=(t-BOOT_NOISE)/ASSEMBLE;
+    const inGlitch=now<glitchAt+260 && now>glitchAt-40;
+    const lit=Math.floor(Math.min(1,Math.max(0,asm))*total);
+    for(let i=0;i<lit;i++){
+      const d=sDots[i];
+      let a;
+      if(asm<1){
+        // dot strobe while settling
+        a=Math.random()<0.5?0.15:0.75+Math.random()*0.25;
+      }else{
+        // stable + breathing shimmer
+        a=0.82+Math.sin(t/1000*d.fq+d.ph)*0.14;
+        if(inGlitch && Math.random()<0.35)a=0.08+Math.random()*0.3; // glitch flash
+        if(Math.random()<0.002)a=0.1;                               // rare dropout
+      }
+      ctx.globalAlpha=Math.min(1,a);
+      diamond(ox+(d.x+.5)*cell,oy+(d.y+.5)*cell,rad);
+    }
+    ctx.globalAlpha=1;
+    if(now>glitchAt+300)glitchAt=now+5000+Math.random()*5000;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ============ reveal ============ */
+const io=new IntersectionObserver(es=>es.forEach(e=>e.isIntersecting&&e.target.classList.add('in')),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+setTimeout(()=>document.querySelectorAll('.reveal').forEach(el=>el.classList.add('in')),1600);
+
+/* ============ terminals ============ */
+const terms={
+ term1:[['t-p','$ ','t-c','somnia run "修复登录接口的 500 错误"'],
+        ['t-d','⠿ 分析堆栈… 定位到 auth/handler.go:87'],
+        ['t-ok','✓ 已修复并通过 12 项测试 (4.2s)'],
+        ['t-p','$ ','t-c','somnia commit --auto']],
+ term2:[['t-c','Somnia Desktop v1.2.0'],
+        ['t-d','会话: 12   Skills: 8   MCP Servers: 5'],
+        ['t-ok','● Agent Team "refactor-squad" 运行中'],
+        ['t-d','  architect ✓  developer ⠿  reviewer …']],
+ term3:[['t-p','🌐 ','t-c','https://somnia.top/app/#/connect'],
+        ['t-d','托管登录 · 正在安全接入桌面主机 …'],
+        ['t-ok','✓ 已连接 MacBook-Pro (延迟 38ms)'],
+        ['t-c','继续会话: "重构支付模块" — 进度 72%']],
+ term4:[['t-c','CLI 发起任务   → 10:24'],
+        ['t-c','Desktop 查看   → 12:05'],
+        ['t-c','Web 远程跟进  → 15:40'],
+        ['t-ok','✓ 同一上下文，全程不断线']]};
+function typeTerm(id){
+  const box=document.getElementById(id),lines=terms[id];let li=0,ci=0,cur;
+  function step(){
+    if(li>=lines.length){box.insertAdjacentHTML('beforeend','<span class="caret"></span>');return;}
+    if(ci===0){cur=document.createElement('span');cur.className='t-line';box.appendChild(cur);}
+    const parts=lines[li];let plain='';
+    for(let i=0;i<parts.length;i+=2)plain+=parts[i+1];
+    if(ci<=plain.length){
+      let count=0,html='';
+      for(let i=0;i<parts.length;i+=2){
+        const cls=parts[i],txt=parts[i+1],rem=ci-count;
+        if(rem<=0)break;
+        html+=`<span class="${cls}">${txt.slice(0,rem)}</span>`;count+=txt.length;}
+      cur.innerHTML=html+'<span class="caret"></span>';ci++;setTimeout(step,26);
+    }else{cur.innerHTML=cur.innerHTML.replace(/<span class="caret"><\/span>/,'');li++;ci=0;setTimeout(step,420);}
+  }
+  new IntersectionObserver((es,o)=>{if(es[0].isIntersecting){o.disconnect();step();}},{threshold:.3}).observe(box);
+}
+Object.keys(terms).forEach(typeTerm);
+
+/* ticker loop */
+const tk=document.getElementById('ticker');tk.innerHTML+=tk.innerHTML;
+</script>
+</body>
+</html>
