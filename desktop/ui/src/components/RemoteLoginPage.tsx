@@ -44,6 +44,9 @@ export default function RemoteLoginPage({ access }: RemoteLoginPageProps) {
         <button type="submit" disabled={access.busy || !access.username.trim() || !access.password}>
           {t("remote.signIn")}
         </button>
+        <button type="button" onClick={() => access.beginGitHubSignIn()} disabled={access.busy}>
+          {t("remote.continueWithGitHub")}
+        </button>
         <a className="remote-login-link" href="#/register">
           {t("remote.noAccountRegister")}
         </a>

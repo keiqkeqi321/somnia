@@ -28,6 +28,7 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
   const busy = access.busy || connecting;
   const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
   const projects = selectedDevice?.projects ?? [];
+  const githubIdentity = access.identities.find((identity) => identity.provider === "github");
 
   useEffect(() => {
     if (projects.length > 0 && !projects.some((project) => project.project_id === projectId)) {
@@ -105,6 +106,18 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
           <button type="button" onClick={onSignOut} disabled={busy}>
             {t("remote.signOut")}
           </button>
+          {githubIdentity ? (
+            <>
+              <p className="remote-empty">GitHub: @{githubIdentity.provider_username}</p>
+              <button type="button" onClick={() => void access.unbindGitHub()} disabled={busy}>
+                {t("remote.unbindGitHub")}
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => access.beginGitHubBind()} disabled={busy}>
+              {t("remote.bindGitHub")}
+            </button>
+          )}
         </section>
         <div className="remote-notice" role="status">
           {access.notice}

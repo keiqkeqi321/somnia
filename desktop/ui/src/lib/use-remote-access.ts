@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
-import { RemoteRelayClient, RemoteRelayError, type RemoteDevice } from "./remote-relay-client";
+import { spaSelfUrl } from "./remote-oauth";
+import { RemoteRelayClient, RemoteRelayError, type RemoteDevice, type RemoteIdentity } from "./remote-relay-client";
 
 export function useRemoteAccess(initialRelayUrl: string) {
   const [relayUrl, setRelayUrl] = useState(initialRelayUrl);
@@ -8,6 +9,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
   const [password, setPassword] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [devices, setDevices] = useState<RemoteDevice[]>([]);
+  const [identities, setIdentities] = useState<RemoteIdentity[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [pairingName, setPairingName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
@@ -32,6 +34,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       clientRef.current = client;
       applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
+      setIdentities(await client.listIdentities());
       setAuthenticated(true);
       setPassword("");
       setNotice("Signed in.");
@@ -55,6 +58,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       clientRef.current = client;
       applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
+      setIdentities(await client.listIdentities());
       setAuthenticated(true);
       setPassword("");
       setNotice("Account created. Signed in.");
@@ -78,6 +82,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       clientRef.current = client;
       applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
+      setIdentities(await client.listIdentities());
       setAuthenticated(true);
       setNotice("Signed in.");
       return true;
@@ -124,6 +129,57 @@ export function useRemoteAccess(initialRelayUrl: string) {
     }
   }
 
+  /**
+   * OAuth sign-in: full-page redirect to the Relay authorize endpoint (mode
+   * `login`). On success the Relay sets the same cookie session and lands back
+   * on the bare SPA address, where the mount restore picks the session up.
+   */
+  function beginGitHubSignIn(): void {
+    const client = new RemoteRelayClient(relayUrl);
+    window.location.assign(client.oauthAuthorizeUrl("github", "login", spaSelfUrl()));
+  }
+
+  /**
+   * OAuth bind: same round trip in mode `bind`, for an already signed-in
+   * account. The callback returns with the grant in the URL fragment; the App
+   * mount flow hands it to `completeGitHubBind`.
+   */
+  function beginGitHubBind(): void {
+    const client = clientRef.current;
+    if (!client) return;
+    window.location.assign(client.oauthAuthorizeUrl("github", "bind", spaSelfUrl()));
+  }
+
+  async function completeGitHubBind(grant: { provider: string; code: string; state: string }): Promise<void> {
+    const client = clientRef.current;
+    if (!client) return;
+    setBusy(true);
+    try {
+      await client.bindIdentity(grant.provider, grant.code, grant.state);
+      setIdentities(await client.listIdentities());
+      setNotice("GitHub account bound.");
+    } catch (error) {
+      setNotice(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unbindGitHub(): Promise<void> {
+    const client = clientRef.current;
+    if (!client) return;
+    setBusy(true);
+    try {
+      await client.unbindIdentity("github");
+      setIdentities(await client.listIdentities());
+      setNotice("GitHub account unbound.");
+    } catch (error) {
+      setNotice(formatError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function signOut(): Promise<void> {
     setBusy(true);
     try {
@@ -135,6 +191,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       devicesRef.current = [];
       setAuthenticated(false);
       setDevices([]);
+      setIdentities([]);
       setDeviceId("");
       setPairingCode("");
       setBusy(false);
@@ -157,11 +214,15 @@ export function useRemoteAccess(initialRelayUrl: string) {
 
   return {
     authenticated,
+    beginGitHubBind,
+    beginGitHubSignIn,
     busy,
+    completeGitHubBind,
     createPairing,
     deviceId,
     devices,
     devicesRef,
+    identities,
     notice,
     pairingCode,
     pairingName,
@@ -178,6 +239,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
     signIn,
     signOut,
     signUp,
+    unbindGitHub,
     username,
     verifyAccess,
   };

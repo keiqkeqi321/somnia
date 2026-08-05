@@ -71,6 +71,19 @@ class CredentialPolicyError(ValueError):
 USERNAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]{3,32}")
 
 
+def sanitize_external_username(hint: str) -> str:
+    """Best-effort cleanup of an external profile name into a valid username base.
+
+    Illegal characters become ``-``, the result is truncated to 32 characters
+    and padded to the 3-character minimum; an empty hint falls back to
+    ``user``. The caller deduplicates collisions.
+    """
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]", "-", str(hint).strip())[:32]
+    if not cleaned:
+        return "user"
+    return cleaned if len(cleaned) >= 3 else cleaned.ljust(3, "-")
+
+
 @dataclass(frozen=True, slots=True)
 class Account:
     id: str
@@ -242,7 +255,9 @@ class RemoteAuth:
             recent.append(now)
             account = self._accounts_by_username.get(normalized)
         verified = False
-        if account is None:
+        if account is None or account.password_hash == "":
+            # Accounts without a password (OAuth-only) take the same dummy-hash
+            # path as unknown usernames so the timing stays uniform.
             self._password_hasher.hash(str(password))
         else:
             try:
@@ -296,6 +311,49 @@ class RemoteAuth:
                     StoredAccount(id=account.id, username=account.username, password_hash=account.password_hash)
                 )
             return account
+
+    def register_external_account(self, *, username_hint: str, source: str) -> Account:
+        """Create a passwordless account for an external (OAuth) sign-in.
+
+        The username is derived from ``username_hint`` (see
+        ``sanitize_external_username``) with ``-2`` … ``-99`` suffixes on
+        casefold collisions and a random suffix as the last resort. The empty
+        ``password_hash`` marks the account as having no password login.
+        """
+        base = sanitize_external_username(username_hint)
+        with self._lock:
+            now = self._clock()
+            recent = self._recent_attempts(
+                self._registration_attempts,
+                source,
+                now=now,
+                window_seconds=self.registration_attempt_window_seconds,
+            )
+            if len(recent) >= self.registration_attempt_limit:
+                raise RegistrationRateLimited("Too many registration attempts. Try again later.")
+            recent.append(now)
+            username = self._available_username(base)
+            account = Account(id=uuid.uuid4().hex, username=username, password_hash="")
+            self._accounts_by_username[username.casefold()] = account
+            self._accounts_by_id[account.id] = account
+            if self._metadata_store is not None:
+                self._metadata_store.save_account(
+                    StoredAccount(id=account.id, username=account.username, password_hash=account.password_hash)
+                )
+            return account
+
+    def _available_username(self, base: str) -> str:
+        if base.casefold() not in self._accounts_by_username:
+            return base
+        for suffix in range(2, 100):
+            tail = f"-{suffix}"
+            candidate = f"{base[: 32 - len(tail)]}{tail}"
+            if candidate.casefold() not in self._accounts_by_username:
+                return candidate
+        while True:
+            candidate = f"{base[:25]}-{secrets.token_hex(3)}"
+            if candidate.casefold() not in self._accounts_by_username:
+                return candidate
 
     def issue_browser_tokens(self, account_id: str) -> BrowserTokens:
         now = self._clock()

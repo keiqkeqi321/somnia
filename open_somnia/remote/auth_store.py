@@ -2,7 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import Column, Float, ForeignKey, LargeBinary, MetaData, String, Table, create_engine, delete, insert, select, update
+from sqlalchemy import (
+    Column,
+    Float,
+    ForeignKey,
+    LargeBinary,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+    create_engine,
+    delete,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.engine import Engine
 
 
@@ -30,6 +44,15 @@ class StoredBrowserSession:
     refresh_digest: str
     access_expires_at: float
     refresh_expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class StoredIdentity:
+    account_id: str
+    provider: str
+    provider_user_id: str
+    provider_username: str
+    created_at: float
 
 
 class AuthMetadataStore:
@@ -63,6 +86,16 @@ class AuthMetadataStore:
             Column("account_id", String(64), ForeignKey("remote_accounts.id"), nullable=False, index=True),
             Column("access_expires_at", Float, nullable=False),
             Column("refresh_expires_at", Float, nullable=False),
+        )
+        self.identities = Table(
+            "remote_identities",
+            metadata,
+            Column("provider", String(32), nullable=False),
+            Column("provider_user_id", String(128), nullable=False),
+            Column("account_id", String(64), ForeignKey("remote_accounts.id"), nullable=False, index=True),
+            Column("provider_username", String(128), nullable=False),
+            Column("created_at", Float, nullable=False),
+            PrimaryKeyConstraint("provider", "provider_user_id"),
         )
         metadata.create_all(self.engine)
 
@@ -146,6 +179,41 @@ class AuthMetadataStore:
         with self.engine.begin() as connection:
             connection.execute(
                 delete(self.browser_sessions).where(self.browser_sessions.c.access_digest == access_digest)
+            )
+
+    def load_identities(self) -> list[StoredIdentity]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(self.identities)).mappings().all()
+        return [
+            StoredIdentity(
+                account_id=row["account_id"],
+                provider=row["provider"],
+                provider_user_id=row["provider_user_id"],
+                provider_username=row["provider_username"],
+                created_at=float(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def save_identity(self, identity: StoredIdentity) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                insert(self.identities).values(
+                    account_id=identity.account_id,
+                    provider=identity.provider,
+                    provider_user_id=identity.provider_user_id,
+                    provider_username=identity.provider_username,
+                    created_at=identity.created_at,
+                )
+            )
+
+    def delete_identity(self, provider: str, provider_user_id: str) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                delete(self.identities).where(
+                    self.identities.c.provider == provider,
+                    self.identities.c.provider_user_id == provider_user_id,
+                )
             )
 
     def close(self) -> None:

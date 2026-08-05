@@ -9,6 +9,7 @@ from pathlib import Path
 import secrets
 import time
 from typing import Any, Callable, Mapping
+from urllib.parse import urlencode
 import uuid
 
 from cryptography.exceptions import InvalidSignature
@@ -17,7 +18,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -39,6 +40,16 @@ from open_somnia.remote.auth import (
     device_challenge_payload,
 )
 from open_somnia.remote.auth_store import AuthMetadataStore
+from open_somnia.remote.identities import Identity, IdentityRegistry, IdentityTaken, LastAuthMethodError
+from open_somnia.remote.oauth import (
+    GitHubOAuthProvider,
+    OAuthError,
+    derive_state_signing_key,
+    github_provider_from_env,
+    is_allowed_redirect,
+    issue_oauth_state,
+    verify_oauth_state,
+)
 
 
 ACCESS_COOKIE = "somnia_access"
@@ -430,6 +441,7 @@ def create_relay_app(
     secure_cookies: bool = False,
     allowed_origins: list[str] | None = None,
     database_url: str | None = None,
+    oauth_providers: Mapping[str, GitHubOAuthProvider] | None = None,
     client_send_timeout_seconds: float = 2.0,
     max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
 ) -> Starlette:
@@ -467,6 +479,14 @@ def create_relay_app(
         client_send_timeout_seconds=client_send_timeout_seconds,
         max_message_bytes=max_message_bytes,
     )
+    if oauth_providers is None:
+        github_provider = github_provider_from_env()
+        oauth_providers = {"github": github_provider} if github_provider is not None else {}
+    identity_registry = IdentityRegistry(metadata_store, clock=clock)
+    # resolved_secret_key is None for in-memory setups (tests); fall back to a
+    # per-boot random key there, matching RemoteAuth's own behavior.
+    oauth_state_key = derive_state_signing_key(resolved_secret_key or secrets.token_bytes(32))
+    oauth_redirect_uri_override = os.environ.get("SOMNIA_GITHUB_REDIRECT_URI", "").strip() or None
 
     async def health_endpoint(request: Request) -> JSONResponse:
         del request
@@ -624,6 +644,118 @@ def create_relay_app(
         await hub.revoke_device(device_id)
         return JSONResponse(_serialize_device(device))
 
+    def oauth_redirect_uri(request: Request) -> str:
+        if oauth_redirect_uri_override:
+            return oauth_redirect_uri_override
+        return f"{request.base_url}api/auth/github/callback"
+
+    async def oauth_authorize_endpoint(request: Request) -> Response:
+        provider = oauth_providers.get("github")
+        if provider is None:
+            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        mode = str(request.query_params.get("mode", "login"))
+        if mode not in {"login", "bind"}:
+            return JSONResponse({"error": "mode must be 'login' or 'bind'."}, status_code=400)
+        redirect = str(request.query_params.get("redirect", "")).strip() or "/"
+        if not is_allowed_redirect(redirect, browser_origins):
+            return JSONResponse({"error": "redirect is not an allowed origin."}, status_code=400)
+        state = issue_oauth_state(oauth_state_key, provider="github", mode=mode, redirect=redirect, clock=clock)
+        return RedirectResponse(provider.authorize_url(state=state, redirect_uri=oauth_redirect_uri(request)), status_code=302)
+
+    async def oauth_callback_endpoint(request: Request) -> Response:
+        provider = oauth_providers.get("github")
+        if provider is None:
+            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        code = str(request.query_params.get("code", "")).strip()
+        state_token = str(request.query_params.get("state", "")).strip()
+        state = verify_oauth_state(oauth_state_key, state_token, provider="github", clock=clock)
+        if state is None or not code:
+            return JSONResponse({"error": "OAuth state is invalid or expired."}, status_code=400)
+        redirect = str(state.get("redirect", "")).strip()
+        if not is_allowed_redirect(redirect, browser_origins):
+            redirect = web_origins[0] if web_origins else "/"
+        if state.get("mode") == "bind":
+            # Two-step bind: the SameSite=strict session cookie is not sent on
+            # this cross-site return from GitHub, so the callback hands
+            # code+state to the SPA via URL fragment and the SPA finishes via
+            # POST /api/auth/github/bind with its cookie attached.
+            fragment = urlencode({"provider": "github", "code": code, "state": state_token})
+            return RedirectResponse(f"{redirect}#{fragment}", status_code=302)
+        try:
+            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request))
+        except OAuthError:
+            return RedirectResponse(_oauth_error_redirect(redirect, "github_login_failed"), status_code=302)
+        identity = identity_registry.resolve("github", profile.provider_user_id)
+        account_id = identity.account_id if identity is not None else None
+        if account_id is None:
+            if not registration_enabled:
+                return JSONResponse({"error": "Registration is disabled on this Relay."}, status_code=403)
+            source = request.client.host if request.client is not None else "unknown"
+            try:
+                account = auth.register_external_account(username_hint=profile.username, source=source)
+            except RegistrationRateLimited:
+                return RedirectResponse(_oauth_error_redirect(redirect, "registration_rate_limited"), status_code=302)
+            try:
+                identity_registry.bind(account.id, "github", profile.provider_user_id, profile.username)
+            except IdentityTaken:
+                # A concurrent sign-in bound this GitHub user first; log in as the winner.
+                winner = identity_registry.resolve("github", profile.provider_user_id)
+                account_id = winner.account_id if winner is not None else None
+            else:
+                account_id = account.id
+            if account_id is None:
+                return RedirectResponse(_oauth_error_redirect(redirect, "github_login_failed"), status_code=302)
+        response = RedirectResponse(redirect, status_code=302)
+        _set_browser_cookies(response, auth.issue_browser_tokens(account_id), auth, secure=secure_cookies)
+        return response
+
+    async def oauth_bind_endpoint(request: Request) -> Response:
+        provider = oauth_providers.get("github")
+        if provider is None:
+            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
+        if account is None:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+        body = await _json_body(request)
+        code = str(body.get("code", "")).strip()
+        state = verify_oauth_state(oauth_state_key, str(body.get("state", "")), provider="github", clock=clock)
+        if state is None or state.get("mode") != "bind" or not code:
+            return JSONResponse({"error": "OAuth state is invalid or expired."}, status_code=400)
+        try:
+            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request))
+        except OAuthError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        try:
+            identity = identity_registry.bind(account.id, "github", profile.provider_user_id, profile.username)
+        except IdentityTaken as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        return JSONResponse({"identity": _serialize_identity(identity)})
+
+    async def list_identities_endpoint(request: Request) -> JSONResponse:
+        account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
+        if account is None:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+        identities = identity_registry.list_for_account(account.id)
+        return JSONResponse({"identities": [_serialize_identity(identity) for identity in identities]})
+
+    async def unbind_identity_endpoint(request: Request) -> JSONResponse:
+        account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
+        if account is None:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+        owned = identity_registry.list_for_account(account.id)
+        has_other_login = bool(account.password_hash) or len(owned) > 1
+        try:
+            identity = identity_registry.unbind(
+                account.id,
+                str(request.path_params["provider"]),
+                has_other_login=has_other_login,
+            )
+        except LastAuthMethodError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        if identity is None:
+            return JSONResponse({"error": "Identity not found."}, status_code=404)
+        return JSONResponse({"identity": _serialize_identity(identity)})
+
     async def connector_endpoint(socket: WebSocket) -> None:
         await hub.serve_connector(str(socket.path_params["device_id"]), socket)
 
@@ -664,12 +796,18 @@ def create_relay_app(
             Route("/api/pair-sessions/{session_id}/approve", approve_pair_session_endpoint, methods=["POST"]),
             Route("/api/devices", list_devices_endpoint, methods=["GET"]),
             Route("/api/devices/{device_id}", revoke_device_endpoint, methods=["DELETE"]),
+            Route("/api/auth/github/authorize", oauth_authorize_endpoint, methods=["GET"]),
+            Route("/api/auth/github/callback", oauth_callback_endpoint, methods=["GET"]),
+            Route("/api/auth/github/bind", oauth_bind_endpoint, methods=["POST"]),
+            Route("/api/auth/identities", list_identities_endpoint, methods=["GET"]),
+            Route("/api/auth/identities/{provider}", unbind_identity_endpoint, methods=["DELETE"]),
             WebSocketRoute("/ws/connector/{device_id}", connector_endpoint),
             WebSocketRoute("/ws/client/{device_id}", client_endpoint),
         ]
     )
     app.state.relay_hub = hub
     app.state.remote_auth = auth
+    app.state.identity_registry = identity_registry
     return app
 
 
@@ -689,7 +827,7 @@ def _message_within_limit(message: Any, limit: int) -> bool:
     return len(encoded) <= limit
 
 
-def _set_browser_cookies(response: JSONResponse, tokens, auth: RemoteAuth, *, secure: bool) -> None:
+def _set_browser_cookies(response: Response, tokens, auth: RemoteAuth, *, secure: bool) -> None:
     response.set_cookie(
         ACCESS_COOKIE,
         tokens.access_token,
@@ -717,3 +855,17 @@ def _serialize_device(device) -> dict[str, Any]:
         "created_at": device.created_at,
         "revoked_at": device.revoked_at,
     }
+
+
+def _serialize_identity(identity: Identity) -> dict[str, Any]:
+    return {
+        "provider": identity.provider,
+        "provider_user_id": identity.provider_user_id,
+        "provider_username": identity.provider_username,
+        "created_at": identity.created_at,
+    }
+
+
+def _oauth_error_redirect(redirect: str, slug: str) -> str:
+    separator = "&" if "?" in redirect else "?"
+    return f"{redirect}{separator}oauth_error={slug}"

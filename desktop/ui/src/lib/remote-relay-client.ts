@@ -17,6 +17,14 @@ export interface PairingGrant {
   expires_at: number;
 }
 
+/** A third-party identity (e.g. GitHub) linked to the account, as reported by `GET /api/auth/identities`. */
+export interface RemoteIdentity {
+  provider: string;
+  provider_user_id: string;
+  provider_username: string;
+  created_at: number;
+}
+
 /** Device-flow pair session as reported by `GET /api/pair-sessions/{id}`. */
 export interface PairSessionInfo {
   status: "pending" | "approved" | "expired";
@@ -62,6 +70,32 @@ export class RemoteRelayClient {
   async listDevices(): Promise<RemoteDevice[]> {
     const payload = await this.request("/api/devices", {}, true) as { devices?: unknown };
     return Array.isArray(payload.devices) ? payload.devices as RemoteDevice[] : [];
+  }
+
+  /**
+   * Builds the OAuth authorize URL for a full-page redirect (the Relay 302s
+   * to the provider). `redirect` is where the Relay sends the browser back.
+   */
+  oauthAuthorizeUrl(provider: string, mode: "login" | "bind", redirect: string): string {
+    const query = new URLSearchParams({ mode, redirect });
+    return `${this.baseUrl}/api/auth/${encodeURIComponent(provider)}/authorize?${query}`;
+  }
+
+  /** Completes the OAuth bind round trip with the grant from the callback fragment. */
+  bindIdentity(provider: string, code: string, state: string): Promise<RemoteIdentity> {
+    return this.request(`/api/auth/${encodeURIComponent(provider)}/bind`, {
+      method: "POST",
+      body: JSON.stringify({ code, state }),
+    }, true) as Promise<RemoteIdentity>;
+  }
+
+  async listIdentities(): Promise<RemoteIdentity[]> {
+    const payload = await this.request("/api/auth/identities", {}, true) as { identities?: unknown };
+    return Array.isArray(payload.identities) ? payload.identities as RemoteIdentity[] : [];
+  }
+
+  async unbindIdentity(provider: string): Promise<void> {
+    await this.request(`/api/auth/identities/${encodeURIComponent(provider)}`, { method: "DELETE" }, true);
   }
 
   async logout(): Promise<void> {

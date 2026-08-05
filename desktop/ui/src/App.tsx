@@ -57,6 +57,7 @@ import {
   writeRemoteLastTarget,
 } from "./lib/remote-storage";
 import { navigateRemoteRoute, parseRemoteRoute, resolveRemoteRoute, useRemoteRouteHash } from "./lib/remote-router";
+import { parseOAuthBindFragment, readOAuthError, stripOAuthError } from "./lib/remote-oauth";
 import { useWorkspaceImageSource } from "./lib/workspace-image";
 import { useRemoteAccess } from "./lib/use-remote-access";
 import RemoteConnectPage from "./components/RemoteConnectPage";
@@ -458,6 +459,19 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       return;
     }
     remoteRestoreAttemptedRef.current = true;
+    // A failed OAuth login lands back here with `?oauth_error=<slug>`: strip
+    // it from the URL and surface the failure. A successful restore below
+    // overwrites the notice ("Signed in."), so the message only survives on
+    // the login page — which is exactly where it belongs.
+    const oauthError = readOAuthError(window.location.search);
+    if (oauthError) {
+      window.history.replaceState(null, "", stripOAuthError(window.location.search, window.location.hash));
+      remoteAccess.setNotice(
+        oauthError === "github_login_failed"
+          ? "GitHub sign-in failed. Please try again."
+          : "OAuth sign-in failed. Please try again.",
+      );
+    }
     void restoreRemoteSession().finally(() => setRemoteRestorePending(false));
     // Intentionally run only once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -947,8 +961,18 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }
 
   async function restoreRemoteSession() {
+    // An OAuth bind callback carries its grant in a non-route fragment
+    // (`#provider=…&code=…&state=…`); capture it now, before the route-sync
+    // effect rewrites the hash once restore settles.
+    const bindGrant = parseOAuthBindFragment(window.location.hash);
     const restored = await remoteAccess.restoreSession();
     if (!restored) {
+      return;
+    }
+    if (bindGrant) {
+      // The bind round trip always lands on `#/connect` — it must not trigger
+      // the remembered-target auto-reconnect below.
+      await remoteAccess.completeGitHubBind(bindGrant);
       return;
     }
     // A `#/pair` deep link must not be overridden by the remembered
