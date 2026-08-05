@@ -159,10 +159,36 @@ section.chapter{border-bottom:1px solid var(--line-dark)}
 @media(max-width:860px){.os-grid{grid-template-columns:1fr}.os-l{border-right:none;padding-right:0}.os-r{padding-left:0}}
 
 /* big statement / cta */
-.statement{padding:110px 0;text-align:left}
+.statement{padding:110px 0;text-align:left;scroll-margin-top:80px}
 .statement h2{font-family:'Noto Serif SC',serif;font-weight:900;font-size:clamp(36px,5vw,72px);line-height:1.25;max-width:900px}
 .statement h2 .dotlogo-inline{display:inline-block;width:1.02em;height:1.02em;vertical-align:-.18em;border-radius:.22em;mix-blend-mode:multiply}
 .statement p{margin:30px 0 40px;font-size:15.5px;line-height:2;color:var(--ink-2);max-width:520px}
+
+/* cta grid */
+.cta-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line-dark)}
+.cta-card{padding:38px 36px 34px;position:relative}
+.cta-local{border-right:1px solid var(--line-dark);background:var(--paper)}
+.cta-remote{background:var(--ink);color:var(--paper)}
+.cta-card-head{display:flex;align-items:baseline;gap:12px;margin-bottom:22px}
+.cta-num{font-family:'Space Grotesk';font-size:13px;letter-spacing:2px;color:var(--accent)}
+.cta-remote .cta-num{color:#8bff9e}
+.cta-label{font-family:'Space Grotesk';font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--ink-3)}
+.cta-remote .cta-label{color:rgba(244,242,234,.5)}
+.cta-card h3{font-family:'Noto Serif SC',serif;font-weight:700;font-size:24px;margin-bottom:10px}
+.cta-card .cta-desc{font-size:13.5px;line-height:1.9;color:var(--ink-2);margin:0 0 26px;max-width:none}
+.cta-remote .cta-desc{color:rgba(244,242,234,.65)}
+.cta-group{margin-bottom:18px}
+.cta-group:last-child{margin-bottom:0}
+.cta-group-label{display:block;font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:2px;color:var(--ink-3);text-transform:uppercase;margin-bottom:10px}
+.cta-btns{display:flex;gap:12px;flex-wrap:wrap}
+.cta-remote-link{margin:6px 0 14px}
+.btn-remote{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+.btn-remote:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+.cta-remote-note{font-family:'JetBrains Mono';font-size:10.5px;letter-spacing:1.5px;color:rgba(244,242,234,.4);text-transform:uppercase}
+.standby-bar{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:34px;padding-top:26px;border-top:1px solid var(--line)}
+.standby-dot{width:8px;height:8px;border-radius:50%;background:#8bff9e;box-shadow:0 0 8px rgba(139,255,158,.7);animation:blink 1.6s infinite}
+.standby-text{font-family:'Space Grotesk';font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--ink-3)}
+@media(max-width:860px){.cta-grid{grid-template-columns:1fr}.cta-local{border-right:none;border-bottom:1px solid var(--line-dark)}}
 
 footer{padding:34px 0 44px}
 .foot-in{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;font-size:12.5px;color:var(--ink-3)}
@@ -175,6 +201,7 @@ footer{padding:34px 0 44px}
 .reveal{opacity:0;transform:translateY(26px);transition:opacity .7s ease,transform .7s ease}
 .reveal.in{opacity:1;transform:none}
 </style>
+<base target="_blank">
 </head>
 <body>
 
@@ -189,7 +216,7 @@ footer{padding:34px 0 44px}
         <a href="#platforms">多端</a>
         <a href="#opensource">开源</a>
         <a href="https://github.com/keiqkeqi321/somnia" target="_blank" rel="noopener">GitHub</a>
-        <a class="solid" href="#download">立即下载</a>
+        <a class="solid" href="#download">立即使用</a>
       </nav>
     </div>
   </div>
@@ -357,11 +384,39 @@ footer{padding:34px 0 44px}
 <section class="statement" id="download">
   <div class="wrap reveal">
     <h2>现在，就把任务交给 <img class="dotlogo-inline" src="home-assets/logo.png" alt="S"> Somnia。</h2>
-    <p>免费、开源（MIT）、多端可用。从 GitHub Releases 下载桌面版，或用 pip 装上 CLI —— 再通过 <a href="https://somnia.top/app/#/connect" target="_blank" rel="noopener" style="color:var(--accent)">somnia.top</a> 远程接管。</p>
-    <div class="hero-cta">
-      <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">下载 for macOS · dmg</a>
-      <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">下载 for Windows · msi</a>
-      <a class="btn btn-line" href="https://pypi.org/project/somnia/" target="_blank" rel="noopener">pip install somnia ↗</a>
+    <p>本地装一次，多端待命。或直接从浏览器远程接入。</p>
+    <div class="cta-grid">
+      <div class="cta-card cta-local">
+        <div class="cta-card-head"><span class="cta-num">01</span><span class="cta-label">本地部署</span></div>
+        <h3>桌面端与 CLI</h3>
+        <p class="cta-desc">在你的主力机器上安装 Somnia，Agent 随叫随到。</p>
+        <div class="cta-group">
+          <span class="cta-group-label">桌面端</span>
+          <div class="cta-btns">
+            <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">macOS · dmg</a>
+            <a class="btn btn-ink" href="https://github.com/keiqkeqi321/somnia/releases/latest" target="_blank" rel="noopener">Windows · msi</a>
+          </div>
+        </div>
+        <div class="cta-group">
+          <span class="cta-group-label">命令行</span>
+          <div class="cta-btns">
+            <a class="btn btn-line" href="https://pypi.org/project/somnia/" target="_blank" rel="noopener">pip install somnia ↗</a>
+          </div>
+        </div>
+      </div>
+      <div class="cta-card cta-remote">
+        <div class="cta-card-head"><span class="cta-num">02</span><span class="cta-label">远程待命</span></div>
+        <h3>已在别处部署好了？</h3>
+        <p class="cta-desc">打开浏览器，接入同一台 Agent 主机 —— 出门在外，任务照跑。</p>
+        <div class="cta-remote-link">
+          <a class="btn btn-remote" href="https://somnia.top/app/#/connect" target="_blank" rel="noopener">somnia.top/app/#/connect ↗</a>
+        </div>
+        <span class="cta-remote-note">Web Remote · 桌面端的远程入口</span>
+      </div>
+    </div>
+    <div class="standby-bar">
+      <span class="standby-dot"></span>
+      <span class="standby-text">Standing By · 任务在任何端不间断</span>
     </div>
   </div>
 </section>
