@@ -177,6 +177,28 @@ export function useRemoteAccess(initialRelayUrl: string) {
     }
   }
 
+  /**
+   * Silent device-list refresh for the connect page poller: a newly paired
+   * Device only appears after the Desktop claims and enables it (seconds
+   * after the browser approval), so the picker re-reads the list until it
+   * shows up. Never touches busy/notice and keeps the selection valid.
+   */
+  async function refreshDevices(): Promise<void> {
+    const client = clientRef.current;
+    if (!client) return;
+    try {
+      const availableDevices = await client.listDevices();
+      applyDevices(availableDevices);
+      setDeviceId((current) =>
+        availableDevices.some((device) => device.device_id === current && !device.revoked_at)
+          ? current
+          : (availableDevices.find((device) => !device.revoked_at)?.device_id ?? ""),
+      );
+    } catch {
+      // A transient Relay failure keeps the current list; the next poll retries.
+    }
+  }
+
   async function verifyAccess(): Promise<boolean> {
     try {
       await clientRef.current?.listDevices();
@@ -206,6 +228,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
     pairingCode,
     pairingName,
     password,
+    refreshDevices,
     relayUrl,
     restoreSession,
     revokeSelectedDevice,

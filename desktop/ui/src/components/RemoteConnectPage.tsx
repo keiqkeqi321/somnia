@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useI18n } from "../lib/i18n";
 import { oauthProviderLabel } from "../lib/remote-oauth";
@@ -29,6 +29,17 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
   const busy = access.busy || connecting;
   const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
   const projects = selectedDevice?.projects ?? [];
+  const accessRef = useRef(access);
+  accessRef.current = access;
+
+  // The picker is usually entered right after a pairing approval, but the
+  // Relay-side Device only appears once the Desktop claims and enables it —
+  // poll so the list fills in without a manual page refresh.
+  useEffect(() => {
+    void accessRef.current.refreshDevices();
+    const timer = window.setInterval(() => void accessRef.current.refreshDevices(), 3000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (projects.length > 0 && !projects.some((project) => project.project_id === projectId)) {
