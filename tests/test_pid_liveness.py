@@ -13,6 +13,17 @@ class PidLivenessTests(unittest.TestCase):
     def test_current_process_is_alive(self):
         self.assertTrue(pid_is_alive(os.getpid()))
 
+    def test_exited_process_is_dead_with_handle_still_open(self):
+        # Regression: on Windows, Popen keeps the child handle open, so the
+        # kernel retains the process object and a bare OpenProcess succeeds
+        # even though the process has exited. Liveness must consult the exit
+        # code, or per-workspace locks are never reclaimed (real-world victim:
+        # desktop/backend/instance_lock.py).
+        process = subprocess.Popen([sys.executable, "-c", "pass"])
+        pid = process.pid
+        process.wait()
+        self.assertFalse(pid_is_alive(pid))
+
     def test_exited_process_is_dead(self):
         process = subprocess.Popen([sys.executable, "-c", "pass"])
         pid = process.pid
