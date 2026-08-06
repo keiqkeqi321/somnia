@@ -117,6 +117,14 @@ class AuthMetadataStore:
                 )
             )
 
+    def update_account_password(self, account_id: str, password_hash: str) -> None:
+        with self.engine.begin() as connection:
+            connection.execute(
+                update(self.accounts)
+                .where(self.accounts.c.id == str(account_id))
+                .values(password_hash=str(password_hash))
+            )
+
     def load_devices(self) -> list[StoredDevice]:
         with self.engine.connect() as connection:
             rows = connection.execute(select(self.devices)).mappings().all()

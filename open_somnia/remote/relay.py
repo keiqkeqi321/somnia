@@ -24,6 +24,8 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from open_somnia.remote.auth import (
     CredentialPolicyError,
+    CurrentPasswordInvalid,
+    CurrentPasswordRequired,
     LoginRateLimited,
     PairingCodeExpired,
     PairingCodeInvalid,
@@ -557,6 +559,27 @@ def create_relay_app(
         response.delete_cookie(REFRESH_COOKIE, path="/api/auth")
         return response
 
+    async def set_password_endpoint(request: Request) -> JSONResponse:
+        account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
+        if account is None:
+            return JSONResponse({"error": "Authentication required."}, status_code=401)
+        body = await _json_body(request)
+        source = request.client.host if request.client is not None else "unknown"
+        try:
+            auth.set_password(
+                account.id,
+                body.get("password", ""),
+                current_password=body.get("current_password"),
+                source=source,
+            )
+        except LoginRateLimited as exc:
+            return JSONResponse({"error": str(exc)}, status_code=429, headers={"Retry-After": "60"})
+        except (CredentialPolicyError, CurrentPasswordRequired) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except CurrentPasswordInvalid as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        return JSONResponse({"status": "password_set"})
+
     async def create_pairing_endpoint(request: Request) -> JSONResponse:
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
         if account is None:
@@ -736,7 +759,12 @@ def create_relay_app(
         if account is None:
             return JSONResponse({"error": "Authentication required."}, status_code=401)
         identities = identity_registry.list_for_account(account.id)
-        return JSONResponse({"identities": [_serialize_identity(identity) for identity in identities]})
+        return JSONResponse(
+            {
+                "identities": [_serialize_identity(identity) for identity in identities],
+                "has_password": bool(account.password_hash),
+            }
+        )
 
     async def unbind_identity_endpoint(request: Request) -> JSONResponse:
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
@@ -789,6 +817,7 @@ def create_relay_app(
             Route("/api/auth/register", register_endpoint, methods=["POST"]),
             Route("/api/auth/refresh", refresh_endpoint, methods=["POST"]),
             Route("/api/auth/logout", logout_endpoint, methods=["POST"]),
+            Route("/api/auth/password", set_password_endpoint, methods=["POST"]),
             Route("/api/pairings", create_pairing_endpoint, methods=["POST"]),
             Route("/api/pairings/claim", claim_pairing_endpoint, methods=["POST"]),
             Route("/api/pair-sessions", create_pair_session_endpoint, methods=["POST"]),

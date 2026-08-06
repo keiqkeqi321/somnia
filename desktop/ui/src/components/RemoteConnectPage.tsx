@@ -24,6 +24,7 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
   const { t } = useI18n();
   const [projectId, setProjectId] = useState("");
   const [pairingOpen, setPairingOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
 
   const busy = access.busy || connecting;
   const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
@@ -118,6 +119,31 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
               {t("remote.bindGitHub")}
             </button>
           )}
+          {!access.hasPassword ? (
+            <>
+              <label>
+                {t("remote.newPassword")}
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  disabled={busy}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  void access.setAccountPassword(newPassword).then((ok) => {
+                    if (ok) setNewPassword("");
+                  });
+                }}
+                disabled={!newPassword || busy}
+              >
+                {t("remote.setPassword")}
+              </button>
+            </>
+          ) : null}
         </section>
         <div className="remote-notice" role="status">
           {access.notice}

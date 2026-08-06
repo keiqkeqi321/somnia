@@ -89,9 +89,24 @@ export class RemoteRelayClient {
     }, true) as Promise<RemoteIdentity>;
   }
 
-  async listIdentities(): Promise<RemoteIdentity[]> {
-    const payload = await this.request("/api/auth/identities", {}, true) as { identities?: unknown };
-    return Array.isArray(payload.identities) ? payload.identities as RemoteIdentity[] : [];
+  async listIdentities(): Promise<{ identities: RemoteIdentity[]; hasPassword: boolean }> {
+    const payload = await this.request("/api/auth/identities", {}, true) as { identities?: unknown; has_password?: unknown };
+    return {
+      identities: Array.isArray(payload.identities) ? payload.identities as RemoteIdentity[] : [],
+      hasPassword: payload.has_password === true,
+    };
+  }
+
+  /**
+   * Sets the password on a passwordless (OAuth-created) account, or changes an
+   * existing one — then `currentPassword` is required by the Relay.
+   */
+  async setAccountPassword(password: string, currentPassword?: string): Promise<void> {
+    const body = currentPassword ? { password, current_password: currentPassword } : { password };
+    await this.request("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, true);
   }
 
   async unbindIdentity(provider: string): Promise<void> {

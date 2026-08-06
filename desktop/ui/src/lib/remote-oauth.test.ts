@@ -54,3 +54,27 @@ describe("remote oauth helpers", () => {
     expect(bindUrl.searchParams.get("mode")).toBe("bind");
   });
 });
+
+describe("RemoteRelayClient.listIdentities", () => {
+  function jsonResponse(payload: unknown): Response {
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("parses identities and has_password from the relay response", async () => {
+    const identity = { provider: "github", provider_user_id: "1001", provider_username: "octocat", created_at: 1 };
+    const fetcher = vi.fn(async () => jsonResponse({ identities: [identity], has_password: true }));
+    const client = new RemoteRelayClient("https://relay.example.com", fetcher);
+    const result = await client.listIdentities();
+    expect(result.hasPassword).toBe(true);
+    expect(result.identities).toEqual([identity]);
+  });
+
+  it("defaults hasPassword to false when the relay omits has_password", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ identities: [] }));
+    const client = new RemoteRelayClient("https://relay.example.com", fetcher);
+    await expect(client.listIdentities()).resolves.toEqual({ identities: [], hasPassword: false });
+  });
+});

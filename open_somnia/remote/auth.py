@@ -68,6 +68,14 @@ class CredentialPolicyError(ValueError):
     pass
 
 
+class CurrentPasswordRequired(ValueError):
+    pass
+
+
+class CurrentPasswordInvalid(ValueError):
+    pass
+
+
 USERNAME_PATTERN = re.compile(r"[a-zA-Z0-9_.-]{3,32}")
 
 
@@ -341,6 +349,59 @@ class RemoteAuth:
                     StoredAccount(id=account.id, username=account.username, password_hash=account.password_hash)
                 )
             return account
+
+    def set_password(
+        self,
+        account_id: str,
+        password: str,
+        *,
+        current_password: str | None = None,
+        source: str,
+    ) -> Account:
+        """Set the password of a passwordless (OAuth) account or change an existing one.
+
+        The policy matches ``register_account``. Accounts that already have a
+        password must present the current one; verification attempts share the
+        per-``source`` login rate-limit window so brute forcing the current
+        password is throttled exactly like password logins.
+        """
+        password = str(password)
+        with self._lock:
+            account = self._accounts_by_id.get(str(account_id))
+            if account is None:
+                raise ValueError("Account not found.")
+            if len(password) < 8 or password.casefold() == account.username.casefold():
+                raise CredentialPolicyError("Password must be at least 8 characters and differ from the username.")
+            has_password = bool(account.password_hash)
+            if has_password:
+                if not current_password:
+                    raise CurrentPasswordRequired("Current password is required.")
+                now = self._clock()
+                recent = self._recent_attempts(
+                    self._login_attempts,
+                    source,
+                    now=now,
+                    window_seconds=self.login_attempt_window_seconds,
+                )
+                if len(recent) >= self.login_attempt_limit:
+                    raise LoginRateLimited("Too many login attempts. Try again later.")
+                recent.append(now)
+        if has_password:
+            try:
+                verified = bool(self._password_hasher.verify(account.password_hash, str(current_password)))
+            except (VerifyMismatchError, InvalidHashError):
+                verified = False
+            if not verified:
+                raise CurrentPasswordInvalid("Current password is invalid.")
+        password_hash = self._password_hasher.hash(password)
+        with self._lock:
+            updated = Account(id=account.id, username=account.username, password_hash=password_hash)
+            self._accounts_by_username[updated.username.casefold()] = updated
+            self._accounts_by_id[updated.id] = updated
+            if self._metadata_store is not None:
+                self._metadata_store.update_account_password(updated.id, updated.password_hash)
+            self._login_attempts.pop(source, None)
+            return updated
 
     def _available_username(self, base: str) -> str:
         if base.casefold() not in self._accounts_by_username:
