@@ -972,7 +972,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     if (bindGrant) {
       // The bind round trip always lands on `#/connect` — it must not trigger
       // the remembered-target auto-reconnect below.
-      await remoteAccess.completeGitHubBind(bindGrant);
+      await remoteAccess.completeOAuthBind(bindGrant);
       return;
     }
     // A `#/pair` deep link must not be overridden by the remembered

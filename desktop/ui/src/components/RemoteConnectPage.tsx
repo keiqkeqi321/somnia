@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { useI18n } from "../lib/i18n";
+import { oauthProviderLabel } from "../lib/remote-oauth";
 import type { useRemoteAccess } from "../lib/use-remote-access";
 import appIconUrl from "../../src-tauri/icons/32x32.png";
 
@@ -28,7 +29,6 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
   const busy = access.busy || connecting;
   const selectedDevice = access.devices.find((device) => device.device_id === access.deviceId);
   const projects = selectedDevice?.projects ?? [];
-  const githubIdentity = access.identities.find((identity) => identity.provider === "github");
 
   useEffect(() => {
     if (projects.length > 0 && !projects.some((project) => project.project_id === projectId)) {
@@ -106,13 +106,19 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
           <button type="button" onClick={onSignOut} disabled={busy}>
             {t("remote.signOut")}
           </button>
-          {githubIdentity ? (
-            <p className="remote-empty">GitHub: @{githubIdentity.provider_username}</p>
-          ) : (
-            <button type="button" onClick={() => access.beginGitHubBind()} disabled={busy}>
-              {t("remote.bindGitHub")}
-            </button>
-          )}
+          {access.oauthProviders.map((provider) => {
+            const identity = access.identities.find((item) => item.provider === provider);
+            const label = oauthProviderLabel(provider);
+            return identity ? (
+              <p key={provider} className="remote-empty">
+                {label}: @{identity.provider_username}
+              </p>
+            ) : (
+              <button key={provider} type="button" onClick={() => access.beginOAuthBind(provider)} disabled={busy}>
+                {t("remote.bindProvider", { provider: label })}
+              </button>
+            );
+          })}
         </section>
         <div className="remote-notice" role="status">
           {access.notice}

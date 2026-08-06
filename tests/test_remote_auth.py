@@ -332,7 +332,7 @@ class PairSessionTests(unittest.TestCase):
         with TestClient(app) as client:
             response = client.get("/api/info")
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json(), {"web_origin": "https://somnia.example.com"})
+            self.assertEqual(response.json(), {"web_origin": "https://somnia.example.com", "oauth_providers": []})
 
     def _create_session(self, client: TestClient) -> dict:
         response = client.post("/api/pair-sessions")

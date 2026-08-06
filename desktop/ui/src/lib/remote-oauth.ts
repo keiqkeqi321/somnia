@@ -11,6 +11,17 @@ export function spaSelfUrl(): string {
   return window.location.origin + window.location.pathname;
 }
 
+/** Display names for the OAuth channels a Relay may report via `/api/info`. */
+export const OAUTH_PROVIDER_LABELS: Record<string, string> = {
+  github: "GitHub",
+  gitee: "Gitee",
+};
+
+/** Human-readable channel name; falls back to the raw provider id for unknown channels. */
+export function oauthProviderLabel(provider: string): string {
+  return OAUTH_PROVIDER_LABELS[provider] ?? provider;
+}
+
 /**
  * Parses the bind-mode callback fragment (`#provider=github&code=…&state=…`).
  * This fragment is not a router hash — returns `null` for route hashes

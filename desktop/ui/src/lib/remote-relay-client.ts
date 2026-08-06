@@ -72,6 +72,17 @@ export class RemoteRelayClient {
     return Array.isArray(payload.devices) ? payload.devices as RemoteDevice[] : [];
   }
 
+  /** Public relay metadata (`GET /api/info`): which OAuth channels the SPA may offer. */
+  async getInfo(): Promise<{ webOrigin: string | null; oauthProviders: string[] }> {
+    const payload = await this.request("/api/info", {}, false) as { web_origin?: unknown; oauth_providers?: unknown };
+    return {
+      webOrigin: typeof payload.web_origin === "string" ? payload.web_origin : null,
+      oauthProviders: Array.isArray(payload.oauth_providers)
+        ? payload.oauth_providers.filter((provider): provider is string => typeof provider === "string")
+        : [],
+    };
+  }
+
   /**
    * Builds the OAuth authorize URL for a full-page redirect (the Relay 302s
    * to the provider). `redirect` is where the Relay sends the browser back.

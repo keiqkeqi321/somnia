@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { spaSelfUrl } from "./remote-oauth";
+import { oauthProviderLabel, spaSelfUrl } from "./remote-oauth";
 import { RemoteRelayClient, RemoteRelayError, type RemoteDevice, type RemoteIdentity } from "./remote-relay-client";
 
 export function useRemoteAccess(initialRelayUrl: string) {
@@ -10,6 +10,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
   const [authenticated, setAuthenticated] = useState(false);
   const [devices, setDevices] = useState<RemoteDevice[]>([]);
   const [identities, setIdentities] = useState<RemoteIdentity[]>([]);
+  const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [pairingName, setPairingName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
@@ -19,6 +20,27 @@ export function useRemoteAccess(initialRelayUrl: string) {
   // Mirrors `devices` so async flows started from a stale render (e.g. the
   // refresh-restore effect on mount) still see the latest device list.
   const devicesRef = useRef<RemoteDevice[]>([]);
+
+  // Which OAuth channels the Relay has configured (public `/api/info`) —
+  // drives the per-channel sign-in and bind buttons. Best-effort: a failed
+  // or unreachable Relay just leaves the list empty.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOauthProviders() {
+      try {
+        const info = await new RemoteRelayClient(relayUrl).getInfo();
+        if (!cancelled) {
+          setOauthProviders(info.oauthProviders);
+        }
+      } catch {
+        // Silent: an old or unreachable Relay simply offers no channels.
+      }
+    }
+    void loadOauthProviders();
+    return () => {
+      cancelled = true;
+    };
+  }, [relayUrl]);
 
   function applyDevices(availableDevices: RemoteDevice[]) {
     devicesRef.current = availableDevices;
@@ -115,30 +137,30 @@ export function useRemoteAccess(initialRelayUrl: string) {
    * `login`). On success the Relay sets the same cookie session and lands back
    * on the bare SPA address, where the mount restore picks the session up.
    */
-  function beginGitHubSignIn(): void {
+  function beginOAuthSignIn(provider: string): void {
     const client = new RemoteRelayClient(relayUrl);
-    window.location.assign(client.oauthAuthorizeUrl("github", "login", spaSelfUrl()));
+    window.location.assign(client.oauthAuthorizeUrl(provider, "login", spaSelfUrl()));
   }
 
   /**
    * OAuth bind: same round trip in mode `bind`, for an already signed-in
    * account. The callback returns with the grant in the URL fragment; the App
-   * mount flow hands it to `completeGitHubBind`.
+   * mount flow hands it to `completeOAuthBind`.
    */
-  function beginGitHubBind(): void {
+  function beginOAuthBind(provider: string): void {
     const client = clientRef.current;
     if (!client) return;
-    window.location.assign(client.oauthAuthorizeUrl("github", "bind", spaSelfUrl()));
+    window.location.assign(client.oauthAuthorizeUrl(provider, "bind", spaSelfUrl()));
   }
 
-  async function completeGitHubBind(grant: { provider: string; code: string; state: string }): Promise<void> {
+  async function completeOAuthBind(grant: { provider: string; code: string; state: string }): Promise<void> {
     const client = clientRef.current;
     if (!client) return;
     setBusy(true);
     try {
       await client.bindIdentity(grant.provider, grant.code, grant.state);
       setIdentities((await client.listIdentities()).identities);
-      setNotice("GitHub account bound.");
+      setNotice(`${oauthProviderLabel(grant.provider)} account bound.`);
     } catch (error) {
       setNotice(formatError(error));
     } finally {
@@ -180,16 +202,17 @@ export function useRemoteAccess(initialRelayUrl: string) {
 
   return {
     authenticated,
-    beginGitHubBind,
-    beginGitHubSignIn,
+    beginOAuthBind,
+    beginOAuthSignIn,
     busy,
-    completeGitHubBind,
+    completeOAuthBind,
     createPairing,
     deviceId,
     devices,
     devicesRef,
     identities,
     notice,
+    oauthProviders,
     pairingCode,
     pairingName,
     password,

@@ -44,12 +44,13 @@ from open_somnia.remote.auth import (
 from open_somnia.remote.auth_store import AuthMetadataStore
 from open_somnia.remote.identities import Identity, IdentityRegistry, IdentityTaken, LastAuthMethodError
 from open_somnia.remote.oauth import (
-    GitHubOAuthProvider,
+    OAUTH_PROVIDER_TYPES,
     OAuthError,
+    OAuthProvider,
     derive_state_signing_key,
-    github_provider_from_env,
     is_allowed_redirect,
     issue_oauth_state,
+    oauth_providers_from_env,
     verify_oauth_state,
 )
 
@@ -443,7 +444,7 @@ def create_relay_app(
     secure_cookies: bool = False,
     allowed_origins: list[str] | None = None,
     database_url: str | None = None,
-    oauth_providers: Mapping[str, GitHubOAuthProvider] | None = None,
+    oauth_providers: Mapping[str, OAuthProvider] | None = None,
     client_send_timeout_seconds: float = 2.0,
     max_message_bytes: int = DEFAULT_MAX_MESSAGE_BYTES,
 ) -> Starlette:
@@ -482,13 +483,15 @@ def create_relay_app(
         max_message_bytes=max_message_bytes,
     )
     if oauth_providers is None:
-        github_provider = github_provider_from_env()
-        oauth_providers = {"github": github_provider} if github_provider is not None else {}
+        oauth_providers = oauth_providers_from_env()
     identity_registry = IdentityRegistry(metadata_store, clock=clock)
     # resolved_secret_key is None for in-memory setups (tests); fall back to a
     # per-boot random key there, matching RemoteAuth's own behavior.
     oauth_state_key = derive_state_signing_key(resolved_secret_key or secrets.token_bytes(32))
-    oauth_redirect_uri_override = os.environ.get("SOMNIA_GITHUB_REDIRECT_URI", "").strip() or None
+    oauth_redirect_uri_overrides = {
+        name: os.environ.get(f"SOMNIA_{name.upper()}_REDIRECT_URI", "").strip()
+        for name in OAUTH_PROVIDER_TYPES
+    }
 
     async def health_endpoint(request: Request) -> JSONResponse:
         del request
@@ -498,8 +501,9 @@ def create_relay_app(
         del request
         # Clients (e.g. Desktop pairing) use this to find the Web app origin;
         # it differs from the Relay origin whenever the SPA is hosted separately.
+        # The OAuth channel list lets the SPA render one sign-in button each.
         web_origin = web_origins[0] if web_origins else None
-        return JSONResponse({"web_origin": web_origin})
+        return JSONResponse({"web_origin": web_origin, "oauth_providers": sorted(oauth_providers)})
 
     async def login_endpoint(request: Request) -> JSONResponse:
         body = await _json_body(request)
@@ -667,31 +671,53 @@ def create_relay_app(
         await hub.revoke_device(device_id)
         return JSONResponse(_serialize_device(device))
 
-    def oauth_redirect_uri(request: Request) -> str:
-        if oauth_redirect_uri_override:
-            return oauth_redirect_uri_override
-        return f"{request.base_url}api/auth/github/callback"
+    def oauth_redirect_uri(request: Request, provider_name: str) -> str:
+        override = oauth_redirect_uri_overrides.get(provider_name, "")
+        if override:
+            return override
+        return f"{request.base_url}api/auth/{provider_name}/callback"
+
+    def oauth_channel(request: Request) -> tuple[str, OAuthProvider | None, JSONResponse | None]:
+        """Resolve the ``{provider}`` path parameter to a configured channel.
+
+        Unknown channels answer 404; known-but-unconfigured ones answer 503.
+        """
+        provider_name = str(request.path_params["provider"])
+        provider_type = OAUTH_PROVIDER_TYPES.get(provider_name)
+        if provider_type is None:
+            return provider_name, None, JSONResponse({"error": "Unknown OAuth provider."}, status_code=404)
+        provider = oauth_providers.get(provider_name)
+        if provider is None:
+            error = JSONResponse(
+                {"error": f"{provider_type.label} sign-in is not configured on this Relay."},
+                status_code=503,
+            )
+            return provider_name, None, error
+        return provider_name, provider, None
 
     async def oauth_authorize_endpoint(request: Request) -> Response:
-        provider = oauth_providers.get("github")
-        if provider is None:
-            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        provider_name, provider, error = oauth_channel(request)
+        if error is not None:
+            return error
         mode = str(request.query_params.get("mode", "login"))
         if mode not in {"login", "bind"}:
             return JSONResponse({"error": "mode must be 'login' or 'bind'."}, status_code=400)
         redirect = str(request.query_params.get("redirect", "")).strip() or "/"
         if not is_allowed_redirect(redirect, browser_origins):
             return JSONResponse({"error": "redirect is not an allowed origin."}, status_code=400)
-        state = issue_oauth_state(oauth_state_key, provider="github", mode=mode, redirect=redirect, clock=clock)
-        return RedirectResponse(provider.authorize_url(state=state, redirect_uri=oauth_redirect_uri(request)), status_code=302)
+        state = issue_oauth_state(oauth_state_key, provider=provider_name, mode=mode, redirect=redirect, clock=clock)
+        return RedirectResponse(
+            provider.authorize_url(state=state, redirect_uri=oauth_redirect_uri(request, provider_name)),
+            status_code=302,
+        )
 
     async def oauth_callback_endpoint(request: Request) -> Response:
-        provider = oauth_providers.get("github")
-        if provider is None:
-            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        provider_name, provider, error = oauth_channel(request)
+        if error is not None:
+            return error
         code = str(request.query_params.get("code", "")).strip()
         state_token = str(request.query_params.get("state", "")).strip()
-        state = verify_oauth_state(oauth_state_key, state_token, provider="github", clock=clock)
+        state = verify_oauth_state(oauth_state_key, state_token, provider=provider_name, clock=clock)
         if state is None or not code:
             return JSONResponse({"error": "OAuth state is invalid or expired."}, status_code=400)
         redirect = str(state.get("redirect", "")).strip()
@@ -699,16 +725,16 @@ def create_relay_app(
             redirect = web_origins[0] if web_origins else "/"
         if state.get("mode") == "bind":
             # Two-step bind: the SameSite=strict session cookie is not sent on
-            # this cross-site return from GitHub, so the callback hands
+            # this cross-site return from the provider, so the callback hands
             # code+state to the SPA via URL fragment and the SPA finishes via
-            # POST /api/auth/github/bind with its cookie attached.
-            fragment = urlencode({"provider": "github", "code": code, "state": state_token})
+            # POST /api/auth/{provider}/bind with its cookie attached.
+            fragment = urlencode({"provider": provider_name, "code": code, "state": state_token})
             return RedirectResponse(f"{redirect}#{fragment}", status_code=302)
         try:
-            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request))
+            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request, provider_name))
         except OAuthError:
-            return RedirectResponse(_oauth_error_redirect(redirect, "github_login_failed"), status_code=302)
-        identity = identity_registry.resolve("github", profile.provider_user_id)
+            return RedirectResponse(_oauth_error_redirect(redirect, f"{provider_name}_login_failed"), status_code=302)
+        identity = identity_registry.resolve(provider_name, profile.provider_user_id)
         account_id = identity.account_id if identity is not None else None
         if account_id is None:
             if not registration_enabled:
@@ -719,37 +745,37 @@ def create_relay_app(
             except RegistrationRateLimited:
                 return RedirectResponse(_oauth_error_redirect(redirect, "registration_rate_limited"), status_code=302)
             try:
-                identity_registry.bind(account.id, "github", profile.provider_user_id, profile.username)
+                identity_registry.bind(account.id, provider_name, profile.provider_user_id, profile.username)
             except IdentityTaken:
-                # A concurrent sign-in bound this GitHub user first; log in as the winner.
-                winner = identity_registry.resolve("github", profile.provider_user_id)
+                # A concurrent sign-in bound this provider user first; log in as the winner.
+                winner = identity_registry.resolve(provider_name, profile.provider_user_id)
                 account_id = winner.account_id if winner is not None else None
             else:
                 account_id = account.id
             if account_id is None:
-                return RedirectResponse(_oauth_error_redirect(redirect, "github_login_failed"), status_code=302)
+                return RedirectResponse(_oauth_error_redirect(redirect, f"{provider_name}_login_failed"), status_code=302)
         response = RedirectResponse(redirect, status_code=302)
         _set_browser_cookies(response, auth.issue_browser_tokens(account_id), auth, secure=secure_cookies)
         return response
 
     async def oauth_bind_endpoint(request: Request) -> Response:
-        provider = oauth_providers.get("github")
-        if provider is None:
-            return JSONResponse({"error": "GitHub sign-in is not configured on this Relay."}, status_code=503)
+        provider_name, provider, error = oauth_channel(request)
+        if error is not None:
+            return error
         account = auth.resolve_access(request.cookies.get(ACCESS_COOKIE))
         if account is None:
             return JSONResponse({"error": "Authentication required."}, status_code=401)
         body = await _json_body(request)
         code = str(body.get("code", "")).strip()
-        state = verify_oauth_state(oauth_state_key, str(body.get("state", "")), provider="github", clock=clock)
+        state = verify_oauth_state(oauth_state_key, str(body.get("state", "")), provider=provider_name, clock=clock)
         if state is None or state.get("mode") != "bind" or not code:
             return JSONResponse({"error": "OAuth state is invalid or expired."}, status_code=400)
         try:
-            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request))
+            profile = await provider.fetch_profile(code=code, redirect_uri=oauth_redirect_uri(request, provider_name))
         except OAuthError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
         try:
-            identity = identity_registry.bind(account.id, "github", profile.provider_user_id, profile.username)
+            identity = identity_registry.bind(account.id, provider_name, profile.provider_user_id, profile.username)
         except IdentityTaken as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         return JSONResponse({"identity": _serialize_identity(identity)})
@@ -825,9 +851,9 @@ def create_relay_app(
             Route("/api/pair-sessions/{session_id}/approve", approve_pair_session_endpoint, methods=["POST"]),
             Route("/api/devices", list_devices_endpoint, methods=["GET"]),
             Route("/api/devices/{device_id}", revoke_device_endpoint, methods=["DELETE"]),
-            Route("/api/auth/github/authorize", oauth_authorize_endpoint, methods=["GET"]),
-            Route("/api/auth/github/callback", oauth_callback_endpoint, methods=["GET"]),
-            Route("/api/auth/github/bind", oauth_bind_endpoint, methods=["POST"]),
+            Route("/api/auth/{provider}/authorize", oauth_authorize_endpoint, methods=["GET"]),
+            Route("/api/auth/{provider}/callback", oauth_callback_endpoint, methods=["GET"]),
+            Route("/api/auth/{provider}/bind", oauth_bind_endpoint, methods=["POST"]),
             Route("/api/auth/identities", list_identities_endpoint, methods=["GET"]),
             Route("/api/auth/identities/{provider}", unbind_identity_endpoint, methods=["DELETE"]),
             WebSocketRoute("/ws/connector/{device_id}", connector_endpoint),
