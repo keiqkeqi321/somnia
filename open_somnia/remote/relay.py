@@ -922,5 +922,8 @@ def _serialize_identity(identity: Identity) -> dict[str, Any]:
 
 
 def _oauth_error_redirect(redirect: str, slug: str) -> str:
-    separator = "&" if "?" in redirect else "?"
-    return f"{redirect}{separator}oauth_error={slug}"
+    # The slug belongs to the query: insert it ahead of any fragment, or a
+    # redirect like `/?remote=1#/pair?...` would swallow it into the hash.
+    base, marker, fragment = redirect.partition("#")
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}oauth_error={slug}{marker}{fragment}"

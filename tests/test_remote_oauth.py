@@ -183,6 +183,19 @@ class GitHubLoginTests(unittest.TestCase):
             self.assertEqual(response.headers["location"], "/welcome?oauth_error=github_login_failed")
             self.assertFalse(client.cookies.get("somnia_access"))
 
+    def test_login_failure_keeps_the_error_slug_ahead_of_a_fragment_redirect(self) -> None:
+        # The Desktop pairing link (`/?remote=1#/pair?...`) must stay intact
+        # with the slug in the query, not swallowed by the fragment.
+        provider = FakeGitHubProvider({})
+        app = create_relay_app(administrators={}, oauth_providers={"github": provider})
+        with TestClient(app) as client:
+            response = oauth_login(client, "unknown-code", redirect="/?remote=1#/pair?session=s&secret=x")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(
+                response.headers["location"],
+                "/?remote=1&oauth_error=github_login_failed#/pair?session=s&secret=x",
+            )
+
     def test_callback_rejects_tampered_expired_or_incomplete_state(self) -> None:
         now = [1_000.0]
         profile = OAuthProfile(provider_user_id="1001", username="octocat", display_name="", avatar_url="")

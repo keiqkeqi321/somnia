@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { oauthProviderLabel, spaSelfUrl } from "./remote-oauth";
+import { oauthProviderLabel, oauthReturnUrl } from "./remote-oauth";
 import { RemoteRelayClient, RemoteRelayError, type RemoteDevice, type RemoteIdentity } from "./remote-relay-client";
 
 export function useRemoteAccess(initialRelayUrl: string) {
@@ -139,7 +139,9 @@ export function useRemoteAccess(initialRelayUrl: string) {
    */
   function beginOAuthSignIn(provider: string): void {
     const client = new RemoteRelayClient(relayUrl);
-    window.location.assign(client.oauthAuthorizeUrl(provider, "login", spaSelfUrl()));
+    window.location.assign(
+      client.oauthAuthorizeUrl(provider, "login", oauthReturnUrl(window.location.search, window.location.hash)),
+    );
   }
 
   async function completeOAuthBind(grant: { provider: string; code: string; state: string }): Promise<void> {

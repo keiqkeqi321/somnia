@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { parseOAuthBindFragment, readOAuthError, stripOAuthError } from "./remote-oauth";
+import { oauthReturnUrl, parseOAuthBindFragment, readOAuthError, stripOAuthError } from "./remote-oauth";
 import { RemoteRelayClient } from "./remote-relay-client";
 
 afterEach(() => {
@@ -40,6 +40,21 @@ describe("remote oauth helpers", () => {
     expect(stripOAuthError("?oauth_error=github_login_failed", "")).toBe("/app/");
     expect(stripOAuthError("?remote=1&oauth_error=github_login_failed", "#/login")).toBe("/app/?remote=1#/login");
     expect(stripOAuthError("", "#/connect")).toBe("/app/#/connect");
+  });
+
+  it("builds the sign-in return URL preserving the route context", () => {
+    vi.stubGlobal("window", { location: { origin: "https://somnia.top", pathname: "/" } });
+    // The Desktop pairing link must survive the whole OAuth round trip.
+    expect(oauthReturnUrl("?remote=1", "#/pair?session=s-1&secret=abc")).toBe(
+      "https://somnia.top/?remote=1#/pair?session=s-1&secret=abc",
+    );
+    // A stale error slug is not carried into the next attempt.
+    expect(oauthReturnUrl("?remote=1&oauth_error=github_login_failed", "#/pair?session=s-1&secret=abc")).toBe(
+      "https://somnia.top/?remote=1#/pair?session=s-1&secret=abc",
+    );
+    // A leftover bind fragment never travels as the return address.
+    expect(oauthReturnUrl("", "#provider=github&code=abc&state=xyz")).toBe("https://somnia.top/");
+    expect(oauthReturnUrl("", "")).toBe("https://somnia.top/");
   });
 
   it("builds the authorize URL with mode and redirect query parameters", () => {

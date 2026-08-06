@@ -6,9 +6,19 @@
  * trivially testable.
  */
 
-/** The bare SPA address used as the OAuth `redirect` — no query, no hash. */
-export function spaSelfUrl(): string {
-  return window.location.origin + window.location.pathname;
+/**
+ * The current page as the OAuth sign-in `redirect`, so the round trip
+ * returns to whatever route/query brought the user here — e.g. the Desktop
+ * pairing link (`?remote=1#/pair?session=…&secret=…`), which must survive
+ * for the approval page to resume after sign-in. A stale `oauth_error`
+ * slug and any leftover bind fragment are dropped.
+ */
+export function oauthReturnUrl(search: string, hash: string): string {
+  const params = new URLSearchParams(search);
+  params.delete("oauth_error");
+  const query = params.toString();
+  const safeHash = hash.startsWith("#provider=") ? "" : hash;
+  return `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ""}${safeHash}`;
 }
 
 /** Display names for the OAuth channels a Relay may report via `/api/info`. */
