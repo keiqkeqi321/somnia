@@ -106,19 +106,11 @@ export default function RemoteConnectPage({ access, connecting, onConnect, onSig
           <button type="button" onClick={onSignOut} disabled={busy}>
             {t("remote.signOut")}
           </button>
-          {access.oauthProviders.map((provider) => {
-            const identity = access.identities.find((item) => item.provider === provider);
-            const label = oauthProviderLabel(provider);
-            return identity ? (
-              <p key={provider} className="remote-empty">
-                {label}: @{identity.provider_username}
-              </p>
-            ) : (
-              <button key={provider} type="button" onClick={() => access.beginOAuthBind(provider)} disabled={busy}>
-                {t("remote.bindProvider", { provider: label })}
-              </button>
-            );
-          })}
+          {access.identities.map((identity) => (
+            <p key={identity.provider} className="remote-empty">
+              {oauthProviderLabel(identity.provider)}: @{identity.provider_username}
+            </p>
+          ))}
         </section>
         <div className="remote-notice" role="status">
           {access.notice}

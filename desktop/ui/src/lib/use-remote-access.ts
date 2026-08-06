@@ -142,17 +142,6 @@ export function useRemoteAccess(initialRelayUrl: string) {
     window.location.assign(client.oauthAuthorizeUrl(provider, "login", spaSelfUrl()));
   }
 
-  /**
-   * OAuth bind: same round trip in mode `bind`, for an already signed-in
-   * account. The callback returns with the grant in the URL fragment; the App
-   * mount flow hands it to `completeOAuthBind`.
-   */
-  function beginOAuthBind(provider: string): void {
-    const client = clientRef.current;
-    if (!client) return;
-    window.location.assign(client.oauthAuthorizeUrl(provider, "bind", spaSelfUrl()));
-  }
-
   async function completeOAuthBind(grant: { provider: string; code: string; state: string }): Promise<void> {
     const client = clientRef.current;
     if (!client) return;
@@ -202,7 +191,6 @@ export function useRemoteAccess(initialRelayUrl: string) {
 
   return {
     authenticated,
-    beginOAuthBind,
     beginOAuthSignIn,
     busy,
     completeOAuthBind,
