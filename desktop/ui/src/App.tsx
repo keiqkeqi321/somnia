@@ -1087,26 +1087,25 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }
 
   async function collectRemoteProjects(): Promise<RemoteProjectTarget[]> {
-    // The embedded Connector can only bridge loopback sidecars, so only
-    // projects with a managed sidecar connection are exposed; each sidecar
+    // Expose every managed Desktop project, not just the ones already
+    // connected: a project without a live sidecar gets one spawned on the
+    // spot so the embedded Connector can bridge all of them. Each sidecar
     // reports its own desktop-<hash> project id (see /remote/project-id).
-    const managed = projects.filter((project) => project.connection !== null);
-    const collected = await Promise.all(
-      managed.map(async (project) => {
-        const connection = project.connection;
+    // Sidecars start sequentially to avoid a process-spawn burst.
+    const collected: RemoteProjectTarget[] = [];
+    for (const project of projects) {
+      try {
+        const connection = project.connection ?? (await ensureManagedSidecar(project.path));
         if (!connection) {
-          return null;
+          continue;
         }
-        try {
-          const projectId = await new SidecarClient(connection.baseUrl).getRemoteProjectId();
-          return { project_id: projectId, name: project.label, base_url: connection.baseUrl };
-        } catch {
-          // A sidecar that does not answer cannot be exposed; skip it.
-          return null;
-        }
-      }),
-    );
-    return collected.filter((entry): entry is RemoteProjectTarget => entry !== null);
+        const projectId = await new SidecarClient(connection.baseUrl).getRemoteProjectId();
+        collected.push({ project_id: projectId, name: project.label, base_url: connection.baseUrl });
+      } catch {
+        // A project whose sidecar cannot start cannot be exposed; skip it.
+      }
+    }
+    return collected;
   }
 
   async function connectManagedProject(

@@ -28,6 +28,11 @@ function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectio
   clientRef.current = client;
   const collectRef = useRef(collectProjects);
   collectRef.current = collectProjects;
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  // One full project-set push per connector run: pairing auto-enables with a
+  // single project, so the first running sighting back-fills the rest.
+  const autoApplyRef = useRef(false);
   const baseUrl = client.baseUrl;
 
   const refresh = useCallback(async () => {
@@ -47,6 +52,36 @@ function RemoteSettingsSection({ client, collectProjects }: RemoteSettingsSectio
     }, STATUS_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  // Pairing finishes in the background with only the host's own project
+  // exposed. When the poll first reports the Connector running, push the
+  // full Desktop project set once (the Relay connection survives the
+  // in-place re-register); later changes still go through the enable toggle.
+  useEffect(() => {
+    const current = statusRef.current;
+    if (!current?.enabled || !current.connector_running) {
+      autoApplyRef.current = false;
+      return;
+    }
+    if (autoApplyRef.current || !collectRef.current) {
+      return;
+    }
+    autoApplyRef.current = true;
+    void (async () => {
+      try {
+        const collected = await collectRef.current!();
+        if (collected.length === 0) {
+          return;
+        }
+        const exposed = new Set((statusRef.current?.projects ?? []).map((project) => project.project_id));
+        if (collected.some((project) => !exposed.has(project.project_id))) {
+          setStatus(await clientRef.current.enableRemoteDevice(collected));
+        }
+      } catch {
+        // A failed back-fill is retried on the next toggle or app start.
+      }
+    })();
+  }, [status?.enabled, status?.connector_running]);
 
   useEffect(() => {
     if (!status || prefilledRef.current) {
