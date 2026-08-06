@@ -9,51 +9,28 @@ type RemoteLoginPageProps = {
 };
 
 /**
- * Remote-mode `#/login` route: sign in against the relay. The relay sets a
- * cookie session, so a later refresh can restore access without this form.
+ * Remote-mode `#/login` route: channel sign-in only (GitHub OAuth via the
+ * relay). Username/password sign-in is intentionally hidden from the UI for
+ * maintainability — the relay still serves the password endpoints for API
+ * clients and administrative deep links.
  */
 export default function RemoteLoginPage({ access }: RemoteLoginPageProps) {
   const { t } = useI18n();
 
   return (
     <main className="remote-shell remote-shell-login">
-      <form
-        className="remote-login"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void access.signIn();
-        }}
-      >
+      <div className="remote-login">
         <div className="remote-brand">
           <img className="remote-brand-icon" src={appIconUrl} alt="" aria-hidden="true" />
           <h1>{t("remote.title")}</h1>
         </div>
-        <label>
-          {t("remote.username")}
-          <input value={access.username} onChange={(event) => access.setUsername(event.target.value)} autoComplete="username" />
-        </label>
-        <label>
-          {t("remote.password")}
-          <input
-            type="password"
-            value={access.password}
-            onChange={(event) => access.setPassword(event.target.value)}
-            autoComplete="current-password"
-          />
-        </label>
-        <button type="submit" disabled={access.busy || !access.username.trim() || !access.password}>
-          {t("remote.signIn")}
-        </button>
         <button type="button" onClick={() => access.beginGitHubSignIn()} disabled={access.busy}>
           {t("remote.continueWithGitHub")}
         </button>
-        <a className="remote-login-link" href="#/register">
-          {t("remote.noAccountRegister")}
-        </a>
         <div className="remote-notice" role="status">
           {access.notice}
         </div>
-      </form>
+      </div>
     </main>
   );
 }

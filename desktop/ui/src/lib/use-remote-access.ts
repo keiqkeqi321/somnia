@@ -10,7 +10,6 @@ export function useRemoteAccess(initialRelayUrl: string) {
   const [authenticated, setAuthenticated] = useState(false);
   const [devices, setDevices] = useState<RemoteDevice[]>([]);
   const [identities, setIdentities] = useState<RemoteIdentity[]>([]);
-  const [hasPassword, setHasPassword] = useState(false);
   const [deviceId, setDeviceId] = useState("");
   const [pairingName, setPairingName] = useState("");
   const [pairingCode, setPairingCode] = useState("");
@@ -26,31 +25,10 @@ export function useRemoteAccess(initialRelayUrl: string) {
     setDevices(availableDevices);
   }
 
-  async function signIn(): Promise<void> {
-    setBusy(true);
-    try {
-      const client = new RemoteRelayClient(relayUrl);
-      await client.login(username.trim(), password);
-      const availableDevices = await client.listDevices();
-      clientRef.current = client;
-      applyDevices(availableDevices);
-      selectFirstActiveDevice(availableDevices);
-      const linked = await client.listIdentities();
-      setIdentities(linked.identities);
-      setHasPassword(linked.hasPassword);
-      setAuthenticated(true);
-      setPassword("");
-      setNotice("Signed in.");
-    } catch (error) {
-      setNotice(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   /**
-   * Self-service registration: the Relay issues the same cookie session as
-   * login on success, so the flow ends authenticated exactly like `signIn`.
+   * Self-service registration (kept for the hidden `#/register` deep link):
+   * the Relay issues the same cookie session as login on success, so the
+   * flow ends authenticated exactly like a restored session.
    */
   async function signUp(): Promise<void> {
     setBusy(true);
@@ -61,9 +39,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       clientRef.current = client;
       applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
-      const linked = await client.listIdentities();
-      setIdentities(linked.identities);
-      setHasPassword(linked.hasPassword);
+      setIdentities((await client.listIdentities()).identities);
       setAuthenticated(true);
       setPassword("");
       setNotice("Account created. Signed in.");
@@ -87,9 +63,7 @@ export function useRemoteAccess(initialRelayUrl: string) {
       clientRef.current = client;
       applyDevices(availableDevices);
       selectFirstActiveDevice(availableDevices);
-      const linked = await client.listIdentities();
-      setIdentities(linked.identities);
-      setHasPassword(linked.hasPassword);
+      setIdentities((await client.listIdentities()).identities);
       setAuthenticated(true);
       setNotice("Signed in.");
       return true;
@@ -163,51 +137,10 @@ export function useRemoteAccess(initialRelayUrl: string) {
     setBusy(true);
     try {
       await client.bindIdentity(grant.provider, grant.code, grant.state);
-      const linked = await client.listIdentities();
-      setIdentities(linked.identities);
-      setHasPassword(linked.hasPassword);
+      setIdentities((await client.listIdentities()).identities);
       setNotice("GitHub account bound.");
     } catch (error) {
       setNotice(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function unbindGitHub(): Promise<void> {
-    const client = clientRef.current;
-    if (!client) return;
-    setBusy(true);
-    try {
-      await client.unbindIdentity("github");
-      const linked = await client.listIdentities();
-      setIdentities(linked.identities);
-      setHasPassword(linked.hasPassword);
-      setNotice("GitHub account unbound.");
-    } catch (error) {
-      setNotice(formatError(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * Sets the account password. OAuth-created accounts start passwordless and
-   * cannot unlink their last identity until this succeeds — hence the
-   * `hasPassword` flip here doubles as the unbind guard's release.
-   */
-  async function setAccountPassword(password: string): Promise<boolean> {
-    const client = clientRef.current;
-    if (!client || busy) return false;
-    setBusy(true);
-    try {
-      await client.setAccountPassword(password);
-      setHasPassword(true);
-      setNotice("Password set.");
-      return true;
-    } catch (error) {
-      setNotice(formatError(error));
-      return false;
     } finally {
       setBusy(false);
     }
@@ -225,7 +158,6 @@ export function useRemoteAccess(initialRelayUrl: string) {
       setAuthenticated(false);
       setDevices([]);
       setIdentities([]);
-      setHasPassword(false);
       setDeviceId("");
       setPairingCode("");
       setBusy(false);
@@ -256,7 +188,6 @@ export function useRemoteAccess(initialRelayUrl: string) {
     deviceId,
     devices,
     devicesRef,
-    hasPassword,
     identities,
     notice,
     pairingCode,
@@ -265,17 +196,14 @@ export function useRemoteAccess(initialRelayUrl: string) {
     relayUrl,
     restoreSession,
     revokeSelectedDevice,
-    setAccountPassword,
     setDeviceId,
     setNotice,
     setPairingName,
     setPassword,
     setRelayUrl,
     setUsername,
-    signIn,
     signOut,
     signUp,
-    unbindGitHub,
     username,
     verifyAccess,
   };
