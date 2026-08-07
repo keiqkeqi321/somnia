@@ -989,8 +989,8 @@ class FilesystemToolTests(unittest.TestCase):
             root = Path(tmpdir)
             (root / "src").mkdir()
             (root / "src" / "app.py").write_text("alpha\nbeta\n", encoding="utf-8")
-            # 二进制内容里也埋入 needle：嗅探命中 NUL 字节后应整体跳过
-            (root / "src" / "payload.bytes").write_bytes(b"\x00beta\x00\xff\xfegarbage\x00")
+            # 未知后缀 + NUL 字节：走嗅探兜底路径，应整体跳过
+            (root / "src" / "payload.dat").write_bytes(b"\x00beta\x00\xff\xfegarbage\x00")
             ctx = SimpleNamespace(
                 runtime=SimpleNamespace(
                     settings=SimpleNamespace(
@@ -1004,6 +1004,45 @@ class FilesystemToolTests(unittest.TestCase):
             result = grep_search(ctx, {"pattern": "beta"})
 
         self.assertEqual(result, "src/app.py:2:beta")
+
+    def test_grep_search_skips_blacklisted_extension_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # 纯 ASCII 内容、不含 NUL：嗅探抓不到它，只有扩展名黑名单会跳过
+            (root / "image.png").write_bytes(b"beta inside a fake png")
+            (root / "notes.md").write_text("beta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta"})
+
+        self.assertEqual(result, "notes.md:1:beta")
+
+    def test_grep_search_unknown_text_extension_uses_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # 未知后缀的文本文件：保留原有 fallback 逻辑，仍可被搜索
+            (root / "data.foobar").write_text("beta\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta"})
+
+        self.assertEqual(result, "data.foobar:1:beta")
 
     def test_grep_search_explicit_binary_file_returns_no_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

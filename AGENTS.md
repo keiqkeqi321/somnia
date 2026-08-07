@@ -52,7 +52,20 @@ python -m unittest discover -s tests -p "test_*.py"
 # Version is in VERSION file (currently 0.5.2)
 ```
 
-Dependencies (from `pyproject.toml`): `anthropic>=0.25.0`, `Pillow>=10.3.0`, `prompt_toolkit>=3.0.43`, `tiktoken>=0.8.0`. Requires Python >=3.11.
+Dependencies (from `pyproject.toml`): `anthropic>=0.25.0`, `Pillow>=10.3.0`, `prompt_toolkit>=3.0.43`, `tiktoken>=0.8.0`, `pathspec>=0.12,<2` (used by `open_somnia/tools/gitignore.py` for gitignore matching). Requires Python >=3.11.
+
+## Search Tools and Ignore Rules
+
+Content/listing tools (`grep`, `glob`, `tree`, `find_symbol`, and read_file auto-resolve)
+skip paths ignored by workspace `.gitignore` files (nested files included, deepest rules
+win, `!` negation supported) via `open_somnia/tools/gitignore.py::GitignoreMatcher`, in
+addition to the hardcoded `EXPLORATION_IGNORED_DIR_NAMES` list. Ignored directories are
+pruned during the walk. `grep` classifies files by extension before reading: known-binary
+extensions (`BINARY_FILE_EXTENSIONS`) are skipped without opening, known-text extensions
+(`TEXT_FILE_EXTENSIONS`) are read directly, and unknown extensions fall back to NUL-byte
+sniffing of the first 8 KB. An explicit single-file `path` always bypasses ignore rules. `list_ignored()`
+(`open_somnia/tools/filesystem.py`) reports which paths are excluded and by which rule;
+it is a diagnostic helper, intentionally not registered as an LLM tool.
 
 ## Configuration
 

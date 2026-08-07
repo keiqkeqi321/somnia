@@ -19,6 +19,7 @@ from open_somnia.runtime.messages import (
     make_image_reference_block,
     render_image_reference_text,
 )
+from open_somnia.tools.gitignore import GitignoreMatcher
 from open_somnia.tools.process import drop_windows_extended_prefix
 from open_somnia.tools.registry import ToolDefinition
 
@@ -46,6 +47,23 @@ EXPLORATION_IGNORED_DIR_PREFIXES = (
     ".tmp",
     "tmp",
 )
+# 必然二进制的扩展名：内容搜索直接跳过，不 open、不解码（grep 专用，不影响 glob/tree 的文件名检索）
+BINARY_FILE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".psd", ".tga", ".tif", ".tiff", ".exr", ".hdr",
+    ".mp3", ".mp4", ".wav", ".ogg", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".aac", ".m4a", ".flac",
+    ".dll", ".exe", ".so", ".dylib", ".a", ".lib", ".o", ".pdb", ".class", ".jar", ".pyc", ".pyo",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".unitypackage", ".pak", ".bundle",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".bytes", ".ttf", ".otf", ".woff", ".woff2", ".eot", ".db", ".sqlite", ".sqlite3",
+}
+# 必然文本的扩展名：直接读取搜索，跳过二进制嗅探
+TEXT_FILE_EXTENSIONS = {
+    ".c", ".cc", ".cpp", ".cs", ".go", ".h", ".hpp", ".java", ".js", ".jsx", ".kt", ".kts",
+    ".lua", ".php", ".py", ".rb", ".rs", ".swift", ".ts", ".tsx", ".m", ".mm", ".scala", ".dart", ".vue",
+    ".txt", ".md", ".markdown", ".rst", ".html", ".htm", ".xml", ".xhtml", ".svg", ".css", ".scss", ".less",
+    ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".properties",
+    ".csv", ".tsv", ".sql", ".sh", ".bash", ".bat", ".ps1", ".meta", ".log", ".gradle", ".cmake",
+}
 CODE_FILE_EXTENSIONS = {
     ".c",
     ".cc",
@@ -213,7 +231,25 @@ def _raise_if_tool_interrupted(ctx: Any) -> None:
         raise TurnInterrupted("Interrupted by user.")
 
 
-def _filtered_walk(base_path: Path, *, include_hidden: bool = False, ctx: Any | None = None):
+def _filtered_walk(
+    base_path: Path,
+    *,
+    include_hidden: bool = False,
+    ctx: Any | None = None,
+    workspace_root: Path | None = None,
+    respect_gitignore: bool = True,
+):
+    """遍历目录并应用内置排除名单与 .gitignore 规则。
+
+    内置名单（EXPLORATION_IGNORED_DIR_NAMES 等）始终生效；.gitignore 规则在
+    ``respect_gitignore=True`` 时生效，锚定 workspace_root（缺省为 base_path）。
+    被忽略的目录直接剪枝，不再深入。
+    """
+    matcher = (
+        GitignoreMatcher.for_walk(workspace_root or base_path, base_path)
+        if respect_gitignore
+        else None
+    )
     for current_root, dir_names, file_names in os.walk(base_path):
         if ctx is not None:
             _raise_if_tool_interrupted(ctx)
@@ -231,11 +267,34 @@ def _filtered_walk(base_path: Path, *, include_hidden: bool = False, ctx: Any | 
                 if include_hidden or not name.startswith(".")
             ]
         )
+        if matcher is not None:
+            current_path = Path(current_root)
+            dir_names[:] = [
+                name
+                for name in dir_names
+                if not matcher.is_ignored(current_path / name, is_dir=True)
+            ]
+            filtered_files = [
+                name
+                for name in filtered_files
+                if not matcher.is_ignored(current_path / name, is_dir=False)
+            ]
         yield Path(current_root), dir_names, filtered_files
 
 
-def _iter_filtered_files(base_path: Path, *, include_hidden: bool = False, ctx: Any | None = None):
-    for current_root, _dir_names, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx):
+def _iter_filtered_files(
+    base_path: Path,
+    *,
+    include_hidden: bool = False,
+    ctx: Any | None = None,
+    workspace_root: Path | None = None,
+):
+    for current_root, _dir_names, file_names in _filtered_walk(
+        base_path,
+        include_hidden=include_hidden,
+        ctx=ctx,
+        workspace_root=workspace_root,
+    ):
         current_path = Path(current_root)
         for file_name in file_names:
             if ctx is not None:
@@ -266,10 +325,18 @@ def _path_candidates_for_missing_file(workspace_root: Path, requested_path: str,
     if not file_name:
         return []
     search_root = _nearest_existing_parent(missing_path, workspace_root)
-    local_matches = [candidate for candidate in _iter_filtered_files(search_root) if candidate.name == file_name]
+    local_matches = [
+        candidate
+        for candidate in _iter_filtered_files(search_root, workspace_root=workspace_root)
+        if candidate.name == file_name
+    ]
     if local_matches:
         return local_matches[:limit]
-    workspace_matches = [candidate for candidate in _iter_filtered_files(workspace_root) if candidate.name == file_name]
+    workspace_matches = [
+        candidate
+        for candidate in _iter_filtered_files(workspace_root, workspace_root=workspace_root)
+        if candidate.name == file_name
+    ]
     return workspace_matches[:limit]
 
 
@@ -279,8 +346,8 @@ def _fuzzy_path_candidates_for_missing_file(workspace_root: Path, missing_path: 
     if not file_name:
         return []
     search_root = _nearest_existing_parent(missing_path, workspace_root)
-    local_files = list(_iter_filtered_files(search_root))
-    workspace_files = list(_iter_filtered_files(workspace_root))
+    local_files = list(_iter_filtered_files(search_root, workspace_root=workspace_root))
+    workspace_files = list(_iter_filtered_files(workspace_root, workspace_root=workspace_root))
     pool = local_files or workspace_files
     if not pool:
         return []
@@ -621,6 +688,7 @@ def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
     limit = max(1, int(payload.get("limit", 200)))
     include_hidden = bool(payload.get("include_hidden", False))
     dirs_first = bool(payload.get("dirs_first", True))
+    matcher = GitignoreMatcher.for_walk(workspace_root, base_path)
     lines = [_relative_label(workspace_root, base_path) + "/"]
     shown = 0
     truncated = False
@@ -635,6 +703,8 @@ def tree_view(ctx: Any, payload: dict[str, Any]) -> str:
             for entry in current.iterdir():
                 _raise_if_tool_interrupted(ctx)
                 if _should_skip_name(entry.name, include_hidden=include_hidden):
+                    continue
+                if matcher.is_ignored(entry, is_dir=entry.is_dir()):
                     continue
                 entries.append(entry)
         except OSError as exc:
@@ -695,7 +765,12 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     elif base_path.is_dir():
         candidates = [
             current_root / file_name
-            for current_root, _, file_names in _filtered_walk(base_path, include_hidden=include_hidden, ctx=ctx)
+            for current_root, _, file_names in _filtered_walk(
+                base_path,
+                include_hidden=include_hidden,
+                ctx=ctx,
+                workspace_root=workspace_root,
+            )
             for file_name in file_names
         ]
     else:
@@ -850,15 +925,18 @@ def _iter_grep_candidates(
     recursive: bool,
 ):
     if not recursive:
+        matcher = GitignoreMatcher.for_walk(workspace_root, base_path)
         for candidate in sorted(base_path.iterdir(), key=lambda item: item.name.lower()):
             _raise_if_tool_interrupted(ctx)
             if not candidate.is_file():
+                continue
+            if matcher.is_ignored(candidate, is_dir=False):
                 continue
             if _grep_candidate_matches_glob(workspace_root, base_path, candidate, glob_patterns):
                 yield candidate
         return
 
-    for current_root, _dir_names, file_names in _filtered_walk(base_path, ctx=ctx):
+    for current_root, _dir_names, file_names in _filtered_walk(base_path, ctx=ctx, workspace_root=workspace_root):
         current_path = Path(current_root)
         for file_name in file_names:
             _raise_if_tool_interrupted(ctx)
@@ -873,7 +951,7 @@ def _iter_recursive_glob_candidates(
     base_path: Path,
     pattern_variants: list[str],
 ):
-    for current_root, dir_names, file_names in _filtered_walk(base_path, ctx=ctx):
+    for current_root, dir_names, file_names in _filtered_walk(base_path, ctx=ctx, workspace_root=workspace_root):
         current_path = Path(current_root)
         for dir_name in dir_names:
             _raise_if_tool_interrupted(ctx)
@@ -917,9 +995,11 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
     iterators = []
     if recursive:
         iterators.append(_iter_recursive_glob_candidates(ctx, workspace_root, base_path, pattern_variants))
+        non_recursive_matcher = None
     else:
         for pattern_variant in pattern_variants:
             iterators.append(base_path.glob(pattern_variant))
+        non_recursive_matcher = GitignoreMatcher.for_walk(workspace_root, base_path)
 
     results: list[str] = []
     seen: set[Path] = set()
@@ -932,6 +1012,8 @@ def glob_search(ctx: Any, payload: dict[str, Any]) -> str:
                 continue
             seen.add(candidate)
             is_dir = candidate.is_dir()
+            if non_recursive_matcher is not None and non_recursive_matcher.is_ignored(candidate, is_dir=is_dir):
+                continue
             if match_type == "files" and is_dir:
                 type_filtered_matches += 1
                 continue
@@ -1004,7 +1086,12 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
             seen.add(candidate)
             if not candidate.is_file():
                 continue
-            if _looks_like_binary_file(candidate):
+            # 三层扩展名快路径：黑名单直接跳过（不 open）；白名单直接读；
+            # 未知后缀回退到 NUL 字节嗅探，谨慎处理不盲目解码。
+            extension = candidate.suffix.lower()
+            if extension in BINARY_FILE_EXTENSIONS:
+                continue
+            if extension not in TEXT_FILE_EXTENSIONS and _looks_like_binary_file(candidate):
                 continue
             relative = _relative_label(workspace_root, candidate)
             try:
@@ -1032,6 +1119,81 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     if truncated:
         matches.append(f"... ({limit} matches shown)")
     return "\n".join(matches)[: ctx.runtime.settings.runtime.max_tool_output_chars]
+
+
+def _format_gitignore_source(source: tuple[str, int, str] | None) -> str:
+    if source is None:
+        return ".gitignore rule"
+    label, line_number, pattern_text = source
+    return f"{label}:{line_number}: `{pattern_text}`"
+
+
+def list_ignored(ctx: Any, payload: dict[str, Any]) -> str:
+    """列出 path 下被忽略规则排除的文件和目录（诊断用）。
+
+    有意不注册为 LLM 工具：忽略规则已在 grep/glob/tree 内部自动生效，
+    该函数供测试、调试或未来 CLI 诊断命令直接调用。
+    """
+    workspace_root = ctx.runtime.settings.workspace_root
+    base_path = safe_path(workspace_root, str(payload.get("path", ".")), allow_outside=True)
+    if not base_path.exists():
+        return f"Error: Path not found: {payload.get('path', '.')}"
+    if not base_path.is_dir():
+        return f"Error: Path is not a directory: {payload.get('path', '.')}"
+
+    limit = max(1, int(payload.get("limit", 200)))
+    include_builtin = bool(payload.get("include_builtin", True))
+    matcher = GitignoreMatcher.for_walk(workspace_root, base_path)
+
+    entries: list[str] = []
+    gitignore_count = 0
+    builtin_count = 0
+
+    for current_root, dir_names, file_names in os.walk(base_path):
+        _raise_if_tool_interrupted(ctx)
+        current_path = Path(current_root)
+        kept_dirs: list[str] = []
+        for name in sorted(dir_names, key=str.lower):
+            candidate = current_path / name
+            if _should_skip_name(name, include_hidden=False):
+                if include_builtin:
+                    builtin_count += 1
+                    if len(entries) < limit:
+                        entries.append(f"{_relative_label(workspace_root, candidate)}/  [builtin ignore list]")
+                continue
+            ignored, source = matcher.check(candidate, is_dir=True)
+            if ignored:
+                gitignore_count += 1
+                if len(entries) < limit:
+                    entries.append(
+                        f"{_relative_label(workspace_root, candidate)}/  [{_format_gitignore_source(source)}]"
+                    )
+            else:
+                kept_dirs.append(name)
+        dir_names[:] = kept_dirs
+        for name in sorted(file_names, key=str.lower):
+            if name.startswith("."):
+                continue
+            ignored, source = matcher.check(current_path / name, is_dir=False)
+            if not ignored:
+                continue
+            gitignore_count += 1
+            if len(entries) < limit:
+                entries.append(
+                    f"{_relative_label(workspace_root, current_path / name)}  [{_format_gitignore_source(source)}]"
+                )
+
+    base_label = _relative_label(workspace_root, base_path)
+    total = gitignore_count + builtin_count
+    if total == 0:
+        return f"(no ignored paths under {base_label})"
+    header = (
+        f"{base_label}: {total} ignored path(s) "
+        f"({gitignore_count} by .gitignore rules, {builtin_count} by builtin list)"
+    )
+    if len(entries) < total:
+        header += f"; showing first {len(entries)}"
+    return "\n".join([header, *entries])[: ctx.runtime.settings.runtime.max_tool_output_chars]
 
 
 def _line_diff_stats(before: str, after: str) -> tuple[int, int]:
