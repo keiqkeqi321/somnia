@@ -261,6 +261,10 @@ button {
 .shell {
   position: relative;
   height: 100vh;
+  /* Mobile browsers (Edge/Chrome/Safari): 100vh ignores the dynamic toolbar,
+   * so the composer ends up under the browser's bottom bar. dvh tracks the
+   * actually-visible viewport; keep 100vh above as fallback for old engines. */
+  height: 100dvh;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -3634,6 +3638,7 @@ button {
   gap: 10px;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   overflow: visible;
 }
 
@@ -4966,8 +4971,8 @@ button {
 /* ── Mobile drawer layout (≤ 900px) ──
  * The workspace becomes a single-column flex: the conversation panel owns the
  * viewport, while the sidebar and context panels turn into off-canvas drawers.
- * CRITICAL: we must keep the 100vh height chain intact
- * (html/body/#root 100% → .shell 100vh → .workspace flex:1 → .panel min-height:0
+ * CRITICAL: we must keep the 100vh/100dvh height chain intact
+ * (html/body/#root 100% → .shell 100vh + 100dvh → .workspace flex:1 → .panel min-height:0
  * → .conversation-body flex:1/min-height:0 → .conversation-virtual-list height:100%).
  * The previous max-width:1120px block broke this chain by forcing height:auto
  * and overflow:visible, which collapsed the virtua VList to 0 and made
@@ -4976,6 +4981,7 @@ button {
 @media (max-width: 900px) {
   .shell {
     height: 100vh;
+    height: 100dvh;
   }
 
   /* Workspace: drop the 3-column grid, use flex column so the conversation

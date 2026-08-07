@@ -177,6 +177,22 @@ def _read_text_with_fallback(path: Path) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+BINARY_SNIFF_BYTES = 8192
+
+
+def _looks_like_binary_file(path: Path) -> bool:
+    """通过文件头 NUL 字节嗅探二进制文件（与 grep/git 相同的启发式）。
+
+    解码回退链不包含 UTF-16，因此含 NUL 的文件无法被正确解码，搜索它没有意义。
+    """
+    try:
+        with path.open("rb") as handle:
+            chunk = handle.read(BINARY_SNIFF_BYTES)
+    except OSError:
+        return False
+    return b"\x00" in chunk
+
+
 def _should_skip_name(name: str, *, include_hidden: bool) -> bool:
     if name in EXPLORATION_IGNORED_DIR_NAMES:
         return True
@@ -987,6 +1003,8 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
                 continue
             seen.add(candidate)
             if not candidate.is_file():
+                continue
+            if _looks_like_binary_file(candidate):
                 continue
             relative = _relative_label(workspace_root, candidate)
             try:

@@ -984,6 +984,65 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "src/app.py:2:beta")
 
+    def test_grep_search_skips_binary_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("alpha\nbeta\n", encoding="utf-8")
+            # 二进制内容里也埋入 needle：嗅探命中 NUL 字节后应整体跳过
+            (root / "src" / "payload.bytes").write_bytes(b"\x00beta\x00\xff\xfegarbage\x00")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta"})
+
+        self.assertEqual(result, "src/app.py:2:beta")
+
+    def test_grep_search_explicit_binary_file_returns_no_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            binary_file = root / "lib.dll"
+            binary_file.write_bytes(b"MZ\x90\x00beta\x00" + b"\x01\x02" * 4096)
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"path": "lib.dll", "pattern": "beta"})
+
+        self.assertEqual(result, "(no matches)")
+
+    def test_grep_search_still_reads_text_without_nul_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            # 中文 GBK 文本（无 NUL 字节）不应被误判为二进制
+            (root / "notes.txt").write_bytes("beta 中文注释\n".encode("gb18030"))
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": "beta"})
+
+        self.assertEqual(result, "notes.txt:1:beta 中文注释")
+
     def test_grep_search_uses_focused_recursive_glob_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
