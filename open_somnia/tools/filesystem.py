@@ -22,6 +22,7 @@ from open_somnia.runtime.messages import (
 from open_somnia.tools.gitignore import GitignoreMatcher
 from open_somnia.tools.process import drop_windows_extended_prefix
 from open_somnia.tools.registry import ToolDefinition
+from open_somnia.tools.ripgrep import run_ripgrep
 
 READ_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "cp936")
 EXPLORATION_IGNORED_DIR_NAMES = {
@@ -1067,6 +1068,26 @@ def grep_search(ctx: Any, payload: dict[str, Any]) -> str:
     if compile_error is not None:
         return compile_error
     needle = pattern if case_sensitive else pattern.lower()
+
+    # rg 加速前端：pattern 为纯 ASCII 时优先委托 rg（GBK/GB18030 文件 + 中文 pattern 的 parity
+    # 由 Python 兜底保证——rg 把 pattern 编码成 UTF-8 字节，在 GBK 文件里搜不到）。
+    # run_ripgrep 返回 None 表示不适合用 rg（无 rg / spawn 失败 / exit 2 / base_path 在工作空间外），
+    # 此时自然落入下方纯 Python 实现作为兜底。
+    if pattern.isascii():
+        rg_result = run_ripgrep(
+            ctx,
+            workspace_root=workspace_root,
+            base_path=base_path,
+            pattern=pattern,
+            glob_patterns=glob_patterns,
+            recursive=recursive,
+            case_sensitive=case_sensitive,
+            use_regex=use_regex,
+            limit=limit,
+            max_output_chars=ctx.runtime.settings.runtime.max_tool_output_chars,
+        )
+        if rg_result is not None:
+            return rg_result
 
     if base_path.is_file():
         iterators = [[base_path]]

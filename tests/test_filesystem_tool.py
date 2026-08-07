@@ -1604,6 +1604,85 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["error_type"], "file_not_found")
         self.assertEqual(result["tool_name"], "edit_file")
 
+    def _make_grep_ctx(self, root: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=root,
+                    runtime=SimpleNamespace(max_tool_output_chars=50000),
+                )
+            ),
+            session=None,
+        )
+
+    def test_grep_rg_path_matches_python_path_when_available(self) -> None:
+        """同一 fixture：默认走 rg，强制无 rg 走 Python，两者结果必须一致。"""
+        from open_somnia.tools import ripgrep as rg_module
+
+        # 系统未装 rg 时跳过——这个测试仅在 rg 可用时才有意义（验证 parity）。
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg-path parity test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+            (root / "src" / "util.py").write_text("beta helper\n", encoding="utf-8")
+            (root / "README.md").write_text("docs beta\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            # 默认（rg 可用）。
+            rg_module.reset_ripgrep_cache()
+            result_with_rg = grep_search(ctx, {"pattern": "beta"})
+
+            # 强制 Python：把 find_ripgrep 打桩返回 None，清缓存确保重新探测。
+            rg_module.reset_ripgrep_cache()
+            with patch.object(rg_module, "find_ripgrep", return_value=None):
+                result_python = grep_search(ctx, {"pattern": "beta"})
+
+        self.assertEqual(result_with_rg, result_python)
+        # 确认确实搜到了内容（非空、非 no matches）。
+        self.assertIn("beta", result_with_rg)
+
+    def test_grep_backreference_regex_falls_back_to_python(self) -> None:
+        """rg 不支持的 regex（如 backreference ``\\1``）应 exit 2 → 回退 Python re 并正确搜到。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            # ``foo...foo`` 形式的重复单词——backreference ``(\w+) \1`` 能匹配。
+            (root / "src" / "app.py").write_text("hello hello world\nno repeat here\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            result = grep_search(
+                ctx,
+                {"pattern": r"(\w+) \1", "glob": "*.py", "use_regex": True},
+            )
+
+        # 回退 Python re 后应能搜到 ``hello hello``（rg 会 exit 2 触发回退，不会报错）。
+        self.assertEqual(result, "src/app.py:1:hello hello world")
+
+    def test_grep_no_rg_env_forces_python_fallback(self) -> None:
+        """``SOMNIA_NO_RG=1`` 必须强制走 Python，即使系统装了 rg。"""
+        from open_somnia.tools import ripgrep as rg_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("alpha\nbeta\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            rg_module.reset_ripgrep_cache()
+            with patch.dict(os.environ, {"SOMNIA_NO_RG": "1"}):
+                # 缓存必须在设置环境变量之后清空，否则会命中旧探测结果。
+                rg_module.reset_ripgrep_cache()
+                self.assertIsNone(rg_module.find_ripgrep())
+                result = grep_search(ctx, {"pattern": "beta", "glob": "*.py"})
+
+        # 清掉缓存，避免污染后续测试。
+        rg_module.reset_ripgrep_cache()
+        self.assertEqual(result, "src/app.py:2:beta")
+
 
 if __name__ == "__main__":
     unittest.main()
