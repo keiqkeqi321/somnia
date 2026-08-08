@@ -17,7 +17,14 @@ def register_subagent_tool(registry) -> None:
     registry.register(
         ToolDefinition(
             name="subagent",
-            description="Spawn an isolated subagent for exploration or implementation.",
+            description=(
+                "Delegate exploration or implementation to an isolated subagent that runs in a fresh "
+                "context and returns a concise summary, keeping your main context clean. "
+                "Use this FIRST for broad codebase exploration, research, 'how does X work' questions, "
+                "or any task that would require several read/grep/glob steps. "
+                "If a task needs more than ~3-5 exploratory tool calls, delegate it to a subagent "
+                "instead of doing the exploration yourself."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

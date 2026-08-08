@@ -198,8 +198,10 @@ class OpenAgentRuntime:
     )
     EXPLORATION_SUMMARY_REMINDER_TEXT = (
         "Reminder: You have been exploring for {streak} consecutive read/search step(s) "
-        "({total} total this turn). Stop broad exploration and provide a concise interim conclusion before reading more: "
-        "state the likely finding, evidence already gathered, confidence, and the smallest remaining verification if any."
+        "({total} total this turn). Stop exploring in the main context now — delegate the remaining "
+        "exploration to a `subagent` (it runs in its own clean context) or provide a concise interim "
+        "conclusion first: state the likely finding, evidence already gathered, confidence, and the "
+        "smallest remaining verification if any."
     )
     TODO_RECONCILE_REMINDER_TEXT = (
         "Reminder: Before ending, reconcile TodoWrite with the work just completed. "
@@ -3220,7 +3222,9 @@ class OpenAgentRuntime:
             "exploration_budget_exceeded",
             (
                 f"Exploration budget exceeded after {limit_text}. "
-                "Stop broad exploration now and provide a concise interim conclusion from the evidence already gathered. "
+                "Stop exploring in the main context now and delegate the remaining inspection to a `subagent` "
+                "(it runs in its own clean context and returns a summary), or provide a concise interim "
+                "conclusion from the evidence already gathered. "
                 "If more inspection is genuinely necessary, ask the user to continue with the smallest specific next check."
             ),
         )

@@ -16,19 +16,16 @@ class SystemPromptBuilder:
         os_name = platform.system() or sys.platform
         shell_line = "PowerShell-compatible command runner" if sys.platform == "win32" else "system shell command runner"
         bash_hint = (
-            "When using the `bash` tool on Windows, prefer PowerShell commands such as "
-            "`Get-ChildItem`, `Get-Content`, `Select-String`, and `Select-Object`. "
-            "Do not assume Unix commands like `ls`, `find -name`, `head`, `grep`, or `/dev/null` are available. "
-            "Never launch GUI programs in the foreground with `&` (they block the tool call until the app exits); "
-            "start them detached with `Start-Process` and check them via `Get-Process` or log files instead."
+            "Prefer PowerShell commands (`Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`) in the "
+            "`bash` tool on Windows; Unix commands like `ls`, `find -name`, `head`, `grep`, or `/dev/null` are not assumed. "
+            "Never launch GUI programs in the foreground with `&`; use `Start-Process` and check via `Get-Process` or logs."
             if sys.platform == "win32"
-            else "When using the `bash` tool on Unix-like systems, standard shell commands are available."
+            else "Use standard shell commands in the `bash` tool on Unix-like systems."
         )
         return (
             "Execution environment:\n"
             f"- OS: {os_name}\n"
             f"- Shell: {shell_line}\n"
-            f"- Workspace: {self.runtime.settings.workspace_root}\n"
             f"- Active provider: {self.runtime.settings.provider.name}\n"
             f"- Active model: {self.runtime.settings.provider.model}\n"
             "Tool behavior:\n"
@@ -40,25 +37,15 @@ class SystemPromptBuilder:
         working_file_path_getter = getattr(self.runtime, "current_working_file_path", None)
         working_file_path = working_file_path_getter() if callable(working_file_path_getter) else ""
         project_instruction_paths = [working_file_path] if working_file_path else None
-        project_instructions = ProjectInstructionsLoader(self.runtime.settings.workspace_root).render(paths=project_instruction_paths)
-        identity_guidance = (
-            "Identity rules:\n"
-            f"- Your configured runtime provider is '{self.runtime.settings.provider.name}'.\n"
-            f"- Your configured runtime model is '{self.runtime.settings.provider.model}'.\n"
-            "- If the user asks which model or provider you are using, answer with these configured values.\n"
-            "- Do not claim to be Claude, ChatGPT, GPT, Gemini, or any other model/vendor unless that exactly matches the configured runtime values above."
-        )
+        project_instructions = ProjectInstructionsLoader(self.runtime.settings.workspace_root).render(paths=project_instruction_paths) 
         tool_selection_guidance = (
             "Tool selection rules:\n"
             "- Follow project instructions first. If they specify a tool or workflow for a task, use that before overlapping generic tools.\n"
-            "- Prefer MCP and project-specific tools over generic filesystem/search tools when their capabilities overlap.\n"
             "- Treat generic workspace tools as fallbacks for overlapping work; use them when no more specific tool applies, the specific tool is unavailable, or its result needs focused confirmation.\n"
             "- Prefer dedicated tools over `bash` whenever a relevant tool exists; reserve `bash` for system commands and terminal operations that truly require shell execution.\n"
-            "- Use `edit_file` instead of shell text replacement via `sed` or `awk`.\n"
-            "- Use `write_file` instead of shell redirection or heredocs for file creation.\n"
+            "- Use `edit_file` instead of shell text replacement via `sed` or `awk`; use `write_file` instead of shell redirection or heredocs for file creation.\n"
             "- Avoid broad repository sweeps unless the user explicitly asks for them; narrow discovery by task, directory, symbol, or file type.\n"
             "- Before reading or editing a file, establish the exact path through the most specific available evidence; do not guess paths from broad listings.\n"
-            "- For `edit_file`, always wrap replacements as `edits=[{old_text,new_text}, ...]`; do not send top-level `old_text` or `new_text`.\n"
             "- If you are unsure and a dedicated tool exists, use the dedicated tool first."
         )
         workflow_guidance = (
@@ -66,17 +53,13 @@ class SystemPromptBuilder:
             "- For non-trivial coding tasks, follow a compact loop: understand local evidence, plan the smallest coherent change, implement focused edits, verify with checks matched to risk, then close the loop.\n"
             "- Do not treat edits as complete until the user-visible goal is verified. If checks cannot run, say what was reviewed and what remains unverified.\n"
             "Workflow rules:\n"
-            "- Use `TodoWrite` to break down meaningful work and keep progress visible to the user.\n"
-            "- Mark each todo item complete as soon as it is done; do not batch completions.\n"
+            "- Use `TodoWrite` to break down meaningful work and keep progress visible to the user; mark each item complete as soon as it is done.\n"
             "- Before ending a task, reconcile `TodoWrite` with the work just completed.\n"
-            "- When multiple tool calls are independent, prefer emitting them in the same turn.\n"
-            "- The engine runs independent read-only tool calls in the same turn concurrently; "
+            "- Prefer emitting independent read-only tool calls in the same turn; the engine runs them concurrently, and "
             "sequencing only matters when one call's input depends on another's result.\n"
-            "- Do not batch dependent tool calls; sequence them when later inputs depend on earlier results.\n"
-            "- When a tool result matters for later context governance, you may set `importance` on the tool input: "
-            "`glance`, `investigate`, or `foundation`.\n"
-            "- Use `edit_file` with `edits=[...]` for every text replacement, including a single replacement.\n"
-            "- When editing one file in several nearby places, prefer a single `edit_file` call with multiple `edits` items over many tiny follow-up patches.\n"
+            "- Set `importance` (`glance`, `investigate`, or `foundation`) on tool results that matter for later context governance.\n"
+            "- Use `edit_file` with `edits=[...]` for every text replacement — always wrap replacements as "
+            "`edits=[{old_text,new_text}, ...]`; for nearby edits in one file, prefer a single call with multiple `edits` items.\n"
             "- After `write_file` or `edit_file`, use the returned updated snippet before rereading the same file.\n"
             "- Do not claim a root cause until your evidence materially narrows the main alternatives.\n"
             "- If you keep rereading the same file or area, stop and summarize facts, open hypotheses, and the next verification step before another read.\n"
@@ -84,12 +67,14 @@ class SystemPromptBuilder:
         )
         runtime_identity = (
             f"You are '{actor}', role: {role}, operating inside workspace {self.runtime.settings.workspace_root}.\n"
-            f"{identity_guidance}\n"
             f"{self.environment_guidance()}"
         )
         lead_guidance = (
             "Use tools to solve coding tasks. Prefer task_create_batch/task_update/task_list for longer work.\n"
-            "Use TodoWrite for short checklists. Use subagent for isolated subagent work. Use load_skill only when needed.\n"
+            "Delegate exploration to a subagent: for broad codebase research, 'how does X work' questions, "
+            "or any task likely to need more than a few read/grep/glob steps, call `subagent` FIRST instead of "
+            "exploring yourself — the subagent runs in its own clean context and returns only a concise summary, "
+            "so your main context stays small. Avoid more than ~3-5 exploratory tool calls before delegating.\n"
             "When collaborating, keep teammates informed through inbox messages and respect shutdown and plan protocols.\n"
             "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing."
         )
@@ -103,8 +88,6 @@ class SystemPromptBuilder:
         skill_descriptions = skill_prompt_getter() if callable(skill_prompt_getter) else self.runtime.skill_loader.descriptions()
         mcp_guidance = (
             "MCP tools are provided through the tool schema and are not repeated here.\n"
-            "Use MCP tools when they are more specific to the task than generic filesystem or shell tools.\n"
-            "If repository instructions require an MCP-backed workflow, follow that workflow before using overlapping generic tools.\n"
             "If a relevant MCP tool is unavailable, fall back to the closest safe generic tool and mention the limitation when it matters."
         )
         # Sections are ordered stable-first: session-stable content (A-C) leads and

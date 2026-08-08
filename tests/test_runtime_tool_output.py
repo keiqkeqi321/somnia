@@ -616,11 +616,10 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertIn("Execution environment:", prompt)
         self.assertIn("Tool behavior:", prompt)
-        self.assertIn("Workspace:", prompt)
+        self.assertIn("operating inside workspace", prompt)
         self.assertIn("bash", prompt)
         self.assertIn("Prefer dedicated tools over `bash`", prompt)
         self.assertIn("Follow project instructions first", prompt)
-        self.assertIn("Prefer MCP and project-specific tools over generic filesystem/search tools", prompt)
         self.assertIn("Treat generic workspace tools as fallbacks for overlapping work", prompt)
         self.assertIn("Avoid broad repository sweeps", prompt)
         self.assertIn("establish the exact path through the most specific available evidence", prompt)
@@ -641,8 +640,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertNotIn("Current mode:", prompt)
         self.assertNotIn("Return a concrete implementation plan", prompt)
         self.assertNotIn("request_mode_switch", prompt)
-        self.assertIn("Use subagent for isolated subagent work.", prompt)
-        self.assertIn("Do not claim to be Claude", prompt)
+        self.assertIn(
+            "Delegate exploration to a subagent: for broad codebase research, 'how does X work' questions", prompt
+        )
+        self.assertIn("Avoid more than ~3-5 exploratory tool calls before delegating", prompt)
+        self.assertIn("You are OpenAgent, a top-rated AI assistant", prompt)
 
     def test_build_system_prompt_sections_are_structured_for_debug_payloads(self) -> None:
         root = self._stable_test_dir("prompt-sections")
@@ -844,7 +846,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn(project_tool_priority, prompt)
         self.assertIn(generic_fallback_guidance, prompt)
         self.assertLess(prompt.index(project_tool_priority), prompt.index(generic_fallback_guidance))
-        self.assertIn("Prefer MCP and project-specific tools over generic filesystem/search tools", prompt)
         self.assertNotIn("Use `grep` instead of shell content search commands", prompt)
 
     def test_build_system_prompt_uses_claude_md_when_agents_md_is_missing(self) -> None:
