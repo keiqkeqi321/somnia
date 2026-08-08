@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import inspect
 import json
 import os
@@ -74,8 +75,14 @@ from open_somnia.runtime.messages import (
     render_text_content,
 )
 from open_somnia.runtime.permissions import PermissionManager
+from open_somnia.runtime.parallel_dispatch import (
+    dispatch_parallel_segment,
+    is_parallel_safe,
+    parallel_dispatch_enabled,
+    segment_tool_calls,
+)
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
-from open_somnia.runtime.round_runner import execute_tool_call, finalize_tool_call
+from open_somnia.runtime.round_runner import ToolCallRecord, execute_tool_call, finalize_tool_call
 from open_somnia.runtime.session import AgentSession, SessionManager
 from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
@@ -113,6 +120,21 @@ from open_somnia.reasoning import normalize_reasoning_level
 
 OpenAIProvider = None
 AnthropicProvider = None
+
+
+@dataclass(slots=True)
+class _PlannedLeadCall:
+    """One tool call's deterministic plan from the lead pre-scan."""
+
+    tool_call: Any
+    tool_name: str
+    is_exploration: bool
+    # "execute" | "flood_error" | "malformed_error" | "unknown_error" | "budget_error"
+    decision: str
+    guard_output: Any  # non-None only for the *_error decisions
+    parallel_safe: bool  # decision == "execute" and is_parallel_safe(tool_name)
+    is_turn_boundary: bool  # tool_name in TURN_BOUNDARY_TOOL_NAMES
+    end_turn_after: bool  # flood/budget guard tripped at or before this call
 
 
 class AgentLoopResult(str):
@@ -3212,6 +3234,160 @@ class OpenAgentRuntime:
         except Exception:
             return set()
 
+    # ----- Lead tool-call planning (order-preserving parallel dispatch) -----
+    #
+    # The lead loop used to execute tool calls strictly serially and interleave
+    # guard decisions (flood guard, malformed/unknown name, exploration budget)
+    # with execution and side effects. To run independent read-only tools
+    # concurrently without changing observable behavior, the loop is split into
+    # three stages:
+    #
+    #   Stage A (``_plan_lead_tool_calls``): a pure, deterministic pre-scan that
+    #       reproduces the exact guard/counter sequence the serial loop would
+    #       have produced, yielding a ``PlannedCall`` per tool call. Every guard
+    #       decision here depends only on tool name + the counters carried from
+    #       the previous call, never on execution output -- so pre-scanning the
+    #       whole turn is equivalent to deciding one-at-a-time.
+    #
+    #   Stage B/C (the loop body): iterate the plan in order, executing maximal
+    #       runs of parallel-safe EXECUTE calls on the shared pool (via
+    #       ``dispatch_parallel_segment``) and every other call inline, then
+    #       applying side effects (UI, transcript, counters) in input order.
+    #       The stateful interrupts (turn-boundary tools,
+    #       ``prepare_next_loop_user_message``) are checked at segment
+    #       boundaries, not pre-scanned: they are time-sensitive (e.g. loop
+    #       injections arriving via the API during execution) and must be
+    #       evaluated during the live execution flow.
+
+    def _plan_lead_tool_calls(
+        self,
+        tool_calls: list[Any],
+        *,
+        max_tool_calls: int,
+        known_tool_names: set[str],
+        exploration_streak: int,
+        exploration_total: int,
+        exploration_soft_limit: int,
+        exploration_hard_streak_limit: int,
+        exploration_hard_total_limit: int,
+    ) -> tuple[list["_PlannedLeadCall"], int, int, bool]:
+        """Deterministically reproduce the serial guard/counter sequence.
+
+        Returns ``(plan, final_exploration_streak, final_exploration_total,
+        pending_exploration_summary_reminder)``. ``plan`` is in input order;
+        duplicate malformed/unknown names are dropped (mirroring the serial
+        ``continue``) and never produce a result.
+        """
+        plan: list[_PlannedLeadCall] = []
+        reported_invalid: set[tuple[str, str]] = set()
+        reported = 0
+        streak = exploration_streak
+        total = exploration_total
+        pending_summary = False
+        end_turn = False
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.name or "")
+            is_exploration = self._is_exploration_tool_call(tool_name, tool_call.input)
+            decision: str = "execute"
+            output: Any = None
+            if reported >= max_tool_calls:
+                output = make_tool_error(
+                    tool_name,
+                    "too_many_tool_calls",
+                    (
+                        f"Tool call flood guard stopped this turn after {max_tool_calls} reported tool "
+                        f"call(s); skipped the remaining {max(0, len(tool_calls) - reported)}."
+                    ),
+                )
+                decision = "flood_error"
+                end_turn = True
+            else:
+                malformed_reason = self._malformed_tool_name_reason(tool_name)
+                if malformed_reason is not None:
+                    key = ("malformed_tool_name", tool_name)
+                    if key in reported_invalid:
+                        # Serial ``continue`` -> dropped, no result, no counters.
+                        continue
+                    reported_invalid.add(key)
+                    output = make_tool_error(
+                        tool_name,
+                        "malformed_tool_name",
+                        (
+                            f"Malformed tool call name '{tool_name}': {malformed_reason}. "
+                            "Use exactly one of the registered tool names and send arguments as JSON."
+                        ),
+                    )
+                    decision = "malformed_error"
+                elif known_tool_names and tool_name not in known_tool_names:
+                    key = ("unknown_tool", tool_name)
+                    if key in reported_invalid:
+                        continue
+                    reported_invalid.add(key)
+                    output = make_tool_error(
+                        tool_name,
+                        "unknown_tool",
+                        (
+                            f"Unknown tool: {tool_name}. "
+                            f"Available tools: {', '.join(sorted(known_tool_names))}."
+                        ),
+                    )
+                    decision = "unknown_error"
+                elif is_exploration:
+                    next_streak = streak + 1
+                    next_total = total + 1
+                    if (
+                        (exploration_hard_streak_limit > 0 and next_streak > exploration_hard_streak_limit)
+                        or (exploration_hard_total_limit > 0 and next_total > exploration_hard_total_limit)
+                    ):
+                        output = self._exploration_budget_error(
+                            tool_name,
+                            next_streak=next_streak,
+                            next_total=next_total,
+                            hard_streak_limit=exploration_hard_streak_limit,
+                            hard_total_limit=exploration_hard_total_limit,
+                        )
+                        decision = "budget_error"
+                        pending_summary = True
+                        end_turn = True
+                    # else decision stays "execute"; streak/total updated below.
+            # A planned call always consumes a report slot and a result, except
+            # for dropped duplicates (handled by ``continue`` above).
+            parallel_safe = decision == "execute" and is_parallel_safe(tool_name)
+            plan.append(
+                _PlannedLeadCall(
+                    tool_call=tool_call,
+                    tool_name=tool_name,
+                    is_exploration=is_exploration,
+                    decision=decision,
+                    guard_output=output,
+                    parallel_safe=parallel_safe,
+                    is_turn_boundary=tool_name in self.TURN_BOUNDARY_TOOL_NAMES,
+                    end_turn_after=end_turn,
+                )
+            )
+            reported += 1
+            # Counter update mirrors agent.py 3707-3727 exactly.
+            if is_exploration and decision != "budget_error":
+                streak += 1
+                total += 1
+                if (
+                    (exploration_soft_limit > 0 and streak >= exploration_soft_limit)
+                    or (exploration_hard_streak_limit > 0 and streak >= exploration_hard_streak_limit)
+                    or (exploration_hard_total_limit > 0 and total >= exploration_hard_total_limit)
+                ):
+                    pending_summary = True
+            elif not is_exploration:
+                streak = 0
+                pending_summary = False
+            # Flood guard and exploration budget set ``end_turn_after_tool`` in
+            # the serial loop, which then ``break``s -- so the scan stops here
+            # too. The stateful breaks (turn-boundary tools,
+            # ``prepare_next_loop_user_message``) are not pre-scannable and are
+            # evaluated live during execution instead.
+            if end_turn:
+                break
+        return plan, streak, total, pending_summary
+
     def _malformed_tool_name_reason(self, tool_name: str) -> str | None:
         normalized = str(tool_name or "").strip()
         if not normalized:
@@ -3595,146 +3771,142 @@ class OpenAgentRuntime:
                 end_turn_after_tool = False
                 max_tool_calls = self._max_tool_calls_per_turn()
                 known_tool_names = self._known_tool_names()
-                reported_invalid_tool_names: set[tuple[str, str]] = set()
-                reported_tool_calls = 0
-                for tool_call in turn.tool_calls:
-                    self._raise_if_interrupted(should_interrupt)
-                    ctx = ToolExecutionContext(
+
+                # Stage A: deterministic pre-scan reproducing the serial
+                # guard/counter sequence. Counter updates (exploration
+                # streak/total) are computed here; the loop below only applies
+                # side effects (UI, transcript, stateful interrupts) in order.
+                plan, exploration_streak, exploration_total, pending_exploration_summary_reminder = (
+                    self._plan_lead_tool_calls(
+                        turn.tool_calls,
+                        max_tool_calls=max_tool_calls,
+                        known_tool_names=known_tool_names,
+                        exploration_streak=exploration_streak,
+                        exploration_total=exploration_total,
+                        exploration_soft_limit=exploration_soft_limit,
+                        exploration_hard_streak_limit=exploration_hard_streak_limit,
+                        exploration_hard_total_limit=exploration_hard_total_limit,
+                    )
+                )
+                # Stale counters are now authoritative from the plan; the loop
+                # body must not recompute them.
+                reported_tool_calls = len(plan)
+
+                # Stages B+C: execute and apply side effects in one ordered pass.
+                #
+                # The original loop interleaved execution with the stateful
+                # interrupts (turn-boundary tools, ``prepare_next_loop_user_message``)
+                # -- an interrupt could stop the turn *before* later calls ran.
+                # So we must not pre-execute the whole plan and then break:
+                # execution and interrupt checks are fused here, in input order.
+                # Parallelism happens only *inside* a maximal run of parallel-safe
+                # read-only calls (which carry no side effects, so an injection
+                # arriving mid-run is harmlessly deferred to the run's end -- it
+                # only takes effect on the next loop iteration anyway). Everything
+                # else (writes, shell, subagent, stateful and turn-boundary tools,
+                # guard errors) runs one at a time with the exact same per-call
+                # interrupt/break semantics as before.
+                trace_id = f"{session.id}-{session.latest_turn_id}"
+                parallel_on = parallel_dispatch_enabled(self.settings)
+
+                def _lead_ctx() -> ToolExecutionContext:
+                    return ToolExecutionContext(
                         runtime=self,
                         session=session,
                         actor="lead",
-                        trace_id=f"{session.id}-{session.latest_turn_id}",
+                        trace_id=trace_id,
                         should_interrupt=should_interrupt,
                     )
-                    tool_name = str(tool_call.name or "")
-                    is_exploration_tool = self._is_exploration_tool_call(tool_name, tool_call.input)
-                    output: Any | None = None
-                    if reported_tool_calls >= max_tool_calls:
-                        output = make_tool_error(
-                            tool_name,
-                            "too_many_tool_calls",
-                            (
-                                f"Tool call flood guard stopped this turn after {max_tool_calls} reported tool "
-                                f"call(s); skipped the remaining {max(0, len(turn.tool_calls) - reported_tool_calls)}."
-                            ),
-                        )
-                        end_turn_after_tool = True
-                    else:
-                        malformed_reason = self._malformed_tool_name_reason(tool_name)
-                        if malformed_reason is not None:
-                            key = ("malformed_tool_name", tool_name)
-                            if key in reported_invalid_tool_names:
-                                continue
-                            reported_invalid_tool_names.add(key)
-                            output = make_tool_error(
-                                tool_name,
-                                "malformed_tool_name",
-                                (
-                                    f"Malformed tool call name '{tool_name}': {malformed_reason}. "
-                                    "Use exactly one of the registered tool names and send arguments as JSON."
-                                ),
-                            )
-                        elif known_tool_names and tool_name not in known_tool_names:
-                            key = ("unknown_tool", tool_name)
-                            if key in reported_invalid_tool_names:
-                                continue
-                            reported_invalid_tool_names.add(key)
-                            output = make_tool_error(
-                                tool_name,
-                                "unknown_tool",
-                                (
-                                    f"Unknown tool: {tool_name}. "
-                                    f"Available tools: {', '.join(sorted(known_tool_names))}."
-                                ),
-                            )
-                        elif is_exploration_tool:
-                            next_exploration_streak = exploration_streak + 1
-                            next_exploration_total = exploration_total + 1
-                            if (
-                                (
-                                    exploration_hard_streak_limit > 0
-                                    and next_exploration_streak > exploration_hard_streak_limit
-                                )
-                                or (
-                                    exploration_hard_total_limit > 0
-                                    and next_exploration_total > exploration_hard_total_limit
-                                )
-                            ):
-                                output = self._exploration_budget_error(
-                                    tool_name,
-                                    next_streak=next_exploration_streak,
-                                    next_total=next_exploration_total,
-                                    hard_streak_limit=exploration_hard_streak_limit,
-                                    hard_total_limit=exploration_hard_total_limit,
-                                )
-                                pending_exploration_summary_reminder = True
-                                end_turn_after_tool = True
-                    if tool_name == "compress":
-                        manual_compact = True
-                    if output is None:
-                        self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
-                        record = execute_tool_call(
-                            self.registry,
-                            ctx,
-                            tool_call,
-                            max_content_chars=self.settings.runtime.max_tool_output_chars,
-                        )
-                    else:
-                        record = finalize_tool_call(
-                            tool_call,
-                            output,
-                            max_content_chars=self.settings.runtime.max_tool_output_chars,
-                        )
-                    if record.repair_hint is not None:
-                        pending_tool_repair_hints.append(record.repair_hint)
-                    output = record.persisted_output
-                    log_id = self.print_tool_event("lead", tool_name, tool_call.input, record.persisted_output)
-                    result = record.result_item
-                    result["raw_output"] = record.persisted_output
-                    result["log_id"] = log_id
-                    executed_tool_calls.append(tool_call)
-                    reported_tool_calls += 1
-                    tool_results.append(result)
-                    self._append_transcript_entry(
-                        session.id,
-                        {
-                            "role": "tool",
-                            "name": tool_name,
-                            "input": tool_call.input,
-                            "output": result["content"],
-                        },
-                    )
-                    if is_exploration_tool and output is not None and not (
-                        isinstance(output, dict)
-                        and str(output.get("error_type", "")).strip() == "exploration_budget_exceeded"
-                    ):
-                        exploration_streak += 1
-                        exploration_total += 1
-                        if (
-                            (exploration_soft_limit > 0 and exploration_streak >= exploration_soft_limit)
-                            or (
-                                exploration_hard_streak_limit > 0
-                                and exploration_streak >= exploration_hard_streak_limit
-                            )
-                            or (
-                                exploration_hard_total_limit > 0
-                                and exploration_total >= exploration_hard_total_limit
-                            )
+
+                cursor = 0
+                while cursor < len(plan):
+                    self._raise_if_interrupted(should_interrupt)
+                    current = plan[cursor]
+                    # Determine the segment: a maximal run of parallel-safe
+                    # EXECUTE calls (concurrent), or a single call (inline).
+                    if parallel_on and current.decision == "execute" and current.parallel_safe:
+                        run_end = cursor
+                        while (
+                            run_end < len(plan)
+                            and plan[run_end].decision == "execute"
+                            and plan[run_end].parallel_safe
                         ):
-                            pending_exploration_summary_reminder = True
-                    elif not is_exploration_tool:
-                        exploration_streak = 0
-                        pending_exploration_summary_reminder = False
-                    if tool_name == "TodoWrite":
-                        used_todo = True
-                    if tool_name in self.TURN_BOUNDARY_TOOL_NAMES:
-                        end_turn_after_tool = True
+                            run_end += 1
+                    else:
+                        run_end = cursor + 1
+                    seg_plans = plan[cursor:run_end]
+                    # Execute the segment.
+                    if current.decision != "execute":
+                        seg_records = [
+                            finalize_tool_call(
+                                current.tool_call,
+                                current.guard_output,
+                                max_content_chars=self.settings.runtime.max_tool_output_chars,
+                            )
+                        ]
+                    elif run_end - cursor > 1:
+                        seg_records = dispatch_parallel_segment(
+                            self.registry,
+                            _lead_ctx,
+                            [p.tool_call for p in seg_plans],
+                            should_interrupt=should_interrupt,
+                            settings=self.settings,
+                            max_content_chars=self.settings.runtime.max_tool_output_chars,
+                        )
+                    else:
+                        seg_records = [
+                            execute_tool_call(
+                                self.registry,
+                                _lead_ctx(),
+                                current.tool_call,
+                                max_content_chars=self.settings.runtime.max_tool_output_chars,
+                            )
+                        ]
+                    # Apply side effects in input order, breaking on stateful
+                    # interrupts exactly like the serial loop.
+                    seg_broke = False
+                    for offset, record in enumerate(seg_records):
+                        planned = seg_plans[offset]
+                        tool_call = planned.tool_call
+                        tool_name = planned.tool_name
+                        if tool_name == "compress":
+                            manual_compact = True
+                        if planned.decision == "execute":
+                            self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
+                        if record.repair_hint is not None:
+                            pending_tool_repair_hints.append(record.repair_hint)
+                        log_id = self.print_tool_event("lead", tool_name, tool_call.input, record.persisted_output)
+                        result = record.result_item
+                        result["raw_output"] = record.persisted_output
+                        result["log_id"] = log_id
+                        executed_tool_calls.append(tool_call)
+                        tool_results.append(result)
+                        self._append_transcript_entry(
+                            session.id,
+                            {
+                                "role": "tool",
+                                "name": tool_name,
+                                "input": tool_call.input,
+                                "output": result["content"],
+                            },
+                        )
+                        if tool_name == "TodoWrite":
+                            used_todo = True
+                        if planned.is_turn_boundary:
+                            end_turn_after_tool = True
+                            seg_broke = True
+                            break
+                        if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
+                            end_turn_after_tool = True
+                            seg_broke = True
+                            break
+                        if planned.end_turn_after:
+                            end_turn_after_tool = True
+                            seg_broke = True
+                            break
+                    if seg_broke:
                         break
-                    if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
-                        end_turn_after_tool = True
-                        break
-                    if end_turn_after_tool:
-                        break
+                    cursor = run_end
 
                 assistant_message = turn.as_message(executed_tool_calls)
                 assistant_message = self._attach_thinking_log_marker(

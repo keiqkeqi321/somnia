@@ -121,6 +121,11 @@ class RuntimeSettings:
     exploration_hard_total_limit: int = 0
     max_subagent_rounds: int = 30
     max_agent_rounds: int = 100
+    # Order-preserving parallel dispatch: maximal runs of independent read-only
+    # tools run concurrently; writes/shell/subagent/stateful tools stay serial.
+    # Disabled by SOMNIA_NO_PARALLEL_TOOLS=1 (mirrors SOMNIA_NO_RG).
+    parallel_tool_dispatch: bool = True
+    parallel_tool_max_workers: int = 8
 
 
 @dataclass(slots=True)

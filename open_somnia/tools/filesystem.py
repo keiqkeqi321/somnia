@@ -307,6 +307,16 @@ def _relative_label(workspace_root: Path, path: Path) -> str:
     try:
         return path.relative_to(workspace_root).as_posix() or "."
     except ValueError:
+        pass
+    # On Windows the raw workspace root (e.g. a temp dir) may carry an 8.3
+    # short-name segment ("KEQIKE~1") while paths produced via safe_path /
+    # os.walk are resolved to their long form ("keqikeqi321"), so the textual
+    # relative_to above fails even when the path is genuinely inside the root.
+    # Resolve both sides to their canonical form and retry once; if the path
+    # truly lives outside the workspace, fall back to the absolute string.
+    try:
+        return path.resolve().relative_to(workspace_root.resolve()).as_posix() or "."
+    except (ValueError, OSError):
         return str(path)
 
 
@@ -830,10 +840,7 @@ def _format_glob_no_matches(
     match_type: str,
     type_filtered_matches: int,
 ) -> str:
-    try:
-        base_label = base_path.relative_to(workspace_root).as_posix() or "."
-    except ValueError:
-        base_label = str(base_path)
+    base_label = _relative_label(workspace_root, base_path)
     lines = [
         "(no matches)",
         f"path: {base_label}",
@@ -1298,6 +1305,12 @@ def _workspace_relative_path(workspace_root: Path, path: Path) -> str:
     try:
         return path.relative_to(workspace_root).as_posix()
     except Exception:
+        pass
+    # Windows 8.3 short-name vs resolved long-name mismatch: retry against the
+    # canonical forms (see _relative_label for the full rationale).
+    try:
+        return path.resolve().relative_to(workspace_root.resolve()).as_posix()
+    except (ValueError, OSError):
         return str(path)
 
 

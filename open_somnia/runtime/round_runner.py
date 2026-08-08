@@ -33,6 +33,10 @@ from open_somnia.runtime.messages import (
     make_tool_result_message,
     make_user_text_message,
 )
+from open_somnia.runtime.parallel_dispatch import (
+    dispatch_parallel_segment,
+    segment_tool_calls,
+)
 from open_somnia.tools.registry import ToolRegistry
 from open_somnia.tools.tool_errors import (
     extract_transient_repair_hint,
@@ -208,18 +212,42 @@ class SessionlessRoundRunner:
             trace_id=trace_id,
             should_interrupt=should_interrupt,
         )
+
+        # Order-preserving segment parallelism: maximal runs of independent
+        # read-only tools run concurrently on a shared pool; everything else
+        # (writes, shell, subagent, stateful tools) stays serial. Results are
+        # always returned in input order so provider tool_result pairing holds.
+        # Hooks (on_tool_record / should_stop_after_round) and repair-hint
+        # collection fire sequentially, in input order, after each segment
+        # completes -- preserving the exact serial-observable behavior. The
+        # toggle lives in parallel_dispatch; SOMNIA_NO_PARALLEL_TOOLS=1 or
+        # runtime.parallel_tool_dispatch=false degrades every segment to a
+        # serial run identical to the old loop.
+        settings = getattr(self.runtime, "settings", None)
         records: list[ToolCallRecord] = []
         stop_after_round = False
-        for tool_call in turn.tool_calls:
+        for seg_indices in segment_tool_calls(turn.tool_calls):
             self._raise_if_interrupted(should_interrupt)
-            record = execute_tool_call(registry, ctx, tool_call, hooks=hooks)
-            if record.repair_hint is not None:
-                pending_repair_hints.append(record.repair_hint)
-            if hooks is not None and hooks.on_tool_record is not None:
-                hooks.on_tool_record(record)
-            records.append(record)
-            if hooks is not None and hooks.should_stop_after_round is not None:
-                stop_after_round = stop_after_round or bool(hooks.should_stop_after_round(record))
+            seg_calls = [turn.tool_calls[i] for i in seg_indices]
+            if len(seg_calls) > 1:
+                seg_records = dispatch_parallel_segment(
+                    registry,
+                    lambda: ctx,
+                    seg_calls,
+                    should_interrupt=should_interrupt,
+                    settings=settings,
+                    hooks=hooks,
+                )
+            else:
+                seg_records = [execute_tool_call(registry, ctx, seg_calls[0], hooks=hooks)]
+            for record in seg_records:
+                if record.repair_hint is not None:
+                    pending_repair_hints.append(record.repair_hint)
+                if hooks is not None and hooks.on_tool_record is not None:
+                    hooks.on_tool_record(record)
+                records.append(record)
+                if hooks is not None and hooks.should_stop_after_round is not None:
+                    stop_after_round = stop_after_round or bool(hooks.should_stop_after_round(record))
         messages.append(make_tool_result_message([record.result_item for record in records]))
         return RoundResult(
             turn_text=turn_text,

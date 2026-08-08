@@ -177,7 +177,9 @@ class FilesystemToolTests(unittest.TestCase):
             result = read_file(ctx, {"path": str(outside_file)})
 
         self.assertEqual(result, "external context")
-        self.assertEqual(active_files[0]["path"], str(outside_file))
+        # read_file canonicalizes paths via safe_path (resolve), so the stored
+        # path is the resolved form -- compare against the resolved outside_file.
+        self.assertEqual(active_files[0]["path"], str(Path(outside_file).resolve()))
         self.assertEqual(active_files[0]["source"], "read_file")
 
     def test_grep_search_accepts_absolute_path_outside_workspace(self) -> None:
@@ -197,7 +199,9 @@ class FilesystemToolTests(unittest.TestCase):
 
             result = grep_search(ctx, {"path": str(outside_file), "pattern": "needle"})
 
-        self.assertEqual(result, f"{outside_file}:2:needle")
+        # grep canonicalizes the path label via safe_path (resolve), so compare
+        # against the resolved form rather than the raw tempdir string.
+        self.assertEqual(result, f"{Path(outside_file).resolve()}:2:needle")
 
     def test_write_file_rejects_absolute_path_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as workspace_tmp, tempfile.TemporaryDirectory() as outside_tmp:

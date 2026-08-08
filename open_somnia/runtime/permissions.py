@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from fnmatch import fnmatchcase
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from open_somnia.runtime.execution_mode import (
@@ -26,6 +27,13 @@ def is_tool_authorized_by_patterns(tool_name: str, authorized_tools: set[str]) -
 class PermissionManager:
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
+        # Guards the once-authorization counters below. Those counters are
+        # read-modify-written on every authorized call; with parallel tool
+        # dispatch two concurrent calls sharing a once-grant could otherwise
+        # race and both consume the same slot. (In practice the parallel-safe
+        # tool set is read-only and resolves via builtin/workspace grants long
+        # before reaching this path, but the lock is cheap insurance.)
+        self._once_lock = RLock()
 
     @staticmethod
     def _authorized_tools_from_payload(payload: Any) -> set[str]:
@@ -109,26 +117,28 @@ class PermissionManager:
             worker_key = f"{actor}\0{tool_name}"
             if worker_key in getattr(self.runtime, "_worker_authorized_tools", set()):
                 return None
-            worker_once = getattr(self.runtime, "_worker_once_authorized_tools", {})
-            remaining_worker = int(worker_once.get(worker_key, 0) or 0)
-            if remaining_worker > 0:
-                if remaining_worker == 1:
-                    worker_once.pop(worker_key, None)
-                else:
-                    worker_once[worker_key] = remaining_worker - 1
-                return None
+            with self._once_lock:
+                worker_once = getattr(self.runtime, "_worker_once_authorized_tools", {})
+                remaining_worker = int(worker_once.get(worker_key, 0) or 0)
+                if remaining_worker > 0:
+                    if remaining_worker == 1:
+                        worker_once.pop(worker_key, None)
+                    else:
+                        worker_once[worker_key] = remaining_worker - 1
+                    return None
         builtin_authorized = getattr(self.runtime, "_builtin_authorized_tools", set())
         if is_tool_authorized_by_patterns(
             tool_name, builtin_authorized
         ) or is_tool_authorized_by_patterns(tool_name, self.runtime._workspace_authorized_tools):
             return None
-        remaining = self.runtime._once_authorized_tools.get(tool_name, 0)
-        if remaining > 0:
-            if remaining == 1:
-                self.runtime._once_authorized_tools.pop(tool_name, None)
-            else:
-                self.runtime._once_authorized_tools[tool_name] = remaining - 1
-            return None
+        with self._once_lock:
+            remaining = self.runtime._once_authorized_tools.get(tool_name, 0)
+            if remaining > 0:
+                if remaining == 1:
+                    self.runtime._once_authorized_tools.pop(tool_name, None)
+                else:
+                    self.runtime._once_authorized_tools[tool_name] = remaining - 1
+                return None
         if getattr(ctx, "actor", None) == "subagent":
             return None
         if tool_name == "subagent":

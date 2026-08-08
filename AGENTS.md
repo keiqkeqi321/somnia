@@ -98,6 +98,64 @@ ambiguity), `-F` for literal / raw regex passthrough, `-i` when case-insensitive
 relative to `base_path` (matching the Python path's base-relative label matching); output
 paths are re-prefixed to workspace-relative form on parse.
 
+### Parallel tool dispatch (order-preserving segment parallelism)
+
+Independent read-only tool calls in a single turn run concurrently; writes and
+state-changing calls stay serial. `open_somnia/runtime/parallel_dispatch.py`
+implements the policy; both call sites — the Lead main loop
+(`open_somnia/runtime/agent.py`) and `SessionlessRoundRunner.run_round`
+(`open_somnia/runtime/round_runner.py`) — dispatch through it.
+
+**Algorithm.** `segment_tool_calls(tool_calls)` scans the calls in input order
+and yields maximal runs of consecutive **parallel-safe** call indices. Each
+segment runs on a process-lifetime singleton `ThreadPoolExecutor`
+(`max_workers = min(8, runtime.parallel_tool_max_workers)`). Results are
+re-collected and **reordered to input order** before being paired back to the
+provider's `tool_use` blocks (Anthropic/OpenAI pair results positionally/by id).
+Segments are concatenated in input order, so the observable behaviour — result
+order, transcript order, counters, guards, turn-boundary interrupts — is
+identical to serial execution. Serial fast path: segments of length ≤ 1 (a lone
+safe call, or any unsafe call) execute inline exactly as before.
+
+**Whitelist** (`PARALLEL_SAFE_TOOL_NAMES`, a strict subset of the read-only
+tools): `read_file`, `read_image`, `grep`, `glob`, `tree`, `find_symbol`,
+`web_fetch`, `task_get`, `task_list`, `list_teammates`, `check_background`.
+Everything else is conservatively serial: `TodoWrite` (unlocked `session.todo_items`
+write), `request_authorization`/`request_mode_switch` (blocking handshake +
+control flow), `submit_plan`/`compress`/`load_skill`/`request_original_context`
+(context mutation), `write_file`/`edit_file`/`bash`/`background_run` (writes /
+side effects), `subagent`/`spawn_teammate` (nested agent loops), all task-mutation
+and team-collaboration tools, and all `mcp__*` tools (no read-only marker). GIL
+releases during I/O in the whitelisted tools make the threading worthwhile.
+
+**Lead loop (three-stage).** Stage A is a deterministic, I/O-free pre-scan
+(`_plan_lead_tool_calls`) that reproduces the serial guard/counter sequence
+(flood guard, malformed/unknown-name dedup with drop-on-repeat, exploration
+budget streak/total) and yields a plan with a decision per call plus the
+computed `is_parallel_safe`/`is_exploration`/`end_turn_after` flags. Stages B
+and C are **fused into a single cursor loop**: each iteration determines the
+segment (maximal parallel-safe run, or a single call), executes it
+(`dispatch_parallel_segment` or inline), then applies all side effects for that
+segment in input order — `print_tool_started`, repair hints, `print_tool_event`,
+transcript append, `reported_tool_calls`/exploration counters, `used_todo`/
+`manual_compact`, and the stateful interrupts (`is_turn_boundary`,
+`prepare_next_loop_user_message`, `end_turn_after`) which break the loop exactly
+as the serial loop did. Fusion is required because `prepare_next_loop_user_message`
+moves pending→ready context injections and cannot be pre-scanned.
+
+**Locking.** `PermissionManager` wraps its worker-once / lead-once counter
+mutations in an `RLock` as defensive insurance (the safe set never needs a once
+grant). UI rendering, transcript, and `tool_results` appends all happen in stage
+C / the round-runner post-segment hooks, which are single-threaded and
+order-preserving — no extra locks needed.
+
+**Switches.** `runtime.parallel_tool_dispatch` (default `True`) and
+`runtime.parallel_tool_max_workers` (default `8`) live in
+`RuntimeSettings` (`open_somnia/config/models.py`). The escape hatch
+`SOMNIA_NO_PARALLEL_TOOLS=1` forces fully serial execution regardless of config
+(troubleshooting). The system prompt tells the model that independent read-only
+calls run concurrently and sequencing only matters across result dependencies.
+
 ## Configuration
 
 Primary config files:

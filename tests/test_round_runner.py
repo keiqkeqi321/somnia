@@ -197,6 +197,214 @@ class SessionlessRoundRunnerTests(unittest.TestCase):
             self._run([AssistantTurn(stop_reason="end_turn", text_blocks=["x"])], should_interrupt=lambda: True)
 
 
+def _readonly_registry():
+    """Registry of parallel-safe tools that record whether they overlapped."""
+    import threading
+    import time
+
+    lock = threading.Lock()
+    active: list[str] = []
+    log: list[tuple[str, str]] = []
+
+    def make(name, delay=0.0):
+        def handler(ctx, payload):
+            with lock:
+                active.append(name)
+                log.append((name, "start"))
+            if delay:
+                time.sleep(delay)
+            with lock:
+                active.remove(name)
+                log.append((name, "end"))
+            return {"status": "ok", "tool": name}
+        return handler
+
+    registry = ToolRegistry()
+    for name in ("read_file", "grep", "glob"):
+        registry.register(ToolDefinition(name=name, description="d", input_schema={}, handler=make(name)))
+    # A non-safe tool to verify serialization around it.
+    registry.register(
+        ToolDefinition(name="write_file", description="d", input_schema={}, handler=make("write_file"))
+    )
+    return registry, log
+
+
+class SessionlessRoundRunnerParallelTests(unittest.TestCase):
+    """The run_round loop drives order-preserving segment parallelism."""
+
+    def _run_turn(self, tool_calls, registry):
+        runtime = _FakeRuntime([AssistantTurn(stop_reason="tool_use", tool_calls=tool_calls)])
+        runtime.settings = SimpleNamespace(runtime=SimpleNamespace(parallel_tool_dispatch=True))
+        runner = SessionlessRoundRunner(runtime)
+        messages = [{"role": "user", "content": "hi"}]
+        result = runner.run_round(
+            system_prompt="sys",
+            messages=messages,
+            registry=registry,
+            pending_repair_hints=[],
+            actor="tester",
+            trace_id="t-1",
+        )
+        return result, messages
+
+    def test_parallel_readonly_tools_run_concurrently(self) -> None:
+        import threading
+        import time
+
+        active: list[str] = []
+        overlap_seen = {"value": False}
+        guard = threading.Lock()
+
+        def make(name, delay):
+            def handler(ctx, payload):
+                with guard:
+                    active.append(name)
+                    if len(active) > 1:
+                        overlap_seen["value"] = True
+                time.sleep(delay)
+                with guard:
+                    active.remove(name)
+                return {"status": "ok", "tool": name}
+            return handler
+
+        registry = ToolRegistry()
+        for name in ("read_file", "grep", "glob"):
+            registry.register(ToolDefinition(name=name, description="d", input_schema={}, handler=make(name, 0.15)))
+
+        calls = [
+            ToolCall(id="r1", name="read_file", input={}),
+            ToolCall(id="r2", name="grep", input={}),
+            ToolCall(id="r3", name="glob", input={}),
+        ]
+        t0 = time.monotonic()
+        result, _ = self._run_turn(calls, registry)
+        elapsed = time.monotonic() - t0
+        self.assertTrue(result.has_tool_calls)
+        self.assertEqual(len(result.records), 3)
+        # All three ran concurrently (overlap observed) and finished in ~1 delay, not 3.
+        self.assertTrue(overlap_seen["value"], "read-only tools should run concurrently")
+        self.assertLess(elapsed, 0.40)
+
+    def test_results_preserve_input_order_under_parallelism(self) -> None:
+        import time
+
+        registry = ToolRegistry()
+
+        def slow(ctx, p):
+            time.sleep(0.15)
+            return {"status": "ok", "who": "slow"}
+
+        def fast(ctx, p):
+            return {"status": "ok", "who": "fast"}
+
+        registry.register(ToolDefinition(name="read_file", description="d", input_schema={}, handler=slow))
+        registry.register(ToolDefinition(name="grep", description="d", input_schema={}, handler=fast))
+        # slow first: finishes last, but result order must stay [slow, fast].
+        calls = [ToolCall(id="slow", name="read_file", input={}), ToolCall(id="fast", name="grep", input={})]
+        result, _ = self._run_turn(calls, registry)
+        self.assertEqual([r.tool_call.id for r in result.records], ["slow", "fast"])
+        self.assertEqual(result.records[0].persisted_output, {"status": "ok", "who": "slow"})
+
+    def test_write_then_read_runs_serially(self) -> None:
+        """A write tool must not be reordered ahead of a trailing read."""
+        import threading
+        import time
+
+        log: list[str] = []
+        guard = threading.Lock()
+
+        def make(name, delay=0.05):
+            def handler(ctx, payload):
+                with guard:
+                    log.append(name)
+                time.sleep(delay)
+                return {"status": "ok", "tool": name}
+            return handler
+
+        registry = ToolRegistry()
+        registry.register(ToolDefinition(name="write_file", description="d", input_schema={}, handler=make("write_file")))
+        registry.register(ToolDefinition(name="read_file", description="d", input_schema={}, handler=make("read_file")))
+        calls = [ToolCall(id="w", name="write_file", input={}), ToolCall(id="r", name="read_file", input={})]
+        result, _ = self._run_turn(calls, registry)
+        self.assertEqual(len(result.records), 2)
+        # write_file executes fully before read_file starts (no reordering).
+        self.assertEqual(log, ["write_file", "read_file"])
+
+    def test_on_tool_record_fires_in_input_order(self) -> None:
+        import time
+
+        seen: list[str] = []
+        hooks = RoundHooks(on_tool_record=lambda rec: seen.append(rec.tool_call.id))
+
+        registry = ToolRegistry()
+
+        def slow(ctx, p):
+            time.sleep(0.1)
+            return {"status": "ok", "who": "slow"}
+
+        registry.register(ToolDefinition(name="read_file", description="d", input_schema={}, handler=slow))
+        registry.register(ToolDefinition(name="grep", description="d", input_schema={}, handler=lambda c, p: {"status": "ok"}))
+        runtime = _FakeRuntime(
+            [AssistantTurn(stop_reason="tool_use", tool_calls=[
+                ToolCall(id="slow", name="read_file", input={}),
+                ToolCall(id="fast", name="grep", input={}),
+            ])]
+        )
+        runtime.settings = SimpleNamespace(runtime=SimpleNamespace(parallel_tool_dispatch=True))
+        runner = SessionlessRoundRunner(runtime)
+        runner.run_round(
+            system_prompt="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            registry=registry,
+            pending_repair_hints=[],
+            actor="tester",
+            trace_id="t-1",
+            hooks=hooks,
+        )
+        # Hooks fire in input order despite concurrent execution.
+        self.assertEqual(seen, ["slow", "fast"])
+
+    def test_disable_runs_serially(self) -> None:
+        registry = ToolRegistry()
+        import threading
+        import time
+
+        active: list[str] = []
+        overlap = {"value": False}
+        guard = threading.Lock()
+
+        def make(name):
+            def handler(ctx, p):
+                with guard:
+                    active.append(name)
+                    if len(active) > 1:
+                        overlap["value"] = True
+                time.sleep(0.1)
+                with guard:
+                    active.remove(name)
+                return {"status": "ok"}
+            return handler
+
+        registry.register(ToolDefinition(name="read_file", description="d", input_schema={}, handler=make("read_file")))
+        registry.register(ToolDefinition(name="grep", description="d", input_schema={}, handler=make("grep")))
+
+        runtime = _FakeRuntime([AssistantTurn(stop_reason="tool_use", tool_calls=[
+            ToolCall(id="a", name="read_file", input={}),
+            ToolCall(id="b", name="grep", input={}),
+        ])])
+        runtime.settings = SimpleNamespace(runtime=SimpleNamespace(parallel_tool_dispatch=False))
+        runner = SessionlessRoundRunner(runtime)
+        runner.run_round(
+            system_prompt="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            registry=registry,
+            pending_repair_hints=[],
+            actor="tester",
+            trace_id="t-1",
+        )
+        self.assertFalse(overlap["value"], "with parallel dispatch disabled, tools must not overlap")
+
+
 class TeammateCompactTests(unittest.TestCase):
     def _manager(self, usage: ContextWindowUsage) -> tuple[TeammateRuntimeManager, list[tuple[str, list]]]:
         compact_calls: list[tuple[str, list]] = []
