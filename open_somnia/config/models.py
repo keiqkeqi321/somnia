@@ -121,6 +121,11 @@ class RuntimeSettings:
     exploration_hard_total_limit: int = 0
     max_subagent_rounds: int = 50
     max_agent_rounds: int = 100
+    # Circuit breaker for thinking-only (empty) responses: when a reasoning model
+    # burns the whole max_tokens budget on reasoning and emits no visible text or
+    # tool calls for this many consecutive turns, stop the turn with a diagnostic
+    # instead of looping to max_agent_rounds. 0 disables the breaker.
+    empty_response_max_streak: int = 3
     # Subagent resume: a subagent that ends interrupted/truncated/failed is
     # checkpointed so the lead can resume it from where it left off instead of
     # restarting from scratch. Each resume resets the round budget (the subagent

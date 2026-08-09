@@ -554,6 +554,15 @@ class OpenAIProvider(LLMProvider):
         }
         if cache_hit_tokens:
             result["cache_read_input_tokens"] = cache_hit_tokens
+        # Capture reasoning/thinking token spend so the runtime can detect a
+        # reasoning model that exhausted the whole max_tokens budget on thinking
+        # and produced no visible output (OpenAI chat-completions exposes it under
+        # completion_tokens_details.reasoning_tokens).
+        completion_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
+        if isinstance(completion_details, dict):
+            reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
+            if reasoning_tokens > 0:
+                result["reasoning_tokens"] = reasoning_tokens
         return result
 
     def _responses_reasoning_payload(self) -> dict[str, Any]:

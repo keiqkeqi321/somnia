@@ -215,7 +215,18 @@ class OpenAgentRuntime:
     TODO_STALE_STATUS_REMINDER_TEXT = "Reminder: Pay attention to the status of todos"
     EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT = (
         "Reminder: Your previous response ended without any visible assistant text or tool calls. "
-        "Continue the task now and either call the next needed tool or provide a visible final answer."
+        "Continue the task now and either call the next needed tool or provide a visible final answer. "
+        "Do not re-plan at length — act now and keep any internal reasoning short."
+    )
+    EMPTY_RESPONSE_REASONING_BUMP_NOTICE = (
+        "Runtime notice: the model spent the entire max_tokens budget on reasoning and produced no "
+        "visible output. Temporarily raising the completion budget so reasoning does not crowd out the "
+        "answer. If this repeats, the turn will be stopped."
+    )
+    EMPTY_RESPONSE_STOPPED_TEXT = (
+        "Stopped: the model produced only internal reasoning with no visible text or tool calls for "
+        "several consecutive turns (likely the completion budget is too small for this reasoning model). "
+        "Raise the provider max_tokens, lower the reasoning level, or switch to a non-reasoning model."
     )
     RUNTIME_NOTICE_PREFIX = "Runtime notice:"
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
@@ -229,6 +240,16 @@ class OpenAgentRuntime:
     BUILTIN_PERMISSIONS_FILE = "builtin/permissions.json"
     PROVIDER_POLL_INTERVAL_SECONDS = 0.1
     PROVIDER_RETRY_DELAY_SECONDS = 2.0
+    # Empty-response (thinking-only) circuit breaker. When a reasoning model burns
+    # the whole max_tokens budget on thinking and emits no visible text or tool
+    # calls, retrying with the same budget loops indefinitely. Allow a few nudges
+    # first, then stop the turn with a clear diagnostic instead of spinning up to
+    # max_agent_rounds. See _detect_reasoning_budget_exhaustion for the paired
+    # usage-based auto-bump that tries to recover before giving up.
+    EMPTY_RESPONSE_MAX_STREAK = 3
+    EMPTY_RESPONSE_REASONING_BUMP_FACTOR = 2.0
+    EMPTY_RESPONSE_REASONING_BUMP_MAX_TOKENS = 65_536
+    EMPTY_RESPONSE_REASONING_BUDGET_RATIO = 0.90
     JANITOR_REARM_RATIO = 0.45
     JANITOR_FORCE_RATIO = 0.70
     JANITOR_MIN_TOKEN_DELTA = 8_000
@@ -321,6 +342,9 @@ class OpenAgentRuntime:
         self._context_governance_events: dict[str, dict[str, Any]] = {}
         self._janitor_state: dict[str, dict[str, Any]] = {}
         self._current_working_file: dict[str, Any] | None = None
+        # One-shot max_tokens override for reasoning-budget recovery (see
+        # _maybe_raise_reasoning_budget / _consume_transient_max_tokens_override).
+        self._transient_max_tokens_override: int | None = None
         self.mcp_registry = MCPRegistry(settings.mcp_servers)
         self.team_manager = TeammateRuntimeManager(
             runtime=self,
@@ -1927,7 +1951,7 @@ class OpenAgentRuntime:
             cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens") or 0)
             source = str(usage.get("source", "provider"))
             if total_tokens > 0:
-                return {
+                normalized: dict[str, int | str] = {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
@@ -1935,6 +1959,10 @@ class OpenAgentRuntime:
                     "cache_creation_input_tokens": cache_creation_input_tokens,
                     "source": source,
                 }
+                reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+                if reasoning_tokens > 0:
+                    normalized["reasoning_tokens"] = reasoning_tokens
+                return normalized
 
         provider = getattr(self, "provider", None)
         try:
@@ -1951,6 +1979,117 @@ class OpenAgentRuntime:
             "total_tokens": max(0, input_tokens + output_tokens),
             "source": "estimate",
         }
+
+    def _detect_reasoning_budget_exhaustion(self, turn, *, current_max_tokens: int) -> bool:
+        """Return True when a turn spent essentially the whole max_tokens budget on reasoning.
+
+        This is the signature of the OpenAI-compatible reasoning path where max_tokens
+        is a single shared budget: a reasoning model can burn it all on reasoning_content
+        and emit no visible text or tool calls, then get truncated mid-thought. Detecting
+        it lets the loop raise the budget once before giving up.
+        """
+        if current_max_tokens <= 0:
+            return False
+        usage = getattr(turn, "usage", None)
+        if not isinstance(usage, dict):
+            return False
+        output_tokens = int(usage.get("output_tokens") or 0)
+        if output_tokens <= 0:
+            return False
+        # Prefer the explicit reasoning_tokens breakdown when the provider reports it
+        # (OpenAI chat-completions completion_tokens_details.reasoning_tokens).
+        reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+        if reasoning_tokens > 0:
+            return reasoning_tokens >= int(current_max_tokens * self.EMPTY_RESPONSE_REASONING_BUDGET_RATIO)
+        # Fall back to: all output tokens consumed and close to the max_tokens ceiling.
+        # output_tokens == current_max_tokens with no visible text is a strong signal.
+        return output_tokens >= int(current_max_tokens * self.EMPTY_RESPONSE_REASONING_BUDGET_RATIO)
+
+    def _compute_reasoning_budget_bump(self, current_max_tokens: int) -> int | None:
+        """Compute a clamped, larger max_tokens for a one-shot reasoning-exhaustion retry.
+
+        Returns None if no safe bump is possible (no context window known, or already
+        at/above the ceiling). The result is always clamped to the model's context
+        window so we never request more than the model can accept.
+        """
+        if current_max_tokens <= 0:
+            return None
+        target = int(current_max_tokens * self.EMPTY_RESPONSE_REASONING_BUMP_FACTOR)
+        target = min(target, self.EMPTY_RESPONSE_REASONING_BUMP_MAX_TOKENS)
+        if target <= current_max_tokens:
+            return None
+        context_window = self._resolved_context_window_tokens()
+        if context_window is not None and context_window > 0:
+            # Reserve headroom for input; never let max_tokens eat the whole window.
+            cap = max(current_max_tokens + 1, int(context_window * 0.75))
+            target = min(target, cap)
+        # Require a meaningful bump (at least ~20% larger); a +1 token nudge from
+        # a tight context-window clamp is useless and would just re-trip the loop.
+        minimum_useful = int(current_max_tokens * 1.2)
+        if target < minimum_useful:
+            return None
+        return target
+
+    def _maybe_raise_reasoning_budget(self, turn) -> int | None:
+        """If a thinking-only turn exhausted the budget on reasoning, raise it once.
+
+        Returns the new max_tokens when a bump was staged, or None when no bump
+        was possible (no usage data, not a reasoning-exhaustion signature, or the
+        configured budget is already at the context-window ceiling). The bump is
+        staged as a transient override consumed by complete() on the next call.
+        """
+        current = getattr(self.settings.provider, "max_tokens", 0)
+        try:
+            current = int(current)
+        except (TypeError, ValueError):
+            current = 0
+        if not self._detect_reasoning_budget_exhaustion(turn, current_max_tokens=current):
+            return None
+        # Don't stack bumps: only raise from the configured baseline.
+        if getattr(self, "_transient_max_tokens_override", None) is not None:
+            return None
+        target = self._compute_reasoning_budget_bump(current)
+        if target is None:
+            return None
+        self._set_transient_max_tokens_override(target)
+        return target
+
+    def _resolved_context_window_tokens(self) -> int | None:
+        provider = getattr(self, "provider", None)
+        value: int | None = None
+        if provider is not None and callable(getattr(provider, "context_window_tokens", None)):
+            try:
+                value = provider.context_window_tokens()
+            except Exception:
+                value = None
+        if value is None:
+            value = getattr(getattr(self.settings, "provider", None), "context_window_tokens", None)
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _set_transient_max_tokens_override(self, value: int | None) -> None:
+        """Stage a one-shot max_tokens bump for the next complete() call.
+
+        Used by the agent loop to recover from a reasoning-budget exhaustion:
+        the next completion runs with the larger budget, then the override is
+        cleared so subsequent turns revert to the configured value.
+        """
+        try:
+            self._transient_max_tokens_override = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            self._transient_max_tokens_override = None
+
+    def _consume_transient_max_tokens_override(self, fallback: int) -> int:
+        override = getattr(self, "_transient_max_tokens_override", None)
+        if override is None:
+            try:
+                return int(fallback)
+            except (TypeError, ValueError):
+                return fallback
+        self._transient_max_tokens_override = None
+        return int(override)
 
     def _ensure_session_token_usage(self, session: AgentSession) -> dict[str, int]:
         usage = getattr(session, "token_usage", None)
@@ -2853,6 +2992,10 @@ class OpenAgentRuntime:
         provider_settings = getattr(provider, "settings", self.settings.provider)
         provider_system_prompt = self._prepare_system_prompt_for_provider(system_prompt, provider)
         provider_complete = getattr(provider, "complete")
+        # Transient one-shot max_tokens override set by the agent loop when a
+        # reasoning model exhausted the budget on thinking. Consumed here so the
+        # next completion uses the larger budget exactly once.
+        effective_max_tokens = self._consume_transient_max_tokens_override(provider_settings.max_tokens)
         try:
             provider_parameters = inspect.signature(provider_complete).parameters
         except (TypeError, ValueError):
@@ -2871,7 +3014,7 @@ class OpenAgentRuntime:
                         "system_prompt": provider_system_prompt,
                         "messages": messages,
                         "tools": tools,
-                        "max_tokens": provider_settings.max_tokens,
+                        "max_tokens": effective_max_tokens,
                         "text_callback": text_callback,
                         "stop_checker": None,
                     }
@@ -2883,7 +3026,7 @@ class OpenAgentRuntime:
                     messages=messages,
                     tools=tools,
                     provider=provider,
-                    max_tokens=provider_settings.max_tokens,
+                    max_tokens=effective_max_tokens,
                     text_callback=text_callback,
                     thinking_callback=thinking_callback,
                     should_interrupt=should_interrupt,
@@ -3282,6 +3425,9 @@ class OpenAgentRuntime:
 
     def _exploration_hard_total_limit(self) -> int:
         return self._runtime_non_negative_int("exploration_hard_total_limit", self.EXPLORATION_HARD_TOTAL_LIMIT)
+
+    def _empty_response_max_streak(self) -> int:
+        return self._runtime_non_negative_int("empty_response_max_streak", self.EMPTY_RESPONSE_MAX_STREAK)
 
     def _exploration_budget_error(
         self,
@@ -3682,11 +3828,17 @@ class OpenAgentRuntime:
         exploration_streak = 0
         exploration_total = 0
         pending_exploration_summary_reminder = False
+        # Counter of consecutive thinking-only turns (no text, no tool calls).
+        # Replaces the old boolean flag: the first nudges retry, repeated empty
+        # responses trip a circuit breaker instead of looping to max_agent_rounds.
         pending_empty_response_repair = False
+        empty_response_streak = 0
+        pending_reasoning_budget_notice = False
         try:
             exploration_soft_limit = self._exploration_soft_limit()
             exploration_hard_streak_limit = self._exploration_hard_streak_limit()
             exploration_hard_total_limit = self._exploration_hard_total_limit()
+            empty_response_max_streak = self._empty_response_max_streak()
             for _ in range(self.settings.runtime.max_agent_rounds):
                 self._raise_if_interrupted(should_interrupt)
                 loop_user_message = None
@@ -3736,8 +3888,19 @@ class OpenAgentRuntime:
                 if pending_todo_reconcile:
                     transient_notices.append(self.TODO_RECONCILE_REMINDER_TEXT)
                 if pending_empty_response_repair:
-                    transient_notices.append(self.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT)
+                    # Escalate the nudge wording as the streak grows so the model
+                    # is pushed harder toward acting instead of re-planning.
+                    if empty_response_streak >= 2:
+                        transient_notices.append(
+                            "Reminder: again, no visible text or tool calls. Stop planning now and call a "
+                            "tool or write the answer directly. Keep any reasoning minimal."
+                        )
+                    else:
+                        transient_notices.append(self.EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT)
                     pending_empty_response_repair = False
+                if pending_reasoning_budget_notice:
+                    transient_notices.append(self.EMPTY_RESPONSE_REASONING_BUMP_NOTICE)
+                    pending_reasoning_budget_notice = False
                 if pending_exploration_summary_reminder:
                     transient_notices.append(
                         self._exploration_summary_reminder(streak=exploration_streak, total=exploration_total)
@@ -3770,12 +3933,17 @@ class OpenAgentRuntime:
                     )
                 request_provider = self._provider_for_messages(payload_messages)
                 self._consume_ephemeral_image_history(session.messages, session_id=session.id)
+                # Reflect the effective max_tokens (incl. a staged reasoning-budget
+                # bump) in the diagnostic dump; complete() consumes the override.
+                effective_max_tokens_for_dump = getattr(self, "_transient_max_tokens_override", None)
+                if not isinstance(effective_max_tokens_for_dump, int):
+                    effective_max_tokens_for_dump = self.settings.provider.max_tokens
                 dump_path = self._dump_provider_payload_if_enabled(
                     session=session,
                     system_prompt=system_prompt,
                     payload_messages=payload_messages,
                     tools=tool_schemas,
-                    max_tokens=self.settings.provider.max_tokens,
+                    max_tokens=effective_max_tokens_for_dump,
                     provider=request_provider,
                     actor="lead",
                     stream=text_callback is not None or should_interrupt is not None,
@@ -3914,9 +4082,29 @@ class OpenAgentRuntime:
                     if final_text:
                         exploration_streak = 0
                         pending_exploration_summary_reminder = False
+                        empty_response_streak = 0
                     self._capture_turn_file_changes(session)
                     self.session_manager.save(session)
                     if not final_text:
+                        # Thinking-only turn: no visible text and no tool calls.
+                        # The model may have burned the whole max_tokens budget on
+                        # reasoning and been truncated mid-thought. Try to recover
+                        # once by raising the budget (C); if it keeps happening or
+                        # no bump is possible, trip the circuit breaker (B) instead
+                        # of looping up to max_agent_rounds.
+                        empty_response_streak += 1
+                        bumped = self._maybe_raise_reasoning_budget(turn)
+                        if bumped is not None:
+                            # Budget raised for the next completion (one-shot).
+                            pending_reasoning_budget_notice = True
+                            pending_empty_response_repair = True
+                            continue
+                        if empty_response_max_streak > 0 and empty_response_streak >= empty_response_max_streak:
+                            return AgentLoopResult(
+                                self.EMPTY_RESPONSE_STOPPED_TEXT,
+                                status="stopped_empty_response",
+                                open_todo_count=self._count_open_todo_items(session),
+                            )
                         pending_empty_response_repair = True
                         continue
                     self._hook_manager().on_assistant_response(
@@ -3942,6 +4130,8 @@ class OpenAgentRuntime:
                     # Treat a visible interim conclusion as the boundary between exploration bursts.
                     exploration_streak = 0
                     pending_exploration_summary_reminder = False
+                # A tool-producing turn breaks the thinking-only streak.
+                empty_response_streak = 0
 
                 if not thinking_finished_notified:
                     pre_tool_thinking_message = self._attach_thinking_log_marker(

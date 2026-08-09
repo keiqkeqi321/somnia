@@ -276,7 +276,7 @@ def _run_service_turn_to_console(runtime: OpenAgentRuntime, service: AppService,
         raise RuntimeError(str(getattr(result, "error", "")).strip() or "Turn failed.")
     if streamer.has_output:
         streamer.finish()
-        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and result.text:
+        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds", "stopped_empty_response"} and result.text:
             print()
             print(_prefix_first_line(render_markdown_text(result.text, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
     elif result.text:
@@ -311,7 +311,7 @@ def cmd_run(runtime: OpenAgentRuntime, prompt: str) -> int:
     result_status = str(getattr(result, "status", "")).strip()
     if streamer.has_output:
         streamer.finish()
-        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and result:
+        if result_status in {"stopped_with_open_todos", "stopped_after_max_rounds", "stopped_empty_response"} and result:
             print()
             print(_prefix_first_line(render_markdown_text(result, ansi=sys.stdout.isatty()), _assistant_prefix(ansi=sys.stdout.isatty())))
     elif result:

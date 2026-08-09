@@ -746,6 +746,7 @@ class TurnQueueRunner:
     OPEN_TEAM_TEXT = "waiting_on_teammates"
     STOPPED_WITH_OPEN_TODOS_TEXT = "stopped_with_open_todos"
     STOPPED_AFTER_MAX_ROUNDS_TEXT = "stopped_after_max_rounds"
+    STOPPED_EMPTY_RESPONSE_TEXT = "stopped_empty_response"
     QUEUED_MESSAGES_NOTICE = "Queued: after turn; Esc sends next after tool"
     QUEUED_MESSAGES_ARMED_NOTICE = "Queued: next one sends after current tool"
     THINKING_FRAME_SECONDS = 0.25
@@ -1151,7 +1152,7 @@ class TurnQueueRunner:
         if streamer.has_output:
             streamer.finish()
             print()
-            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
+            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds", "stopped_empty_response"} and response:
                 print(
                     _prefix_first_line(
                         render_markdown_text(response, ansi=sys.stdout.isatty()),
@@ -1233,7 +1234,7 @@ class TurnQueueRunner:
         if streamer.has_output:
             streamer.finish()
             print()
-            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds"} and response:
+            if response_status in {"stopped_with_open_todos", "stopped_after_max_rounds", "stopped_empty_response"} and response:
                 print(
                     _prefix_first_line(
                         render_markdown_text(response.text, ansi=sys.stdout.isatty()),
@@ -1567,6 +1568,8 @@ class TurnQueueRunner:
             return self.STOPPED_WITH_OPEN_TODOS_TEXT
         if status == "stopped_after_max_rounds":
             return self.STOPPED_AFTER_MAX_ROUNDS_TEXT
+        if status == "stopped_empty_response":
+            return self.STOPPED_EMPTY_RESPONSE_TEXT
         return ""
 
     def _session_has_open_todos(self) -> bool:
@@ -1594,6 +1597,8 @@ class TurnQueueRunner:
             return "stopped_with_open_todos"
         if status == "stopped_after_max_rounds":
             return "stopped_after_max_rounds"
+        if status == "stopped_empty_response":
+            return "stopped_empty_response"
         if self._session_has_open_todos():
             return "waiting_on_open_todos"
         if self._has_active_teammates():
