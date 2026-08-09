@@ -128,6 +128,34 @@ side effects), `subagent`/`spawn_teammate` (nested agent loops), all task-mutati
 and team-collaboration tools, and all `mcp__*` tools (no read-only marker). GIL
 releases during I/O in the whitelisted tools make the threading worthwhile.
 
+**Explore-subagent parallelism.** An `agent_type=Explore` `subagent` call is
+also parallel-safe (via `is_explore_subagent_safe`, *not* membership in
+`PARALLEL_SAFE_TOOL_NAMES` — that set stays a pure read-only *tool* list).
+Consecutive Explore-subagent calls in one turn run concurrently so the lead
+can fan out three explorations and pay max(latency), not sum(latency).
+`general-purpose` subagents (which carry `write_file`/`edit_file`) stay serial.
+Two dispatch pools, deliberately separate: read-only tools run on `_POOL`
+(`dispatch_parallel_segment`); Explore subagents run on `_SUBAGENT_POOL`
+(`run_parallel_explore_subagents`). A subagent is a nested agent loop whose
+internal rounds submit read-only tools to `_POOL`, so the subagent calls
+themselves must **not** consume `_POOL` workers or they deadlock (all workers
+busy holding subagent loops waiting for a worker). The lead loop bounds a
+maximal parallel run by *kind* (`_parallel_safe_kind`: `tool` vs `subagent`)
+so the two pools never mix in one segment. `SkillLoader` is guarded by an
+`RLock` (its `reload` reassigns `self.skills` wholesale; parallel subagents
+calling `load_skill` could otherwise observe a half-rebuilt dict).
+
+**Explore-subagent read-only bash.** An Explore subagent's only write vector
+is `bash` (it has no `write_file`/`edit_file`). To keep parallel Explore
+subagents free of write races, the subagent runner registers a **gated** `bash`
+(`register_readonly_shell_tool`) that refuses mutating commands via
+`is_readonly_shell_command` (allow-list of read-only prefixes mirroring
+`EXPLORATION_SHELL_PREFIXES`, plus a write-syntax deny-list for `>`/`|tee`/
+`rm`/`git checkout`/`git reset`/`git pull`/`git push`/`git commit`/`npm install`/etc.).
+Non-read-only commands return an error naming the write op and suggesting a
+read-only alternative or a general-purpose subagent / lead-loop `bash`. The
+lead loop's `bash` and general-purpose subagents' `bash` are **unrestricted**.
+
 **Lead loop (three-stage).** Stage A is a deterministic, I/O-free pre-scan
 (`_plan_lead_tool_calls`) that reproduces the serial guard/counter sequence
 (flood guard, malformed/unknown-name dedup with drop-on-repeat, exploration

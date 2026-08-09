@@ -19,6 +19,138 @@ DANGEROUS_COMMAND_PATTERNS = [
     re.compile(r"(?im)(?:^|[;&|]\s*)format(?:\.com|\.exe)?(?:\s|$)"),
 ]
 
+# Read-only shell command prefixes. An Explore subagent runs in parallel with
+# its siblings, and its only write vector is `bash` (it has no write_file /
+# edit_file). To keep parallel Explore subagents free of write races, the
+# subagent's `bash` is gated to these read-only prefixes, mirroring the lead
+# loop's exploration-budget classifier (`EXPLORATION_SHELL_PREFIXES` in
+# runtime/agent.py). Cross-platform: Unix read commands, Windows PowerShell
+# read cmdlets, and the read-only `git` subcommands. Kept as a module-level
+# constant so tests and the agent-loop classifier share one source of truth.
+READONLY_SHELL_PREFIXES = (
+    # Unix read commands
+    "cat ",
+    "find ",
+    "grep ",
+    "head ",
+    "ls",
+    "pwd",
+    "rg ",
+    "tail ",
+    "tree",
+    "type ",
+    "wc ",
+    # Windows PowerShell read cmdlets
+    "dir",
+    "get-childitem",
+    "get-content",
+    "select-string",
+    # Read-only git subcommands
+    "git diff",
+    "git log",
+    "git show",
+    "git status",
+)
+
+# Substrings that indicate a write side effect anywhere in the command. Even
+# when the leading word is a read-only prefix, these fragments turn the whole
+# command into a write (e.g. `grep x > out.txt`, `cat a && rm b`, `git status |
+# tee log`). Matched case-insensitively against the normalized command.
+WRITE_SYNTAX_SNIPPETS = (
+    ">",
+    ">>",
+    "| tee",
+    "| out-file",
+    "| set-content",
+    "| add-content",
+    " rm ",
+    "rm ",
+    " del ",
+    "del ",
+    "remove-item",
+    " mv ",
+    " move ",
+    "move-item",
+    " cp ",
+    " copy ",
+    "copy-item",
+    " mkdir ",
+    "md ",
+    " touch ",
+    "new-item",
+    "set-content",
+    "add-content",
+    "chmod",
+    "chown",
+    "tar ",
+    "zip ",
+    "unzip",
+    "curl ",
+    "wget ",
+    "git checkout",
+    "git reset",
+    "git clean",
+    "git pull",
+    "git push",
+    "git commit",
+    "git add",
+    "git stash",
+    "git merge",
+    "git rebase",
+    "git cherry-pick",
+    "git rm",
+    "git mv",
+    "pip install",
+    "npm install",
+    "yarn add",
+)
+
+# Write-syntax detector: matches any WRITE_SYNTAX_SNIPPETS as a token-boundary
+# substring of the normalized command. Word-boundary matching prevents false
+# positives like "directory" matching "dir".
+_WRITE_SYNTAX_PATTERN = re.compile(
+    r"(?:^|[^\w-])(?:" + "|".join(re.escape(s.strip()) for s in WRITE_SYNTAX_SNIPPETS) + r")",
+    re.IGNORECASE,
+)
+
+
+def _normalize_command(command: str) -> str:
+    """Collapse whitespace and trim so prefix/snippet matching is stable."""
+    return " ".join(str(command or "").split())
+
+
+def is_readonly_shell_command(command: str) -> tuple[bool, str]:
+    """Classify a shell command as read-only for Explore-subagent gating.
+
+    Returns ``(is_readonly, reason)``. ``is_readonly`` is True only when the
+    command's leading word matches a :data:`READONLY_SHELL_PREFIXES` entry AND
+    no write-syntax fragment appears anywhere in the command. ``reason`` is a
+    short human-readable explanation used in the rejection message when the
+    command is not read-only.
+
+    This is a conservative static classifier, not a sandbox: its job is to keep
+    parallel Explore subagents from racing on workspace writes by refusing
+    anything that looks like a mutation. It deliberately errs on the side of
+    rejecting ambiguous commands (the model gets a clear error and can switch
+    to a read-only command, or the work can move to a general-purpose subagent
+    / the lead loop where `bash` is unrestricted).
+    """
+    normalized = _normalize_command(command)
+    if not normalized:
+        return False, "empty command"
+    lowered = normalized.lower()
+    # Reject first if any write-syntax fragment is present, regardless of the
+    # leading word -- a command like `cat a && rm b` must be refused even though
+    # it starts with the read-only `cat`.
+    match = _WRITE_SYNTAX_PATTERN.search(normalized)
+    if match is not None:
+        return False, f"write operation detected near '{normalized[match.start():match.end()].strip()}'"
+    # Then require the leading word to be a recognized read-only prefix.
+    if not any(lowered == prefix.rstrip() or lowered.startswith(prefix) for prefix in READONLY_SHELL_PREFIXES):
+        first_word = lowered.split(None, 1)[0] if lowered.split() else lowered
+        return False, f"'{first_word}' is not in the read-only allowlist"
+    return True, ""
+
 
 def _is_windows() -> bool:
     return os.name == "nt"
@@ -123,5 +255,56 @@ def register_shell_tool(registry) -> None:
                 "required": ["command"],
             },
             handler=run_shell,
+        )
+    )
+
+
+_READONLY_REJECTION_HEADER = (
+    "Error: Explore 模式仅允许只读命令（cat/grep/find/rg/ls/head/tail/wc/tree/type/"
+    "git status/git log/git diff/git show，Windows 下 Get-Content/Get-ChildItem/Select-String）。"
+)
+_READONLY_REJECTION_GUIDE = (
+    "若需修改文件，请改用 general-purpose subagent，或在 lead 主循环直接执行 bash。"
+)
+
+
+def run_readonly_shell(ctx: Any, payload: dict[str, Any]) -> str:
+    """Explore-subagent bash: execute read-only commands, refuse writes.
+
+    Mirrors :func:`run_shell` for read-only commands but rejects anything
+    :func:`is_readonly_shell_command` classifies as a write, returning a clear
+    error with the specific reason and read-only alternatives. The rejection is
+    surfaced as a tool error (not raised) so the model can react and switch
+    commands within the same subagent run.
+    """
+    command = str(payload.get("command", ""))
+    is_readonly, reason = is_readonly_shell_command(command)
+    if not is_readonly:
+        return f"{_READONLY_REJECTION_HEADER}\n拒绝原因：{reason}。\n{_READONLY_REJECTION_GUIDE}"
+    return run_shell(ctx, payload)
+
+
+def register_readonly_shell_tool(registry) -> None:
+    """Register the Explore-subagent `bash` tool, gated to read-only commands.
+
+    Registered under the same name/schema/description as the unrestricted
+    :func:`register_shell_tool` so the model sees an identical interface; only
+    the handler (:func:`run_readonly_shell`) differs. Used by Explore
+    subagents whose only write vector is `bash`; the lead loop and
+    general-purpose subagents keep the unrestricted tool.
+    """
+    registry.register(
+        ToolDefinition(
+            name="bash",
+            description="Run a shell command inside the workspace. On Unix this uses the system shell; on Windows commands should be PowerShell-compatible.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout": {"type": "integer"},
+                },
+                "required": ["command"],
+            },
+            handler=run_readonly_shell,
         )
     )

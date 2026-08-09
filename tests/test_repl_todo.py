@@ -602,6 +602,223 @@ class ReplTodoTests(unittest.TestCase):
         self.assertIn("↳ grep route: found open_somnia/cli/repl.py", rendered)
         self.assertLess(rendered.index("↳ grep route"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
 
+    def test_parallel_subagents_each_get_their_own_panel_slot(self) -> None:
+        # Three parallel Explore subagents must each appear in the status panel,
+        # not collapse onto one slot. Pre-fire started for each (Fix A), then
+        # activity events keyed by distinct ids route to distinct slots (Fix B).
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        for idx, aid in enumerate(("sa-1", "sa-2", "sa-3")):
+            runner._note_tool_started(
+                {
+                    "actor": "lead",
+                    "tool_name": "subagent",
+                    "trace_id": aid,
+                    "tool_input": {"agent_type": "Explore", "prompt": f"Explore area {idx}"},
+                }
+            )
+        # Each subagent emits an activity with its own activity_id.
+        for idx, aid in enumerate(("sa-1", "sa-2", "sa-3")):
+            runner._note_subagent_activity(
+                {
+                    "activity_id": aid,
+                    "agent_type": "Explore",
+                    "prompt": f"Explore area {idx}",
+                    "kind": "tool_result",
+                    "text": f"grep area {idx}: found files",
+                }
+            )
+
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (3 running)", rendered)
+        for idx in range(3):
+            self.assertIn(f"⏳ Explore: Explore area {idx}", rendered)
+
+    def test_parallel_subagent_activity_with_unmatched_id_does_not_merge_onto_sibling(self) -> None:
+        # Regression guard for Fix B: before the fix, when one slot already
+        # existed and a second subagent's activity arrived with an id NOT in the
+        # map, the len==1 fallback merged it onto the first slot. Now a present
+        # id that does not match creates its own slot.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._note_tool_started(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-1",
+             "tool_input": {"agent_type": "Explore", "prompt": "first"}}
+        )
+        runner._note_subagent_activity(
+            {"activity_id": "sa-2", "agent_type": "Explore", "prompt": "second",
+             "kind": "tool_result", "text": "second activity"}
+        )
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (2 running)", rendered)
+        self.assertIn("⏳ Explore: first", rendered)
+        self.assertIn("⏳ Explore: second", rendered)
+
+    def test_parallel_subagent_finish_clears_only_its_own_slot(self) -> None:
+        # Fix C: finishing one subagent must not wipe a still-running sibling.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        for aid, prompt in (("sa-1", "first"), ("sa-2", "second")):
+            runner._note_tool_started(
+                {"actor": "lead", "tool_name": "subagent", "trace_id": aid,
+                 "tool_input": {"agent_type": "Explore", "prompt": prompt}}
+            )
+        # Finish sa-1 by its key; sa-2 must remain.
+        runner._note_tool_finished(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-1",
+             "tool_input": {"agent_type": "Explore", "prompt": "first"}}
+        )
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (1 running)", rendered)
+        self.assertNotIn("⏳ Explore: first", rendered)
+        self.assertIn("⏳ Explore: second", rendered)
+
+    def test_subagent_not_tracked_in_tools_panel(self) -> None:
+        # Fix 1 (cross-panel duplication): a subagent tool call must appear ONLY
+        # in the subagents panel, never in the tools panel. Before the fix the
+        # subagent was added to both ``_active_tools`` and ``_active_subagents``.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._note_tool_started(
+            {
+                "actor": "lead",
+                "tool_name": "subagent",
+                "trace_id": "sa-1",
+                "tool_input": {"agent_type": "Explore", "prompt": "Inspect routing."},
+            }
+        )
+        with runner._lock:
+            self.assertNotIn("subagent", {v["tool_name"] for v in runner._active_tools.values()})
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (1 running)", rendered)
+        # The tools panel must not render a Subagent(...) row.
+        self.assertNotIn("Subagent(agent_type=Explore", rendered)
+
+    def test_finish_with_present_key_never_pops_sibling_sharing_prompt(self) -> None:
+        # Fix 2 (per-subagent duplication): two parallel subagents sharing the
+        # same prompt/agent_type. Finishing one by its key must not fuzzy-match
+        # and pop the sibling. Before the fix the fuzzy (prompt, agent_type)
+        # match removed the wrong slot, and the sibling's next activity event
+        # re-created a duplicate.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        shared_prompt = "Explore the desktop framework"
+        for aid in ("sa-1", "sa-2"):
+            runner._note_tool_started(
+                {"actor": "lead", "tool_name": "subagent", "trace_id": aid,
+                 "tool_input": {"agent_type": "Explore", "prompt": shared_prompt}}
+            )
+        # Finish sa-1 (key present + matched). sa-2 must remain even though it
+        # shares the exact same prompt/agent_type.
+        runner._note_tool_finished(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-1",
+             "tool_input": {"agent_type": "Explore", "prompt": shared_prompt}}
+        )
+        with runner._lock:
+            self.assertIn("sa-2", runner._active_subagents)
+            self.assertNotIn("sa-1", runner._active_subagents)
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (1 running)", rendered)
+
+    def test_finish_with_present_but_unmatched_key_does_nothing(self) -> None:
+        # Fix 2 edge: a finish event whose key is NOT in the map must NOT fall
+        # through to fuzzy matching (which could wipe a sibling). It should be a
+        # no-op, leaving running siblings intact.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._note_tool_started(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-1",
+             "tool_input": {"agent_type": "Explore", "prompt": "first"}}
+        )
+        runner._note_tool_started(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-2",
+             "tool_input": {"agent_type": "Explore", "prompt": "first"}}
+        )
+        # Finish with an unrelated key that matches neither slot's id but shares
+        # prompt/agent_type with both. Must not pop either.
+        runner._note_tool_finished(
+            {"actor": "lead", "tool_name": "subagent", "trace_id": "sa-ghost",
+             "tool_input": {"agent_type": "Explore", "prompt": "first"}}
+        )
+        with runner._lock:
+            self.assertEqual(len(runner._active_subagents), 2)
+
+    def test_parallel_subagents_pre_fire_keyed_by_tool_call_id_not_shared_trace(self) -> None:
+        # Service-mode regression: the runtime host emits TOOL_STARTED with BOTH
+        # a unique ``tool_call_id`` and a SHARED ``trace_id`` (the per-turn id)
+        # for every parallel Explore subagent. Pre-fires for all N subagents
+        # therefore share one ``trace_id``; if the subagent slot is keyed on
+        # ``trace_id`` the N pre-fires collapse onto a single slot. Each
+        # subagent's later activity event carries its own ``activity_id``
+        # (== ``tool_call.id``), which matches none of the collapsed slots, so N
+        # NEW slots appear -- leaving N+1 entries (the orphaned shared slot plus
+        # N real ones). This is the "empty subagent shows first, then the three
+        # real ones appear, one duplicated" bug. The slot key must prefer
+        # ``tool_call_id`` (unique) over ``trace_id`` (shared).
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        shared_turn = "sess-1-turn-1"
+        tool_call_ids = ["call-1", "call-2", "call-3"]
+        # Pre-fire TOOL_STARTED for all three, mirroring the service host payload
+        # (unique tool_call_id, shared trace_id).
+        for idx, call_id in enumerate(tool_call_ids):
+            runner._note_tool_started(
+                {
+                    "actor": "lead",
+                    "tool_name": "subagent",
+                    "tool_call_id": call_id,
+                    "trace_id": shared_turn,
+                    "tool_input": {"agent_type": "Explore", "prompt": f"Explore area {idx}"},
+                }
+            )
+        # Each subagent's activity is keyed by its own tool_call.id.
+        for idx, call_id in enumerate(tool_call_ids):
+            runner._note_subagent_activity(
+                {
+                    "activity_id": call_id,
+                    "agent_type": "Explore",
+                    "prompt": f"Explore area {idx}",
+                    "kind": "tool_result",
+                    "text": f"grep area {idx}: found files",
+                }
+            )
+
+        rendered = _render_prompt_text(runner.prompt_message())
+        # Exactly three slots -- NOT four (the orphaned shared-trace slot must
+        # not exist).
+        with runner._lock:
+            self.assertEqual(len(runner._active_subagents), 3, msg=dict(runner._active_subagents))
+        self.assertIn("subagent (3 running)", rendered)
+        for idx in range(3):
+            self.assertIn(f"⏳ Explore: Explore area {idx}", rendered)
+
+    def test_parallel_subagent_finish_keys_by_tool_call_id_in_service_mode(self) -> None:
+        # The matching TOOL_FINISHED event also carries the shared ``trace_id``
+        # and the unique ``tool_call_id``. Finishing one subagent must clear
+        # only its own slot (keyed by ``tool_call_id``), not pop the shared slot
+        # (which would leave all three "real" slots orphaned and running).
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        shared_turn = "sess-1-turn-1"
+        for idx, call_id in enumerate(("call-1", "call-2")):
+            runner._note_tool_started(
+                {
+                    "actor": "lead",
+                    "tool_name": "subagent",
+                    "tool_call_id": call_id,
+                    "trace_id": shared_turn,
+                    "tool_input": {"agent_type": "Explore", "prompt": f"Explore area {idx}"},
+                }
+            )
+        # Finish call-1 by its unique tool_call_id; call-2 must remain.
+        runner._note_tool_finished(
+            {
+                "actor": "lead",
+                "tool_name": "subagent",
+                "tool_call_id": "call-1",
+                "trace_id": shared_turn,
+                "tool_input": {"agent_type": "Explore", "prompt": "Explore area 0"},
+            }
+        )
+        with runner._lock:
+            self.assertNotIn("call-1", runner._active_subagents)
+            self.assertIn("call-2", runner._active_subagents)
+        rendered = _render_prompt_text(runner.prompt_message())
+        self.assertIn("subagent (1 running)", rendered)
+        self.assertIn("⏳ Explore: Explore area 1", rendered)
+
     def test_service_subagent_events_update_persistent_panel(self) -> None:
         runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
         streamer = ConsoleStreamer(start_on_new_line=True)

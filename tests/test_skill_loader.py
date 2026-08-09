@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -133,6 +134,51 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertEqual(loader.names().count("Review"), 1)
             self.assertIn("somnia body", loader.load("Review"))
             self.assertIn("- Review [workspace] - somnia review", loader.render_listing())
+
+
+class SkillLoaderConcurrencyTests(unittest.TestCase):
+    """The loader is shared across parallel Explore subagents calling load_skill.
+
+    ``reload`` reassigns ``self.skills`` wholesale; without the internal lock a
+    reader could observe an empty dict mid-rebuild. These tests pin the
+    thread-safety fix so concurrent ``load``/``names``/``reload`` never raise
+    and always return the populated skill body.
+    """
+
+    def test_concurrent_load_never_returns_empty_or_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skills_dir = root / "skills" / "Alpha"
+            skills_dir.mkdir(parents=True)
+            skills_dir.joinpath("SKILL.md").write_text(
+                "---\ndescription: a\n---\nalpha body\n", encoding="utf-8"
+            )
+            loader = SkillLoader([root / "skills"])
+
+            errors: list[Exception] = []
+            empty_hits: list[bool] = []
+
+            def worker():
+                try:
+                    for _ in range(50):
+                        # Mix reads with forced reloads to maximize contention
+                        # on the self.skills reassignment.
+                        body = loader.load("alpha")
+                        if "alpha body" not in body:
+                            empty_hits.append(True)
+                        loader.names()
+                        loader.reload()
+                except Exception as exc:  # pragma: no cover - failure path
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(errors, [], "concurrent load/reload must not raise")
+            self.assertEqual(empty_hits, [], "load must never see an empty mid-rebuild dict")
 
 
 if __name__ == "__main__":

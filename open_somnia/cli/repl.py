@@ -1362,6 +1362,11 @@ class TurnQueueRunner:
                     self._ready_loop_injection_previews = []
                     self._active_turn_handle = None
                     self._active_tools = {}
+                    # Clear active-subagent slots at the turn boundary too, so an
+                    # orphaned slot (e.g. a finish event that never matched its
+                    # slot) cannot persist across turns and render as a stale
+                    # "running" entry. Mirrors the ``_active_tools`` reset above.
+                    self._active_subagents = {}
                     self._thinking_preview_text = ""
                     self._thinking_log_path = None
                 self._set_status(self._status_for_response(response))
@@ -1743,6 +1748,7 @@ class TurnQueueRunner:
         registry = getattr(self.runtime, "registry", None)
         original_execute = getattr(registry, "execute", None) if registry is not None else None
         original_print_tool_started = getattr(self.runtime, "print_tool_started", None)
+        original_print_tool_finished = getattr(self.runtime, "print_tool_finished", None)
         original_handler = getattr(self.runtime, "subagent_activity_handler", None)
         had_original_handler = hasattr(self.runtime, "subagent_activity_handler")
         self.runtime.subagent_activity_handler = self._note_subagent_activity
@@ -1776,6 +1782,22 @@ class TurnQueueRunner:
                 }
             )
 
+        def wrapped_print_tool_finished(
+            actor: str,
+            tool_name: str,
+            tool_input: dict[str, object],
+            *,
+            tool_call_id: str | None = None,
+        ) -> None:
+            self._note_tool_finished(
+                {
+                    "actor": actor,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "trace_id": tool_call_id,
+                }
+            )
+
         def wrapped_execute(ctx, name: str, payload: dict[str, object]):
             activity_payload = {
                 "actor": getattr(ctx, "actor", "lead"),
@@ -1792,12 +1814,16 @@ class TurnQueueRunner:
 
         if callable(original_print_tool_started):
             self.runtime.print_tool_started = wrapped_print_tool_started
+        if callable(original_print_tool_finished):
+            self.runtime.print_tool_finished = wrapped_print_tool_finished
         registry.execute = wrapped_execute
         try:
             yield
         finally:
             if callable(original_print_tool_started):
                 self.runtime.print_tool_started = original_print_tool_started
+            if callable(original_print_tool_finished):
+                self.runtime.print_tool_finished = original_print_tool_finished
             registry.execute = original_execute
             if had_original_handler:
                 self.runtime.subagent_activity_handler = original_handler
@@ -1860,7 +1886,7 @@ class TurnQueueRunner:
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
-        if actor == "lead" and tool_name and tool_name != "TodoWrite":
+        if actor == "lead" and tool_name and tool_name != "TodoWrite" and tool_name != "subagent":
             key = self._tool_activity_key(payload, tool_name, tool_input)
             with self._lock:
                 self._active_tools[key] = {
@@ -1871,7 +1897,20 @@ class TurnQueueRunner:
             self._invalidate_ui()
         if tool_name != "subagent" or actor != "lead":
             return
-        key = str(payload.get("trace_id", "")).strip()
+        # Prefer ``tool_call_id`` over ``trace_id`` as the slot key. The runtime
+        # host (service mode) emits BOTH for lead TOOL_STARTED events: a unique
+        # ``tool_call_id`` per call and a SHARED ``trace_id`` (the per-turn id).
+        # Parallel Explore subagents pre-fire one TOOL_STARTED each, all sharing
+        # the same ``trace_id``; keying on it collapses N pre-fires onto a single
+        # slot, and the later per-call activity events (keyed by ``tool_call.id``)
+        # then miss that slot and create N new ones -- leaving an orphaned shared
+        # slot alongside the N real ones (the "empty subagent shows first, then
+        # the real ones, one duplicated" bug). The unique ``tool_call_id`` matches
+        # the activity id emitted by ``_invoke_subagent`` and so keeps one slot
+        # per parallel subagent. Direct mode wraps ``tool_call_id`` into
+        # ``trace_id`` already, so the fallback covers legacy/serial paths that
+        # only carry a trace id.
+        key = str(payload.get("tool_call_id") or payload.get("trace_id") or "").strip()
         if not key:
             key = f"subagent-{time.monotonic_ns()}"
         prompt = str(tool_input.get("prompt", "")).strip()
@@ -1894,7 +1933,14 @@ class TurnQueueRunner:
             return
         with self._lock:
             key = activity_id if activity_id in self._active_subagents else ""
-            if not key and len(self._active_subagents) == 1:
+            # The single-entry fallback is ONLY safe when the activity carries
+            # no usable id: it exists for legacy/serial subagent paths that emit
+            # activity without an id. With a present-but-unmatched id (parallel
+            # subagents), falling back to ``len == 1`` would wrongly merge a new
+            # subagent's facts onto a sibling's slot, collapsing N parallel
+            # subagents to one displayed entry. So gate the fallback on an empty
+            # id, and otherwise create a fresh slot for the new id.
+            if not key and not activity_id and len(self._active_subagents) == 1:
                 key = next(iter(self._active_subagents))
             if not key and activity_id:
                 key = activity_id
@@ -1940,13 +1986,26 @@ class TurnQueueRunner:
             self._clear_tool_activity(payload, tool_name, tool_input)
         if tool_name != "subagent" or actor != "lead":
             return
-        key = str(payload.get("trace_id", "")).strip()
+        # Match the slot key resolution in ``_note_tool_started``: prefer
+        # ``tool_call_id`` over ``trace_id`` so a finish keyed by the unique
+        # per-call id clears exactly the right parallel-subagent slot (service
+        # mode emits both, with a shared ``trace_id`` across the whole turn).
+        key = str(payload.get("tool_call_id") or payload.get("trace_id") or "").strip()
         prompt = str(tool_input.get("prompt", "")).strip()
         agent_type = str(tool_input.get("agent_type", "Explore")).strip() or "Explore"
         with self._lock:
             if key and key in self._active_subagents:
+                # Exact-key match (the parallel path pre-fires started with
+                # ``tool_call.id`` and finishes with the same id): pop just it.
                 self._active_subagents.pop(key, None)
-            else:
+            elif not key:
+                # No id to match on (legacy/serial path without a trace_id).
+                # Only then fall back to prompt/agent_type or single-slot
+                # heuristics. When a key IS present but unmatched we do nothing:
+                # a fuzzy match would risk popping a still-running parallel
+                # sibling that happens to share the same prompt/agent_type, and
+                # the orphaned slot is harmless (it clears on the next finish
+                # with a matching key, or when the segment completes).
                 matched_key = None
                 for candidate_key, item in self._active_subagents.items():
                     if item.get("prompt") == prompt and item.get("agent_type") == agent_type:

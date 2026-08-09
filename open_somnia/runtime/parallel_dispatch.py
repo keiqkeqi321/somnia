@@ -178,6 +178,39 @@ def is_parallel_safe(tool_name: str) -> bool:
     return str(tool_name or "").strip() in PARALLEL_SAFE_TOOL_NAMES
 
 
+def is_explore_subagent_safe(tool_call: Any) -> bool:
+    """True when a tool call spawns an Explore subagent that may run in parallel.
+
+    ``subagent`` itself is a nested agent loop, so it is deliberately NOT in
+    :data:`PARALLEL_SAFE_TOOL_NAMES` (that set is for pure read-only *tools*).
+    But an ``agent_type=Explore`` subagent is itself confined to read-only tools
+    (its ``bash`` is gated to read-only commands by the subagent runner), so
+    running several Explore subagents concurrently is safe -- exactly the
+    "delegate three explorations in parallel" win the parallelism was built for.
+    ``general-purpose`` subagents keep write_file/edit_file and stay serial.
+
+    This predicate is folded into the default ``segment_tool_calls`` predicate
+    so both the lead loop and ``SessionlessRoundRunner`` group consecutive
+    Explore-subagent calls into one segment. The lead loop then dispatches such
+    a segment via :func:`run_parallel_explore_subagents` (a *separate* pool,
+    not ``_POOL`` -- see its docstring for the deadlock rationale).
+    """
+    name = str(getattr(tool_call, "name", "") or "").strip()
+    if name != "subagent":
+        return False
+    payload = getattr(tool_call, "input", None)
+    if not isinstance(payload, dict):
+        # Treat a missing/unknown payload as the default agent_type (Explore).
+        return True
+    agent_type = str(payload.get("agent_type", "Explore") or "Explore").strip()
+    return agent_type == "Explore"
+
+
+def _default_segment_predicate(tool_call: Any) -> bool:
+    """Default safe-set for ``segment_tool_calls``: read-only tools OR Explore subagents."""
+    return is_parallel_safe(getattr(tool_call, "name", "")) or is_explore_subagent_safe(tool_call)
+
+
 def segment_tool_calls(tool_calls: Sequence[Any], *, safe: Callable[[Any], bool] | None = None) -> Iterator[list[int]]:
     """Split ``tool_calls`` indices into maximal runs of parallel-safe calls.
 
@@ -187,11 +220,11 @@ def segment_tool_calls(tool_calls: Sequence[Any], *, safe: Callable[[Any], bool]
     via the pool -- ``segment_tool_calls`` deliberately keeps singletons so
     the caller can treat every segment uniformly.
 
-    ``safe`` defaults to ``lambda tc: is_parallel_safe(tc.name)`` and may be
-    overridden by callers (e.g. the lead loop) that need to fold in extra
-    per-call constraints such as "decision == EXECUTE".
+    ``safe`` defaults to :func:`_default_segment_predicate` (read-only tools OR
+    Explore subagents) and may be overridden by callers (e.g. the lead loop)
+    that need to fold in extra per-call constraints such as "decision == EXECUTE".
     """
-    predicate = safe if safe is not None else (lambda tc: is_parallel_safe(getattr(tc, "name", "")))
+    predicate = safe if safe is not None else _default_segment_predicate
     current: list[int] = []
     for index, tool_call in enumerate(tool_calls):
         if predicate(tool_call):
@@ -293,3 +326,153 @@ def _run_one(
 ) -> ToolCallRecord:
     """Per-worker entrypoint; thin wrapper so ``execute_tool_call`` owns all error policy."""
     return _resolve_executor()(registry, ctx, tool_call, hooks=hooks, **result_item_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Parallel Explore-subagent dispatch (separate pool, NOT ``_POOL``)
+# ---------------------------------------------------------------------------
+#
+# Why a separate pool? A subagent is a nested agent loop: its internal rounds
+# run through ``SessionlessRoundRunner`` → ``dispatch_parallel_segment`` →
+# ``_POOL``. If the lead loop dispatched the subagent *calls* themselves on
+# ``_POOL``, each subagent would occupy a ``_POOL`` worker for its whole
+# multi-round lifetime, and when those subagents' internal read-only tools
+# tried to acquire ``_POOL`` workers they could find the pool exhausted --
+# classic thread-pool deadlock (all workers busy holding subagent loops that
+# are themselves waiting for a worker). Teammates sidestep this by running on
+# their own daemon threads; we mirror that here with a dedicated pool. The
+# subagent pool is sized independently (capped at ``parallel_tool_max_workers``)
+# so a burst of Explore delegations cannot spawn unbounded threads.
+
+
+class _SharedSubagentThreadPool:
+    """Process-lifetime pool for parallel Explore-subagent loops.
+
+    Separate from :class:`_SharedThreadPool` to avoid the nested-dispatch
+    deadlock described above. Lazily created on first parallel Explore run,
+    sized to the configured ``parallel_tool_max_workers``.
+    """
+
+    def __init__(self) -> None:
+        self._pool: ThreadPoolExecutor | None = None
+        self._lock = threading.Lock()
+
+    def acquire(self, max_workers: int) -> ThreadPoolExecutor:
+        pool = self._pool
+        if pool is not None:
+            return pool
+        with self._lock:
+            pool = self._pool
+            if pool is None:
+                pool = ThreadPoolExecutor(
+                    max_workers=max(2, max_workers),
+                    thread_name_prefix="somnia-subagent",
+                )
+                self._pool = pool
+                atexit.register(self._shutdown)
+            return pool
+
+    def _shutdown(self) -> None:
+        pool = self._pool
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+
+_SUBAGENT_POOL = _SharedSubagentThreadPool()
+
+
+def run_parallel_explore_subagents(
+    run_subagent_fn: Callable[..., str],
+    segment_calls: Sequence[Any],
+    *,
+    should_interrupt: Callable[[], bool] | None = None,
+    settings: Any = None,
+) -> list[str]:
+    """Run a segment of Explore-subagent calls concurrently, in input order.
+
+    Each ``tool_call`` is dispatched to ``run_subagent_fn(prompt, agent_type,
+    activity_id=..., should_interrupt=...)`` -- the same signature the lead
+    loop's ``AgentRuntime.run_subagent`` exposes. The shared ``should_interrupt``
+    checker is forwarded into every subagent so a user interrupt propagates into
+    running subagent loops (their internal rounds poll it between tool calls).
+    Results (subagent summary strings) are reordered to the segment's input
+    order so the lead loop's provider ``tool_result`` pairing stays positional.
+
+    Uses :data:`_SUBAGENT_POOL` (not ``_POOL``) to avoid the nested-dispatch
+    deadlock: a subagent loop internally submits its read-only tools to
+    ``_POOL``, so the subagent calls themselves must not consume ``_POOL``
+    workers. Interruption is cooperative and mirrors
+    :func:`dispatch_parallel_segment`: we check before submitting and again as
+    each future completes; once an interrupt is seen we stop submitting, cancel
+    pending futures, collect whatever finished, and raise ``TurnInterrupted``.
+
+    When parallel dispatch is disabled (``SOMNIA_NO_PARALLEL_TOOLS=1`` or
+    ``runtime.parallel_tool_dispatch = false``) or the segment is a single
+    call, runs serially inline -- identical to the pre-parallel behavior.
+    """
+    enabled = parallel_dispatch_enabled(settings)
+    # Resolve the interrupt checker once: the same lead-loop checker is shared
+    # by every subagent so an interrupt aborts the whole parallel batch.
+    interrupt_checker = should_interrupt
+    if len(segment_calls) <= 1 or not enabled:
+        out: list[str] = []
+        for tool_call in segment_calls:
+            if interrupt_checker is not None and interrupt_checker():
+                raise TurnInterrupted("Interrupted by user.")
+            out.append(_invoke_subagent(run_subagent_fn, tool_call, interrupt_checker))
+        return out
+
+    pool = _SUBAGENT_POOL.acquire(_max_workers(settings))
+    futures: list[tuple[int, Future[str]]] = []
+    for offset, tool_call in enumerate(segment_calls):
+        if interrupt_checker is not None and interrupt_checker():
+            break
+        future = pool.submit(_invoke_subagent, run_subagent_fn, tool_call, interrupt_checker)
+        futures.append((offset, future))
+
+    results: list[str | None] = [None] * len(segment_calls)
+    interrupted = False
+    for offset, future in futures:
+        try:
+            results[offset] = future.result()
+        except TurnInterrupted:
+            interrupted = True
+        except Exception as exc:  # pragma: no cover - defensive
+            # A subagent loop blowing up should already be converted to a
+            # summary string by its own error handling; if something escapes,
+            # surface a best-effort error string rather than a None slot.
+            results[offset] = f"(subagent failed: {exc})"
+
+    if interrupted or any(r is None for r in results):
+        for _, future in futures:
+            future.cancel()
+        if interrupted or (interrupt_checker is not None and interrupt_checker()):
+            raise TurnInterrupted("Interrupted by user.")
+
+    return [r for r in results if r is not None]  # type: ignore[list-item]
+
+
+def _invoke_subagent(
+    run_subagent_fn: Callable[..., str],
+    tool_call: Any,
+    should_interrupt: Callable[[], bool] | None = None,
+) -> str:
+    """Worker entrypoint: unpack a subagent tool_call and call run_subagent_fn.
+
+    Mirrors the lead-loop subagent handler's argument mapping
+    (``tools/subagent.py``): prompt + agent_type (default Explore) +
+    activity_id (the lead trace_id) + should_interrupt passthrough. ``run_subagent_fn``
+    owns all error policy and returns a summary string.
+    """
+    payload = getattr(tool_call, "input", None)
+    if not isinstance(payload, dict):
+        payload = {}
+    prompt = str(payload.get("prompt", "") or "")
+    agent_type = str(payload.get("agent_type", "Explore") or "Explore")
+    activity_id = getattr(tool_call, "id", None) or getattr(tool_call, "trace_id", None)
+    return run_subagent_fn(
+        prompt,
+        agent_type,
+        activity_id=activity_id,
+        should_interrupt=should_interrupt,
+    )

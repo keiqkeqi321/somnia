@@ -18,7 +18,7 @@ from open_somnia.tools.filesystem import (
     write_file,
 )
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
-from open_somnia.tools.shell import register_shell_tool
+from open_somnia.tools.shell import register_readonly_shell_tool, register_shell_tool
 from open_somnia.tools.tool_errors import serialize_tool_output
 from open_somnia.tools.web_fetch import register_web_fetch_tool
 
@@ -179,7 +179,15 @@ class SubagentRunner:
 
     def _build_registry(self, agent_type: str) -> ToolRegistry:
         registry = ToolRegistry()
-        register_shell_tool(registry)
+        # Explore subagents run in parallel with their siblings, and their only
+        # write vector is `bash` (write_file/edit_file are not registered for
+        # Explore). To keep parallel Explore subagents free of write races, the
+        # Explore `bash` is gated to read-only commands. general-purpose keeps
+        # the unrestricted `bash` (it is expected to mutate and runs serially).
+        if agent_type == "Explore":
+            register_readonly_shell_tool(registry)
+        else:
+            register_shell_tool(registry)
         registry.register(
             ToolDefinition(
                 name="tree",

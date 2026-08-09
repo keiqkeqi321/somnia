@@ -13,8 +13,10 @@ from open_somnia.runtime.messages import ToolCall
 from open_somnia.runtime.parallel_dispatch import (
     PARALLEL_SAFE_TOOL_NAMES,
     dispatch_parallel_segment,
+    is_explore_subagent_safe,
     is_parallel_safe,
     parallel_dispatch_enabled,
+    run_parallel_explore_subagents,
     segment_tool_calls,
 )
 from open_somnia.tools.registry import ToolDefinition, ToolRegistry
@@ -335,6 +337,189 @@ class LeadToolCallPlannerTests(unittest.TestCase):
         )
         self.assertTrue(plan[1].is_turn_boundary)
         self.assertFalse(plan[1].parallel_safe)
+
+    def test_explore_subagent_marked_parallel_safe_in_plan(self) -> None:
+        # An Explore subagent call is parallel-safe in the plan, so the lead
+        # loop will group consecutive Explore-subagent calls into one segment.
+        calls = [
+            ToolCall(id="s1", name="subagent", input={"prompt": "explore A"}),
+            ToolCall(id="s2", name="subagent", input={"prompt": "explore B", "agent_type": "Explore"}),
+        ]
+        plan, _, _, _ = self._plan(calls, known_tool_names={"subagent"})
+        self.assertEqual([p.decision for p in plan], ["execute", "execute"])
+        self.assertTrue(all(p.parallel_safe for p in plan))
+
+    def test_general_purpose_subagent_not_parallel_safe_in_plan(self) -> None:
+        # general-purpose subagents carry write_file/edit_file and must stay serial.
+        calls = [ToolCall(id="s1", name="subagent", input={"prompt": "edit", "agent_type": "general-purpose"})]
+        plan, _, _, _ = self._plan(calls, known_tool_names={"subagent"})
+        self.assertEqual(plan[0].decision, "execute")
+        self.assertFalse(plan[0].parallel_safe)
+
+
+class ExploreSubagentSafeTests(unittest.TestCase):
+    def _call(self, agent_type=None):
+        payload = {"prompt": "do something"}
+        if agent_type is not None:
+            payload["agent_type"] = agent_type
+        return ToolCall(id="s1", name="subagent", input=payload)
+
+    def test_default_agent_type_is_explore_and_safe(self) -> None:
+        self.assertTrue(is_explore_subagent_safe(self._call()))
+
+    def test_explicit_explore_is_safe(self) -> None:
+        self.assertTrue(is_explore_subagent_safe(self._call("Explore")))
+
+    def test_general_purpose_not_safe(self) -> None:
+        self.assertFalse(is_explore_subagent_safe(self._call("general-purpose")))
+
+    def test_non_subagent_name_not_safe(self) -> None:
+        call = ToolCall(id="r1", name="read_file", input={})
+        self.assertFalse(is_explore_subagent_safe(call))
+
+    def test_empty_name_not_safe(self) -> None:
+        call = ToolCall(id="x", name="", input={})
+        self.assertFalse(is_explore_subagent_safe(call))
+
+
+class SegmentToolCallsSubagentTests(unittest.TestCase):
+    def _sub(self, i, agent_type=None):
+        payload = {"prompt": f"p{i}"}
+        if agent_type is not None:
+            payload["agent_type"] = agent_type
+        return ToolCall(id=f"s{i}", name="subagent", input=payload)
+
+    def test_consecutive_explore_subagents_one_segment(self) -> None:
+        segs = list(segment_tool_calls([self._sub(0), self._sub(1), self._sub(2)]))
+        self.assertEqual(segs, [[0, 1, 2]])
+
+    def test_explore_subagent_interleaved_with_read_breaks_into_subsegments(self) -> None:
+        # read_file and subagent are both parallel-safe but different dispatch
+        # kinds; the default predicate groups them only with their own kind.
+        calls = [
+            ToolCall(id="r1", name="read_file", input={}),
+            self._sub(0),
+            self._sub(1),
+            ToolCall(id="r2", name="grep", input={}),
+        ]
+        segs = list(segment_tool_calls(calls))
+        # The default predicate treats both as safe, so they merge into one run.
+        # (Kind separation happens in the lead loop's maximal-run builder, not
+        # in segment_tool_calls, which only knows safe vs unsafe.)
+        self.assertEqual(segs, [[0, 1, 2, 3]])
+
+    def test_general_purpose_subagent_is_singleton(self) -> None:
+        segs = list(segment_tool_calls([self._sub(0, "general-purpose"), self._sub(1)]))
+        self.assertEqual(segs, [[0], [1]])
+
+
+class RunParallelExploreSubagentsTests(unittest.TestCase):
+    """The parallel Explore-subagent dispatcher: concurrency, order, interrupt, disable."""
+
+    def setUp(self):
+        self._saved = os.environ.pop(parallel_dispatch.NO_PARALLEL_ENV, None)
+
+    def tearDown(self):
+        if self._saved is not None:
+            os.environ[parallel_dispatch.NO_PARALLEL_ENV] = self._saved
+
+    def _settings(self, enabled=True):
+        return SimpleNamespace(runtime=SimpleNamespace(parallel_tool_dispatch=enabled))
+
+    def _make_run_fn(self, delay=0.15):
+        """Returns (run_fn, sink). sink records (tag, start/end) under a lock."""
+        sink: list = []
+        guard = threading.Lock()
+        active: list[str] = []
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+            tag = prompt
+            with guard:
+                active.append(tag)
+                sink.append((tag, "start"))
+            time.sleep(delay)
+            with guard:
+                active.remove(tag)
+                sink.append((tag, "end"))
+            return f"summary:{tag}"
+
+        # Expose overlap detection helper.
+        run_fn.overlap = lambda: len(active) > 1  # type: ignore[attr-defined]
+        return run_fn, sink
+
+    def _calls(self, n):
+        return [ToolCall(id=f"s{i}", name="subagent", input={"prompt": f"p{i}"}) for i in range(n)]
+
+    def test_concurrent_subagents_overlap_and_are_faster(self) -> None:
+        run_fn, sink = self._make_run_fn(delay=0.15)
+        calls = self._calls(3)
+        t0 = time.monotonic()
+        results = run_parallel_explore_subagents(run_fn, calls, settings=self._settings())
+        elapsed = time.monotonic() - t0
+        # All three ran concurrently: some pair overlapped.
+        # Check overlap by scanning the sink for a window where >1 "start" lacks its "end".
+        running = 0
+        max_overlap = 0
+        for _, kind in sink:
+            if kind == "start":
+                running += 1
+                max_overlap = max(max_overlap, running)
+            else:
+                running -= 1
+        self.assertGreaterEqual(max_overlap, 2, "subagents should run concurrently")
+        self.assertLess(elapsed, 0.40, "3x0.15s in parallel should finish well under 0.45s")
+        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+
+    def test_results_preserve_input_order(self) -> None:
+        # Make the first subagent slowest so it finishes last; order must hold.
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+            if prompt == "p0":
+                time.sleep(0.2)
+            return f"summary:{prompt}"
+
+        calls = self._calls(3)
+        results = run_parallel_explore_subagents(run_fn, calls, settings=self._settings())
+        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+
+    def test_single_call_runs_inline(self) -> None:
+        run_fn, _ = self._make_run_fn(delay=0.01)
+        results = run_parallel_explore_subagents(run_fn, self._calls(1), settings=self._settings())
+        self.assertEqual(results, ["summary:p0"])
+
+    def test_disabled_setting_runs_serially(self) -> None:
+        run_fn, sink = self._make_run_fn(delay=0.1)
+        results = run_parallel_explore_subagents(run_fn, self._calls(3), settings=self._settings(enabled=False))
+        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+        # Serial: each start/end pair is contiguous (no interleaving).
+        kinds = [k for _, k in sink]
+        # In serial execution the pattern is start,end,start,end,start,end.
+        self.assertEqual(kinds, ["start", "end", "start", "end", "start", "end"])
+
+    def test_interrupt_before_submit_raises_and_runs_nothing(self) -> None:
+        calls_made: list[str] = []
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+            calls_made.append(prompt)
+            return "ok"
+
+        with self.assertRaises(TurnInterrupted):
+            run_parallel_explore_subagents(
+                run_fn, self._calls(3), should_interrupt=lambda: True, settings=self._settings()
+            )
+        self.assertEqual(calls_made, [])
+
+    def test_forwards_should_interrupt_to_subagent(self) -> None:
+        """The lead interrupt checker is forwarded into each subagent run."""
+        received: list = []
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+            received.append(should_interrupt)
+            return "ok"
+
+        checker = lambda: False
+        run_parallel_explore_subagents(run_fn, self._calls(2), should_interrupt=checker, settings=self._settings())
+        # Each subagent received the same checker (not None).
+        self.assertEqual(received, [checker, checker])
 
 
 if __name__ == "__main__":

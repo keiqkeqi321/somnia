@@ -77,8 +77,10 @@ from open_somnia.runtime.messages import (
 from open_somnia.runtime.permissions import PermissionManager
 from open_somnia.runtime.parallel_dispatch import (
     dispatch_parallel_segment,
+    is_explore_subagent_safe,
     is_parallel_safe,
     parallel_dispatch_enabled,
+    run_parallel_explore_subagents,
     segment_tool_calls,
 )
 from open_somnia.runtime.project_instructions import ProjectInstructionsLoader
@@ -376,6 +378,27 @@ class OpenAgentRuntime:
         tool_call_id: str | None = None,
     ) -> None:
         self._tool_event_renderer().print_tool_started(actor, tool_name, tool_input)
+
+    def print_tool_finished(
+        self,
+        actor: str,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        *,
+        tool_call_id: str | None = None,
+    ) -> None:
+        """Notify the host that a tool call has finished.
+
+        The mirror of :meth:`print_tool_started`. Most tools finish through
+        ``print_tool_event`` (the rendered result) plus the ``registry.execute``
+        wrapper; the parallel Explore-subagent path bypasses ``registry.execute``
+        entirely, so the lead loop calls this explicitly to let the host clear
+        the active-tool / active-subagent slot keyed by ``tool_call_id``.
+        """
+        # No terminal rendering here: the finished state is conveyed by the
+        # subsequent ``print_tool_event`` call. This method exists for host
+        # bookkeeping (REPL active-subagent map, desktop TOOL_FINISHED event).
+        return None
 
     def render_tool_event_lines(
         self,
@@ -1139,6 +1162,33 @@ class OpenAgentRuntime:
             return False
         command = str((payload or {}).get("command", "")).strip().lower()
         return any(command == prefix.rstrip() or command.startswith(prefix) for prefix in self.EXPLORATION_SHELL_PREFIXES)
+
+    def _parallel_safe_kind(self, tool_call: Any) -> str:
+        """Which dispatch pool a parallel-safe call routes to: ``tool`` or ``subagent``.
+
+        Read-only tools go to ``_POOL`` (``dispatch_parallel_segment``); an
+        Explore-subagent call goes to ``_SUBAGENT_POOL``
+        (``run_parallel_explore_subagents``). Segment construction bounds a
+        maximal run by kind so the two never mix in one concurrent segment
+        (they return different shapes and use different pools).
+        """
+        return "subagent" if is_explore_subagent_safe(tool_call) else "tool"
+
+    def _print_tool_finished_subagent(self, tool_call: Any) -> None:
+        """Notify the host that a parallel Explore-subagent call finished.
+
+        The parallel subagent path pre-fires ``print_tool_started`` before
+        dispatch and bypasses ``registry.execute`` (whose wrapper would otherwise
+        emit the finished signal), so the lead loop calls this in the
+        post-completion side-effect loop to let the host clear the
+        active-subagent slot keyed by ``tool_call.id``.
+        """
+        self.print_tool_finished(
+            "lead",
+            "subagent",
+            getattr(tool_call, "input", {}) or {},
+            tool_call_id=getattr(tool_call, "id", None),
+        )
 
     def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
         return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
@@ -3356,7 +3406,9 @@ class OpenAgentRuntime:
                     # else decision stays "execute"; streak/total updated below.
             # A planned call always consumes a report slot and a result, except
             # for dropped duplicates (handled by ``continue`` above).
-            parallel_safe = decision == "execute" and is_parallel_safe(tool_name)
+            parallel_safe = decision == "execute" and (
+                is_parallel_safe(tool_name) or is_explore_subagent_safe(tool_call)
+            )
             plan.append(
                 _PlannedLeadCall(
                     tool_call=tool_call,
@@ -3826,14 +3878,32 @@ class OpenAgentRuntime:
                 while cursor < len(plan):
                     self._raise_if_interrupted(should_interrupt)
                     current = plan[cursor]
+                    # ``head_kind`` distinguishes the two dispatch pools a
+                    # parallel-safe segment can use (``tool`` -> ``_POOL``,
+                    # ``subagent`` -> ``_SUBAGENT_POOL``). Defaulted here so the
+                    # inline single-call branch never references an unbound name.
+                    head_kind = "tool"
+                    # Set non-None only by the parallel Explore-subagent branch
+                    # to signal that ``print_tool_started`` was pre-fired.
+                    subagent_started_ids: set[str] | None = None
                     # Determine the segment: a maximal run of parallel-safe
                     # EXECUTE calls (concurrent), or a single call (inline).
+                    # Read-only tools and Explore-subagent calls are *both*
+                    # parallel-safe but dispatch on DIFFERENT pools (read-only
+                    # tools on ``_POOL`` via ``dispatch_parallel_segment``;
+                    # Explore subagents on ``_SUBAGENT_POOL`` via
+                    # ``run_parallel_explore_subagents`` -- a nested agent loop
+                    # must not consume a ``_POOL`` worker or it deadlocks). So a
+                    # maximal run is also bounded by *kind*: it stops at the
+                    # first call whose safe-kind differs from the run's head.
                     if parallel_on and current.decision == "execute" and current.parallel_safe:
+                        head_kind = self._parallel_safe_kind(current.tool_call)
                         run_end = cursor
                         while (
                             run_end < len(plan)
                             and plan[run_end].decision == "execute"
                             and plan[run_end].parallel_safe
+                            and self._parallel_safe_kind(plan[run_end].tool_call) == head_kind
                         ):
                             run_end += 1
                     else:
@@ -3847,6 +3917,42 @@ class OpenAgentRuntime:
                                 current.guard_output,
                                 max_content_chars=self.settings.runtime.max_tool_output_chars,
                             )
+                        ]
+                    elif run_end - cursor > 1 and head_kind == "subagent":
+                        # Parallel Explore subagents: dispatch on the dedicated
+                        # subagent pool (not ``_POOL``) to avoid nested-loop
+                        # deadlock. ``run_parallel_explore_subagents`` returns
+                        # summary strings; wrap each into a ``ToolCallRecord``
+                        # so the downstream side-effect loop is uniform.
+                        #
+                        # Pre-fire ``print_tool_started`` for EVERY subagent in
+                        # the segment BEFORE dispatching, so the UI registers
+                        # one active-subagent slot per parallel subagent (keyed
+                        # by ``tool_call.id``) up front. Each subagent's
+                        # internal activity (keyed by the same id via
+                        # ``_invoke_subagent``) then routes to the right slot.
+                        # Without this pre-fire the UI's active-subagent map
+                        # would only be populated lazily from activity events,
+                        # which collapses parallel subagents onto one slot.
+                        subagent_started_ids: set[str] = set()
+                        for p in seg_plans:
+                            self.print_tool_started(
+                                "lead", "subagent", p.tool_call.input, tool_call_id=p.tool_call.id
+                            )
+                            subagent_started_ids.add(p.tool_call.id)
+                        summaries = run_parallel_explore_subagents(
+                            self.run_subagent,
+                            [p.tool_call for p in seg_plans],
+                            should_interrupt=should_interrupt,
+                            settings=self.settings,
+                        )
+                        seg_records = [
+                            finalize_tool_call(
+                                p.tool_call,
+                                summary,
+                                max_content_chars=self.settings.runtime.max_tool_output_chars,
+                            )
+                            for p, summary in zip(seg_plans, summaries)
                         ]
                     elif run_end - cursor > 1:
                         seg_records = dispatch_parallel_segment(
@@ -3868,6 +3974,13 @@ class OpenAgentRuntime:
                         ]
                     # Apply side effects in input order, breaking on stateful
                     # interrupts exactly like the serial loop.
+                    #
+                    # ``subagent_started_ids`` is non-None only for the parallel
+                    # Explore-subagent branch, which pre-fired ``print_tool_started``
+                    # before dispatch. For those calls we skip the redundant
+                    # post-completion start event (the slot already exists and was
+                    # updated by the subagent's activity events) and instead emit
+                    # a finished notification so the UI clears each slot.
                     seg_broke = False
                     for offset, record in enumerate(seg_records):
                         planned = seg_plans[offset]
@@ -3876,7 +3989,12 @@ class OpenAgentRuntime:
                         if tool_name == "compress":
                             manual_compact = True
                         if planned.decision == "execute":
-                            self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
+                            if subagent_started_ids is not None and tool_call.id in subagent_started_ids:
+                                # Pre-fired above; emit the matching finish so the
+                                # UI clears the active-subagent slot now it's done.
+                                self._print_tool_finished_subagent(tool_call)
+                            else:
+                                self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
                         if record.repair_hint is not None:
                             pending_tool_repair_hints.append(record.repair_hint)
                         log_id = self.print_tool_event("lead", tool_name, tool_call.input, record.persisted_output)

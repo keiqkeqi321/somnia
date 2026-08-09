@@ -480,6 +480,7 @@ class RuntimeHost:
     def _patched_tool_logging(self, active_turn: _ActiveTurn) -> Iterator[None]:
         original_print_tool_started = active_turn.runtime.print_tool_started
         original_print_tool_event = active_turn.runtime.print_tool_event
+        original_print_tool_finished = getattr(active_turn.runtime, "print_tool_finished", None)
         renderer = active_turn.runtime._tool_event_renderer()
 
         def wrapped_print_tool_started(
@@ -499,6 +500,29 @@ class RuntimeHost:
                     tool_call_id=tool_call_id,
                     trace_id=f"{active_turn.session.id}-{active_turn.session.latest_turn_id}",
                     rendered_lines=renderer.render_tool_started_lines(tool_name, tool_input),
+                )
+
+        def wrapped_print_tool_finished(
+            actor: str,
+            tool_name: str,
+            tool_input: dict[str, Any],
+            *,
+            tool_call_id: str | None = None,
+        ) -> None:
+            # Emits a lightweight TOOL_FINISHED marker for paths that bypass
+            # ``print_tool_event``'s full result rendering -- specifically the
+            # parallel Explore-subagent path, which pre-fires TOOL_STARTED but
+            # needs a matching finish so the frontend clears the active
+            # subagent card keyed by ``tool_call_id``.
+            if _is_lead_actor(actor):
+                self._emit_for_turn(
+                    active_turn,
+                    TOOL_FINISHED,
+                    actor=actor,
+                    tool_name=tool_name,
+                    tool_input=_clone_value(tool_input),
+                    tool_call_id=tool_call_id,
+                    trace_id=f"{active_turn.session.id}-{active_turn.session.latest_turn_id}",
                 )
 
         def wrapped_print_tool_event(actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
@@ -535,11 +559,19 @@ class RuntimeHost:
 
         active_turn.runtime.print_tool_started = wrapped_print_tool_started
         active_turn.runtime.print_tool_event = wrapped_print_tool_event
+        active_turn.runtime.print_tool_finished = wrapped_print_tool_finished
         try:
             yield
         finally:
             active_turn.runtime.print_tool_started = original_print_tool_started
             active_turn.runtime.print_tool_event = original_print_tool_event
+            if original_print_tool_finished is not None:
+                active_turn.runtime.print_tool_finished = original_print_tool_finished
+            else:
+                try:
+                    delattr(active_turn.runtime, "print_tool_finished")
+                except AttributeError:
+                    pass
 
     @contextmanager
     def _patched_subagent_activity(self, active_turn: _ActiveTurn) -> Iterator[None]:
