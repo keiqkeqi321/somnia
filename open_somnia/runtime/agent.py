@@ -70,6 +70,7 @@ from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import (
     consume_ephemeral_image_blocks,
     decode_embedded_user_message,
+    make_tool_result_item,
     make_tool_result_message,
     make_user_text_message,
     render_text_content,
@@ -97,6 +98,7 @@ from open_somnia.storage.inbox import InboxStore
 from open_somnia.storage.jobs import JobStore
 from open_somnia.storage.sessions import SessionStore
 from open_somnia.storage.common import atomic_write_text
+from open_somnia.storage.subagent_checkpoints import SubagentCheckpointStore
 from open_somnia.storage.subagent_logs import SubagentLogStore
 from open_somnia.storage.tasks import TaskStore
 from open_somnia.storage.team import TeamStore
@@ -114,6 +116,7 @@ from open_somnia.tools.team import register_team_tools
 from open_somnia.tools.tool_errors import (
     make_tool_error,
     render_transient_repair_hint_message,
+    serialize_tool_output,
 )
 from open_somnia.tools.todo import TodoManager, register_todo_tool
 from open_somnia.tools.web_fetch import register_web_fetch_tool
@@ -297,6 +300,7 @@ class OpenAgentRuntime:
         self.job_store = JobStore(settings.storage.jobs_dir)
         self.tool_log_store = ToolLogStore(settings.storage.logs_dir)
         self.subagent_log_store = SubagentLogStore(settings.storage.logs_dir)
+        self.subagent_checkpoint_store = SubagentCheckpointStore(settings.storage.logs_dir)
         self.inbox_store = InboxStore(settings.storage.inbox_dir)
         self.bus = MessageBus(self.inbox_store)
         self.team_store = TeamStore(settings.storage.team_dir)
@@ -2973,12 +2977,18 @@ class OpenAgentRuntime:
         *,
         activity_id: str | None = None,
         should_interrupt=None,
-    ) -> str:
+        resume_from=None,
+        session_id: str | None = None,
+        extra_prompt: str | None = None,
+    ):
         return self._subagent_runner().run_subagent(
             prompt,
             agent_type,
             activity_id=activity_id,
             should_interrupt=should_interrupt,
+            resume_from=resume_from,
+            session_id=session_id,
+            extra_prompt=extra_prompt,
         )
 
     def interrupt_active_teammates(self, reason: str = "lead_interrupt") -> int:
@@ -3505,6 +3515,106 @@ class OpenAgentRuntime:
             thinking_callback({"event": "finished", **marker})
         return message
 
+    def _append_subagent_placeholders(self, session, seg_plans):
+        """Pre-write the subagent tool_call + a placeholder tool_result into
+        ``session.messages`` (and the transcript) BEFORE the subagents run.
+
+        Why: when a subagent is interrupted, the assistant turn carrying its
+        tool_call is otherwise never appended (the round-end append at the
+        bottom of the loop is skipped on interrupt), so the lead has no record
+        that the subagent ever ran -- and after "continue" it cannot decide to
+        resume. By writing the tool_call + a ``running`` placeholder up front we
+        guarantee the lead sees the subagent on the next turn no matter what.
+
+        Returns ``(assistant_message, placeholder_items)``: the appended
+        assistant message (so the caller can drop it from the round-end append
+        to avoid a duplicate) and the list of placeholder tool_result items
+        (held by reference so the caller rewrites them in place on completion
+        or interrupt).
+        """
+        blocks: list[dict[str, Any]] = []
+        for p in seg_plans:
+            tool_call = p.tool_call
+            block = {
+                "type": "tool_call",
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_call.input,
+            }
+            if getattr(tool_call, "importance", None):
+                block["importance"] = tool_call.importance
+            blocks.append(block)
+        assistant_message = {"role": "assistant", "content": blocks}
+        session.messages.append(assistant_message)
+        self._append_transcript_entry(session.id, assistant_message)
+
+        placeholder_items: list[dict[str, Any]] = []
+        for p in seg_plans:
+            aid = p.tool_call.id
+            placeholder_output = {
+                "status": "running",
+                "message": (
+                    f"subagent 执行中。若被中断，用 resume_from=\"{aid}\" 恢复"
+                    f"（继承已累积的上下文，低成本），可附 extra_prompt 补充新要求。"
+                ),
+                "activity_id": aid,
+            }
+            item = make_tool_result_item(
+                aid,
+                placeholder_output,
+                rendered_output=serialize_tool_output(placeholder_output),
+            )
+            placeholder_items.append(item)
+        tool_result_message = make_tool_result_message(list(placeholder_items))
+        session.messages.append(tool_result_message)
+        self._append_transcript_entry(session.id, tool_result_message)
+        return assistant_message, placeholder_items
+
+    def _finalize_placeholders_completed(self, placeholder_items, seg_records) -> None:
+        """Rewrite the running placeholder tool_result items in place with the
+        real subagent results. The items are already in ``session.messages`` (by
+        reference), so mutating them here is what the lead will see."""
+        for item, record in zip(placeholder_items, seg_records):
+            persisted = record.persisted_output
+            rendered = record.rendered_output
+            item["content"] = rendered
+            item.pop("is_error", None)
+            # Mirror make_tool_result_item's tool_result_text channel so the
+            # lead sees the clean summary text for completed subagents.
+            if isinstance(persisted, dict):
+                tr_text = persisted.get("tool_result_text")
+                if isinstance(tr_text, str) and tr_text.strip():
+                    item["content"] = tr_text.strip()
+                    item["tool_result_text"] = tr_text.strip()
+                    item.pop("is_error", None)
+                else:
+                    status = str(persisted.get("status", "")).strip().lower()
+                    if bool(persisted.get("is_error")) or status in {"error", "failed", "denied", "interrupted", "truncated"}:
+                        item["is_error"] = True
+            item["raw_output"] = persisted
+
+    def _finalize_placeholders_interrupted(self, placeholder_items, seg_plans) -> None:
+        """Rewrite the running placeholder tool_result items in place to mark
+        the subagent as interrupted, with the resume pointer. Called before
+        re-raising TurnInterrupted so the session save in the interrupt handler
+        captures the rewritten state."""
+        for item, p in zip(placeholder_items, seg_plans):
+            aid = p.tool_call.id
+            payload = {
+                "status": "interrupted",
+                "error_type": "subagent_interrupted",
+                "tool_name": "subagent",
+                "message": (
+                    f"subagent 被用户中断（上下文已保留）。若用户要继续，用 "
+                    f"resume_from=\"{aid}\" 恢复（可附 extra_prompt 补充新要求）；"
+                    f"若用户改方向，忽略它继续。不要从头重新派 subagent。"
+                ),
+                "activity_id": aid,
+                "is_error": True,
+            }
+            item["content"] = serialize_tool_output(payload)
+            item["is_error"] = True
+
     def run_turn(
         self,
         session: AgentSession,
@@ -3875,6 +3985,12 @@ class OpenAgentRuntime:
                     )
 
                 cursor = 0
+                # Subagent tool_calls whose assistant+tool_result pair was
+                # already written as a placeholder (and rewritten in place on
+                # completion/interrupt). The round-end append must skip these to
+                # avoid duplicates. See _append_subagent_placeholders.
+                placeholder_assistant_messages: list[dict[str, Any]] = []
+                placeholder_tool_call_ids: set[str] = set()
                 while cursor < len(plan):
                     self._raise_if_interrupted(should_interrupt)
                     current = plan[cursor]
@@ -3922,8 +4038,9 @@ class OpenAgentRuntime:
                         # Parallel Explore subagents: dispatch on the dedicated
                         # subagent pool (not ``_POOL``) to avoid nested-loop
                         # deadlock. ``run_parallel_explore_subagents`` returns
-                        # summary strings; wrap each into a ``ToolCallRecord``
-                        # so the downstream side-effect loop is uniform.
+                        # structured subagent outputs (dicts); wrap each into a
+                        # ``ToolCallRecord`` so the downstream side-effect loop
+                        # is uniform.
                         #
                         # Pre-fire ``print_tool_started`` for EVERY subagent in
                         # the segment BEFORE dispatching, so the UI registers
@@ -3940,12 +4057,32 @@ class OpenAgentRuntime:
                                 "lead", "subagent", p.tool_call.input, tool_call_id=p.tool_call.id
                             )
                             subagent_started_ids.add(p.tool_call.id)
-                        summaries = run_parallel_explore_subagents(
-                            self.run_subagent,
-                            [p.tool_call for p in seg_plans],
-                            should_interrupt=should_interrupt,
-                            settings=self.settings,
+                        # Write the tool_call + a running placeholder tool_result
+                        # BEFORE dispatch so an interrupt still leaves a visible
+                        # (rewritable) record in session.messages for the next
+                        # turn's lead to decide whether to resume. See
+                        # _append_subagent_placeholders / _finalize_*.
+                        _placeholder_assistant, _placeholder_items = (
+                            self._append_subagent_placeholders(session, seg_plans)
                         )
+                        placeholder_assistant_messages.append(_placeholder_assistant)
+                        placeholder_tool_call_ids.update(p.tool_call.id for p in seg_plans)
+                        try:
+                            summaries = run_parallel_explore_subagents(
+                                self.run_subagent,
+                                [p.tool_call for p in seg_plans],
+                                should_interrupt=should_interrupt,
+                                settings=self.settings,
+                                session_id=session.id,
+                                checkpoint_store=self.subagent_checkpoint_store,
+                            )
+                        except TurnInterrupted:
+                            # Rewrite placeholders to interrupted + resume
+                            # pointer BEFORE re-raising; the round-end save and
+                            # the _agent_loop interrupt handler's save will then
+                            # capture the rewritten state.
+                            self._finalize_placeholders_interrupted(_placeholder_items, seg_plans)
+                            raise
                         seg_records = [
                             finalize_tool_call(
                                 p.tool_call,
@@ -3954,6 +4091,9 @@ class OpenAgentRuntime:
                             )
                             for p, summary in zip(seg_plans, summaries)
                         ]
+                        # Rewrite the placeholder items in place with the real
+                        # results; they are already in session.messages.
+                        self._finalize_placeholders_completed(_placeholder_items, seg_records)
                     elif run_end - cursor > 1:
                         seg_records = dispatch_parallel_segment(
                             self.registry,
@@ -3964,14 +4104,40 @@ class OpenAgentRuntime:
                             max_content_chars=self.settings.runtime.max_tool_output_chars,
                         )
                     else:
-                        seg_records = [
-                            execute_tool_call(
-                                self.registry,
-                                _lead_ctx(),
-                                current.tool_call,
-                                max_content_chars=self.settings.runtime.max_tool_output_chars,
+                        # Single-call inline branch. For a subagent call (single
+                        # Explore or any general-purpose subagent) we also write
+                        # a placeholder first so an interrupt leaves a visible,
+                        # resumable record -- mirroring the parallel branch.
+                        if current.tool_name == "subagent":
+                            self.print_tool_started(
+                                "lead", "subagent", current.tool_call.input, tool_call_id=current.tool_call.id
                             )
-                        ]
+                            subagent_started_ids = {current.tool_call.id}
+                            _ph_asst, _ph_items = self._append_subagent_placeholders(session, [current])
+                            placeholder_assistant_messages.append(_ph_asst)
+                            placeholder_tool_call_ids.add(current.tool_call.id)
+                            try:
+                                seg_records = [
+                                    execute_tool_call(
+                                        self.registry,
+                                        _lead_ctx(),
+                                        current.tool_call,
+                                        max_content_chars=self.settings.runtime.max_tool_output_chars,
+                                    )
+                                ]
+                            except TurnInterrupted:
+                                self._finalize_placeholders_interrupted(_ph_items, [current])
+                                raise
+                            self._finalize_placeholders_completed(_ph_items, seg_records)
+                        else:
+                            seg_records = [
+                                execute_tool_call(
+                                    self.registry,
+                                    _lead_ctx(),
+                                    current.tool_call,
+                                    max_content_chars=self.settings.runtime.max_tool_output_chars,
+                                )
+                            ]
                     # Apply side effects in input order, breaking on stateful
                     # interrupts exactly like the serial loop.
                     #
@@ -3998,6 +4164,29 @@ class OpenAgentRuntime:
                         if record.repair_hint is not None:
                             pending_tool_repair_hints.append(record.repair_hint)
                         log_id = self.print_tool_event("lead", tool_name, tool_call.input, record.persisted_output)
+                        # Placeholder subagent calls already had their
+                        # assistant tool_call + tool_result written (and the
+                        # tool_result rewritten in place with the real result).
+                        # Skip appending them again to executed_tool_calls /
+                        # tool_results / transcript to avoid duplicates; the
+                        # round-end assistant/tool_result append filters them
+                        # out too. UI events and flags still run.
+                        if tool_call.id in placeholder_tool_call_ids:
+                            if tool_name == "TodoWrite":
+                                used_todo = True
+                            if planned.is_turn_boundary:
+                                end_turn_after_tool = True
+                                seg_broke = True
+                                break
+                            if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
+                                end_turn_after_tool = True
+                                seg_broke = True
+                                break
+                            if planned.end_turn_after:
+                                end_turn_after_tool = True
+                                seg_broke = True
+                                break
+                            continue
                         result = record.result_item
                         result["raw_output"] = record.persisted_output
                         result["log_id"] = log_id
@@ -4030,18 +4219,31 @@ class OpenAgentRuntime:
                         break
                     cursor = run_end
 
-                assistant_message = turn.as_message(executed_tool_calls)
-                assistant_message = self._attach_thinking_log_marker(
-                    assistant_message,
-                    thinking_log=thinking_log,
-                    thinking_callback=thinking_callback,
-                    notify_finished=not thinking_finished_notified,
-                )
-                session.messages.append(assistant_message)
-                self._append_transcript_entry(session.id, assistant_message)
-                session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
-                tool_result_message = make_tool_result_message(tool_results)
-                session.messages.append(tool_result_message)
+                # Round-end assistant + tool_result append. Skip both when the
+                # round was entirely placeholder subagent calls (their
+                # assistant/tool_result pair was already written up front and
+                # rewritten in place); otherwise build the message from the
+                # non-placeholder tool calls only (placeholder subagent
+                # tool_calls already live in their own assistant message).
+                if executed_tool_calls or tool_results:
+                    assistant_message = turn.as_message(executed_tool_calls)
+                    assistant_message = self._attach_thinking_log_marker(
+                        assistant_message,
+                        thinking_log=thinking_log,
+                        thinking_callback=thinking_callback,
+                        notify_finished=not thinking_finished_notified,
+                    )
+                    session.messages.append(assistant_message)
+                    self._append_transcript_entry(session.id, assistant_message)
+                    session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
+                    tool_result_message = make_tool_result_message(tool_results)
+                    session.messages.append(tool_result_message)
+                else:
+                    # Placeholder-only round: the assistant text (if any) from
+                    # the model turn would be lost without a transcript note,
+                    # but placeholder subagent rounds carry no user-facing text
+                    # (the model only emitted tool_calls). Nothing to append.
+                    session.rounds_without_todo = 0 if used_todo else session.rounds_without_todo + 1
                 if manual_compact:
                     preserve_from_index = self._active_task_preserve_index(session.messages, task_anchor_message)
                     session.messages = self.compact_manager.auto_compact(

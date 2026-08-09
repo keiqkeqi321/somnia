@@ -119,8 +119,16 @@ class RuntimeSettings:
     exploration_soft_limit: int = 10
     exploration_hard_streak_limit: int = 14
     exploration_hard_total_limit: int = 0
-    max_subagent_rounds: int = 30
+    max_subagent_rounds: int = 50
     max_agent_rounds: int = 100
+    # Subagent resume: a subagent that ends interrupted/truncated/failed is
+    # checkpointed so the lead can resume it from where it left off instead of
+    # restarting from scratch. Each resume resets the round budget (the subagent
+    # gets a fresh max_subagent_rounds budget) up to this many resumes per
+    # subagent; beyond the limit the round budget is no longer reset and the
+    # remaining rounds are used, preventing unbounded round inflation via
+    # repeated interrupt+resume cycles.
+    max_subagent_resumes: int = 3
     # Order-preserving parallel dispatch: maximal runs of independent read-only
     # tools run concurrently; writes/shell/subagent/stateful tools stay serial.
     # Disabled by SOMNIA_NO_PARALLEL_TOOLS=1 (mirrors SOMNIA_NO_RG).

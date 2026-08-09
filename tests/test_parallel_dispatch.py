@@ -432,7 +432,7 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
         guard = threading.Lock()
         active: list[str] = []
 
-        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
             tag = prompt
             with guard:
                 active.append(tag)
@@ -468,28 +468,38 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
                 running -= 1
         self.assertGreaterEqual(max_overlap, 2, "subagents should run concurrently")
         self.assertLess(elapsed, 0.40, "3x0.15s in parallel should finish well under 0.45s")
-        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+        # Dispatcher wraps each subagent result as a structured tool-output dict.
+        self.assertEqual(
+            [r.get("tool_result_text") for r in results],
+            ["summary:p0", "summary:p1", "summary:p2"],
+        )
 
     def test_results_preserve_input_order(self) -> None:
         # Make the first subagent slowest so it finishes last; order must hold.
-        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
             if prompt == "p0":
                 time.sleep(0.2)
             return f"summary:{prompt}"
 
         calls = self._calls(3)
         results = run_parallel_explore_subagents(run_fn, calls, settings=self._settings())
-        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+        self.assertEqual(
+            [r.get("tool_result_text") for r in results],
+            ["summary:p0", "summary:p1", "summary:p2"],
+        )
 
     def test_single_call_runs_inline(self) -> None:
         run_fn, _ = self._make_run_fn(delay=0.01)
         results = run_parallel_explore_subagents(run_fn, self._calls(1), settings=self._settings())
-        self.assertEqual(results, ["summary:p0"])
+        self.assertEqual([r.get("tool_result_text") for r in results], ["summary:p0"])
 
     def test_disabled_setting_runs_serially(self) -> None:
         run_fn, sink = self._make_run_fn(delay=0.1)
         results = run_parallel_explore_subagents(run_fn, self._calls(3), settings=self._settings(enabled=False))
-        self.assertEqual(results, ["summary:p0", "summary:p1", "summary:p2"])
+        self.assertEqual(
+            [r.get("tool_result_text") for r in results],
+            ["summary:p0", "summary:p1", "summary:p2"],
+        )
         # Serial: each start/end pair is contiguous (no interleaving).
         kinds = [k for _, k in sink]
         # In serial execution the pattern is start,end,start,end,start,end.
@@ -498,7 +508,7 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
     def test_interrupt_before_submit_raises_and_runs_nothing(self) -> None:
         calls_made: list[str] = []
 
-        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
             calls_made.append(prompt)
             return "ok"
 
@@ -512,7 +522,7 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
         """The lead interrupt checker is forwarded into each subagent run."""
         received: list = []
 
-        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None):
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
             received.append(should_interrupt)
             return "ok"
 
@@ -520,6 +530,43 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
         run_parallel_explore_subagents(run_fn, self._calls(2), should_interrupt=checker, settings=self._settings())
         # Each subagent received the same checker (not None).
         self.assertEqual(received, [checker, checker])
+
+    def test_resume_from_is_forwarded_and_keeps_checkpoint_activity_id(self) -> None:
+        """Regression: a subagent tool_call carrying resume_from must actually
+        resume the checkpoint (forward resume_from) AND keep the checkpoint's
+        activity_id (not the new tool_call.id), otherwise the lead's resume
+        decision silently starts a fresh subagent and orphans the original
+        checkpoint. This was the bug in transcript 4d5107ccf222."""
+        from types import SimpleNamespace
+
+        # A fake checkpoint returned by the store.load().
+        fake_cp = SimpleNamespace(activity_id="orig-aid-001")
+        fake_store = SimpleNamespace(load=lambda aid: fake_cp if aid == "orig-aid-001" else None)
+
+        # tool_call with resume_from in its payload and a DIFFERENT new id.
+        tc = ToolCall(
+            id="new-call-id-999",
+            name="subagent",
+            input={"prompt": "continue", "resume_from": "orig-aid-001"},
+        )
+        seen = {}
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None,
+                   session_id=None, extra_prompt=None, resume_from=None):
+            seen["activity_id"] = activity_id
+            seen["resume_from"] = resume_from
+            return "summary"
+
+        # Serial inline path (single call) goes through _invoke_subagent.
+        run_parallel_explore_subagents(
+            run_fn, [tc], should_interrupt=lambda: False,
+            settings=self._settings(), checkpoint_store=fake_store,
+        )
+        # resume_from was forwarded (not None) -> the subagent actually resumes.
+        self.assertIsNotNone(seen["resume_from"])
+        # activity_id is the CHECKPOINT's id, not the new tool_call.id.
+        self.assertEqual(seen["activity_id"], "orig-aid-001")
+        self.assertNotEqual(seen["activity_id"], "new-call-id-999")
 
 
 if __name__ == "__main__":

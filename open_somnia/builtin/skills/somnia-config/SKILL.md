@@ -176,8 +176,9 @@ background_poll_interval_seconds = 2
 teammate_idle_timeout_seconds = 60
 teammate_poll_interval_seconds = 5
 max_tool_output_chars = 50000
-max_subagent_rounds = 30
+max_subagent_rounds = 50
 max_agent_rounds = 100
+max_subagent_resumes = 3
 ```
 
 Fields:
@@ -188,8 +189,9 @@ Fields:
 - `teammate_idle_timeout_seconds`: teammate idle timeout. Default: `60`.
 - `teammate_poll_interval_seconds`: teammate polling interval. Default: `5`.
 - `max_tool_output_chars`: max retained/rendered tool output characters. Default: `50000`.
-- `max_subagent_rounds`: subagent round cap. Default: `30`.
+- `max_subagent_rounds`: subagent round cap. Default: `50`.
 - `max_agent_rounds`: main agent round cap. Default: `100`.
+- `max_subagent_resumes`: max resumes per subagent before the round budget stops resetting. Default: `3`.
 
 Prefer project scope only when a repo needs specific tool/output limits. Otherwise use user scope.
 

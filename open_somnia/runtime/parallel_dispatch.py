@@ -382,20 +382,24 @@ _SUBAGENT_POOL = _SharedSubagentThreadPool()
 
 
 def run_parallel_explore_subagents(
-    run_subagent_fn: Callable[..., str],
+    run_subagent_fn: Callable[..., Any],
     segment_calls: Sequence[Any],
     *,
     should_interrupt: Callable[[], bool] | None = None,
     settings: Any = None,
-) -> list[str]:
+    session_id: str | None = None,
+    extra_prompts: dict[str, str] | None = None,
+    checkpoint_store: Any = None,
+) -> list[dict[str, Any]]:
     """Run a segment of Explore-subagent calls concurrently, in input order.
 
     Each ``tool_call`` is dispatched to ``run_subagent_fn(prompt, agent_type,
     activity_id=..., should_interrupt=...)`` -- the same signature the lead
-    loop's ``AgentRuntime.run_subagent`` exposes. The shared ``should_interrupt``
-    checker is forwarded into every subagent so a user interrupt propagates into
-    running subagent loops (their internal rounds poll it between tool calls).
-    Results (subagent summary strings) are reordered to the segment's input
+    loop's ``AgentRuntime.run_subagent`` exposes (it returns a
+    ``SubagentResult``). The shared ``should_interrupt`` checker is forwarded
+    into every subagent so a user interrupt propagates into running subagent
+    loops (their internal rounds poll it between tool calls). Results
+    (subagent structured outputs, dicts) are reordered to the segment's input
     order so the lead loop's provider ``tool_result`` pairing stays positional.
 
     Uses :data:`_SUBAGENT_POOL` (not ``_POOL``) to avoid the nested-dispatch
@@ -414,23 +418,26 @@ def run_parallel_explore_subagents(
     # Resolve the interrupt checker once: the same lead-loop checker is shared
     # by every subagent so an interrupt aborts the whole parallel batch.
     interrupt_checker = should_interrupt
+    prompts_by_id = extra_prompts or {}
     if len(segment_calls) <= 1 or not enabled:
-        out: list[str] = []
+        out: list[dict[str, Any]] = []
         for tool_call in segment_calls:
             if interrupt_checker is not None and interrupt_checker():
                 raise TurnInterrupted("Interrupted by user.")
-            out.append(_invoke_subagent(run_subagent_fn, tool_call, interrupt_checker))
+            ep = prompts_by_id.get(getattr(tool_call, "id", ""))
+            out.append(_invoke_subagent(run_subagent_fn, tool_call, interrupt_checker, session_id, ep, checkpoint_store))
         return out
 
     pool = _SUBAGENT_POOL.acquire(_max_workers(settings))
-    futures: list[tuple[int, Future[str]]] = []
+    futures: list[tuple[int, Future[dict[str, Any]]]] = []
     for offset, tool_call in enumerate(segment_calls):
         if interrupt_checker is not None and interrupt_checker():
             break
-        future = pool.submit(_invoke_subagent, run_subagent_fn, tool_call, interrupt_checker)
+        ep = prompts_by_id.get(getattr(tool_call, "id", ""))
+        future = pool.submit(_invoke_subagent, run_subagent_fn, tool_call, interrupt_checker, session_id, ep, checkpoint_store)
         futures.append((offset, future))
 
-    results: list[str | None] = [None] * len(segment_calls)
+    results: list[dict[str, Any] | None] = [None] * len(segment_calls)
     interrupted = False
     for offset, future in futures:
         try:
@@ -439,9 +446,9 @@ def run_parallel_explore_subagents(
             interrupted = True
         except Exception as exc:  # pragma: no cover - defensive
             # A subagent loop blowing up should already be converted to a
-            # summary string by its own error handling; if something escapes,
-            # surface a best-effort error string rather than a None slot.
-            results[offset] = f"(subagent failed: {exc})"
+            # structured result by its own error handling; if something escapes,
+            # surface a best-effort structured error rather than a None slot.
+            results[offset] = _subagent_failed_output(exc)
 
     if interrupted or any(r is None for r in results):
         for _, future in futures:
@@ -452,27 +459,76 @@ def run_parallel_explore_subagents(
     return [r for r in results if r is not None]  # type: ignore[list-item]
 
 
+def _subagent_failed_output(exc: BaseException) -> dict[str, Any]:
+    """Build a structured tool output for an escaped subagent exception.
+
+    Normal failures are handled inside ``run_subagent`` (which returns a
+    ``SubagentResult(status="failed")``). This covers only exceptions that
+    escape that boundary, e.g. a pool/pickling error.
+    """
+    from open_somnia.runtime.subagent_runner import SubagentResult
+
+    return SubagentResult(status="failed", error=str(exc)).as_tool_output()
+
+
 def _invoke_subagent(
-    run_subagent_fn: Callable[..., str],
+    run_subagent_fn: Callable[..., Any],
     tool_call: Any,
     should_interrupt: Callable[[], bool] | None = None,
-) -> str:
+    session_id: str | None = None,
+    extra_prompt: str | None = None,
+    checkpoint_store: Any = None,
+) -> dict[str, Any]:
     """Worker entrypoint: unpack a subagent tool_call and call run_subagent_fn.
 
     Mirrors the lead-loop subagent handler's argument mapping
     (``tools/subagent.py``): prompt + agent_type (default Explore) +
-    activity_id (the lead trace_id) + should_interrupt passthrough. ``run_subagent_fn``
-    owns all error policy and returns a summary string.
+    activity_id (the lead trace_id) + should_interrupt passthrough.
+    ``run_subagent_fn`` returns a ``SubagentResult``; we convert it to its
+    structured tool-output dict here so the lead loop's ``finalize_tool_call``
+    handles it uniformly with the serial tool-handler path. ``session_id`` is
+    forwarded so checkpoints are stamped with the owning session;
+    ``extra_prompt`` carries an optional resume-time instruction.
+
+    Resume: when the payload carries ``resume_from`` (an activity_id), load the
+    checkpoint from ``checkpoint_store`` and forward it as ``resume_from``. On
+    resume the activity_id is kept as the CHECKPOINT's activity_id (not the new
+    tool_call.id) so the resumed subagent updates the SAME checkpoint file
+    instead of opening a new one -- otherwise the lead's resume decision
+    silently starts a fresh subagent and leaves the original checkpoint orphaned.
     """
     payload = getattr(tool_call, "input", None)
     if not isinstance(payload, dict):
         payload = {}
     prompt = str(payload.get("prompt", "") or "")
     agent_type = str(payload.get("agent_type", "Explore") or "Explore")
-    activity_id = getattr(tool_call, "id", None) or getattr(tool_call, "trace_id", None)
-    return run_subagent_fn(
+    new_activity_id = getattr(tool_call, "id", None) or getattr(tool_call, "trace_id", None)
+    resume_from = None
+    activity_id = new_activity_id
+    resume_aid = str(payload.get("resume_from") or "").strip()
+    if resume_aid and checkpoint_store is not None:
+        try:
+            resume_from = checkpoint_store.load(resume_aid)
+        except Exception:
+            resume_from = None
+        # Keep the checkpoint's activity_id so the resumed run updates the same
+        # checkpoint (and the lead's next resume_from points to a valid id).
+        if resume_from is not None:
+            activity_id = getattr(resume_from, "activity_id", resume_aid) or resume_aid
+    result = run_subagent_fn(
         prompt,
         agent_type,
         activity_id=activity_id,
         should_interrupt=should_interrupt,
+        session_id=session_id,
+        resume_from=resume_from,
+        extra_prompt=extra_prompt,
     )
+    # run_subagent returns a SubagentResult; normalize to the structured tool
+    # output dict. Guard against a legacy str return so an older runtime stays
+    # compatible.
+    if isinstance(result, dict):
+        return result
+    if hasattr(result, "as_tool_output"):
+        return result.as_tool_output()
+    return {"status": "completed", "tool_result_text": str(result)}
