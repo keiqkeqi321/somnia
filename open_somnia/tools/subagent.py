@@ -28,7 +28,12 @@ def register_subagent_tool(registry) -> None:
         if resume_from is not None:
             activity_id = getattr(resume_from, "activity_id", None) or resume_aid
         else:
-            activity_id = getattr(ctx, "trace_id", None)
+            # For a fresh subagent, the activity_id doubles as the checkpoint
+            # key. It MUST match the resume_from pointer the lead writes into
+            # the placeholder/interrupted tool_result, which is tool_call.id.
+            # ctx.tool_call_id is stamped by execute_tool_call; fall back to
+            # trace_id for older call sites that don't set it.
+            activity_id = getattr(ctx, "tool_call_id", None) or getattr(ctx, "trace_id", None)
         result = ctx.runtime.run_subagent(
             payload["prompt"],
             payload.get("agent_type", "Explore"),

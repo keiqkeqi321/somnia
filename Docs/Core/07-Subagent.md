@@ -39,13 +39,16 @@ Subagent（子代理）是 Somnia 的隔离执行单元，允许主 Agent 在独
 
 | 工具 | 说明 |
 |------|------|
-| `bash` | Shell 命令 |
+| `bash` | Shell 命令（受只读门控，禁止写入类命令） |
 | `tree` | 目录树 |
 | `find_symbol` | 符号查找 |
 | `glob` | 文件模式匹配 |
 | `grep` | 内容搜索 |
 | `read_file` | 文件读取 |
+| `read_image` | 图片读取 |
+| `web_fetch` | 网页抓取 |
 | `load_skill` | 技能加载 |
+| `submit_summary` | **完成信号**（见下） |
 
 **禁止**：任何文件写入操作。
 
@@ -59,6 +62,21 @@ Subagent（子代理）是 Somnia 的隔离执行单元，允许主 Agent 在独
 | `edit_file` | 文本替换 |
 
 `edit_file` 与主 Agent 保持同一约定：只接受 `edits=[{old_text,new_text}, ...]`，单次替换也必须包装成单元素数组。
+
+> 两种模式都注册了 `submit_summary`，它是子代理**唯一**的完成方式。
+
+---
+
+## 完成协议（重要）
+
+子代理的循环判定：**只有调用 `submit_summary` 才算完成**。这对应 `round_runner` 的 `should_stop_after_round` 机制（与 teammate 的 `idle` 工具同一套模式）。
+
+- 模型调用 `submit_summary(summary="...")` → 循环结束，`summary` 字段成为返回给 lead 的摘要。
+- **纯文本轮（没有任何工具调用）不是完成**。循环会注入一条提醒用户消息并继续，直到模型要么调用工具继续工作、要么正式调用 `submit_summary`。
+
+这样设计是为了堵住"过早退出"的漏洞：旧逻辑把"本轮无工具调用"当作完成信号，导致模型在第 1 轮凭空吐一段总结、或在没做完工作时输出澄清/计划文本就被当作 `completed`。现在完成是一个**显式动作**，子代理不可能"无意中"结束。
+
+> 这也补齐了 lead 主循环早有的"空响应/退化轮修复"保护（`agent.py` 的 `EMPTY_ASSISTANT_RESPONSE_REPAIR_TEXT`），之前 subagent 循环没有对称的保护。
 
 ---
 
@@ -91,43 +109,21 @@ def run_subagent(self, prompt: str, agent_type: str = "Explore") -> str:
     # 3. 初始消息
     messages = [make_user_text_message(prompt)]
     pending_tool_repair_hints = []
-    
-    # 4. 执行 Agent Loop
-    for _ in range(max_subagent_rounds):
-        if pending_tool_repair_hints:
-            messages.append(
-                make_user_text_message(
-                    render_transient_repair_hint_message(pending_tool_repair_hints)
-                )
-            )
-            pending_tool_repair_hints = []
-        turn = self.provider.complete(system_prompt, messages, registry.schemas())
-        messages.append(turn.as_message())
-        
-        if not turn.has_tool_calls():
-            # 无工具调用 → 返回文本摘要
-            return turn.text or "(no summary)"
-        
-        # 执行工具调用
-        for tool_call in turn.tool_calls:
-            ctx = ToolExecutionContext(
-                runtime=self.runtime,
-                session=None,          # 子代理无会话
-                actor="subagent",      # actor 标记为 subagent
-                trace_id=f"subagent-{uuid}"
-            )
-            output = registry.execute(ctx, tool_call.name, tool_call.input)
-            repair_hint = extract_transient_repair_hint(output)
-            if repair_hint is not None:
-                pending_tool_repair_hints.append(repair_hint)
-            persisted_output = sanitize_tool_output_for_persistence(output)
-            results.append(
-                make_tool_result(content=serialize_tool_output(persisted_output), ...)
-            )
-        
-        messages.append(make_tool_result_message(results))
-    
-    return final_text  # 达到最大轮数时返回最后文本
+
+    # 4. 执行 Agent Loop（完成只能由 submit_summary 触发）
+    while rounds_used < max_rounds:
+        result = runner.run_round(system_prompt, messages, registry, ...)
+        rounds_used += 1
+
+        if result.stop_after_round:      # 模型调用了 submit_summary
+            return SubagentResult(status="completed",
+                                  summary=submit_summary 捕获的 summary)
+
+        if not result.has_tool_calls:    # 纯文本轮 ≠ 完成
+            messages.append(make_user_text_message(SUBAGENT_NO_TOOL_NUDGE))
+            continue                      # 注入提醒后继续
+
+    return SubagentResult(status="truncated", summary=final_text)
 ```
 
 ---

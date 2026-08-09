@@ -31,7 +31,11 @@ class SubagentToolTests(unittest.TestCase):
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen["tool_names"] = [tool["name"] for tool in tools]
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["done"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "done"})],
+                )
 
             runtime.complete = fake_complete
 
@@ -49,6 +53,7 @@ class SubagentToolTests(unittest.TestCase):
                     "read_image",
                     "web_fetch",
                     "load_skill",
+                    "submit_summary",
                 ],
             )
 
@@ -59,7 +64,11 @@ class SubagentToolTests(unittest.TestCase):
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen["tool_names"] = [tool["name"] for tool in tools]
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["done"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "done"})],
+                )
 
             runtime.complete = fake_complete
 
@@ -79,6 +88,7 @@ class SubagentToolTests(unittest.TestCase):
                     "write_file",
                     "edit_file",
                     "load_skill",
+                    "submit_summary",
                 ],
             )
 
@@ -100,7 +110,11 @@ class SubagentToolTests(unittest.TestCase):
                     )
                 tool_result = messages[-1]["content"][0]["content"]
                 self.assertNotIn("requires explicit user approval", tool_result)
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["Done."], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Done."],
+                    tool_calls=[ToolCall("c2", "submit_summary", {"summary": "Done."})],
+                )
 
             runtime.complete = fake_complete
 
@@ -126,7 +140,11 @@ class SubagentToolTests(unittest.TestCase):
                             ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1}),
                         ],
                     )
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["Found the root."], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Found the root."],
+                    tool_calls=[ToolCall("call-2", "submit_summary", {"summary": "Found the root."})],
+                )
 
             runtime.complete = fake_complete
 
@@ -137,7 +155,8 @@ class SubagentToolTests(unittest.TestCase):
             self.assertEqual(events[0]["activity_id"], "turn-1")
             self.assertEqual(events[0]["text"], "Searching files.")
             self.assertTrue(any("tree .:" in event["text"] for event in events))
-            self.assertEqual(events[-1]["text"], "Found the root.")
+            # The submit_summary tool call is logged as the final activity.
+            self.assertIn("submit_summary", events[-1]["text"])
 
     def test_subagent_persists_execution_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,7 +173,11 @@ class SubagentToolTests(unittest.TestCase):
                             ToolCall("call-1", "tree", {"path": ".", "depth": 1, "limit": 1}),
                         ],
                     )
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["Found the root."], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Found the root."],
+                    tool_calls=[ToolCall("call-2", "submit_summary", {"summary": "Found the root."})],
+                )
 
             runtime.complete = fake_complete
 
@@ -164,7 +187,12 @@ class SubagentToolTests(unittest.TestCase):
             self.assertEqual(result.summary, "Found the root.")
             entries = runtime.subagent_log_store.read("turn-1")
             types = [entry["type"] for entry in entries]
-            self.assertEqual(types, ["started", "assistant_message", "tool_call", "assistant_message", "summary"])
+            # Completion now happens via the submit_summary tool call, so the
+            # log gains an extra tool_call entry before the final summary.
+            self.assertEqual(
+                types,
+                ["started", "assistant_message", "tool_call", "assistant_message", "tool_call", "summary"],
+            )
             self.assertEqual(entries[0]["prompt"], "Inspect the workspace")
             self.assertEqual(entries[0]["agent_type"], "Explore")
             self.assertEqual(entries[1]["content"], "Searching files.")
@@ -172,7 +200,8 @@ class SubagentToolTests(unittest.TestCase):
             self.assertIn("tool_input", entries[2])
             self.assertTrue(entries[2]["output_preview"])
             self.assertEqual(entries[3]["content"], "Found the root.")
-            self.assertEqual(entries[4]["content"], "Found the root.")
+            self.assertEqual(entries[4]["tool_name"], "submit_summary")
+            self.assertEqual(entries[5]["content"], "Found the root.")
 
     def test_subagent_stops_when_interrupt_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -304,7 +333,11 @@ class SubagentToolTests(unittest.TestCase):
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen_message_counts.append(len(messages))
                 # Resume must carry the prior context, not start from [prompt].
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["Resumed summary."], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Resumed summary."],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "Resumed summary."})],
+                )
 
             runtime.complete = fake_complete
 
@@ -346,7 +379,11 @@ class SubagentToolTests(unittest.TestCase):
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 captured["messages"] = messages
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["ok"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["ok"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "ok"})],
+                )
 
             runtime.complete = fake_complete
             cp = runtime.subagent_checkpoint_store.load("turn-1")
@@ -384,6 +421,73 @@ class SubagentToolTests(unittest.TestCase):
             # Truncated subagents leave a checkpoint for resume.
             self.assertIsNotNone(runtime.subagent_checkpoint_store.load("turn-1"))
 
+    def test_text_only_turn_does_not_complete_and_keeps_looping(self) -> None:
+        """A text-only turn (no tool call) is NOT completion -- the loop injects
+        a nudge and continues until the model calls submit_summary."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            runtime.settings.runtime.max_subagent_rounds = 3
+            call_count = {"n": 0}
+            seen_messages = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                call_count["n"] += 1
+                seen_messages.append([dict(m) for m in messages])
+                if call_count["n"] < 3:
+                    # Premature text-only "summary" attempt -- must NOT end the run.
+                    return AssistantTurn(stop_reason="end_turn", text_blocks=["Here is my answer."], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=[],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "Real answer after work."})],
+                )
+
+            runtime.complete = fake_complete
+            result = runtime.run_subagent("Do the work", "Explore", activity_id="turn-1")
+
+            # The model tried to exit early twice but was nudged onward; the run
+            # only completed once submit_summary was finally called.
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.summary, "Real answer after work.")
+            self.assertEqual(call_count["n"], 3)
+            # A nudge user message was injected after each premature text-only turn.
+            nudge_texts = [
+                m["content"] for m in seen_messages[1] if str(m.get("role", "")) == "user" and isinstance(m.get("content"), str)
+            ]
+            self.assertTrue(any("submit_summary" in t for t in nudge_texts))
+
+    def test_submit_summary_completes_with_submitted_summary(self) -> None:
+        """submit_summary is the explicit completion act; its payload (not the
+        turn text) is the authoritative summary returned to the lead."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["Some throwaway narration."],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "## Final Report"})],
+                )
+
+            runtime.complete = fake_complete
+            result = runtime.run_subagent("Summarize", "Explore", activity_id="turn-1")
+
+            self.assertEqual(result.status, "completed")
+            # The submitted_summary payload wins over the turn text.
+            self.assertEqual(result.summary, "## Final Report")
+            # Completed run clears its checkpoint.
+            self.assertIsNone(runtime.subagent_checkpoint_store.load("turn-1"))
+
+    def test_submit_summary_registers_for_both_agent_types(self) -> None:
+        """submit_summary must be available to both Explore and general-purpose
+        subagents -- it is the sole completion path for both."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            explore_tools = runtime.subagent_runner._build_registry("Explore").names()
+            gp_tools = runtime.subagent_runner._build_registry("general-purpose").names()
+            self.assertIn("submit_summary", explore_tools)
+            self.assertIn("submit_summary", gp_tools)
+
     def test_resume_count_caps_round_reset(self) -> None:
         """Past max_subagent_resumes the round budget stops resetting."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -407,7 +511,11 @@ class SubagentToolTests(unittest.TestCase):
             captured = {"rounds_used": None}
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["done"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "done"})],
+                )
 
             runtime.complete = fake_complete
             cp = runtime.subagent_checkpoint_store.load("turn-1")
@@ -474,7 +582,11 @@ class SubagentToolTests(unittest.TestCase):
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
                 seen_message_counts.append(len(messages))
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["done"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "done"})],
+                )
 
             runtime.complete = fake_complete
             cp = runtime.subagent_checkpoint_store.load("turn-1")
@@ -505,7 +617,11 @@ class SubagentToolTests(unittest.TestCase):
             seen_activity_ids = []
 
             def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
-                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"], tool_calls=[])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["done"],
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "done"})],
+                )
 
             runtime.complete = fake_complete
             registry = ToolRegistry()
@@ -525,6 +641,156 @@ class SubagentToolTests(unittest.TestCase):
             self.assertIsNone(runtime.subagent_checkpoint_store.load("orig-aid"))
             # And no new checkpoint under the new trace_id was created.
             self.assertIsNone(runtime.subagent_checkpoint_store.load("new-trace-id-999"))
+
+    def test_fresh_subagent_checkpoint_keyed_by_tool_call_id_not_trace_id(self) -> None:
+        """Regression (transcript d84bd0092218): a fresh subagent dispatched via
+        the lead-loop serial path must checkpoint under tool_call.id, because
+        that is the resume_from pointer the lead writes into its placeholder /
+        interrupted tool_result. The old code used ctx.trace_id
+        (<session>-<turn>), which never matched the resume pointer, so every
+        resume silently started from scratch and the accumulated context was
+        lost. execute_tool_call now stamps ctx.tool_call_id; the subagent
+        handler keys the checkpoint on it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            registry = ToolRegistry()
+            register_subagent_tool(registry)
+            from open_somnia.runtime.events import ToolExecutionContext
+            from open_somnia.runtime.round_runner import execute_tool_call
+
+            tool_call_id = "call_00_ResumePointerMatchesKey999"
+            trace_id = "d84bd0092218-dd381caa"  # <session>-<turn>, the WRONG key
+
+            # Fresh subagent that runs one tool round, then is interrupted on
+            # the next round's pre-complete check. We only assert the CHECKPOINT
+            # KEY here (the actual bug); context accumulation is exercised by
+            # test_resume_via_handler_finds_checkpoint_keyed_by_tool_call_id.
+            call_count = {"n": 0}
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    return AssistantTurn(
+                        stop_reason="tool_use",
+                        text_blocks=["Searching."],
+                        tool_calls=[ToolCall("c1", "tree", {"path": ".", "depth": 1})],
+                    )
+                raise TurnInterrupted("Interrupted by user.")
+
+            runtime.complete = fake_complete
+            ctx = ToolExecutionContext(
+                runtime=runtime, session=None, actor="lead",
+                trace_id=trace_id,
+                should_interrupt=(lambda: call_count["n"] >= 1),
+            )
+            tool_call = ToolCall(tool_call_id, "subagent", {"prompt": "explore"})
+            with self.assertRaises(TurnInterrupted):
+                execute_tool_call(registry, ctx, tool_call)
+
+            # The checkpoint MUST be filed under tool_call.id (the resume
+            # pointer), NOT trace_id. Under the bug it was filed under
+            # trace_id, so the lead's resume_from=tool_call.id found nothing.
+            self.assertIsNotNone(runtime.subagent_checkpoint_store.load(tool_call_id))
+            self.assertIsNone(runtime.subagent_checkpoint_store.load(trace_id))
+
+    def test_resume_via_handler_finds_checkpoint_keyed_by_tool_call_id(self) -> None:
+        """Regression (transcript d84bd0092218): a subagent checkpoint filed
+        under tool_call.id (what the lead's fresh-run path now produces) must
+        be found by a subsequent resume_from=<tool_call.id> through the serial
+        handler, inheriting the checkpoint's accumulated context. Before the
+        fix the checkpoint was filed under trace_id (<session>-<turn>) which
+        never matched the lead's resume_from pointer, so resume silently
+        restarted from scratch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            registry = ToolRegistry()
+            register_subagent_tool(registry)
+            from open_somnia.runtime.events import ToolExecutionContext
+
+            tool_call_id = "call_00_FreshThenResume444"
+            # Seed an interrupted checkpoint under tool_call.id, mimicking what
+            # a fresh-run-then-interrupt produces: a user prompt + an assistant
+            # tool-call turn + its tool_result (3 messages of real context).
+            prior_messages = [
+                {"role": "user", "content": "explore the workspace"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Searching."},
+                    {"type": "tool_call", "id": "c1", "name": "tree", "input": {"path": "."}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_call_id": "c1", "content": "root/"},
+                ]},
+            ]
+            runtime.subagent_checkpoint_store.save(
+                SubagentCheckpoint(
+                    activity_id=tool_call_id,
+                    prompt="explore the workspace",
+                    agent_type="Explore",
+                    messages=prior_messages,
+                    pending_repair_hints=[],
+                    rounds_used=1,
+                    status="interrupted",
+                    resume_count=0,
+                )
+            )
+
+            resumed_message_counts = []
+
+            def fake_complete_resume(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                resumed_message_counts.append(len(messages))
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=[],
+                    tool_calls=[ToolCall("c2", "submit_summary", {"summary": "resumed answer"})],
+                )
+
+            runtime.complete = fake_complete_resume
+            ctx2 = ToolExecutionContext(
+                runtime=runtime, session=None, actor="lead",
+                trace_id="sessionX-turn2", should_interrupt=lambda: False,
+            )
+            # The resume call's resume_from points at the checkpoint's key
+            # (tool_call_id). The handler must load it (it would have returned
+            # None under the bug, since the checkpoint was filed under trace_id).
+            out = registry.execute(ctx2, "subagent", {
+                "prompt": "continue", "resume_from": tool_call_id,
+            })
+            # Completed with the resumed summary, and inherited the full 3-message
+            # prior context (not a single-message fresh start).
+            self.assertEqual(out["status"], "completed")
+            self.assertEqual(out["tool_result_text"], "resumed answer")
+            self.assertGreaterEqual(resumed_message_counts[0], len(prior_messages))
+            # Completed resume clears the checkpoint.
+            self.assertIsNone(runtime.subagent_checkpoint_store.load(tool_call_id))
+
+    def test_subagent_slot_id_matches_resume_from_for_resumed_calls(self) -> None:
+        """Regression (transcript 23027ac64578, "4 running" on resume): the lead
+        UI active-subagent slot key must match the id the subagent reports its
+        activity under. A resumed subagent runs under its checkpoint's
+        activity_id (the ``resume_from`` value), NOT the new tool_call.id. If
+        the lead pre-fires / finishes keyed by tool_call.id while the subagent
+        reports under resume_from, the host opens a SECOND slot per resumed
+        subagent, doubling the displayed count. _subagent_slot_id resolves the
+        shared key so pre-fire and self-report collapse to one slot."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+
+            # Fresh subagent: slot key == tool_call.id.
+            fresh = ToolCall("call_round2_new", "subagent", {"prompt": "explore"})
+            self.assertEqual(runtime._subagent_slot_id(fresh), "call_round2_new")
+
+            # Resumed subagent: slot key == resume_from (the checkpoint id the
+            # resumed subagent reports under), NOT the new tool_call.id.
+            resumed = ToolCall(
+                "call_round2_new",
+                "subagent",
+                {"prompt": "continue", "resume_from": "call_round1_checkpoint"},
+            )
+            self.assertEqual(runtime._subagent_slot_id(resumed), "call_round1_checkpoint")
+            # The two ids differ -- without the helper the slot would key on
+            # "call_round2_new" and never match the subagent's self-reported
+            # "call_round1_checkpoint" activity id.
+            self.assertNotEqual(resumed.id, runtime._subagent_slot_id(resumed))
 
     def test_placeholder_helpers_running_then_completed(self) -> None:
         """_append_subagent_placeholders writes a running placeholder;

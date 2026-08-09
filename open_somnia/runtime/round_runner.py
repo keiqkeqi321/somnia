@@ -126,6 +126,15 @@ def execute_tool_call(
         intercepted = hooks.before_execute(tool_call)
         if intercepted is not None:
             return finalize_tool_call(tool_call, intercepted, **result_item_kwargs)
+    # Stamp the per-call id so tools that need a stable identifier keyed to
+    # THIS tool_call (the subagent handler's checkpoint key, which must match
+    # the lead's resume_from pointer) can read it. Set here rather than at ctx
+    # construction because the ctx is built per-round/per-segment (often
+    # before the specific tool_call is chosen) and this is the single funnel
+    # for serial, fast-serial, and parallel dispatch.
+    tool_call_id = getattr(tool_call, "id", None)
+    if isinstance(tool_call_id, str) and tool_call_id:
+        ctx.tool_call_id = tool_call_id
     try:
         output = registry.execute(ctx, tool_call.name, tool_call.input)
     except TurnInterrupted:

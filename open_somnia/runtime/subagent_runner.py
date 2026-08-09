@@ -30,6 +30,19 @@ from open_somnia.tools.web_fetch import register_web_fetch_tool
 
 SubagentStatus = Literal["completed", "truncated", "failed", "interrupted"]
 
+# A text-only turn (no tool call) is not valid completion for a subagent --
+# only the submit_summary tool is. When the model emits such a turn anyway,
+# inject this nudge so it either calls the next tool or calls submit_summary,
+# rather than exiting before the work is done. This closes the "premature exit
+# on round 1" hole where a bare-text summary used to be accepted as done.
+SUBAGENT_NO_TOOL_NUDGE = (
+    "You ended this turn without calling any tool and without calling submit_summary. "
+    "A text-only response is not completion. If your investigation is finished, call "
+    "submit_summary with your final summary now. Otherwise, call the next tool "
+    "(grep / read_file / glob / etc.) and keep working -- do not merely describe what "
+    "you intend to do."
+)
+
 
 @dataclass(slots=True)
 class SubagentResult:
@@ -187,6 +200,14 @@ class SubagentRunner:
             f"You are an isolated subagent working in {self.runtime.settings.workspace_root}. "
             "Keep the main context clean. Do the work, then return a concise summary.\n"
             f"{capability_guidance}\n\n"
+            "## Completion protocol (IMPORTANT)\n"
+            "When -- and ONLY when -- your task is fully done, call the `submit_summary` tool "
+            "with your final summary. That tool is the sole way to finish the task. Do NOT end "
+            "the task by writing a plain text response with no tool call: a text-only turn is "
+            "not completion and will not end the run -- the loop will keep going (with a reminder) "
+            "until you either call a tool to continue the work or call `submit_summary`. Use tools "
+            "to investigate/verify first; then submit a concise, self-contained summary once "
+            "complete.\n\n"
             f"{self.runtime._environment_guidance()}"
         )
         final_text = ""
@@ -211,6 +232,19 @@ class SubagentRunner:
         def on_tool_record(record: ToolCallRecord) -> None:
             nonlocal tool_calls_seen
             tool_calls_seen += 1
+            # submit_summary is the explicit completion act; capture its summary
+            # so the loop uses it as SubagentResult.summary (preferred over any
+            # accompanying text). Prefer the canonical field the handler set,
+            # fall back to the raw input.
+            if record.tool_call.name == "submit_summary":
+                persisted = record.persisted_output
+                summary = None
+                if isinstance(persisted, dict):
+                    summary = persisted.get("submitted_summary")
+                if not summary:
+                    summary = str(record.tool_call.input.get("summary", "")).strip()
+                if summary:
+                    submitted_summary_holder["value"] = summary
             self._emit_activity(
                 activity_id=activity_id,
                 agent_type=agent_type,
@@ -227,7 +261,19 @@ class SubagentRunner:
                 }
             )
 
-        hooks = RoundHooks(on_assistant_message=on_assistant_message, on_tool_record=on_tool_record)
+        # submit_summary marks the round as the final one (mirrors the teammate
+        # ``idle`` pattern via should_stop_after_round). submitted_summary_holder
+        # carries the captured summary out to the loop.
+        submitted_summary_holder: dict[str, Any] = {"value": None}
+
+        def should_stop_after_round(record: ToolCallRecord) -> bool:
+            return record.tool_call.name == "submit_summary"
+
+        hooks = RoundHooks(
+            on_assistant_message=on_assistant_message,
+            on_tool_record=on_tool_record,
+            should_stop_after_round=should_stop_after_round,
+        )
         runner = SessionlessRoundRunner(self.runtime)
         log({"type": "started", "prompt": log_prompt, "agent_type": agent_type, "resume": resuming})
 
@@ -278,18 +324,32 @@ class SubagentRunner:
                 rounds_used += 1
                 if result.turn_text:
                     final_text = result.turn_text
-                if not result.has_tool_calls:
-                    # Completed: a round with no tool calls is the final summary.
-                    log({"type": "summary", "content": result.turn_text or "(no summary)"})
+                # Completion is an explicit act: the model called submit_summary
+                # (signaled via should_stop_after_round). The submitted summary
+                # is the authoritative answer; fall back to the round's text if
+                # a non-standard handler did not populate the holder.
+                if result.stop_after_round:
+                    summary = submitted_summary_holder["value"] or final_text or ""
+                    log({"type": "summary", "content": summary or "(no summary)"})
                     _clear_checkpoint()
                     return SubagentResult(
                         status="completed",
-                        summary=result.turn_text or "",
+                        summary=summary,
                         rounds_used=rounds_used,
                         tool_calls=tool_calls_seen,
                         activity_id=activity_id,
                     )
-            # Round budget exhausted without a no-tool-call summary round.
+                if not result.has_tool_calls:
+                    # A text-only turn is NOT completion -- the model must call
+                    # submit_summary to finish. Append the nudge as a plain user
+                    # message and continue, so the subagent either calls a tool
+                    # or formally submits its summary, instead of exiting early.
+                    # It is appended after run_round returns (and after it has
+                    # drained pending_tool_repair_hints for this round), so it
+                    # appears in the next round's payload.
+                    messages.append(make_user_text_message(SUBAGENT_NO_TOOL_NUDGE))
+                    continue
+            # Round budget exhausted without a submit_summary completion.
             _checkpoint("truncated")
             log({"type": "summary", "content": final_text or "(no summary)", "truncated": True})
             return SubagentResult(
@@ -611,6 +671,41 @@ class SubagentRunner:
                     "required": ["name"],
                 },
                 handler=lambda ctx, payload: self.runtime.skill_loader.load(payload["name"]),
+            )
+        )
+        # The ONLY way a subagent signals "done". submit_summary carries the
+        # final summary; the runner returns when it sees a submit_summary tool
+        # call (via should_stop_after_round). Unlike a bare text turn -- which
+        # might be a half-formed plan or a premature guess -- submit_summary is
+        # an explicit completion act, so a subagent cannot exit before doing the
+        # work. The handler just echoes the payload so the round completes with
+        # a well-formed tool_result; the runner ignores the tool output and uses
+        # the summary field directly.
+        registry.register(
+            ToolDefinition(
+                name="submit_summary",
+                description=(
+                    "Signal that your work is complete and deliver the final summary to the "
+                    "calling agent. This is the ONLY way to finish a subagent task -- a plain "
+                    "text response without any tool call does NOT complete the task. "
+                    "Call this exactly once when done, with a concise, self-contained summary "
+                    "of what you found, decided, or changed."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "The final summary delivered to the calling agent.",
+                        }
+                    },
+                    "required": ["summary"],
+                },
+                handler=lambda ctx, payload: {
+                    "status": "completed",
+                    "tool_result_text": "Summary submitted.",
+                    "submitted_summary": str(payload.get("summary", "")).strip(),
+                },
             )
         )
         return registry

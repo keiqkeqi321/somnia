@@ -1191,8 +1191,29 @@ class OpenAgentRuntime:
             "lead",
             "subagent",
             getattr(tool_call, "input", {}) or {},
-            tool_call_id=getattr(tool_call, "id", None),
+            tool_call_id=self._subagent_slot_id(tool_call),
         )
+
+    def _subagent_slot_id(self, tool_call: Any) -> str | None:
+        """Resolve the UI active-subagent slot key for a subagent tool_call.
+
+        A fresh subagent reports activity under ``tool_call.id`` (the id the
+        lead pre-fires). A RESUMED subagent, however, runs under its
+        checkpoint's activity_id (``resume_from``), so the resumed subagent's
+        internal activity events carry that id, not the new tool_call.id. If
+        the lead pre-fired / finishes keyed by ``tool_call.id`` while the
+        subagent reports under ``resume_from``, the two never match and the
+        host opens a SECOND slot for the resumed subagent -- doubling the
+        displayed count on resume (a fresh pre-fire slot + a self-reported
+        slot). Keying the host events on ``resume_from`` when present keeps
+        one slot per resumed subagent and lets the matching finish clear it.
+        """
+        tool_input = getattr(tool_call, "input", None)
+        if isinstance(tool_input, dict):
+            resume_from = str(tool_input.get("resume_from") or "").strip()
+            if resume_from:
+                return resume_from
+        return getattr(tool_call, "id", None)
 
     def _exploration_summary_reminder(self, *, streak: int, total: int) -> str:
         return self.EXPLORATION_SUMMARY_REMINDER_TEXT.format(streak=streak, total=total)
@@ -4053,10 +4074,11 @@ class OpenAgentRuntime:
                         # which collapses parallel subagents onto one slot.
                         subagent_started_ids: set[str] = set()
                         for p in seg_plans:
+                            slot_id = self._subagent_slot_id(p.tool_call)
                             self.print_tool_started(
-                                "lead", "subagent", p.tool_call.input, tool_call_id=p.tool_call.id
+                                "lead", "subagent", p.tool_call.input, tool_call_id=slot_id
                             )
-                            subagent_started_ids.add(p.tool_call.id)
+                            subagent_started_ids.add(slot_id)
                         # Write the tool_call + a running placeholder tool_result
                         # BEFORE dispatch so an interrupt still leaves a visible
                         # (rewritable) record in session.messages for the next
@@ -4109,10 +4131,11 @@ class OpenAgentRuntime:
                         # a placeholder first so an interrupt leaves a visible,
                         # resumable record -- mirroring the parallel branch.
                         if current.tool_name == "subagent":
+                            slot_id = self._subagent_slot_id(current.tool_call)
                             self.print_tool_started(
-                                "lead", "subagent", current.tool_call.input, tool_call_id=current.tool_call.id
+                                "lead", "subagent", current.tool_call.input, tool_call_id=slot_id
                             )
-                            subagent_started_ids = {current.tool_call.id}
+                            subagent_started_ids = {slot_id}
                             _ph_asst, _ph_items = self._append_subagent_placeholders(session, [current])
                             placeholder_assistant_messages.append(_ph_asst)
                             placeholder_tool_call_ids.add(current.tool_call.id)
@@ -4155,7 +4178,7 @@ class OpenAgentRuntime:
                         if tool_name == "compress":
                             manual_compact = True
                         if planned.decision == "execute":
-                            if subagent_started_ids is not None and tool_call.id in subagent_started_ids:
+                            if subagent_started_ids is not None and self._subagent_slot_id(tool_call) in subagent_started_ids:
                                 # Pre-fired above; emit the matching finish so the
                                 # UI clears the active-subagent slot now it's done.
                                 self._print_tool_finished_subagent(tool_call)
