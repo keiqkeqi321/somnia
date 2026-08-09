@@ -633,6 +633,49 @@ class ReplTodoTests(unittest.TestCase):
         for idx in range(3):
             self.assertIn(f"⏳ Explore: Explore area {idx}", rendered)
 
+    def test_parallel_subagents_each_render_their_own_output_line(self) -> None:
+        # Each parallel subagent renders its latest activity line DIRECTLY under
+        # its own ``⏳`` header, instead of all facts being pooled into a single
+        # rotating ``↳`` line at the bottom. This keeps the "which subagent is
+        # producing which output" pairing unambiguous when several run in
+        # parallel. Verify both that every subagent's fact appears and that the
+        # ordering interleaves each header with its own output line.
+        runner = TurnQueueRunner(SimpleNamespace(), SimpleNamespace(todo_items=[]), stable_prompt=True)
+        for idx, aid in enumerate(("sa-1", "sa-2", "sa-3")):
+            runner._note_tool_started(
+                {
+                    "actor": "lead",
+                    "tool_name": "subagent",
+                    "trace_id": aid,
+                    "tool_input": {"agent_type": "Explore", "prompt": f"Explore area {idx}"},
+                }
+            )
+        for idx, aid in enumerate(("sa-1", "sa-2", "sa-3")):
+            runner._note_subagent_activity(
+                {
+                    "activity_id": aid,
+                    "agent_type": "Explore",
+                    "prompt": f"Explore area {idx}",
+                    "kind": "tool_result",
+                    "text": f"grep area {idx}: found files",
+                }
+            )
+
+        lines = [line for _, line in runner._subagent_lines()]
+        # Each subagent's own output line is present.
+        for idx in range(3):
+            self.assertIn(f"↳ grep area {idx}: found files", lines)
+        # And each output line immediately follows its own header (the header
+        # carries an "(Ns)" elapsed suffix), not a sibling's header.
+        for idx in range(3):
+            fact = f"↳ grep area {idx}: found files"
+            self.assertIn(fact, lines)
+            header_line = lines[lines.index(fact) - 1]
+            self.assertTrue(
+                header_line.startswith(f"⏳ Explore: Explore area {idx} "),
+                msg=f"fact {fact!r} preceded by {header_line!r}",
+            )
+
     def test_parallel_subagent_activity_with_unmatched_id_does_not_merge_onto_sibling(self) -> None:
         # Regression guard for Fix B: before the fix, when one slot already
         # existed and a second subagent's activity arrived with an id NOT in the

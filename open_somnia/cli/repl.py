@@ -2032,15 +2032,22 @@ class TurnQueueRunner:
             agent_type = str(item.get("agent_type", "Explore")).strip() or "Explore"
             elapsed = max(0, int(time.monotonic() - float(item.get("started_at", time.monotonic()))))
             lines.append(("fg:#fbbf24", f"⏳ {agent_type}: {prompt} ({elapsed}s)"))
-        facts = [
-            str(fact).strip()
-            for item in active
-            for fact in list(item.get("facts", []) or [])
-            if str(fact).strip()
-        ]
-        if facts:
-            fact_index = int(time.monotonic() / self.SUBAGENT_FACT_FRAME_SECONDS) % len(facts)
-            lines.append(("fg:#cbd5e1", f"↳ {facts[fact_index]}"))
+            # Render each subagent's LATEST activity line directly beneath its
+            # own header so it's clear which subagent is doing what. Previously
+            # every subagent's facts were pooled into one flat list and only a
+            # single rotating ``↳`` line was shown at the bottom, making it
+            # impossible to tell which of several parallel subagents a given
+            # output belonged to. One line per subagent keeps the pairing
+            # unambiguous while still rotating through that subagent's own facts
+            # when it has several.
+            facts = [
+                str(fact).strip()
+                for fact in list(item.get("facts", []) or [])
+                if str(fact).strip()
+            ]
+            if facts:
+                fact_index = int(time.monotonic() / self.SUBAGENT_FACT_FRAME_SECONDS) % len(facts)
+                lines.append(("fg:#cbd5e1", f"↳ {facts[fact_index]}"))
         return lines
 
     def _compact_panel_text(self, text: str, *, limit: int) -> str:
