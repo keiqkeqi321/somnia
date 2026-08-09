@@ -27,6 +27,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Button, Dialog, Label, RadioList, TextArea
 
+from open_somnia.cli.help import REPL_COMMAND_SPECS
 from open_somnia.path_completion import (
     MAX_PATH_COMPLETION_CANDIDATES,
     PATH_COMPLETION_CACHE_SECONDS,
@@ -37,35 +38,15 @@ from open_somnia.path_completion import (
 )
 
 VISIBLE_COMMAND_SPECS = [
-    ("/init", "Generate AGENTS.md project instructions with an agent inspection loop"),
-    ("/symbols", "Find symbols and inspect matching source locations"),
-    ("/image", "Send a local image to the active multimodal model"),
-    ("/paste-image", "Read an image from the system clipboard"),
-    ("/model", "Choose the active provider and model"),
-    ("/vision", "Choose the image understanding model"),
-    ("/reasoning", "Set the active provider reasoning level"),
-    ("/providers", "Add or edit shared provider profiles"),
-    ("/hooks", "Browse hooks by event and toggle them on or off"),
-    ("/undo", "Undo the most recent file change set"),
-    ("/checkpoint", "Save a named checkpoint of the current session state"),
-    ("/rollback", "Roll back to a previous checkpoint, reverting files and context"),
-    ("/compact", "Compact the current session context"),
-    ("/cancel", "Cancel a queued prompt by its queue id (shown next to each queued prompt)"),
-    ("/janitor", "Run semantic janitor on the current payload"),
-    ("/reloadplugin", "Reload MCP tools, skills, and project instructions"),
-    ("/skills", "Choose a skill to apply to the next prompt"),
-    ("/tasks", "Show persistent tasks"),
-    ("/team", "Show teammate roster and states"),
-    ("/mcp", "Browse configured MCP servers and tools"),
-    ("/bg", "Show background jobs"),
-    ("/help", "Show available REPL commands"),
-    ("/exit", "Exit chat mode"),
+    (spec.name, spec.description)
+    for spec in REPL_COMMAND_SPECS
+    if not spec.hidden
 ]
 
 HIDDEN_COMMAND_SPECS = [
-    ("/teamlog", "Show the full message and tool history for a teammate"),
-    ("/inbox", "Read the lead inbox"),
-    ("/toollog", "Show recent tool logs or expand one by id"),
+    (spec.name, spec.description)
+    for spec in REPL_COMMAND_SPECS
+    if spec.hidden
 ]
 
 COMMAND_SPECS = VISIBLE_COMMAND_SPECS + HIDDEN_COMMAND_SPECS

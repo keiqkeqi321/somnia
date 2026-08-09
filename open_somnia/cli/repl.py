@@ -30,7 +30,6 @@ from open_somnia.app_service.events import (
 )
 from open_somnia.cli.commands import ConsoleStreamer, _assistant_prefix, _prefix_first_line, print_user_message
 from open_somnia.cli.prompting import (
-    COMMAND_SPECS,
     PROMPT_BORDER,
     PROMPT_TEXT,
     choose_authorization_interactively,
@@ -3126,8 +3125,11 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     else:
                         print(f"[queue id #{cancel_id} not found — already running or no such item]")
                     continue
-                if stripped == "/help":
-                    print("\n".join(f"{command} - {description}" for command, description in COMMAND_SPECS))
+                if stripped == "/help" or stripped.startswith("/help "):
+                    help_topic = stripped[len("/help") :].strip()
+                    from open_somnia.cli.help import render_repl_help
+
+                    print(render_repl_help(help_topic or None))
                     continue
                 skill_command = _parse_skill_command(query)
                 expanded_query = _expand_skill_command(runtime, query)

@@ -88,6 +88,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the installed somnia version and exit.",
     )
     parser.add_argument("--workspace", default=".", help="Workspace root for the agent.")
+    parser.add_argument(
+        "-help",
+        dest="help_cmd",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="TOPIC",
+        help=(
+            "Show the somnia intro and all available commands, or detailed help "
+            "for one command (e.g. -help run). Add --json for machine-readable output."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit help output as JSON (machine readable).",
+    )
     session_group = parser.add_mutually_exclusive_group()
     session_group.add_argument(
         "-r",
@@ -193,6 +210,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the HTML report to this path instead of the default provider payload log directory.",
     )
     subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
+    help_parser = subparsers.add_parser(
+        "help",
+        help="Show the somnia intro and all commands, or detailed help for one (alias: -help).",
+    )
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        default=None,
+        help="Command to show detailed help for (e.g. run, tasks, /rollback).",
+    )
     return parser
 
 
@@ -277,6 +304,14 @@ def _open_trace_report(settings) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(_normalize_command_aliases(argv))
+    if args.command == "help" or getattr(args, "help_cmd", None) is not None:
+        from open_somnia.cli.help import cli_help
+
+        if getattr(args, "command", None) == "help":
+            topic = getattr(args, "topic", None)
+        else:
+            topic = args.help_cmd or None
+        return cli_help(topic, as_json=args.json)
     if args.command == "trace" and args.prompt == "viewer":
         parser.error("Use 'somnia traceviewer' to open the trace report.")
     if args.command == "providers":
