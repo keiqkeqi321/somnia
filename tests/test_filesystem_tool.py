@@ -451,6 +451,176 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["applied_edits"], 1)
         self.assertEqual(final_content, "one\ntwo updated\n")
 
+    def test_edit_file_indent_tolerant_when_model_over_indents(self) -> None:
+        """Exact match fails because the model gave more leading whitespace than
+        the file; indent-tolerant matching lands on the unique site and rebases
+        new_text onto the file's real indentation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.py"
+            target.write_text("def foo():\n    x = 1\n    return x\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.py",
+                    "edits": [
+                        {
+                            # Model over-indented by 4 spaces.
+                            "old_text": "        x = 1\n        return x",
+                            "new_text": "        x = 2\n        return x + 1",
+                        }
+                    ],
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["applied_edits"], 1)
+        self.assertEqual(
+            final_content, "def foo():\n    x = 2\n    return x + 1\n"
+        )
+
+    def test_edit_file_indent_tolerant_when_model_under_indents(self) -> None:
+        """Model under-indented (no indent at all) but content is unique."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.py"
+            target.write_text("def foo():\n    x = 1\n    return x\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.py",
+                    "edits": [
+                        {
+                            "old_text": "x = 1\nreturn x",
+                            "new_text": "x = 2\nreturn x + 1",
+                        }
+                    ],
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            final_content, "def foo():\n    x = 2\n    return x + 1\n"
+        )
+
+    def test_edit_file_indent_tolerant_preserves_relative_indent(self) -> None:
+        """new_text lines that are deeper than its own base keep their relative
+        structure after rebasing onto the edit site's indentation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.py"
+            target.write_text("def foo():\n    x = 1\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.py",
+                    "edits": [
+                        {
+                            # Model over-indented; new_text adds a nested block.
+                            "old_text": "        x = 1",
+                            "new_text": "        x = 1\n            y = 2",
+                        }
+                    ],
+                },
+            )
+            final_content = target.read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            final_content, "def foo():\n    x = 1\n        y = 2\n"
+        )
+
+    def test_edit_file_reports_ambiguity_on_multiple_exact_matches(self) -> None:
+        """old_text occurs more than once: refuse to silently edit the first,
+        report ambiguity instead. The file must not be modified."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            target.write_text("dup\ndup\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.txt",
+                    "edits": [{"old_text": "dup", "new_text": "unique"}],
+                },
+            )
+
+            self.assertIsInstance(result, str)
+            self.assertIn("Text not found for edits[1]", result)
+            self.assertIn("matches 2 times", result)
+            # Ambiguity must not mutate the file.
+            self.assertEqual(target.read_text(encoding="utf-8"), "dup\ndup\n")
+
+    def test_edit_file_reports_ambiguity_on_multiple_indent_matches(self) -> None:
+        """Exact match fails, indent-tolerant matching finds several sites:
+        report ambiguity, do not edit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.txt"
+            # Two "a" lines with different indentation -> tolerant match hits both.
+            target.write_text("    a\n  a\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+            result = edit_file(
+                ctx,
+                {
+                    "path": "demo.txt",
+                    # Tab vs spaces: exact miss, tolerant match is ambiguous.
+                    "edits": [{"old_text": "\ta", "new_text": "b"}],
+                },
+            )
+
+            self.assertIsInstance(result, str)
+            self.assertIn("Text not found for edits[1]", result)
+            self.assertIn("ambiguous", result)
+            self.assertIn("2 candidates", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "    a\n  a\n")
+
     def test_read_file_updates_active_file_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1549,6 +1719,69 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result["error_type"], "content_not_found")
         self.assertEqual(result["tool_name"], "edit_file")
         self.assertIn("Text not found for edits[1]", result["message"])
+
+    def test_tool_registry_classifies_indent_tolerant_miss_as_content_not_found(self) -> None:
+        """When both exact and indent-tolerant matching fail, the error must
+        still classify as content_not_found so downstream behavior is unchanged."""
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="edit_file",
+                description="Replace exact text in one or more files.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "old_text": {"type": "string"},
+                                    "new_text": {"type": "string"},
+                                },
+                                "required": ["old_text", "new_text"],
+                            },
+                        },
+                    },
+                    "required": ["edits"],
+                },
+                handler=edit_file,
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "demo.py"
+            target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=SimpleNamespace(pending_file_changes=[]),
+            )
+
+            result = registry.execute(
+                ctx,
+                "edit_file",
+                {
+                    "path": "demo.py",
+                    "edits": [
+                        {
+                            "old_text": "no such line anywhere",
+                            "new_text": "replacement",
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_type"], "content_not_found")
+        self.assertIn("Text not found for edits[1]", result["message"])
+        self.assertIn("both failed", result["message"])
 
     def test_tool_registry_keeps_real_missing_file_as_file_not_found(self) -> None:
         registry = ToolRegistry()

@@ -1334,6 +1334,128 @@ def _snippet_anchor_candidates(text: str, *, limit: int = 3) -> list[str]:
     return [compact[:120]]
 
 
+def _normalize_line_tokens(text: str) -> str:
+    """Collapse all whitespace (leading indent, internal runs) to single spaces.
+
+    Used for indent-tolerant comparison so leading-indent / tab-vs-space
+    differences do not block a match. Internal structure is intentionally
+    flattened: only the content tokens are compared.
+    """
+    return " ".join(text.split())
+
+
+def _find_indent_tolerant_matches(haystack: str, needle: str) -> list[int]:
+    """Return 0-based start line numbers where ``needle`` matches ``haystack``
+    once indent and internal whitespace are normalized per line.
+
+    Matching is over *consecutive* normalized line sequences. An all-blank
+    ``needle`` (or empty) yields no candidates to avoid spurious matches. The
+    caller decides what to do with 0 / 1 / >1 candidates.
+    """
+    needle_lines = needle.splitlines()
+    hay_lines = haystack.splitlines()
+    if not needle_lines:
+        return []
+    norm_needle = [_normalize_line_tokens(line) for line in needle_lines]
+    # All-blank needle would match arbitrary blank runs; refuse it.
+    if all(not line for line in norm_needle):
+        return []
+    norm_hay = [_normalize_line_tokens(line) for line in hay_lines]
+
+    n_needle = len(norm_needle)
+    n_hay = len(norm_hay)
+    if n_needle > n_hay:
+        return []
+
+    matches: list[int] = []
+    for start in range(n_hay - n_needle + 1):
+        if norm_hay[start : start + n_needle] == norm_needle:
+            matches.append(start)
+    return matches
+
+
+def _leading_whitespace(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _common_leading_whitespace(lines: list[str]) -> str:
+    """Longest whitespace prefix common to all non-empty lines."""
+    indents = [_leading_whitespace(line) for line in lines if line.strip()]
+    if not indents:
+        return ""
+    common = indents[0]
+    for indent in indents[1:]:
+        # Per-character shrink so partial space/tab mismatches trim, not zero out.
+        limit = min(len(common), len(indent))
+        i = 0
+        while i < limit and common[i] == indent[i]:
+            i += 1
+        common = common[:i]
+        if not common:
+            break
+    return common
+
+
+def _realign_new_text(new_text: str, target_indent: str) -> str:
+    """Re-base ``new_text`` indentation onto ``target_indent``.
+
+    Strips the new_text's own common leading whitespace, then prefixes
+    ``target_indent`` to each line, so deeper-than-base relative structure
+    inside new_text is preserved while the base indent matches the edit site.
+    Trailing newline (if any) is preserved.
+    """
+    new_lines = new_text.splitlines()
+    if not new_lines:
+        return new_text
+    base = _common_leading_whitespace(new_lines)
+    realigned = []
+    for line in new_lines:
+        if line.startswith(base):
+            line = line[len(base):]
+        realigned.append((target_indent + line) if line.strip() else line.rstrip())
+    result = "\n".join(realigned)
+    if new_text.endswith("\n"):
+        result += "\n"
+    return result
+
+
+def _apply_indent_tolerant_replacement(
+    haystack: str, needle: str, new_text: str, start_line: int
+) -> str:
+    """Splice ``new_text`` (already realigned by the caller) over the
+    normalized-match line span at ``start_line``.
+
+    ``haystack`` is raw text (LF-normalized by the caller). The replaced line
+    span is ``len(needle.splitlines())`` rows starting at ``start_line``.
+    Surrounding lines keep their original bytes (via ``splitlines(keepends=True)``);
+    the spliced block borrows the original block's trailing newline style.
+    """
+    hay_lines = haystack.splitlines(keepends=True)
+    needle_line_count = len(needle.splitlines())
+
+    head = hay_lines[:start_line]
+    tail = hay_lines[start_line + needle_line_count:]
+
+    # Borrow the trailing newline style from the original replaced block's last line.
+    block_end_idx = start_line + needle_line_count - 1
+    block_nl = ""
+    if 0 <= block_end_idx < len(hay_lines):
+        orig_end = hay_lines[block_end_idx]
+        if orig_end.endswith("\r\n"):
+            block_nl = "\r\n"
+        elif orig_end.endswith("\n"):
+            block_nl = "\n"
+
+    body = new_text.removesuffix("\r\n").removesuffix("\n")
+    parts = body.split("\n")
+    spliced: list[str] = []
+    for part in parts[:-1]:
+        spliced.append(part + block_nl)
+    spliced.append(parts[-1] + block_nl)
+
+    return "".join(head + spliced + tail)
+
+
 def _render_updated_content_snippet(
     text: str,
     *,
@@ -1507,9 +1629,47 @@ def edit_file(ctx: Any, payload: dict[str, Any]) -> dict[str, Any] | str:
             old_text = replacement["old_text"]
             new_text = replacement["new_text"]
             source_index = int(replacement["source_index"])
-            if old_text not in updated:
-                return f"Error: Text not found for edits[{source_index}] in {target_path}"
-            updated = updated.replace(old_text, new_text, 1)
+            match_count = updated.count(old_text)
+            if match_count == 1:
+                # Exact, unique match: the fast, fully-predictable path.
+                updated = updated.replace(old_text, new_text, 1)
+            elif match_count > 1:
+                # Refuse to silently pick the first of several: that is how
+                # edits land on the wrong location. Ask for more context.
+                return (
+                    f"Error: Text not found for edits[{source_index}] in {target_path}"
+                    f" (old_text matches {match_count} times; add more surrounding"
+                    f" lines to make it unique)"
+                )
+            else:
+                # Exact miss: try indent-tolerant matching as a safety net so a
+                # leading-whitespace mismatch does not force a full retry.
+                candidates = _find_indent_tolerant_matches(updated, old_text)
+                if len(candidates) == 1:
+                    start_line = candidates[0]
+                    hay_lines = updated.splitlines(keepends=True)
+                    matched_first = (
+                        hay_lines[start_line] if start_line < len(hay_lines) else ""
+                    )
+                    target_indent = _leading_whitespace(
+                        matched_first.rstrip("\n").rstrip("\r")
+                    )
+                    realigned_new = _realign_new_text(new_text, target_indent)
+                    updated = _apply_indent_tolerant_replacement(
+                        updated, old_text, realigned_new, start_line
+                    )
+                    new_text = realigned_new
+                elif len(candidates) > 1:
+                    return (
+                        f"Error: Text not found for edits[{source_index}] in {target_path}"
+                        f" (indent-tolerant match is ambiguous, {len(candidates)}"
+                        f" candidates; add more surrounding lines to make it unique)"
+                    )
+                else:
+                    return (
+                        f"Error: Text not found for edits[{source_index}] in {target_path}"
+                        f" (exact and indent-tolerant match both failed)"
+                    )
             snippet_anchors.extend(_snippet_anchor_candidates(new_text))
 
         path.write_text(updated, encoding="utf-8")
