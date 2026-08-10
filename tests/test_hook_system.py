@@ -19,6 +19,7 @@ from open_somnia.config.models import (
     StorageSettings,
 )
 from open_somnia.config.settings import load_settings
+from open_somnia.hooks.notify_user import build_notification
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.messages import AssistantTurn
 from open_somnia.tools.registry import ToolDefinition
@@ -809,6 +810,67 @@ class HookSystemTests(unittest.TestCase):
         self.assertEqual(payload["choice_payload"]["current_mode"], "plan")
         self.assertEqual(payload["choice_payload"]["target_mode"], "accept_edits")
         self.assertEqual(payload["options"], ["accept_edits", "plan"])
+
+    def test_user_choice_requested_hook_runs_for_question_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            output_path = root / "user_choice_question.json"
+            script_path = self._write_script(
+                root / "record_user_choice_question.py",
+                """
+                import json
+                import pathlib
+                import sys
+
+                payload = json.load(sys.stdin)
+                pathlib.Path(sys.argv[1]).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                """,
+            )
+            settings = self._make_settings(
+                root,
+                hooks=[
+                    HookSettings(
+                        event="UserChoiceRequested",
+                        command=sys.executable,
+                        args=[str(script_path), str(output_path)],
+                    )
+                ],
+            )
+            runtime = OpenAgentRuntime(settings)
+            runtime.ask_user_question_handler = lambda **kwargs: {
+                "status": "answered",
+                "answer": "Option A",
+                "selected_option": "Option A",
+                "reason": "",
+            }
+
+            result = runtime.ask_user_question("Which approach?", ["Option A", "Option B"])
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertIn('"status": "answered"', result)
+        self.assertEqual(payload["event"], "UserChoiceRequested")
+        self.assertEqual(payload["choice_type"], "ask_user_question")
+        self.assertEqual(payload["choice_payload"]["question"], "Which approach?")
+        self.assertEqual(payload["choice_payload"]["options"], ["Option A", "Option B"])
+        self.assertEqual(payload["options"], ["Option A", "Option B", "Custom answer"])
+
+    def test_notify_user_builds_question_notification(self) -> None:
+        title, body = build_notification(
+            {
+                "event": "UserChoiceRequested",
+                "choice_type": "ask_user_question",
+                "choice_payload": {
+                    "question": "Which approach should I take?",
+                    "options": ["Option A", "Option B"],
+                    "allow_custom": True,
+                },
+                "options": ["Option A", "Option B", "Custom answer"],
+            }
+        )
+
+        self.assertEqual(title, "Somnia")
+        self.assertIn("Question from the agent.", body)
+        self.assertIn("Which approach should I take?", body)
 
     def test_turn_failed_hook_runs_when_runtime_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

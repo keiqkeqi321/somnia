@@ -5495,21 +5495,23 @@ function InteractionDecisionCard({
           </button>
         </div>
       ) : isQuestion ? (
-        <div className="decision-actions">
-          {questionOptions.map((option) => (
-            <button
-              key={option}
-              className="action secondary"
-              onClick={() =>
-                void onResolveQuestion(interaction.id, { answer: option, selectedOption: option, status: "answered", reason: "" })
-              }
-              disabled={busy}
-            >
-              {option}
-            </button>
-          ))}
+        <>
+          <div className="decision-actions">
+            {questionOptions.map((option) => (
+              <button
+                key={option}
+                className="action secondary"
+                onClick={() =>
+                  void onResolveQuestion(interaction.id, { answer: option, selectedOption: option, status: "answered", reason: "" })
+                }
+                disabled={busy}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
           {allowCustomAnswer ? (
-            <>
+            <div className="decision-actions">
               <input
                 type="text"
                 value={customAnswer}
@@ -5531,23 +5533,9 @@ function InteractionDecisionCard({
               >
                 {t("decision.submitAnswer")}
               </button>
-            </>
+            </div>
           ) : null}
-          <button
-            className="action danger"
-            onClick={() =>
-              void onResolveQuestion(interaction.id, {
-                answer: "",
-                selectedOption: null,
-                status: "cancelled",
-                reason: t("decision.cancelQuestionReason"),
-              })
-            }
-            disabled={busy}
-          >
-            {t("decision.cancelQuestion")}
-          </button>
-        </div>
+        </>
       ) : (
         <div className="decision-actions">
           <button className="action primary" onClick={() => void onResolveModeSwitch(interaction, true)} disabled={busy}>

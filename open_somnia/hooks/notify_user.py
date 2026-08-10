@@ -58,6 +58,12 @@ def build_notification(payload: dict[str, object]) -> tuple[str, str]:
             if reason:
                 body += f" {reason}"
             return stable_preview(APP_NAME, limit=TITLE_LIMIT), stable_preview(body, limit=BODY_LIMIT)
+        if choice_type == "ask_user_question":
+            question = stable_preview(str(choice_payload.get("question", "")).strip(), limit=140)
+            body = "Question from the agent."
+            if question:
+                body += f" {question}"
+            return stable_preview(APP_NAME, limit=TITLE_LIMIT), stable_preview(body, limit=BODY_LIMIT)
         return stable_preview(APP_NAME, limit=TITLE_LIMIT), "Action required."
     if event == "TurnFailed":
         error_type = stable_preview(str(payload.get("error_type", "")).strip(), limit=48)

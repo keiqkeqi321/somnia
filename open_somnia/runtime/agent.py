@@ -653,6 +653,24 @@ class OpenAgentRuntime:
         handler = self.ask_user_question_handler
         if not callable(handler):
             return "ask_user_question failed: interactive questions are unavailable in this session."
+        try:
+            hook_manager = self._hook_manager()
+        except Exception:
+            hook_manager = None
+        if hook_manager is not None:
+            hook_manager.on_user_choice_requested(
+                session=None,
+                trace_id=None,
+                actor="lead",
+                execution_mode=getattr(self, "execution_mode", DEFAULT_EXECUTION_MODE),
+                choice_type="ask_user_question",
+                choice_payload={
+                    "question": normalized_question,
+                    "options": list(normalized_options),
+                    "allow_custom": bool(allow_custom),
+                },
+                options=list(normalized_options) + (["Custom answer"] if allow_custom else []),
+            )
         result = handler(
             question=normalized_question,
             options=normalized_options,

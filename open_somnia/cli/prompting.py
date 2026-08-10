@@ -957,9 +957,9 @@ def _build_question_application(
     """Build the inline question widget.
 
     Returns an Application resolving to ("option", value) when an option is
-    confirmed, ("custom", text) when the custom input is submitted, or None
-    on cancel. Extra kwargs are forwarded to Application (tests inject pipe
-    input and dummy output this way).
+    confirmed, or ("custom", text) when the custom input is submitted.
+    Extra kwargs are forwarded to Application (tests inject pipe input and
+    dummy output this way).
     """
     radio_list = RadioList(
         values=[(option, option) for option in options],
@@ -979,9 +979,6 @@ def _build_question_application(
 
     def ok_handler() -> None:
         get_app().exit(result=("option", radio_list.current_value))
-
-    def cancel_handler() -> None:
-        get_app().exit(result=None)
 
     body_items = [
         Label(
@@ -1028,9 +1025,9 @@ def _build_question_application(
             _uncheck_options()
             event.app.layout.focus(text_area)
 
-    help_text = "Move: Up/Down or j/k | OK: Enter | Cancel: Esc"
+    help_text = "Move: Up/Down or j/k | OK: Enter"
     if allow_custom:
-        help_text = "Move: Up/Down (wraps into Custom) | OK: Enter | Cancel: Esc"
+        help_text = "Move: Up/Down (wraps into Custom) | OK: Enter"
     body_items.append(
         Label(
             text=help_text,
@@ -1069,10 +1066,6 @@ def _build_question_application(
         def _confirm(event) -> None:
             ok_handler()
 
-    @bindings.add("escape", eager=True)
-    def _cancel(event) -> None:
-        cancel_handler()
-
     app: Application[tuple[str, str] | None] = Application(
         layout=Layout(dialog),
         key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
@@ -1098,8 +1091,8 @@ def ask_question_interactively(
     widget with a cyclic focus ring: Down past the last option focuses the
     custom input, Down in the input wraps back to the first option, and Up
     walks the ring the other way. Enter on the list confirms the highlighted
-    option, Enter in the input submits the typed text, Esc cancels. The
-    message history stays visible the whole time.
+    option, Enter in the input submits the typed text. The message history
+    stays visible the whole time.
     """
     if not options:
         return None

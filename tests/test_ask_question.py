@@ -74,10 +74,11 @@ class AskQuestionInlineTests(unittest.TestCase):
 
         self.assertEqual(result, ("custom", "my own answer"))
 
-    def test_escape_cancels(self) -> None:
-        result = _drive_question_app([ESCAPE], settle_seconds=1.5)
+    def test_escape_does_not_cancel(self) -> None:
+        # Esc is not a hidden cancel: the question must be answered.
+        result = _drive_question_app([ESCAPE, ENTER], settle_seconds=1.5)
 
-        self.assertIsNone(result)
+        self.assertEqual(result, ("option", "Option A"))
 
     def test_navigation_stops_at_last_option_when_custom_disabled(self) -> None:
         result = _drive_question_app([DOWN, DOWN, ENTER], allow_custom=False)
