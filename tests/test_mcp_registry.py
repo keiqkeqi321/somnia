@@ -94,6 +94,34 @@ class MCPRegistryTests(unittest.TestCase):
         self.assertEqual(tool_registry.registration_warnings, [])
         self.assertEqual(registry.warnings, [])
 
+    def test_failed_tool_registration_closes_client(self) -> None:
+        """A client whose list_tools() fails must be closed, not leaked.
+
+        Regression: a partially-initialized client (live portal thread, SSE
+        stream, httpx client) used to be dropped without close(), so GC tore
+        it down in arbitrary order at interpreter exit — surfacing as
+        "Session termination failed: Cannot send a request, as the client
+        has been closed."
+        """
+        registry = MCPRegistry(
+            [SimpleNamespace(name="broken", enabled=True, transport="http", url="http://x", command=None, cwd=None)]
+        )
+        closed: list[bool] = []
+
+        class _FailingClient:
+            def list_tools(self):
+                raise RuntimeError("API key authentication required in HTTP mode")
+
+            def close(self):
+                closed.append(True)
+
+        with patch("open_somnia.mcp.registry.MCPClient", return_value=_FailingClient()):
+            registry.register_tools(ToolRegistry())
+
+        self.assertEqual(closed, [True])
+        self.assertNotIn("broken", registry.clients)
+        self.assertIn("broken", registry.errors)
+
 
 class MCPToolFilterTests(unittest.TestCase):
     def _register(self, server: MCPServerSettings) -> tuple[MCPRegistry, ToolRegistry]:

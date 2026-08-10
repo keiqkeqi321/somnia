@@ -3045,8 +3045,16 @@ class OpenAgentRuntime:
         if last_error is None:
             raise RuntimeError("Provider call failed.")
         if attempts <= 1:
-            raise RuntimeError(f"Provider call failed: {last_error}")
-        raise RuntimeError(f"Provider call failed after {attempts} attempts: {last_error}")
+            message = f"Provider call failed: {last_error}"
+        else:
+            message = f"Provider call failed after {attempts} attempts: {last_error}"
+        if isinstance(last_error, ProviderError):
+            raise ProviderError(
+                message,
+                retryable=getattr(last_error, "retryable", True),
+                kind=getattr(last_error, "kind", "other"),
+            ) from last_error
+        raise RuntimeError(message)
 
     def _wait_before_provider_retry(self, should_interrupt=None) -> None:
         delay_seconds = max(0.0, float(getattr(self, "PROVIDER_RETRY_DELAY_SECONDS", 0.0) or 0.0))

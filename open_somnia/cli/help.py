@@ -38,8 +38,13 @@ OPTION_DESCRIPTIONS: dict[str, str] = {
     "-c": "Continue the latest saved chat in this workspace.",
     "-version": "Show the installed somnia version and exit.",
     "-help": "Show the somnia command overview, or detailed help for one command: -help <topic>.",
-    "--json": "Emit help output as JSON (machine readable).",
-    "--session": "Only include provider payloads for this session ID.",
+    "--json": "Emit machine-readable JSON on stdout (and structured JSON errors on stderr where supported).",
+    "--session": "Resume the saved session with this ID (chat/run); for traceviewer, only include provider payloads for this session ID.",
+    "--continue-last": "Continue the latest saved session in this workspace.",
+    "--plain": "Plain output: no ANSI styling and no bullet prefix (ideal for pipes).",
+    "-f": "Read prompt text from this file (combined with the prompt argument and piped stdin).",
+    "--global": "Use the global config file (~/.open_somnia/open_somnia.toml).",
+    "--project": "Use the workspace config file (.open_somnia/open_somnia.toml).",
     "--limit": "Only include the latest N matching provider payloads.",
     "--output": "Write the HTML report to this path instead of the default provider payload log directory.",
 }
@@ -67,38 +72,101 @@ CLI_COMMANDS: list[CommandSpec] = [
     CommandSpec(
         name="chat",
         description="Start interactive chat mode.",
-        usage="somnia chat [-r | -c] [--provider <name>] [--model <name>]",
+        usage="somnia chat [-r | -c | --session <id>] [--provider <name>] [--model <name>]",
         detail=(
             "Launches the interactive REPL. With -r (or -resume) an interactive "
             "session picker lets you resume a saved chat; with -c the latest saved "
-            "chat in this workspace is continued automatically. Inside the REPL, "
-            "slash commands (see /help) expose the full runtime: tools, tasks, "
-            "teammates, MCP servers, hooks, checkpoints, and background jobs."
+            "chat in this workspace is continued automatically; with --session <id> "
+            "a saved session is resumed directly by ID (no picker, script-friendly). "
+            "Inside the REPL, slash commands (see /help) expose the full runtime: "
+            "tools, tasks, teammates, MCP servers, hooks, checkpoints, and "
+            "background jobs."
         ),
         section="cli",
-        options=("-r", "-c", "--provider", "--model"),
+        options=("-r", "-c", "--session", "--provider", "--model"),
         examples=(
             "somnia chat",
             "somnia chat -r",
+            "somnia chat --session 6b466a6d6a78",
             "somnia chat -c --provider anthropic",
         ),
     ),
     CommandSpec(
         name="run",
-        description="Run a single prompt.",
-        usage="somnia run <prompt> [--provider <name>] [--model <name>]",
+        description="Run a single prompt and exit.",
+        usage="somnia run [prompt] [-f <path>] [--session <id> | --continue-last] [--json] [--plain] [--provider <name>] [--model <name>]",
         detail=(
             "Executes one prompt non-interactively and streams the assistant reply "
-            "to stdout. Exit code 0 means the turn completed; a non-zero exit code "
-            "signals a setup or runtime failure. This is the primary entry point "
-            "for scripting and for other agents that want to delegate a single "
-            "question to Somnia."
+            "to stdout. The prompt comes from the argument, -f/--file, and/or piped "
+            "stdin (combined in that order), so `cat file.py | somnia run \"review "
+            "this\"` works. --session/--continue-last continue a saved session by ID "
+            "without any picker. --json prints one JSON envelope on stdout with "
+            "session_id, status, text, per-turn usage (tokens), provider, model, and "
+            "duration_ms; failures print a structured error object on stderr. "
+            "--plain strips the bullet prefix and all ANSI styling. Exit codes: 0 "
+            "ok, 1 internal error, 2 quota exceeded, 3 auth failed, 4 model error, "
+            "5 timeout, 6 session not found, 7 config error, 64 usage error."
         ),
         section="cli",
-        options=("--provider", "--model"),
+        options=("--session", "--continue-last", "--json", "--plain", "-f", "--provider", "--model"),
         examples=(
             'somnia run "Summarize the open tasks"',
             'somnia run --model gpt-5 "Refactor the parser module"',
+            'cat diff.patch | somnia run "Review this diff" --json',
+            'somnia run -f prompt.txt --session 6b466a6d6a78 --json',
+        ),
+    ),
+    CommandSpec(
+        name="sessions",
+        description="Inspect saved sessions non-interactively.",
+        usage="somnia sessions list [--json]",
+        detail=(
+            "Lists saved sessions for this workspace (id, timestamps, preview, "
+            "token usage) without opening the interactive picker. Does not require "
+            "a configured provider and never connects to MCP servers. Pair with "
+            "`somnia run --session <id>` to continue a session from a script."
+        ),
+        section="cli",
+        options=("--json",),
+        examples=(
+            "somnia sessions list",
+            "somnia sessions list --json",
+        ),
+    ),
+    CommandSpec(
+        name="config",
+        description="Read or modify configuration non-interactively.",
+        usage="somnia config get <key> [--global|--project] [--json] | somnia config set <key> <value> [--global|--project]",
+        detail=(
+            "Gets or sets config values by dotted key (e.g. providers.default, "
+            "agent.name). get reads the merged view by default; set writes the "
+            "global config unless --project is given. Values are parsed as TOML "
+            "literals when possible (true, 42, [\"a\"]) and as strings otherwise. "
+            "Array-of-tables sections (hooks) cannot be edited with set."
+        ),
+        section="cli",
+        options=("--global", "--project", "--json"),
+        examples=(
+            "somnia config get providers.default",
+            "somnia config set providers.default myprovider",
+            "somnia config set agent.name my-agent --project",
+        ),
+    ),
+    CommandSpec(
+        name="capabilities",
+        description="List available tools, models, and MCP servers.",
+        usage="somnia capabilities [--json] [--provider <name>] [--model <name>]",
+        detail=(
+            "Reports the somnia version, active provider/model, configured "
+            "providers, every registered tool (name + description), and MCP server "
+            "status. Lets a calling agent probe what this installation can do "
+            "before delegating work."
+        ),
+        section="cli",
+        options=("--json", "--provider", "--model"),
+        examples=(
+            "somnia capabilities",
+            "somnia capabilities --json",
         ),
     ),
     CommandSpec(
@@ -132,13 +200,16 @@ CLI_COMMANDS: list[CommandSpec] = [
     CommandSpec(
         name="doctor",
         description="Validate runtime configuration.",
-        usage="somnia doctor [--provider <name>] [--model <name>]",
+        usage="somnia doctor [--json] [--provider <name>] [--model <name>]",
         detail=(
             "Runs configuration diagnostics (providers, storage, hooks, MCP, and "
-            "runtime wiring) and prints a human-readable validation report."
+            "runtime wiring). Default output is a human-readable report; --json "
+            "emits the same checks as structured data. Exits 0 when healthy, 7 "
+            "when no provider or API key is configured, so health checks can be "
+            "scripted."
         ),
         section="cli",
-        options=("--provider", "--model"),
+        options=("--json", "--provider", "--model"),
     ),
     CommandSpec(
         name="trace",
@@ -170,14 +241,17 @@ CLI_COMMANDS: list[CommandSpec] = [
     CommandSpec(
         name="providers",
         description="Add or edit shared provider profiles.",
-        usage="somnia providers",
+        usage="somnia providers | somnia providers list [--json]",
         detail=(
             "Interactively adds or edits shared provider profiles in the global "
-            "config. Requires a TTY; in non-interactive contexts edit the global "
-            "config file directly (see `somnia doctor`) instead."
+            "config (requires a TTY). `somnia providers list` is the "
+            "non-interactive counterpart: it prints every profile with API keys "
+            "masked to a configured yes/no flag. For scripted edits use "
+            "`somnia config set providers.<name>.<key> <value>`."
         ),
         section="cli",
-        examples=("somnia providers",),
+        options=("--json",),
+        examples=("somnia providers", "somnia providers list --json"),
     ),
     CommandSpec(
         name="help",

@@ -472,12 +472,40 @@ def _openai_exception_retryable(exc: Exception) -> bool:
     return True
 
 
+def _openai_exception_kind(exc: Exception) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        if status_code in {401, 403}:
+            return "auth"
+        if status_code == 429:
+            return "quota"
+        if status_code == 408:
+            return "timeout"
+        if status_code in {400, 404, 422}:
+            return "model"
+
+    type_name = type(exc).__name__.lower()
+    if "authenticationerror" in type_name or "permissiondeniederror" in type_name:
+        return "auth"
+    if "ratelimiterror" in type_name:
+        return "quota"
+    if "apitimeouterror" in type_name:
+        return "timeout"
+    if "badrequesterror" in type_name or "notfounderror" in type_name:
+        return "model"
+    message = str(exc).lower()
+    if "timed out" in message or "timeout" in message:
+        return "timeout"
+    return "other"
+
+
 def _wrap_openai_exception(exc: Exception) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
     return ProviderError(
         f"OpenAI request failed: {exc}",
         retryable=_openai_exception_retryable(exc),
+        kind=_openai_exception_kind(exc),
     )
 
 
@@ -701,10 +729,15 @@ class OpenAIProvider(LLMProvider):
             raise ProviderError(
                 f"OpenAI request failed: {exc.status_code} {details}",
                 retryable=retryable,
+                kind=_openai_exception_kind(exc),
             ) from exc
         except (APIConnectionError, APITimeoutError) as exc:
-            retryable = isinstance(getattr(exc, "__cause__", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()
-            raise ProviderError(f"OpenAI request failed: {exc}", retryable=retryable) from exc
+            is_timeout = isinstance(getattr(exc, "__cause__", None), TimeoutError | socket.timeout) or "timed out" in str(exc).lower()
+            raise ProviderError(
+                f"OpenAI request failed: {exc}",
+                retryable=is_timeout,
+                kind="timeout" if is_timeout else "other",
+            ) from exc
         except Exception as exc:
             raise _wrap_openai_exception(exc) from exc
 

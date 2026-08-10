@@ -10,9 +10,10 @@ from open_somnia.runtime.messages import AssistantTurn, NormalizedMessage
 class ProviderError(RuntimeError):
     """Raised when a provider request fails."""
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    def __init__(self, message: str, *, retryable: bool = True, kind: str = "other") -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.kind = kind
 
 
 TextCallback = Callable[[str], None]

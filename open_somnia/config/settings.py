@@ -7,6 +7,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from open_somnia.config.backup import (
     restore_last_good,
@@ -513,6 +514,53 @@ def persist_provider_profile(
     _upsert_section_value(lines, provider_section, "base_url", _toml_string(normalized_base_url))
     write_config_text(config_path, "\n".join(lines) + "\n")
     _ensure_global_builtin_notify_hooks(config_path=config_path)
+    return config_path
+
+
+def get_config_value(raw_config: dict, dotted_key: str) -> Any:
+    """Walk ``raw_config`` along a dotted key such as ``providers.default``.
+
+    Raises KeyError when any path segment is missing or a non-dict node is hit.
+    """
+    node: Any = raw_config
+    for part in str(dotted_key).split("."):
+        if not isinstance(node, dict) or part not in node:
+            raise KeyError(dotted_key)
+        node = node[part]
+    return node
+
+
+def set_config_value(config_path: Path, dotted_key: str, raw_value: str) -> Path:
+    """Set ``dotted_key`` (section path + key, e.g. ``agent.name``) in ``config_path``.
+
+    ``raw_value`` is interpreted as a TOML literal when possible (``true``,
+    ``42``, ``["a", "b"]``, ``"quoted"``) and falls back to a plain string
+    otherwise. Only standard ``[section]`` tables are supported; array-of-table
+    roots such as ``hooks`` are rejected. Writes go through write_config_text so
+    the timestamped backup / atomic-write invariant is preserved.
+    """
+    parts = [part.strip() for part in str(dotted_key).split(".") if part.strip()]
+    if len(parts) < 2:
+        raise ValueError(f"Config key '{dotted_key}' must name a section and a key (e.g. 'agent.name').")
+    if parts[0] == "hooks":
+        raise ValueError("Config key 'hooks' uses array-of-tables ([[hooks]]) and cannot be edited with config set.")
+    section = ".".join(parts[:-1])
+    key = parts[-1]
+
+    candidate = str(raw_value).strip()
+    if candidate:
+        try:
+            tomllib.loads(f"__value__ = {candidate}")
+            rendered = candidate
+        except tomllib.TOMLDecodeError:
+            rendered = _toml_string(str(raw_value))
+    else:
+        rendered = _toml_string("")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+    _upsert_section_value(lines, section, key, rendered)
+    write_config_text(config_path, "\n".join(lines) + "\n")
     return config_path
 
 

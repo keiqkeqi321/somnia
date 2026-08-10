@@ -53,6 +53,7 @@ class TurnRunResult:
     open_todo_count: int = 0
     interrupted: bool = False
     error: str | None = None
+    error_kind: str | None = None
 
 
 class TurnHandle:

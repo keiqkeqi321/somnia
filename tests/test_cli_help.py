@@ -59,7 +59,7 @@ class HelpRenderingTests(unittest.TestCase):
 
     def test_detail_includes_usage_options_examples(self) -> None:
         text = render_detail(lookup("run"))
-        self.assertIn("somnia run <prompt>", text)
+        self.assertIn("somnia run [prompt]", text)
         self.assertIn("--provider", text)
         self.assertIn("Examples:", text)
 
@@ -142,7 +142,7 @@ class HelpCliTests(unittest.TestCase):
         with redirect_stdout(stream):
             status = main(["-help", "run"])
         self.assertEqual(status, 0)
-        self.assertIn("somnia run <prompt>", stream.getvalue())
+        self.assertIn("somnia run [prompt]", stream.getvalue())
 
     def test_main_help_subcommand_dispatches(self) -> None:
         stream = io.StringIO()

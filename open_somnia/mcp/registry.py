@@ -176,6 +176,7 @@ class MCPRegistry:
                 self.warnings.append(
                     f"Duplicate MCP server name '{server.name}': tools from the earlier entry are replaced by the later one."
                 )
+            client: MCPClient | None = None
             try:
                 client = MCPClient(server)
                 tools = client.list_tools()
@@ -183,6 +184,17 @@ class MCPRegistry:
                 self.server_tools[server.name] = [tool["name"] for tool in tools]
                 self.server_tool_details[server.name] = list(tools)
             except Exception as exc:
+                # The client may be partially initialized (live portal thread,
+                # SSE stream, httpx client) even though tool registration
+                # failed. Close it here or it leaks and gets torn down by GC
+                # in arbitrary order at interpreter exit — which surfaces as
+                # "Session termination failed: Cannot send a request, as the
+                # client has been closed." from the streamable-http teardown.
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
                 self.errors[server.name] = str(exc)
                 continue
             self._register_server_tool_definitions(registry, server.name, tools)

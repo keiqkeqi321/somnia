@@ -3,10 +3,21 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 from pathlib import Path
 
 from open_somnia import __version__
+from open_somnia.cli.scripting import (
+    EXIT_CONFIG_ERROR,
+    EXIT_INTERNAL_ERROR,
+    EXIT_USAGE_ERROR,
+    CliError,
+    emit_error_json,
+    error_code_for_kind,
+    exit_code_for_error_kind,
+)
 from open_somnia.config.settings import (
+    ConfigParseError,
     NoConfiguredProvidersError,
     NoUsableProvidersError,
     global_config_path,
@@ -14,7 +25,17 @@ from open_somnia.config.settings import (
     persist_initial_provider_setup,
     persist_provider_profile,
 )
+from open_somnia.providers.base import ProviderError
 from open_somnia.runtime.agent import OpenAgentRuntime
+
+
+class SomniaArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that exits with the documented usage-error code (64)."""
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_USAGE_ERROR, f"{self.prog}: error: {message}\n")
+
 
 _COMMAND_FLAG_ALIASES = {
     "-trace": "trace",
@@ -53,6 +74,34 @@ def _add_provider_overrides(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_json_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Emit machine-readable JSON on stdout (and structured JSON errors on stderr).",
+    )
+
+
+def _add_session_scope_flags(parser: argparse.ArgumentParser, *, default: str) -> None:
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
+        "--global",
+        dest="scope",
+        action="store_const",
+        const="global",
+        default=default,
+        help="Use the global config file (~/.open_somnia/open_somnia.toml).",
+    )
+    scope_group.add_argument(
+        "--project",
+        dest="scope",
+        action="store_const",
+        const="project",
+        help="Use the workspace config file (.open_somnia/open_somnia.toml).",
+    )
+
+
 def _normalize_command_aliases(argv: list[str] | None) -> list[str]:
     args = list(sys.argv[1:] if argv is None else argv)
     command_seen = False
@@ -79,7 +128,7 @@ def _normalize_command_aliases(argv: list[str] | None) -> list[str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="somnia")
+    parser = SomniaArgumentParser(prog="somnia")
     parser.add_argument(
         "-version",
         "--version",
@@ -121,8 +170,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue the latest saved chat in this workspace.",
     )
+    session_group.add_argument(
+        "--session",
+        dest="session_id",
+        default=None,
+        metavar="ID",
+        help="Resume the saved session with this ID (skips the interactive picker).",
+    )
     _add_provider_overrides(parser)
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", parser_class=SomniaArgumentParser)
 
     chat_parser = subparsers.add_parser("chat", help="Start interactive chat mode.")
     chat_session_group = chat_parser.add_mutually_exclusive_group()
@@ -141,15 +197,80 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue the latest saved chat in this workspace.",
     )
+    chat_session_group.add_argument(
+        "--session",
+        dest="session_id",
+        default=None,
+        metavar="ID",
+        help="Resume the saved session with this ID (skips the interactive picker).",
+    )
     _add_provider_overrides(chat_parser)
 
-    run_parser = subparsers.add_parser("run", help="Run a single prompt.")
-    run_parser.add_argument("prompt", help="Prompt to execute.")
+    run_parser = subparsers.add_parser("run", help="Run a single prompt and exit.")
+    run_parser.add_argument(
+        "prompt",
+        nargs="?",
+        default=None,
+        help="Prompt to execute. May be omitted when -f/--file or piped stdin supplies the prompt.",
+    )
+    run_parser.add_argument(
+        "-f",
+        "--file",
+        dest="file",
+        default=None,
+        metavar="PATH",
+        help="Read prompt text from this file (combined with the prompt argument and piped stdin).",
+    )
+    run_session_group = run_parser.add_mutually_exclusive_group()
+    run_session_group.add_argument(
+        "--session",
+        dest="session_id",
+        default=None,
+        metavar="ID",
+        help="Continue the saved session with this ID (skips the interactive picker).",
+    )
+    run_session_group.add_argument(
+        "--continue-last",
+        dest="continue_last",
+        action="store_true",
+        help="Continue the latest saved session in this workspace.",
+    )
+    _add_json_flag(run_parser)
+    run_parser.add_argument(
+        "--plain",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Plain output: no ANSI styling and no bullet prefix (ideal for pipes).",
+    )
     _add_provider_overrides(run_parser)
+
+    sessions_parser = subparsers.add_parser("sessions", help="Inspect saved sessions non-interactively.")
+    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command", required=True, parser_class=SomniaArgumentParser)
+    sessions_list_parser = sessions_subparsers.add_parser("list", help="List saved sessions.")
+    _add_json_flag(sessions_list_parser)
+
+    config_parser = subparsers.add_parser("config", help="Read or modify configuration non-interactively.")
+    config_subparsers = config_parser.add_subparsers(dest="config_command", required=True, parser_class=SomniaArgumentParser)
+    config_get_parser = config_subparsers.add_parser("get", help="Get a config value by dotted key (e.g. providers.default).")
+    config_get_parser.add_argument("key", help="Dotted config key to read.")
+    _add_session_scope_flags(config_get_parser, default="merged")
+    _add_json_flag(config_get_parser)
+    config_set_parser = config_subparsers.add_parser("set", help="Set a config value by dotted key (default scope: --global).")
+    config_set_parser.add_argument("key", help="Dotted config key to write (e.g. agent.name).")
+    config_set_parser.add_argument(
+        "value",
+        help="Value as a TOML literal (true, 42, [\"a\", \"b\"]) or plain string.",
+    )
+    _add_session_scope_flags(config_set_parser, default="global")
+    _add_json_flag(config_set_parser)
+
+    capabilities_parser = subparsers.add_parser("capabilities", help="List available tools, models, and MCP servers.")
+    _add_json_flag(capabilities_parser)
+    _add_provider_overrides(capabilities_parser)
 
     tasks_parser = subparsers.add_parser("tasks", help="Inspect persistent tasks.")
     _add_provider_overrides(tasks_parser)
-    tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command", required=True)
+    tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command", required=True, parser_class=SomniaArgumentParser)
     tasks_subparsers.add_parser("list", help="List tasks.")
     get_parser = tasks_subparsers.add_parser("get", help="Get a task by ID.")
     get_parser.add_argument("task_id", type=int)
@@ -157,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     compact_parser = subparsers.add_parser("compact", help="Compact the latest session.")
     _add_provider_overrides(compact_parser)
     doctor_parser = subparsers.add_parser("doctor", help="Validate runtime configuration.")
+    _add_json_flag(doctor_parser)
     _add_provider_overrides(doctor_parser)
     trace_start_parser = subparsers.add_parser(
         "trace",
@@ -184,6 +306,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue the latest saved chat in this workspace.",
     )
+    trace_start_session_group.add_argument(
+        "--session",
+        dest="session_id",
+        default=None,
+        metavar="ID",
+        help="Resume the saved session with this ID (skips the interactive picker).",
+    )
     _add_provider_overrides(trace_start_parser)
     trace_parser = subparsers.add_parser(
         "traceviewer",
@@ -209,7 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write the HTML report to this path instead of the default provider payload log directory.",
     )
-    subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
+    providers_parser = subparsers.add_parser("providers", help="Add or edit shared provider profiles.")
+    providers_subparsers = providers_parser.add_subparsers(dest="providers_command", parser_class=SomniaArgumentParser)
+    providers_list_parser = providers_subparsers.add_parser("list", help="List configured provider profiles.")
+    _add_json_flag(providers_list_parser)
     help_parser = subparsers.add_parser(
         "help",
         help="Show the somnia intro and all commands, or detailed help for one (alias: -help).",
@@ -260,11 +392,12 @@ def _bootstrap_first_provider() -> bool:
 
 def _manage_providers(workspace: str) -> int:
     if not _can_prompt_interactively():
-        print(
-            f"Provider management is interactive. Edit {global_config_path()} manually or run this command in a TTY.",
-            file=sys.stderr,
+        raise CliError(
+            f"Provider management is interactive. Edit {global_config_path()} manually, "
+            "use 'somnia providers list --json' / 'somnia config set', or run this command in a TTY.",
+            code="usage_error",
+            exit_code=EXIT_USAGE_ERROR,
         )
-        return 2
     try:
         settings = load_settings(workspace)
         profiles = settings.provider_profiles
@@ -301,9 +434,7 @@ def _open_trace_report(settings) -> int:
     return cmd_trace_viewer(settings, open_browser=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(_normalize_command_aliases(argv))
+def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command == "help" or getattr(args, "help_cmd", None) is not None:
         from open_somnia.cli.help import cli_help
 
@@ -311,11 +442,38 @@ def main(argv: list[str] | None = None) -> int:
             topic = getattr(args, "topic", None)
         else:
             topic = args.help_cmd or None
-        return cli_help(topic, as_json=args.json)
+        return cli_help(topic, as_json=bool(getattr(args, "json", False)))
     if args.command == "trace" and args.prompt == "viewer":
         parser.error("Use 'somnia traceviewer' to open the trace report.")
-    if args.command == "providers":
+    if args.command == "providers" and getattr(args, "providers_command", None) is None:
         return _manage_providers(args.workspace)
+
+    as_json = bool(getattr(args, "json", False))
+
+    # Commands that only need config/storage state: no provider bootstrap, no
+    # runtime construction (which would eagerly connect MCP servers).
+    if args.command in {"sessions", "providers", "config"}:
+        settings = load_settings(
+            args.workspace,
+            provider_override=getattr(args, "provider", None),
+            model_override=getattr(args, "model", None),
+            allow_missing_provider=True,
+        )
+        from open_somnia.cli.commands import (
+            cmd_config_get,
+            cmd_config_set,
+            cmd_providers_list,
+            cmd_sessions_list,
+        )
+
+        if args.command == "sessions":
+            return cmd_sessions_list(settings, as_json=as_json)
+        if args.command == "providers":
+            return cmd_providers_list(settings, as_json=as_json)
+        if args.config_command == "get":
+            return cmd_config_get(settings, args.key, scope=args.scope, as_json=as_json)
+        return cmd_config_set(settings, args.key, args.value, scope=args.scope, as_json=as_json)
+
     if args.command == "trace-viewer":
         settings = load_settings(
             args.workspace,
@@ -332,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path=args.output,
             open_browser=True,
         )
+
     try:
         settings = load_settings(
             args.workspace,
@@ -340,14 +499,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     except NoConfiguredProvidersError as exc:
         if not _can_prompt_interactively():
-            print(
+            raise CliError(
                 f"{exc}\nCreate your first provider in {global_config_path()} and run the command again.",
-                file=sys.stderr,
-            )
-            return 2
+                code="config_error",
+                exit_code=EXIT_CONFIG_ERROR,
+            ) from exc
         if not _bootstrap_first_provider():
-            print("Provider setup cancelled.", file=sys.stderr)
-            return 1
+            raise CliError("Provider setup cancelled.", code="config_error", exit_code=EXIT_CONFIG_ERROR)
         settings = load_settings(
             args.workspace,
             provider_override=getattr(args, "provider", None),
@@ -358,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = OpenAgentRuntime(settings)
     try:
         from open_somnia.cli.commands import (
+            cmd_capabilities,
             cmd_chat,
             cmd_compact,
             cmd_doctor,
@@ -371,9 +530,18 @@ def main(argv: list[str] | None = None) -> int:
                 runtime,
                 resume=getattr(args, "resume", False),
                 continue_session=getattr(args, "continue_session", False),
+                session_id=getattr(args, "session_id", None),
             )
         if args.command == "run":
-            return cmd_run(runtime, args.prompt)
+            return cmd_run(
+                runtime,
+                args.prompt,
+                file_path=getattr(args, "file", None),
+                session_id=getattr(args, "session_id", None),
+                continue_last=getattr(args, "continue_last", False),
+                as_json=as_json,
+                plain=bool(getattr(args, "plain", False)),
+            )
         if args.command == "trace":
             provider = getattr(settings, "provider", None)
             provider_name = getattr(provider, "name", "unknown")
@@ -394,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
                 runtime,
                 resume=getattr(args, "resume", False),
                 continue_session=getattr(args, "continue_session", False),
+                session_id=getattr(args, "session_id", None),
             )
             if status == 0:
                 return _open_trace_report(settings)
@@ -405,11 +574,70 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "compact":
             return cmd_compact(runtime)
         if args.command == "doctor":
-            return cmd_doctor(runtime)
+            return cmd_doctor(runtime, as_json=as_json)
+        if args.command == "capabilities":
+            return cmd_capabilities(runtime, as_json=as_json)
         parser.error("Unsupported command")
     finally:
         runtime.close()
     return 1
+
+
+def _report_error(
+    code: str,
+    message: str,
+    *,
+    exit_code: int,
+    as_json: bool,
+    exception_type: str | None = None,
+) -> int:
+    if as_json:
+        extra = {"exception_type": exception_type} if exception_type else {}
+        emit_error_json(code, message, **extra)
+    else:
+        print(f"Error: {message}", file=sys.stderr)
+        if os.environ.get("SOMNIA_DEBUG"):
+            traceback.print_exc()
+    return exit_code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(_normalize_command_aliases(argv))
+    as_json = bool(getattr(args, "json", False))
+    try:
+        return _dispatch(args, parser)
+    except CliError as exc:
+        return _report_error(exc.code, str(exc), exit_code=exc.exit_code, as_json=as_json)
+    except ProviderError as exc:
+        kind = getattr(exc, "kind", None)
+        return _report_error(
+            error_code_for_kind(kind),
+            str(exc),
+            exit_code=exit_code_for_error_kind(kind),
+            as_json=as_json,
+            exception_type=type(exc).__name__,
+        )
+    except (NoConfiguredProvidersError, ConfigParseError) as exc:
+        return _report_error(
+            "config_error",
+            str(exc),
+            exit_code=EXIT_CONFIG_ERROR,
+            as_json=as_json,
+            exception_type=type(exc).__name__,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        if os.environ.get("SOMNIA_DEBUG"):
+            raise
+        return _report_error(
+            "internal_error",
+            str(exc) or type(exc).__name__,
+            exit_code=EXIT_INTERNAL_ERROR,
+            as_json=as_json,
+            exception_type=type(exc).__name__,
+        )
 
 
 if __name__ == "__main__":

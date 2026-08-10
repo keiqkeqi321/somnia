@@ -138,6 +138,52 @@ Platform-aware: Unix uses system shell; Windows uses PowerShell. Common Unix com
 
 `somnia -r` opens a session picker. Incomplete sessions (missing user message or assistant reply) are filtered out. `somnia -c` continues the latest session.
 
+## Scriptable CLI (non-interactive)
+
+Every operation has a non-interactive path: given input → deterministic output →
+immediate exit, never waiting for a keypress.
+
+- `somnia sessions list [--json]` — list resumable sessions (no provider needed,
+  no MCP connections). Pair with `somnia run --session <id> "..."` or
+  `--continue-last` to continue a session by ID, skipping the picker.
+  `somnia chat --session <id>` does the same for the REPL.
+- `somnia run [prompt] [-f file]` — prompt may also come from piped stdin
+  (`cat f.py | somnia run "review this"`); argument, file, and stdin text are
+  combined in that order.
+- `somnia providers list [--json]` — list profiles with `api_key_configured`
+  booleans (keys are never printed). `somnia config get/set <key> [value]`
+  (`--global` default for set, `--project` for the workspace file) replaces the
+  interactive `somnia providers` editor; `config set` cannot edit
+  array-of-tables sections (`hooks`).
+- `--json` is accepted by `run`, `doctor`, `sessions list`, `providers list`,
+  `config get/set`, `capabilities`, and `help`. Success JSON goes to stdout;
+  failures print `{"error": {"code": ..., "message": ...}}` on stderr.
+  `run --json` wraps the reply in an envelope with `session_id`, `status`,
+  `text`, per-turn `usage` (tokens), `provider`, `model`, `duration_ms`.
+  `run --plain` strips the bullet prefix and all ANSI styling.
+- `somnia capabilities [--json]` — version, active provider/model, registered
+  tools, and MCP server status, for probing before delegating.
+- `somnia doctor [--json]` — exits 0 when healthy, 7 when no provider/API key.
+
+Exit codes (defined in `open_somnia/cli/scripting.py`, keep in sync):
+
+| Code | Meaning |
+|------|---------|
+| 0 | success |
+| 1 | internal / unclassified error |
+| 2 | quota exceeded / rate limited |
+| 3 | authentication failed |
+| 4 | model error (bad request / not found) |
+| 5 | timeout |
+| 6 | session not found |
+| 7 | config error (no provider, bad TOML, unknown key) |
+| 64 | usage error (bad CLI arguments) |
+
+Provider errors carry a `kind` (`auth`/`quota`/`model`/`timeout`/`other`) from
+the SDK adapters through `ProviderError`; the runtime re-raise preserves it and
+`TurnRunResult.error_kind` exposes it to the CLI. Tracebacks are suppressed
+unless `SOMNIA_DEBUG=1`.
+
 ## Editing Guidance
 
 - Keep tool behavior consistent with REPL UX.

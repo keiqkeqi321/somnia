@@ -615,6 +615,7 @@ class RuntimeHost:
                     status="failed",
                     open_todo_count=_open_todo_count(active_turn.session),
                     error=str(exc),
+                    error_kind=getattr(exc, "kind", None),
                 )
             )
             active_turn.done_event.set()
@@ -695,6 +696,7 @@ class RuntimeHost:
                 status="failed",
                 open_todo_count=_open_todo_count(active_turn.session),
                 error=str(exc),
+                error_kind=getattr(exc, "kind", None),
             )
             self._emit_for_turn(
                 active_turn,

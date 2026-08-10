@@ -134,7 +134,7 @@ class CliResumeTests(unittest.TestCase):
             api_key="sk-test",
             base_url="https://openrouter.ai/api/v1",
         )
-        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False, session_id=None)
 
     def test_main_trace_enables_provider_payload_debug_and_marks_provider(self) -> None:
         settings = SimpleNamespace(
@@ -178,7 +178,7 @@ class CliResumeTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exited:
                 main(["trace", "viewer"])
 
-        self.assertEqual(exited.exception.code, 2)
+        self.assertEqual(exited.exception.code, 64)
 
     def test_main_trace_chat_opens_report_after_exit(self) -> None:
         settings = SimpleNamespace(
@@ -204,7 +204,7 @@ class CliResumeTests(unittest.TestCase):
             result = main(["--workspace", "workspace", "trace"])
 
         self.assertEqual(result, 0)
-        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False, session_id=None)
         mock_open_report.assert_called_once_with(settings)
 
     def test_open_trace_report_opens_browser_viewer(self) -> None:
@@ -248,7 +248,7 @@ class CliResumeTests(unittest.TestCase):
             api_key="sk-ant-test",
             base_url="https://api.anthropic.com",
         )
-        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False)
+        mock_chat.assert_called_once_with(runtime, resume=False, continue_session=False, session_id=None)
 
     def test_main_reports_missing_provider_in_noninteractive_mode(self) -> None:
         with patch("open_somnia.cli.main.load_settings", side_effect=NoConfiguredProvidersError("missing")), patch(
@@ -256,7 +256,7 @@ class CliResumeTests(unittest.TestCase):
         ), patch("sys.stderr", new_callable=io.StringIO):
             result = main([])
 
-        self.assertEqual(result, 2)
+        self.assertEqual(result, 7)
 
     def test_main_providers_command_saves_selected_profile(self) -> None:
         profile = SimpleNamespace(
