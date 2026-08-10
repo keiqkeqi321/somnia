@@ -65,6 +65,8 @@ function relayResultFor(method: string): unknown {
       return contractSetMcpToolEnabledResult;
     case "interaction.resolve_authorization":
       return { resolved: true };
+    case "interaction.resolve_question":
+      return { resolved: true };
     case "tool_log.list":
       return { tool_logs: contractToolLogs };
     case "tool_log.get":
@@ -254,6 +256,7 @@ describe("Remote Somnia Connection", () => {
       connection.setMcpToolEnabled("docs", "fetch", true),
       connection.resolveAuthorization("interaction-1", { scope: "workspace", approved: true, reason: "ok" }),
       connection.resolveModeSwitch("interaction-2", { approved: true, activeMode: "yolo", reason: "" }),
+      connection.resolveQuestion("interaction-3", { answer: "Blue", selectedOption: "Blue", status: "answered", reason: "" }),
       connection.setExecutionMode("yolo"),
       connection.setVisionModel("openai", "vision-test", "user"),
       connection.listTasks(),
@@ -272,6 +275,7 @@ describe("Remote Somnia Connection", () => {
       ["mcp.set_tool_enabled", { name: "docs", tool: "fetch", enabled: true }],
       ["interaction.resolve_authorization", { interaction_id: "interaction-1", scope: "workspace", approved: true, reason: "ok" }],
       ["interaction.resolve_mode_switch", { interaction_id: "interaction-2", approved: true, active_mode: "yolo", reason: "" }],
+      ["interaction.resolve_question", { interaction_id: "interaction-3", answer: "Blue", selected_option: "Blue", status: "answered", reason: "" }],
       ["execution.mode", { mode: "yolo" }],
       ["vision.set", { provider: "openai", model: "vision-test", scope: "user" }],
       ["task.list", {}],

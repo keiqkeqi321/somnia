@@ -13,6 +13,7 @@ from open_somnia.app_service.events import (
     ASSISTANT_DELTA,
     AUTHORIZATION_REQUESTED,
     MODE_SWITCH_REQUESTED,
+    QUESTION_REQUESTED,
     TOOL_FINISHED,
 )
 from open_somnia.app_service.models import TurnRunResult
@@ -320,6 +321,14 @@ def _run_service_turn_to_console(
                             approved=False,
                             active_mode=getattr(runtime, "execution_mode", None),
                             reason="Interactive mode switching is unavailable in this session.",
+                        )
+                elif event.type == QUESTION_REQUESTED:
+                    request_id = str(payload.get("request_id", "")).strip()
+                    if request_id:
+                        service.resolve_question(
+                            request_id,
+                            status="cancelled",
+                            reason="Interactive questions are unavailable in this session.",
                         )
             continue
         if handle.is_done():

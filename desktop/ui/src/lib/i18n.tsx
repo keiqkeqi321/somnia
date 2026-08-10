@@ -334,6 +334,12 @@ const translations = {
     "decision.allowOnceReason": "Allowed once from desktop UI.",
     "decision.allowWorkspaceReason": "Allowed in this workspace from desktop UI.",
     "decision.denyReason": "Denied from desktop UI.",
+    "decision.questionRequest": "Question request",
+    "decision.answerQuestion": "Answer the question",
+    "decision.customAnswerPlaceholder": "Type your answer...",
+    "decision.submitAnswer": "Submit answer",
+    "decision.cancelQuestion": "Cancel",
+    "decision.cancelQuestionReason": "User cancelled.",
 
     /* ── Prompt queue ── */
     "queue.queuedPrompts": "Queued prompts",
@@ -772,6 +778,12 @@ const translations = {
     "decision.allowOnceReason": "已从桌面端允许一次。",
     "decision.allowWorkspaceReason": "已从桌面端允许此工作区。",
     "decision.denyReason": "已从桌面端拒绝。",
+    "decision.questionRequest": "提问请求",
+    "decision.answerQuestion": "回答问题",
+    "decision.customAnswerPlaceholder": "输入你的回答…",
+    "decision.submitAnswer": "提交回答",
+    "decision.cancelQuestion": "取消",
+    "decision.cancelQuestionReason": "用户已取消。",
 
     /* ── Prompt queue ── */
     "queue.queuedPrompts": "排队中的提示",

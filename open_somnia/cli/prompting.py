@@ -948,6 +948,35 @@ def choose_mode_switch_interactively(target_mode_label: str, current_mode_label:
     )
 
 
+CUSTOM_ANSWER_VALUE = "__custom__"
+
+
+def ask_question_interactively(
+    question: str,
+    options: list[str],
+    allow_custom: bool = True,
+) -> dict[str, str | None] | None:
+    items: list[tuple[str, str]] = [(option, option) for option in options]
+    if allow_custom:
+        items.append((CUSTOM_ANSWER_VALUE, "Custom answer... (type your own)"))
+    selected = choose_item_interactively(
+        "Agent Question",
+        f"The agent asks:\n{question}",
+        items,
+    )
+    if selected is None:
+        return None
+    if allow_custom and selected == CUSTOM_ANSWER_VALUE:
+        answer = prompt_text_interactively(
+            "Custom Answer",
+            question,
+        )
+        if answer is None or not answer.strip():
+            return None
+        return {"answer": answer.strip(), "selected_option": None}
+    return {"answer": selected, "selected_option": selected}
+
+
 def format_session_timestamp(timestamp: float | None) -> str:
     if not timestamp:
         return "unknown time"

@@ -15,6 +15,7 @@ TOOL_FINISHED = "tool_finished"
 SUBAGENT_ACTIVITY = "subagent_activity"
 AUTHORIZATION_REQUESTED = "authorization_requested"
 MODE_SWITCH_REQUESTED = "mode_switch_requested"
+QUESTION_REQUESTED = "question_requested"
 INTERRUPT_REQUESTED = "interrupt_requested"
 INTERRUPT_COMPLETED = "interrupt_completed"
 SESSION_UPDATED = "session_updated"
@@ -35,6 +36,7 @@ EVENT_TYPES = frozenset(
         SUBAGENT_ACTIVITY,
         AUTHORIZATION_REQUESTED,
         MODE_SWITCH_REQUESTED,
+        QUESTION_REQUESTED,
         INTERRUPT_REQUESTED,
         INTERRUPT_COMPLETED,
         SESSION_UPDATED,

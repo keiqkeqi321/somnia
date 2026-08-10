@@ -1291,6 +1291,29 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Interaction '{request_id}' was not found.")
         return {"request_id": request_id, "resolved": True}
 
+    def resolve_question(
+        self,
+        request_id: str,
+        *,
+        answer: str = "",
+        selected_option: str | None = None,
+        status: str = "answered",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        try:
+            resolved = self.service.resolve_question(
+                request_id,
+                answer=answer,
+                selected_option=selected_option,
+                status=status,
+                reason=reason,
+            )
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        if not resolved:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Interaction '{request_id}' was not found.")
+        return {"request_id": request_id, "resolved": True}
+
     def register_client(self) -> _WebSocketClient:
         client = _WebSocketClient(id=uuid.uuid4().hex[:8], queue=Queue())
         with self._lock:
@@ -1646,6 +1669,17 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
                     path_parts[1],
                     approved=bool(body.get("approved", False)),
                     active_mode=body.get("active_mode"),
+                    reason=str(body.get("reason", "")).strip(),
+                ),
+                HTTPStatus.OK,
+            )
+        if len(path_parts) == 3 and path_parts[0] == "interactions" and path_parts[2] == "question":
+            return (
+                self.sidecar.resolve_question(
+                    path_parts[1],
+                    answer=str(body.get("answer", "")),
+                    selected_option=body.get("selected_option"),
+                    status=str(body.get("status", "answered")).strip(),
                     reason=str(body.get("reason", "")).strip(),
                 ),
                 HTTPStatus.OK,

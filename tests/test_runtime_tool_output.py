@@ -1637,6 +1637,104 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn('"scope": "workspace"', result)
         self.assertIsNone(OpenAgentRuntime.authorize_tool_call(runtime, "edit_file", {"path": "demo.txt"}))
 
+    def test_ask_user_question_returns_answered_option_payload(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.ask_user_question_handler = lambda **kwargs: {
+            "status": "answered",
+            "answer": "Option A",
+            "selected_option": "Option A",
+            "reason": "",
+        }
+
+        result = json.loads(OpenAgentRuntime.ask_user_question(runtime, "Pick one", ["Option A", "Option B"]))
+
+        self.assertEqual(result["status"], "answered")
+        self.assertEqual(result["question"], "Pick one")
+        self.assertEqual(result["selected_option"], "Option A")
+        self.assertEqual(result["answer"], "Option A")
+
+    def test_ask_user_question_custom_answer_has_null_selected_option(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.ask_user_question_handler = lambda **kwargs: {
+            "status": "answered",
+            "answer": "something else",
+            "selected_option": None,
+        }
+
+        result = json.loads(OpenAgentRuntime.ask_user_question(runtime, "Pick one", ["A", "B"]))
+
+        self.assertEqual(result["status"], "answered")
+        self.assertIsNone(result["selected_option"])
+        self.assertEqual(result["answer"], "something else")
+
+    def test_ask_user_question_cancelled_stays_non_error_status(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.ask_user_question_handler = lambda **kwargs: {"status": "cancelled", "reason": "User cancelled."}
+
+        result = json.loads(OpenAgentRuntime.ask_user_question(runtime, "Pick one", ["A", "B"]))
+
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["reason"], "User cancelled.")
+
+    def test_ask_user_question_without_handler_reports_unavailable(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.ask_user_question_handler = None
+
+        result = OpenAgentRuntime.ask_user_question(runtime, "Pick one", ["A", "B"])
+
+        self.assertIn("unavailable", result)
+
+    def test_ask_user_question_requires_question_and_two_options(self) -> None:
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.ask_user_question_handler = lambda **kwargs: self.fail("invalid input should not prompt")
+
+        self.assertIn("question is required", OpenAgentRuntime.ask_user_question(runtime, "  ", ["A", "B"]))
+        self.assertIn("at least two options", OpenAgentRuntime.ask_user_question(runtime, "Pick", ["A"]))
+
+    def _make_lead_question_runtime(self):
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.execution_mode = "accept_edits"
+        runtime._workspace_authorized_tools = set()
+        runtime._once_authorized_tools = {}
+        runtime.ask_user_question_handler = lambda **kwargs: {
+            "status": "answered",
+            "answer": "A",
+            "selected_option": "A",
+            "reason": "",
+        }
+        return runtime
+
+    def test_ask_user_question_tool_executes_through_lead_registry(self) -> None:
+        runtime = self._make_lead_question_runtime()
+        registry = ToolRegistry()
+        OpenAgentRuntime._register_local_tools(runtime, registry)
+
+        output = registry.execute(
+            ToolExecutionContext(runtime=runtime, session=None, actor="lead", trace_id="lead"),
+            "ask_user_question",
+            {"question": "Pick one", "options": ["A", "B"]},
+        )
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "answered")
+        self.assertEqual(payload["selected_option"], "A")
+
+    def test_ask_user_question_tool_rejects_missing_options(self) -> None:
+        runtime = self._make_lead_question_runtime()
+        registry = ToolRegistry()
+        OpenAgentRuntime._register_local_tools(runtime, registry)
+
+        output = registry.execute(
+            ToolExecutionContext(runtime=runtime, session=None, actor="lead", trace_id="lead"),
+            "ask_user_question",
+            {"question": "Pick one"},
+        )
+
+        self.assertIsInstance(output, dict)
+        self.assertEqual(output["status"], "error")
+        self.assertEqual(output["error_type"], "missing_required_params")
+        self.assertIn("options", output["missing_params"])
+
     def test_worker_request_authorization_returns_cached_workspace_without_lead_request(self) -> None:
         root = self._stable_test_dir("worker-auth-cached-workspace")
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)

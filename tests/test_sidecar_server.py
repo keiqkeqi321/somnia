@@ -702,6 +702,74 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_emits_question_request_and_accepts_external_resolution(self) -> None:
+        root = self._stable_test_dir("sidecar-question")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCall(
+                            "call-1",
+                            "ask_user_question",
+                            {
+                                "question": "Which approach?",
+                                "options": ["Option A", "Option B"],
+                                "allow_custom": True,
+                            },
+                        )
+                    ],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Answered."]),
+            ]
+        )
+        server.runtime.complete = lambda *args, **kwargs: next(turns)
+        try:
+            server.start_background()
+            client = self._connect_websocket(server.host, server.port)
+            try:
+                _, session_response = self._request_json("POST", f"{server.base_url}/sessions", {})
+                session_id = session_response["session"]["id"]
+                _, turn_response = self._request_json(
+                    "POST",
+                    f"{server.base_url}/turns",
+                    {"session_id": session_id, "user_input": "choose approach"},
+                )
+                turn_id = turn_response["turn_id"]
+
+                events = self._collect_events_until(
+                    client,
+                    lambda event: event.get("type") == "question_requested" and event.get("turn_id") == turn_id,
+                )
+                request_event = next(event for event in events if event.get("type") == "question_requested")
+                request_id = request_event["payload"]["request_id"]
+                self.assertEqual(request_event["payload"]["question"], "Which approach?")
+                self.assertEqual(request_event["payload"]["options"], ["Option A", "Option B"])
+
+                status, resolve_response = self._request_json(
+                    "POST",
+                    f"{server.base_url}/interactions/{request_id}/question",
+                    {"answer": "Option A", "selected_option": "Option A", "status": "answered"},
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(resolve_response["resolved"])
+
+                events.extend(
+                    self._collect_events_until(
+                        client,
+                        lambda event: event.get("type") == "assistant_completed" and event.get("turn_id") == turn_id,
+                    )
+                )
+                self.assertIn("assistant_completed", [event["type"] for event in events])
+
+                _, interactions_payload = self._request_json("GET", f"{server.base_url}/interactions")
+                self.assertEqual(interactions_payload["interactions"], [])
+            finally:
+                self._close_websocket(client)
+        finally:
+            server.close()
+
     def test_sidecar_interrupt_endpoint_stops_active_turn(self) -> None:
         root = self._stable_test_dir("sidecar-interrupt")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

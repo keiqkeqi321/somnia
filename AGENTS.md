@@ -124,6 +124,8 @@ Four modes ordered by risk (`Shift+Tab` cycles):
 
 Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode switches via `request_mode_switch`. "Allow in this workspace" persists to `.open_somnia/permissions.json`.
 
+`ask_user_question` lets the agent ask the user a multiple-choice question (options + optional custom answer) mid-turn. It is read-only in every mode and silent in the tool-event renderer. Interactive answers travel the same channels as authorization: the REPL main-thread prompt drain (CLI) or `InteractionService` → sidecar `POST /interactions/<id>/question` → desktop `InteractionDecisionCard` (kind `ask_user_question`, event `question_requested`). Non-interactive sessions (`somnia run`) auto-resolve it as `cancelled`.
+
 ## TodoWrite Behavior
 
 - Session-scoped; shown in REPL status while any item is open (☐ pending, ⏳ in progress, ✅ completed)

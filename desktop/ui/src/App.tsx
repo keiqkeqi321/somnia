@@ -2087,7 +2087,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       }
       return;
     }
-    if (event.type === "authorization_requested" || event.type === "mode_switch_requested") {
+    if (event.type === "authorization_requested" || event.type === "mode_switch_requested" || event.type === "question_requested") {
       if (isActiveProject) {
         void refreshInteractions();
       }
@@ -3655,6 +3655,31 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
   }
 
+  async function handleResolveQuestion(
+    interactionId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ) {
+    const client = clientRef.current;
+    if (!client) {
+      return;
+    }
+    setBusyAction("resolve-question");
+    try {
+      await client.resolveQuestion(interactionId, options);
+      await refreshInteractions();
+      await refreshStatusAndProviders();
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function resizeComposerTextarea() {
     const textarea = composerTextareaRef.current;
     if (!textarea) {
@@ -4533,6 +4558,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       busy={busyAction !== null}
                       onResolveAuthorization={handleResolveAuthorization}
                       onResolveModeSwitch={handleResolveModeSwitch}
+                      onResolveQuestion={handleResolveQuestion}
                     />
                   </div>
                 ) : null}
@@ -5406,6 +5432,7 @@ function InteractionDecisionCard({
   busy,
   onResolveAuthorization,
   onResolveModeSwitch,
+  onResolveQuestion,
 }: {
   interaction: InteractionRequestState;
   busy: boolean;
@@ -5416,13 +5443,30 @@ function InteractionDecisionCard({
     reason: string,
   ) => Promise<void>;
   onResolveModeSwitch: (interaction: InteractionRequestState, approved: boolean) => Promise<void>;
+  onResolveQuestion: (
+    interactionId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ) => Promise<void>;
 }) {
   const { t } = useI18n();
+  const [customAnswer, setCustomAnswer] = useState("");
   const isAuthorization = interaction.kind === "authorization";
+  const isQuestion = interaction.kind === "ask_user_question";
+  const questionOptions = Array.isArray(interaction.payload.options)
+    ? interaction.payload.options.filter((option): option is string => typeof option === "string")
+    : [];
+  const allowCustomAnswer = isQuestion && interaction.payload.allow_custom === true;
   return (
     <section className="decision-card" aria-live="polite">
       <div className="decision-copy">
-        <p className="eyebrow">{isAuthorization ? t("decision.authorizationRequest") : t("decision.modeSwitchRequest")}</p>
+        <p className="eyebrow">
+          {isAuthorization ? t("decision.authorizationRequest") : isQuestion ? t("decision.questionRequest") : t("decision.modeSwitchRequest")}
+        </p>
         <h3>{interactionTitle(interaction, t)}</h3>
         <p>{interactionSummary(interaction, t)}</p>
       </div>
@@ -5448,6 +5492,60 @@ function InteractionDecisionCard({
             disabled={busy}
           >
             {t("decision.deny")}
+          </button>
+        </div>
+      ) : isQuestion ? (
+        <div className="decision-actions">
+          {questionOptions.map((option) => (
+            <button
+              key={option}
+              className="action secondary"
+              onClick={() =>
+                void onResolveQuestion(interaction.id, { answer: option, selectedOption: option, status: "answered", reason: "" })
+              }
+              disabled={busy}
+            >
+              {option}
+            </button>
+          ))}
+          {allowCustomAnswer ? (
+            <>
+              <input
+                type="text"
+                value={customAnswer}
+                onChange={(event) => setCustomAnswer(event.currentTarget.value)}
+                placeholder={t("decision.customAnswerPlaceholder")}
+                disabled={busy}
+              />
+              <button
+                className="action primary"
+                onClick={() =>
+                  void onResolveQuestion(interaction.id, {
+                    answer: customAnswer.trim(),
+                    selectedOption: null,
+                    status: "answered",
+                    reason: "",
+                  })
+                }
+                disabled={busy || !customAnswer.trim()}
+              >
+                {t("decision.submitAnswer")}
+              </button>
+            </>
+          ) : null}
+          <button
+            className="action danger"
+            onClick={() =>
+              void onResolveQuestion(interaction.id, {
+                answer: "",
+                selectedOption: null,
+                status: "cancelled",
+                reason: t("decision.cancelQuestionReason"),
+              })
+            }
+            disabled={busy}
+          >
+            {t("decision.cancelQuestion")}
           </button>
         </div>
       ) : (
@@ -7132,6 +7230,9 @@ function interactionTitle(interaction: InteractionRequestState, t: (key: import(
     const toolName = typeof interaction.payload.tool_name === "string" ? interaction.payload.tool_name : "tool";
     return t("decision.approveTool", { toolName });
   }
+  if (interaction.kind === "ask_user_question") {
+    return t("decision.answerQuestion");
+  }
   const targetMode = typeof interaction.payload.target_mode === "string" ? interaction.payload.target_mode : "another mode";
   return t("decision.switchToMode", { targetMode });
 }
@@ -7141,6 +7242,9 @@ function interactionSummary(interaction: InteractionRequestState, t: (key: impor
     const reason = typeof interaction.payload.reason === "string" ? interaction.payload.reason : "No reason provided.";
     const args = typeof interaction.payload.argument_summary === "string" ? interaction.payload.argument_summary : "";
     return args ? `${reason} Arguments: ${args}` : reason;
+  }
+  if (interaction.kind === "ask_user_question") {
+    return typeof interaction.payload.question === "string" ? interaction.payload.question : "No question provided.";
   }
   const reason = typeof interaction.payload.reason === "string" ? interaction.payload.reason : "No reason provided.";
   const currentMode = typeof interaction.payload.current_mode === "string" ? interaction.payload.current_mode : "unknown";

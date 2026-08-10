@@ -60,6 +60,7 @@ from open_somnia.runtime.compact import (
     should_run_semantic_janitor,
 )
 from open_somnia.runtime.execution_mode import (
+    ASK_USER_QUESTION_TOOL_NAME,
     AUTHORIZATION_TOOL_NAME,
     DEFAULT_EXECUTION_MODE,
     MODE_SWITCH_TOOL_NAME,
@@ -306,6 +307,7 @@ class OpenAgentRuntime:
         self.execution_mode = DEFAULT_EXECUTION_MODE
         self.authorization_request_handler = None
         self.mode_switch_request_handler = None
+        self.ask_user_question_handler = None
         self.permission_manager = PermissionManager(self)
         self.subagent_runner = SubagentRunner(self)
         self.system_prompt_builder = SystemPromptBuilder(self)
@@ -640,6 +642,33 @@ class OpenAgentRuntime:
 
     def request_mode_switch(self, target_mode: str, reason: str = "") -> str:
         return self._permission_manager().request_mode_switch(target_mode, reason)
+
+    def ask_user_question(self, question: str, options: list[str], allow_custom: bool = True) -> str:
+        normalized_question = str(question).strip()
+        if not normalized_question:
+            return "ask_user_question failed: question is required."
+        normalized_options = [str(option).strip() for option in options if str(option).strip()]
+        if len(normalized_options) < 2:
+            return "ask_user_question failed: at least two options are required."
+        handler = self.ask_user_question_handler
+        if not callable(handler):
+            return "ask_user_question failed: interactive questions are unavailable in this session."
+        result = handler(
+            question=normalized_question,
+            options=normalized_options,
+            allow_custom=bool(allow_custom),
+        )
+        if not isinstance(result, dict):
+            return "ask_user_question failed: invalid question response."
+        status = str(result.get("status", "cancelled")).strip().lower()
+        payload = {
+            "status": "answered" if status == "answered" else "cancelled",
+            "question": normalized_question,
+            "selected_option": result.get("selected_option"),
+            "answer": str(result.get("answer", "")),
+            "reason": str(result.get("reason", "")),
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     def set_session_provider_model(
         self,
@@ -2703,6 +2732,29 @@ class OpenAgentRuntime:
                     "required": ["target_mode"],
                 },
                 handler=lambda ctx, payload: self.request_mode_switch(payload["target_mode"], payload.get("reason", "")),
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ASK_USER_QUESTION_TOOL_NAME,
+                description=(
+                    "Ask the user a question with selectable options. "
+                    "The user may pick one of the options or provide a custom answer."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "options": {"type": "array", "items": {"type": "string"}},
+                        "allow_custom": {"type": "boolean"},
+                    },
+                    "required": ["question", "options"],
+                },
+                handler=lambda ctx, payload: self.ask_user_question(
+                    payload["question"],
+                    payload.get("options") or [],
+                    payload.get("allow_custom", True),
+                ),
             )
         )
         registry.register(

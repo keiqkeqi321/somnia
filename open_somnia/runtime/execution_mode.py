@@ -5,6 +5,7 @@ from dataclasses import dataclass
 DEFAULT_EXECUTION_MODE = "accept_edits"
 AUTHORIZATION_TOOL_NAME = "request_authorization"
 MODE_SWITCH_TOOL_NAME = "request_mode_switch"
+ASK_USER_QUESTION_TOOL_NAME = "ask_user_question"
 EXECUTION_MODE_ORDER = ("shortcuts", "plan", "accept_edits", "yolo")
 NON_YOLO_EXECUTION_MODES = ("shortcuts", "plan", "accept_edits")
 READ_ONLY_TOOL_NAMES = frozenset(
@@ -20,6 +21,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "compress",
         AUTHORIZATION_TOOL_NAME,
         MODE_SWITCH_TOOL_NAME,
+        ASK_USER_QUESTION_TOOL_NAME,
         "TodoWrite",
         "task_get",
         "task_list",

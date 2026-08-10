@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import unittest
 from pathlib import Path
@@ -506,6 +507,71 @@ class AppServiceTests(unittest.TestCase):
                 if event.type == "tool_finished" and event.payload["tool_name"] == "request_authorization"
             )
             self.assertIn('"scope":"once"', tool_finished.payload["output"].replace(" ", ""))
+        finally:
+            service.close()
+
+    def test_run_turn_emits_question_request_and_resolves_answer(self) -> None:
+        root = self._stable_test_dir("app-service-question")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            turns = iter(
+                [
+                    AssistantTurn(
+                        stop_reason="tool_use",
+                        tool_calls=[
+                            ToolCall(
+                                "call-1",
+                                "ask_user_question",
+                                {
+                                    "question": "Which approach?",
+                                    "options": ["Option A", "Option B"],
+                                    "allow_custom": True,
+                                },
+                            )
+                        ],
+                    ),
+                    AssistantTurn(stop_reason="end_turn", text_blocks=["Answered."]),
+                ]
+            )
+            runtime.complete = lambda *args, **kwargs: next(turns)
+
+            handle = service.run_turn(session, "choose approach")
+            events = self._collect_events_until(
+                handle,
+                lambda event: event.type == "question_requested",
+            )
+            request_event = next(event for event in events if event.type == "question_requested")
+            self.assertEqual(request_event.payload["question"], "Which approach?")
+            self.assertEqual(request_event.payload["options"], ["Option A", "Option B"])
+
+            resolved = service.resolve_question(
+                request_event.payload["request_id"],
+                answer="Option A",
+                selected_option="Option A",
+                status="answered",
+            )
+            self.assertTrue(resolved)
+
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            events.extend(handle.drain_events())
+
+            self.assertEqual(result.text, "Answered.")
+            self.assertEqual(result.status, "completed")
+            self.assertIn("tool_started", [event.type for event in events])
+            self.assertIn("tool_finished", [event.type for event in events])
+
+            tool_finished = next(
+                event
+                for event in events
+                if event.type == "tool_finished" and event.payload["tool_name"] == "ask_user_question"
+            )
+            tool_output = json.loads(tool_finished.payload["output"])
+            self.assertEqual(tool_output["status"], "answered")
+            self.assertEqual(tool_output["selected_option"], "Option A")
+            self.assertEqual(tool_output["answer"], "Option A")
         finally:
             service.close()
 

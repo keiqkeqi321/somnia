@@ -14,6 +14,7 @@ from open_somnia.cli.prompting import PROMPT_BORDER
 from open_somnia.cli.repl import (
     AuthorizationRequest,
     ModeSwitchRequest,
+    QuestionRequest,
     TurnQueueRunner,
     _build_image_query,
     _build_init_query,
@@ -35,6 +36,7 @@ from open_somnia.cli.repl import (
     _thinking_log_label,
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
+    _resolve_question_requests,
     run_repl,
     _save_windows_clipboard_image,
 )
@@ -1656,6 +1658,89 @@ class ReplTodoTests(unittest.TestCase):
         self.assertTrue(result["value"]["approved"])
         self.assertEqual(result["value"]["active_mode"], "accept_edits")
         self.assertEqual(runtime.execution_mode, "accept_edits")
+
+    def test_request_question_is_resolved_on_main_thread(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        result: dict[str, dict[str, object]] = {}
+
+        worker = Thread(
+            target=lambda: result.setdefault(
+                "value",
+                runner.request_question(
+                    question="Which approach?",
+                    options=["Option A", "Option B"],
+                    allow_custom=True,
+                ),
+            )
+        )
+        worker.start()
+
+        with patch(
+            "open_somnia.cli.repl.ask_question_interactively",
+            return_value={"answer": "Option A", "selected_option": "Option A"},
+        ):
+            for _ in range(50):
+                if _resolve_question_requests(runner):
+                    break
+                time.sleep(0.01)
+
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result["value"]["status"], "answered")
+        self.assertEqual(result["value"]["answer"], "Option A")
+        self.assertEqual(result["value"]["selected_option"], "Option A")
+
+    def test_request_question_reports_cancelled_when_user_dismisses(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        runner._question_requests.append(
+            QuestionRequest(
+                question="Which approach?",
+                options=["Option A", "Option B"],
+                allow_custom=True,
+                completed=Event(),
+            )
+        )
+        request = runner._question_requests[0]
+
+        with patch("open_somnia.cli.repl.ask_question_interactively", return_value=None):
+            handled = _resolve_question_requests(runner)
+
+        self.assertTrue(handled)
+        self.assertTrue(request.completed.is_set())
+        self.assertEqual(request.response["status"], "cancelled")
+        self.assertEqual(request.response["reason"], "User cancelled.")
+
+    def test_service_question_request_is_resolved_through_app_service(self) -> None:
+        resolved: list[tuple[str, str, str | None, str, str]] = []
+        service = SimpleNamespace(
+            resolve_question=lambda request_id, *, answer="", selected_option=None, status="answered", reason="": resolved.append(
+                (request_id, answer, selected_option, status, reason)
+            )
+            or True
+        )
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
+        runner._question_requests.append(
+            QuestionRequest(
+                question="Which approach?",
+                options=["Option A", "Option B"],
+                allow_custom=True,
+                completed=Event(),
+                request_id="question-1",
+            )
+        )
+
+        with patch(
+            "open_somnia.cli.repl.ask_question_interactively",
+            return_value={"answer": "Option A", "selected_option": "Option A"},
+        ):
+            handled = _resolve_question_requests(runner)
+
+        self.assertTrue(handled)
+        self.assertEqual(resolved, [("question-1", "Option A", "Option A", "answered", "")])
 
     def test_service_mode_switch_request_is_resolved_through_app_service(self) -> None:
         resolved: list[tuple[str, bool, str, str]] = []

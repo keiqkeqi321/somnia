@@ -272,6 +272,24 @@ class LocalSidecarBridge:
                 f"/interactions/{quote(interaction_id, safe='')}/mode-switch",
                 {"approved": approved, "active_mode": active_mode, "reason": reason},
             )
+        if method == "interaction.resolve_question":
+            interaction_id = _required_text(params, "interaction_id")
+            answer = str(params.get("answer", ""))
+            selected_option = params.get("selected_option")
+            if selected_option is not None:
+                selected_option = str(selected_option)
+            status = str(params.get("status", "answered")).strip()
+            reason = str(params.get("reason", "")).strip()
+            return self._request(
+                "POST",
+                f"/interactions/{quote(interaction_id, safe='')}/question",
+                {
+                    "answer": answer,
+                    "selected_option": selected_option,
+                    "status": status,
+                    "reason": reason,
+                },
+            )
         if method == "execution.mode":
             mode = _required_text(params, "mode").lower()
             if mode not in {"shortcuts", "plan", "accept_edits", "yolo"}:

@@ -20,6 +20,7 @@ from open_somnia.app_service.events import (
     ASSISTANT_DELTA,
     AUTHORIZATION_REQUESTED,
     MODE_SWITCH_REQUESTED,
+    QUESTION_REQUESTED,
     SESSION_UPDATED,
     SUBAGENT_ACTIVITY,
     THINKING_DELTA,
@@ -32,6 +33,7 @@ from open_somnia.cli.commands import ConsoleStreamer, _assistant_prefix, _prefix
 from open_somnia.cli.prompting import (
     PROMPT_BORDER,
     PROMPT_TEXT,
+    ask_question_interactively,
     choose_authorization_interactively,
     choose_item_interactively,
     choose_mode_switch_interactively,
@@ -725,6 +727,16 @@ class ModeSwitchRequest:
 
 
 @dataclass(slots=True)
+class QuestionRequest:
+    question: str
+    options: list[str]
+    allow_custom: bool
+    completed: Event
+    response: dict[str, object] | None = None
+    request_id: str | None = None
+
+
+@dataclass(slots=True)
 class QueueTask:
     id: int
     kind: str
@@ -788,6 +800,7 @@ class TurnQueueRunner:
         self._interrupt_requested = False
         self._authorization_requests: list[AuthorizationRequest] = []
         self._mode_switch_requests: list[ModeSwitchRequest] = []
+        self._question_requests: list[QuestionRequest] = []
         self._active_turn_handle = None
         self._active_tools: dict[str, dict[str, object]] = {}
         self._active_subagents: dict[str, dict[str, object]] = {}
@@ -932,6 +945,48 @@ class TurnQueueRunner:
         with self._lock:
             pending = list(self._mode_switch_requests)
             self._mode_switch_requests = []
+        return pending
+
+    def _enqueue_question_request(
+        self,
+        *,
+        question: str,
+        options: list[str],
+        allow_custom: bool = True,
+        request_id: str | None = None,
+    ) -> QuestionRequest:
+        request = QuestionRequest(
+            question=question,
+            options=list(options),
+            allow_custom=bool(allow_custom),
+            completed=Event(),
+            request_id=request_id,
+        )
+        with self._lock:
+            self._question_requests.append(request)
+        self._notify_request_available()
+        return request
+
+    def request_question(
+        self,
+        *,
+        question: str,
+        options: list[str],
+        allow_custom: bool = True,
+    ) -> dict[str, object]:
+        request = self._enqueue_question_request(
+            question=question,
+            options=options,
+            allow_custom=allow_custom,
+        )
+        if not request.completed.wait(timeout=300):
+            return {"status": "cancelled", "reason": "Question timed out."}
+        return request.response or {"status": "cancelled", "reason": "Question was not answered."}
+
+    def drain_question_requests(self) -> list[QuestionRequest]:
+        with self._lock:
+            pending = list(self._question_requests)
+            self._question_requests = []
         return pending
 
     def close(self, *, drain: bool) -> int:
@@ -1294,13 +1349,23 @@ class TurnQueueRunner:
                 request_id=str(payload.get("request_id", "")).strip() or None,
             )
             return
+        if event_type == QUESTION_REQUESTED:
+            raw_options = payload.get("options", [])
+            options = [str(option) for option in raw_options] if isinstance(raw_options, list) else []
+            self._enqueue_question_request(
+                question=str(payload.get("question", "")).strip(),
+                options=options,
+                allow_custom=bool(payload.get("allow_custom", True)),
+                request_id=str(payload.get("request_id", "")).strip() or None,
+            )
+            return
         if event_type in {TODO_UPDATED, SESSION_UPDATED}:
             self._invalidate_ui()
 
     def _print_service_tool_event(self, payload: dict[str, object]) -> None:
         tool_name = str(payload.get("tool_name", "")).strip()
         actor = str(payload.get("actor", "")).strip() or "lead"
-        if tool_name == "TodoWrite" or actor != "lead" or not sys.stdout.isatty():
+        if tool_name in {"TodoWrite", "ask_user_question"} or actor != "lead" or not sys.stdout.isatty():
             return
         rendered_lines = payload.get("rendered_lines")
         if not isinstance(rendered_lines, list) or not rendered_lines:
@@ -2813,6 +2878,42 @@ def _resolve_mode_switch_requests(runner: TurnQueueRunner) -> bool:
     return True
 
 
+def _resolve_question_requests(runner: TurnQueueRunner) -> bool:
+    pending = runner.drain_question_requests()
+    if not pending:
+        return False
+    for request in pending:
+        answer = ask_question_interactively(
+            request.question,
+            request.options,
+            request.allow_custom,
+        )
+        if answer is not None:
+            request.response = {
+                "status": "answered",
+                "answer": str(answer.get("answer", "")),
+                "selected_option": answer.get("selected_option"),
+                "reason": "",
+            }
+        else:
+            request.response = {
+                "status": "cancelled",
+                "answer": "",
+                "selected_option": None,
+                "reason": "User cancelled.",
+            }
+        if request.request_id and runner.service is not None:
+            runner.service.resolve_question(
+                request.request_id,
+                answer=str(request.response["answer"]),
+                selected_option=request.response["selected_option"],
+                status=str(request.response["status"]),
+                reason=str(request.response["reason"]),
+            )
+        request.completed.set()
+    return True
+
+
 def _read_fallback_query(runner: TurnQueueRunner, pending_query_prefix: str) -> str:
     prefix = pending_query_prefix
     if sys.stdout.isatty():
@@ -2837,6 +2938,7 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
     if service is None:
         runtime.authorization_request_handler = runner.request_authorization
         runtime.mode_switch_request_handler = runner.request_mode_switch
+        runtime.ask_user_question_handler = runner.request_question
     prompt_session = None
     pending_query_prefix = ""
     try:
@@ -2870,6 +2972,8 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                 if _resolve_mode_switch_requests(runner):
                     continue
                 if _resolve_authorization_requests(runner):
+                    continue
+                if _resolve_question_requests(runner):
                     continue
                 try:
                     if prompt_session is not None:
@@ -2913,6 +3017,7 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                 if query == AUTHORIZATION_PROMPT_SENTINEL:
                     _resolve_mode_switch_requests(runner)
                     _resolve_authorization_requests(runner)
+                    _resolve_question_requests(runner)
                     continue
                 stripped = query.strip()
                 if not stripped:
@@ -3156,4 +3261,5 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
         if service is None:
             runtime.authorization_request_handler = None
             runtime.mode_switch_request_handler = None
+            runtime.ask_user_question_handler = None
     return 0

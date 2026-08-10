@@ -5,7 +5,7 @@ from threading import Lock, local
 from typing import Any, Callable, Iterator
 import uuid
 
-from open_somnia.app_service.events import AUTHORIZATION_REQUESTED, MODE_SWITCH_REQUESTED
+from open_somnia.app_service.events import AUTHORIZATION_REQUESTED, MODE_SWITCH_REQUESTED, QUESTION_REQUESTED
 from open_somnia.app_service.models import InteractionRequestState
 from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.execution_mode import DEFAULT_EXECUTION_MODE, normalize_execution_mode
@@ -28,6 +28,7 @@ class InteractionService:
         target_runtime = runtime or self.runtime
         previous_authorization_handler = target_runtime.authorization_request_handler
         previous_mode_switch_handler = target_runtime.mode_switch_request_handler
+        previous_question_handler = getattr(target_runtime, "ask_user_question_handler", None)
         previous_session_id = getattr(self._active, "session_id", None)
         previous_turn_id = getattr(self._active, "turn_id", None)
         with self._lock:
@@ -37,11 +38,13 @@ class InteractionService:
         self._active.turn_id = turn_id
         target_runtime.authorization_request_handler = self._request_authorization
         target_runtime.mode_switch_request_handler = self._request_mode_switch
+        target_runtime.ask_user_question_handler = self._request_question
         try:
             yield
         finally:
             target_runtime.authorization_request_handler = previous_authorization_handler
             target_runtime.mode_switch_request_handler = previous_mode_switch_handler
+            target_runtime.ask_user_question_handler = previous_question_handler
             self._active.session_id = previous_session_id
             self._active.turn_id = previous_turn_id
             with self._lock:
@@ -102,6 +105,27 @@ class InteractionService:
             },
         )
 
+    def resolve_question(
+        self,
+        request_id: str,
+        *,
+        answer: str = "",
+        selected_option: str | None = None,
+        status: str = "answered",
+        reason: str = "",
+    ) -> bool:
+        normalized_status = str(status).strip().lower()
+        resolved_status = "answered" if normalized_status == "answered" else "cancelled"
+        return self.resolve_request(
+            request_id,
+            {
+                "status": resolved_status,
+                "answer": str(answer),
+                "selected_option": str(selected_option) if selected_option is not None else None,
+                "reason": str(reason).strip(),
+            },
+        )
+
     def cancel_turn_requests(self, turn_id: str, *, reason: str) -> int:
         with self._lock:
             to_cancel = [
@@ -116,6 +140,13 @@ class InteractionService:
                 request.response = {
                     "status": "denied",
                     "scope": "deny",
+                    "reason": str(reason).strip(),
+                }
+            elif request.kind == "ask_user_question":
+                request.response = {
+                    "status": "cancelled",
+                    "answer": "",
+                    "selected_option": None,
                     "reason": str(reason).strip(),
                 }
             else:
@@ -203,6 +234,44 @@ class InteractionService:
         }
         self.runtime.execution_mode = normalize_execution_mode(response.get("active_mode", current_mode))
         return response
+
+    def _request_question(
+        self,
+        *,
+        question: str,
+        options: list[str],
+        allow_custom: bool = True,
+    ) -> dict[str, Any]:
+        request = self._create_request(
+            "ask_user_question",
+            {
+                "question": str(question).strip(),
+                "options": [str(option) for option in options],
+                "allow_custom": bool(allow_custom),
+            },
+        )
+        self._emit_event(
+            QUESTION_REQUESTED,
+            session_id=request.session_id,
+            turn_id=request.turn_id,
+            request_id=request.id,
+            **request.payload,
+        )
+        if not request.completed.wait(timeout=self.REQUEST_TIMEOUT_SECONDS):
+            with self._lock:
+                self._pending.pop(request.id, None)
+            return {
+                "status": "cancelled",
+                "answer": "",
+                "selected_option": None,
+                "reason": "Question timed out.",
+            }
+        return request.response or {
+            "status": "cancelled",
+            "answer": "",
+            "selected_option": None,
+            "reason": "Question was not answered.",
+        }
 
     def _create_request(self, kind: str, payload: dict[str, Any]) -> InteractionRequestState:
         session_id = getattr(self._active, "session_id", None) or self._active_session_id

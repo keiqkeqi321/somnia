@@ -68,6 +68,7 @@ function stubSidecarFetch(): void {
     if (url.endsWith("/mcp/servers")) return jsonResponse({ servers: contractMcpServers });
     if (url.includes("/mcp/servers/") && url.includes("/tools/") && method === "POST") return jsonResponse(contractSetMcpToolEnabledResult);
     if (url.includes("/authorization")) return jsonResponse({ resolved: true });
+    if (url.includes("/question")) return jsonResponse({ resolved: true });
     if (url.includes("/tool-logs/log-1")) return jsonResponse({ tool_log: contractToolLogDetail });
     if (url.includes("/tool-logs")) return jsonResponse({ tool_logs: contractToolLogs });
     throw new Error(`Unexpected fetch: ${method} ${url}`);

@@ -398,6 +398,25 @@ export class SidecarClient {
     );
   }
 
+  async resolveQuestion(
+    requestId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ): Promise<void> {
+    const { answer, selectedOption, status, reason } = options;
+    await parseResponse<{ resolved: boolean }>(
+      await fetch(`${this.baseUrl}/interactions/${requestId}/question`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answer, selected_option: selectedOption, status, reason }),
+      }),
+    );
+  }
+
   async listToolLogs(limit = 24): Promise<ToolLogIndexEntry[]> {
     const payload = await parseResponse<{ tool_logs: ToolLogIndexEntry[] }>(
       await fetch(`${this.baseUrl}/tool-logs?limit=${encodeURIComponent(String(limit))}`),

@@ -13,7 +13,7 @@ from open_somnia.runtime.session import AgentSession
 class ToolEventRenderer:
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
-    SILENT_TOOL_NAMES = {"TodoWrite"}
+    SILENT_TOOL_NAMES = {"TodoWrite", "ask_user_question"}
 
     def __init__(self, runtime: Any) -> None:
         self.runtime = runtime

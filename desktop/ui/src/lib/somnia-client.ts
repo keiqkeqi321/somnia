@@ -140,6 +140,15 @@ export interface SomniaClient extends SomniaConnection {
       reason: string;
     },
   ): Promise<void>;
+  resolveQuestion(
+    requestId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ): Promise<void>;
 
   // Tool/thinking/team logs and task graph.
   listToolLogs(limit?: number): Promise<ToolLogIndexEntry[]>;
@@ -380,6 +389,18 @@ export class DirectSomniaClient implements SomniaClient {
     },
   ): Promise<void> {
     return this.rest.resolveModeSwitch(requestId, options);
+  }
+
+  resolveQuestion(
+    requestId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ): Promise<void> {
+    return this.rest.resolveQuestion(requestId, options);
   }
 
   listToolLogs(limit?: number): Promise<ToolLogIndexEntry[]> {

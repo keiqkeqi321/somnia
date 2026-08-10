@@ -168,6 +168,23 @@ class AppService:
             reason=reason,
         )
 
+    def resolve_question(
+        self,
+        request_id: str,
+        *,
+        answer: str = "",
+        selected_option: str | None = None,
+        status: str = "answered",
+        reason: str = "",
+    ) -> bool:
+        return self.interaction_service.resolve_question(
+            request_id,
+            answer=answer,
+            selected_option=selected_option,
+            status=status,
+            reason=reason,
+        )
+
     def close(self) -> None:
         self.runtime_host.close()
         self.runtime.close()

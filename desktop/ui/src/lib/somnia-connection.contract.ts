@@ -183,7 +183,7 @@ export function describeSomniaConnectionContract(
       await expect(connection.setMcpToolEnabled("docs", "fetch", true)).resolves.toEqual(contractSetMcpToolEnabledResult);
     });
 
-    it("resolves authorization interactions and reads tool logs", async () => {
+    it("resolves authorization and question interactions and reads tool logs", async () => {
       const harness = createHarness();
       const { connection } = harness;
       connection.subscribe(() => undefined);
@@ -191,6 +191,9 @@ export function describeSomniaConnectionContract(
 
       await expect(
         connection.resolveAuthorization("interaction-1", { scope: "workspace", approved: true, reason: "ok" }),
+      ).resolves.toBeUndefined();
+      await expect(
+        connection.resolveQuestion("interaction-2", { answer: "Blue", selectedOption: "Blue", status: "answered", reason: "" }),
       ).resolves.toBeUndefined();
       await expect(connection.listToolLogs(24)).resolves.toEqual(contractToolLogs);
       await expect(connection.getToolLog("log-1")).resolves.toEqual(contractToolLogDetail);

@@ -295,6 +295,25 @@ export class RemoteSomniaConnection implements SomniaClient {
     }).then(() => undefined);
   }
 
+  resolveQuestion(
+    requestId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ): Promise<void> {
+    const { answer, selectedOption, status, reason } = options;
+    return this.sendRequest("interaction.resolve_question", {
+      interaction_id: requestId,
+      answer,
+      selected_option: selectedOption,
+      status,
+      reason,
+    }).then(() => undefined);
+  }
+
   setExecutionMode(mode: string): Promise<{ message: string; execution_mode: string; execution_mode_title: string }> {
     return this.sendRequest("execution.mode", { mode });
   }
