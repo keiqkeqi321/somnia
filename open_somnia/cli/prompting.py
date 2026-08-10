@@ -12,7 +12,7 @@ from prompt_toolkit.clipboard import ClipboardData
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completion, Completer
-from prompt_toolkit.filters import has_focus
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
@@ -948,7 +948,143 @@ def choose_mode_switch_interactively(target_mode_label: str, current_mode_label:
     )
 
 
-CUSTOM_ANSWER_VALUE = "__custom__"
+def _build_question_application(
+    question: str,
+    options: list[str],
+    allow_custom: bool,
+    **app_kwargs,
+) -> Application[tuple[str, str] | None]:
+    """Build the inline question widget.
+
+    Returns an Application resolving to ("option", value) when an option is
+    confirmed, ("custom", text) when the custom input is submitted, or None
+    on cancel. Extra kwargs are forwarded to Application (tests inject pipe
+    input and dummy output this way).
+    """
+    radio_list = RadioList(
+        values=[(option, option) for option in options],
+        default=options[0],
+        select_on_focus=True,
+        show_scrollbar=True,
+        show_numbers=True,
+        open_character="[",
+        close_character="]",
+        select_character="x",
+        container_style="class:radio-list",
+        default_style="class:radio",
+        selected_style="class:radio-selected",
+        checked_style="class:radio-checked",
+        number_style="class:radio-number",
+    )
+
+    def ok_handler() -> None:
+        get_app().exit(result=("option", radio_list.current_value))
+
+    def cancel_handler() -> None:
+        get_app().exit(result=None)
+
+    body_items = [
+        Label(
+            text=f"The agent asks:\n{question}",
+            style="class:session-picker.subtitle",
+            dont_extend_height=True,
+        ),
+        radio_list,
+    ]
+
+    text_area = None
+    if allow_custom:
+        text_area = TextArea(
+            multiline=False,
+            height=1,
+            prompt="Custom answer: ",
+        )
+
+        def _accept_custom(buffer) -> bool:
+            value = (text_area.text or "").strip()
+            if value:
+                get_app().exit(result=("custom", value))
+            return True
+
+        text_area.accept_handler = _accept_custom
+        body_items.append(text_area)
+
+        radio_keys = radio_list.control.key_bindings
+        at_last_option = Condition(lambda: radio_list._selected_index == len(radio_list.values) - 1)
+        at_first_option = Condition(lambda: radio_list._selected_index == 0)
+
+        def _uncheck_options() -> None:
+            radio_list.current_value = None
+
+        @radio_keys.add("down", filter=at_last_option)
+        @radio_keys.add("j", filter=at_last_option)
+        def _focus_custom_from_last(event) -> None:
+            _uncheck_options()
+            event.app.layout.focus(text_area)
+
+        @radio_keys.add("up", filter=at_first_option)
+        @radio_keys.add("k", filter=at_first_option)
+        def _focus_custom_from_first(event) -> None:
+            _uncheck_options()
+            event.app.layout.focus(text_area)
+
+    help_text = "Move: Up/Down or j/k | OK: Enter | Cancel: Esc"
+    if allow_custom:
+        help_text = "Move: Up/Down (wraps into Custom) | OK: Enter | Cancel: Esc"
+    body_items.append(
+        Label(
+            text=help_text,
+            style="class:session-picker.help",
+            dont_extend_height=True,
+        )
+    )
+
+    dialog = Dialog(
+        title="Agent Question",
+        body=HSplit(body_items, padding=1),
+        buttons=[],
+        with_background=False,
+    )
+
+    bindings = KeyBindings()
+
+    if text_area is not None:
+        @bindings.add("up", filter=has_focus(text_area))
+        def _wrap_to_last_option(event) -> None:
+            radio_list._selected_index = len(radio_list.values) - 1
+            radio_list._handle_enter()
+            event.app.layout.focus(radio_list)
+
+        @bindings.add("down", filter=has_focus(text_area))
+        def _wrap_to_first_option(event) -> None:
+            radio_list._selected_index = 0
+            radio_list._handle_enter()
+            event.app.layout.focus(radio_list)
+
+        @bindings.add("enter", eager=True, filter=~has_focus(text_area))
+        def _confirm(event) -> None:
+            ok_handler()
+    else:
+        @bindings.add("enter", eager=True)
+        def _confirm(event) -> None:
+            ok_handler()
+
+    @bindings.add("escape", eager=True)
+    def _cancel(event) -> None:
+        cancel_handler()
+
+    app: Application[tuple[str, str] | None] = Application(
+        layout=Layout(dialog),
+        key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
+        full_screen=False,
+        style=SESSION_PICKER_STYLE,
+        erase_when_done=True,
+        **app_kwargs,
+    )
+    # Exposed for tests that drive the widget headlessly.
+    app._question_radio_list = radio_list
+    app._question_text_area = text_area
+    return app
 
 
 def ask_question_interactively(
@@ -956,25 +1092,57 @@ def ask_question_interactively(
     options: list[str],
     allow_custom: bool = True,
 ) -> dict[str, str | None] | None:
-    items: list[tuple[str, str]] = [(option, option) for option in options]
-    if allow_custom:
-        items.append((CUSTOM_ANSWER_VALUE, "Custom answer... (type your own)"))
-    selected = choose_item_interactively(
-        "Agent Question",
-        f"The agent asks:\n{question}",
-        items,
-    )
-    if selected is None:
+    """Ask a question inline below the conversation, without leaving the page.
+
+    The option list and (optional) custom-answer input live in one inline
+    widget with a cyclic focus ring: Down past the last option focuses the
+    custom input, Down in the input wraps back to the first option, and Up
+    walks the ring the other way. Enter on the list confirms the highlighted
+    option, Enter in the input submits the typed text, Esc cancels. The
+    message history stays visible the whole time.
+    """
+    if not options:
         return None
-    if allow_custom and selected == CUSTOM_ANSWER_VALUE:
-        answer = prompt_text_interactively(
-            "Custom Answer",
-            question,
-        )
-        if answer is None or not answer.strip():
+
+    try:
+        outcome = _build_question_application(question, options, allow_custom).run()
+        if outcome is None:
             return None
-        return {"answer": answer.strip(), "selected_option": None}
-    return {"answer": selected, "selected_option": selected}
+        kind, value = outcome
+        result = {
+            "answer": value,
+            "selected_option": value if kind == "option" else None,
+        }
+    except Exception:
+        print("Agent Question")
+        print(f"The agent asks:\n{question}")
+        for index, option in enumerate(options, start=1):
+            print(f"{index}. {option}")
+        hint = (
+            "Selection (number, or type a custom answer; blank to cancel): "
+            if allow_custom
+            else "Selection (number; blank to cancel): "
+        )
+        result = None
+        while result is None:
+            choice = input(hint).strip()
+            if not choice:
+                return None
+            if choice.isdigit():
+                selected = int(choice)
+                if 1 <= selected <= len(options):
+                    result = {"answer": options[selected - 1], "selected_option": options[selected - 1]}
+                    break
+                print("Invalid selection.")
+                continue
+            if allow_custom:
+                result = {"answer": choice, "selected_option": None}
+                break
+            print("Invalid selection.")
+
+    print(f"? {question}")
+    print(f"\u276f {result['answer']}")
+    return result
 
 
 def format_session_timestamp(timestamp: float | None) -> str:
