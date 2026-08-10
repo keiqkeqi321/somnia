@@ -607,7 +607,7 @@ class HookSystemTests(unittest.TestCase):
                 import sys
                 import time
 
-                time.sleep(1.5)
+                time.sleep(0.6)
                 pathlib.Path(sys.argv[1]).write_text("done", encoding="utf-8")
                 """,
             )
@@ -645,7 +645,7 @@ class HookSystemTests(unittest.TestCase):
                 import sys
                 import time
 
-                time.sleep(0.5)
+                time.sleep(0.05)
                 print("boom", file=sys.stderr)
                 raise SystemExit(2)
                 """,

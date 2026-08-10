@@ -72,7 +72,7 @@ class _SSEHandler(BaseHTTPRequestHandler):
 class SSETransportTests(unittest.TestCase):
     def test_request_round_trip_uses_sse_endpoint(self) -> None:
         server = _SSETestServer()
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         transport = SSETransport(
             url=f"http://127.0.0.1:{server.server_port}/sse",
@@ -93,7 +93,7 @@ class SSETransportTests(unittest.TestCase):
 
     def test_close_does_not_wait_on_open_sse_response(self) -> None:
         server = _SSETestServer()
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         transport = SSETransport(
             url=f"http://127.0.0.1:{server.server_port}/sse",
@@ -114,16 +114,16 @@ class SSETransportTests(unittest.TestCase):
 
     def test_startup_timeout_does_not_become_idle_read_timeout(self) -> None:
         server = _SSETestServer()
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         transport = SSETransport(
             url=f"http://127.0.0.1:{server.server_port}/sse",
             timeout_seconds=2,
-            startup_timeout_seconds=1,
+            startup_timeout_seconds=0.3,
         )
         try:
             transport.start()
-            time.sleep(1.2)
+            time.sleep(0.5)
             self.assertIsNotNone(transport._reader_thread)
             self.assertTrue(transport._reader_thread.is_alive())
             response = transport.request("tools/list", {})
@@ -137,7 +137,7 @@ class SSETransportTests(unittest.TestCase):
 
     def test_post_http_error_fails_without_waiting_for_sse_response(self) -> None:
         server = _SSETestServer()
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         transport = SSETransport(
             url=f"http://127.0.0.1:{server.server_port}/sse",

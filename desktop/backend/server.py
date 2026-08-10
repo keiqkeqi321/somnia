@@ -577,7 +577,7 @@ class SidecarServer:
             raise SidecarAPIError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, f"Unsupported image format: {raw_path}")
         return resolved, media_type
 
-    def serve_forever(self, poll_interval: float = 0.5) -> None:
+    def serve_forever(self, poll_interval: float = 0.05) -> None:
         self.remote_device.autostart_if_enabled()
         self._start_parent_watchdog()
         self.httpd.serve_forever(poll_interval=poll_interval)

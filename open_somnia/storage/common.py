@@ -21,24 +21,36 @@ def get_lock(path: Path) -> threading.RLock:
         return lock
 
 
-def atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp_path.write_text(content, encoding="utf-8")
+def replace_with_retry(tmp_path: Path, path: Path, *, attempts: int = 5, delay_seconds: float = 0.05) -> None:
+    """Rename ``tmp_path`` over ``path``, retrying transient PermissionError.
+
+    Windows intermittently denies a tmp->target rename while an AV scanner or
+    indexer holds the target open; a short retry loop absorbs it.
+    """
     last_error: PermissionError | None = None
-    for _ in range(5):
+    for _ in range(attempts):
         try:
             tmp_path.replace(path)
             return
         except PermissionError as exc:
             last_error = exc
-            time.sleep(0.05)
-    try:
-        tmp_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+            time.sleep(delay_seconds)
     if last_error is not None:
         raise last_error
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    try:
+        replace_with_retry(tmp_path, path)
+    except PermissionError:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def read_json(path: Path, default: Any) -> Any:

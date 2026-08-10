@@ -16,6 +16,7 @@ from open_somnia.remote.connector import ConnectorReplaced, LocalSidecarBridge, 
 from open_somnia.remote.identity import DeviceIdentity, default_identity_path, pair_device
 from open_somnia.remote.identity import _relay_http_url as validate_relay_http_url
 from open_somnia.remote.runtime_manager import RuntimeOwnershipError, _OwnerLease
+from open_somnia.storage.common import atomic_write_text
 
 CONNECTOR_JOIN_TIMEOUT_SECONDS = 5.0
 PAIR_POLL_INTERVAL_SECONDS = 1.5
@@ -108,10 +109,10 @@ class RemoteDeviceManager:
         settings = self._load_settings()
         settings.update(updates)
         settings.pop("password", None)
-        self._settings_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._settings_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(settings, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(self._settings_path)
+        # atomic_write_text retries the transient PermissionError that Windows
+        # raises on tmp->target renames (AV / indexer holding the file), and
+        # uses a unique tmp name so concurrent saves cannot collide.
+        atomic_write_text(self._settings_path, json.dumps(settings, ensure_ascii=True, indent=2) + "\n")
 
     # ------------------------------------------------------------------
     # Status

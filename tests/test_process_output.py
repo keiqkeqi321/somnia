@@ -79,7 +79,7 @@ class ProcessOutputTests(unittest.TestCase):
                 [sys.executable, "-c", command],
                 shell=False,
                 cwd=Path.cwd(),
-                timeout=1,
+                timeout=0.75,
             )
 
         self.assertLess(time.monotonic() - started_at, 15.0)
@@ -94,7 +94,7 @@ class ProcessOutputTests(unittest.TestCase):
         )
 
         def request_interrupt() -> None:
-            time.sleep(0.5)
+            time.sleep(0.4)
             interrupt_requested.set()
 
         interrupter = threading.Thread(target=request_interrupt, daemon=True)
@@ -116,7 +116,7 @@ class ProcessOutputTests(unittest.TestCase):
         interrupt_requested = threading.Event()
 
         def request_interrupt() -> None:
-            time.sleep(0.2)
+            time.sleep(0.15)
             interrupt_requested.set()
 
         interrupter = threading.Thread(target=request_interrupt, daemon=True)

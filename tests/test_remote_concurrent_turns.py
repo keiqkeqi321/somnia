@@ -39,7 +39,7 @@ def _scripted_complete(barrier: Barrier, calls: list[int]):
         if text_callback is not None:
             for index in range(CHUNKS_PER_TURN):
                 text_callback(f"chunk-{index} ")
-                time.sleep(0.005)
+                time.sleep(0.002)
         return AssistantTurn(stop_reason="end_turn", text_blocks=["done"])
 
     return complete
@@ -212,6 +212,13 @@ class RemoteLateProjectJoinIntegrationTests(unittest.TestCase):
     """A Project whose sidecar starts late must join the running Connector
     without any Relay reconnect or manual re-enable."""
 
+    # The pump's production retry backoff (1s → 2s → …, capped at 5s) is not
+    # what this test verifies; shrink it so the late sidecar joins quickly.
+    @patch.multiple(
+        "open_somnia.remote.connector",
+        SIDECAR_PUMP_INITIAL_DELAY_SECONDS=0.05,
+        SIDECAR_PUMP_MAX_DELAY_SECONDS=0.2,
+    )
     def test_late_project_joins_the_running_connector(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

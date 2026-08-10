@@ -367,7 +367,7 @@ class RemoteConnectorTests(unittest.TestCase):
 
     def test_pair_device_claims_code_over_http_and_persists_returned_identity(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _PairingStubHandler)
-        thread = Thread(target=server.serve_forever, daemon=True)
+        thread = Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         try:
             with TemporaryDirectory() as temp_dir:
@@ -387,7 +387,7 @@ class RemoteConnectorTests(unittest.TestCase):
 
     def test_bridge_maps_tracer_requests_over_loopback_http(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _SidecarStubHandler)
-        thread = Thread(target=server.serve_forever, daemon=True)
+        thread = Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         try:
             bridge = LocalSidecarBridge(f"http://127.0.0.1:{server.server_port}")

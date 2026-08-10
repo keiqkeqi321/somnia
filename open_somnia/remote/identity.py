@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from open_somnia.remote.auth import decode_bytes, device_challenge_payload, encode_bytes
+from open_somnia.storage.common import replace_with_retry
 
 
 IDENTITY_VERSION = 1
@@ -110,7 +111,7 @@ class DeviceIdentity:
         try:
             temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
             os.chmod(temporary, 0o600)
-            temporary.replace(self.path)
+            replace_with_retry(temporary, self.path)
             os.chmod(self.path, 0o600)
         finally:
             if temporary.exists():

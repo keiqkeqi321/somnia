@@ -1056,7 +1056,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             manager.spawn("Reporter", "reporter", "Wait for lead input.")
             try:
                 self.assertTrue(idle_called.wait(timeout=1))
-                time.sleep(1.3)
+                time.sleep(1.15)
                 member = manager._find("Reporter")
                 self.assertIsNotNone(member)
                 self.assertTrue(reminder_seen.is_set())

@@ -128,7 +128,7 @@ class DesktopRemoteTests(unittest.TestCase):
         _MockRelayHandler.reset()
         _FakeConnector.instances = []
         _FakeConnector.run_error = None
-        self._temp = TemporaryDirectory()
+        self._temp = TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._temp.cleanup)
         self.root = Path(self._temp.name)
         self.identity_path = self.root / "identity" / "device-identity.json"
@@ -160,18 +160,29 @@ class DesktopRemoteTests(unittest.TestCase):
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(
-            f"{self.server.base_url}{path}", data=data, headers=headers, method=method
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=5.0) as response:
-                return response.status, json.loads(response.read().decode("utf-8") or b"{}")
-        except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read().decode("utf-8") or b"{}")
+        # The endpoints used here are idempotent state setters; tolerate
+        # transient loopback connect refusals seen under full-suite load.
+        last_error: Exception | None = None
+        for attempt in range(5):
+            request = urllib.request.Request(
+                f"{self.server.base_url}{path}", data=data, headers=headers, method=method
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5.0) as response:
+                    return response.status, json.loads(response.read().decode("utf-8") or b"{}")
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8") or b"{}")
+            except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+                last_error = exc
+                if attempt == 4 or not self.server.wait_until_ready(timeout=1.0):
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
 
     def _start_mock_relay(self) -> tuple[ThreadingHTTPServer, str]:
         relay = ThreadingHTTPServer(("127.0.0.1", 0), _MockRelayHandler)
-        thread = Thread(target=relay.serve_forever, name="mock-relay", daemon=True)
+        thread = Thread(target=lambda: relay.serve_forever(poll_interval=0.05), name="mock-relay", daemon=True)
         thread.start()
         self.addCleanup(relay.server_close)
         self.addCleanup(relay.shutdown)
@@ -529,7 +540,12 @@ class DesktopRemoteTests(unittest.TestCase):
         self.assertTrue(connector.started.wait(5.0))
         self.assertEqual(connector.project_id, own_id)
         # No pruning: late sidecars join via the Connector's retrying event pumps.
-        self.assertEqual(set(connector.sidecars), {"desktop-alive", "desktop-dead"})
+        # update_projects lands on the manager thread right after run() starts,
+        # so wait for the propagation instead of racing it.
+        self.assertTrue(
+            wait_until(lambda: set(connector.sidecars) == {"desktop-alive", "desktop-dead"}),
+            f"sidecars not propagated: {connector.sidecars}",
+        )
         restarted_status = restarted.status()
         self.assertEqual(restarted_status["last_error"], "")
         self.assertEqual(
