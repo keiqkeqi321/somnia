@@ -752,7 +752,7 @@ class HookSystemTests(unittest.TestCase):
                 ],
             )
             runtime = OpenAgentRuntime(settings)
-            runtime.execution_mode = "plan"
+            runtime.execution_mode = "shortcuts"
             runtime.authorization_request_handler = lambda **kwargs: {
                 "status": "approved",
                 "scope": "once",
@@ -794,7 +794,7 @@ class HookSystemTests(unittest.TestCase):
                 ],
             )
             runtime = OpenAgentRuntime(settings)
-            runtime.execution_mode = "plan"
+            runtime.execution_mode = "shortcuts"
             runtime.mode_switch_request_handler = lambda **kwargs: {
                 "approved": True,
                 "active_mode": "accept_edits",
@@ -807,9 +807,9 @@ class HookSystemTests(unittest.TestCase):
         self.assertIn('"status": "approved"', result)
         self.assertEqual(payload["event"], "UserChoiceRequested")
         self.assertEqual(payload["choice_type"], "mode_switch")
-        self.assertEqual(payload["choice_payload"]["current_mode"], "plan")
+        self.assertEqual(payload["choice_payload"]["current_mode"], "shortcuts")
         self.assertEqual(payload["choice_payload"]["target_mode"], "accept_edits")
-        self.assertEqual(payload["options"], ["accept_edits", "plan"])
+        self.assertEqual(payload["options"], ["accept_edits", "shortcuts"])
 
     def test_user_choice_requested_hook_runs_for_question_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

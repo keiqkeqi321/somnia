@@ -156,7 +156,6 @@ const COMMAND_SPECS = [
 const PATH_MENTION_PATTERN = /(^|\s)@([^\s]*)$/;
 const EXECUTION_MODE_OPTIONS = [
   { key: "shortcuts", titleKey: "mode.shortcuts.title" as const, descriptionKey: "mode.shortcuts.description" as const },
-  { key: "plan", titleKey: "mode.plan.title" as const, descriptionKey: "mode.plan.description" as const },
   { key: "accept_edits", titleKey: "mode.acceptEdits.title" as const, descriptionKey: "mode.acceptEdits.description" as const },
   { key: "yolo", titleKey: "mode.yolo.title" as const, descriptionKey: "mode.yolo.description" as const },
 ] as const;

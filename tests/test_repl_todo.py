@@ -1065,8 +1065,6 @@ class ReplTodoTests(unittest.TestCase):
         runner.cycle_execution_mode()
         self.assertEqual(runner.current_execution_mode().key, "shortcuts")
         runner.cycle_execution_mode()
-        self.assertEqual(runner.current_execution_mode().key, "plan")
-        runner.cycle_execution_mode()
         self.assertEqual(runner.current_execution_mode().key, "accept_edits")
         self.assertEqual(runtime.execution_mode, "accept_edits")
 
@@ -1640,7 +1638,7 @@ class ReplTodoTests(unittest.TestCase):
                 runner.request_mode_switch(
                     target_mode="accept_edits",
                     reason="Plan is complete",
-                    current_mode="plan",
+                    current_mode="shortcuts",
                 ),
             )
         )
@@ -1752,13 +1750,13 @@ class ReplTodoTests(unittest.TestCase):
         )
         runtime = SimpleNamespace(
             settings=SimpleNamespace(provider=SimpleNamespace(name="anthropic", model="glm-5")),
-            execution_mode="plan",
+            execution_mode="shortcuts",
         )
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True, service=service)
         runner._mode_switch_requests.append(
             ModeSwitchRequest(
                 target_mode="accept_edits",
-                current_mode="plan",
+                current_mode="shortcuts",
                 reason="Ready to implement",
                 completed=Event(),
                 request_id="mode-1",
@@ -1795,7 +1793,7 @@ class ReplTodoTests(unittest.TestCase):
         mock_print.assert_not_called()
 
     def test_mutating_command_requires_accept_edits_mode(self) -> None:
-        runtime = SimpleNamespace(execution_mode="plan")
+        runtime = SimpleNamespace(execution_mode="shortcuts")
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
 
         with patch("open_somnia.cli.repl.choose_mode_switch_interactively", return_value="stay"), patch(
@@ -1808,7 +1806,7 @@ class ReplTodoTests(unittest.TestCase):
             )
 
         self.assertFalse(allowed)
-        self.assertEqual(runner.current_execution_mode().key, "plan")
+        self.assertEqual(runner.current_execution_mode().key, "shortcuts")
         self.assertIn("/rollback requires", mock_print.call_args[0][0])
 
     def test_mutating_command_can_switch_into_accept_edits_mode(self) -> None:

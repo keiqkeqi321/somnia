@@ -52,7 +52,7 @@ function relayResultFor(method: string): unknown {
     case "interaction.list":
       return { interactions: [] };
     case "execution.mode":
-      return { message: "Execution mode set.", execution_mode: "plan", execution_mode_title: "Plan mode" };
+      return { message: "Execution mode set.", execution_mode: "shortcuts", execution_mode_title: "For shortcuts" };
     case "settings.config.get":
       return contractSettingsConfig;
     case "settings.config.save":
@@ -146,7 +146,7 @@ describe("Remote Somnia Connection", () => {
     await expect(connection.setVisionModel("openai", "vision-test")).resolves.toBeDefined();
     await expect(connection.setReasoningLevel("high")).resolves.toBeDefined();
     await expect(connection.listInteractions()).resolves.toEqual([]);
-    await expect(connection.setExecutionMode("plan")).resolves.toMatchObject({ execution_mode: "plan" });
+    await expect(connection.setExecutionMode("shortcuts")).resolves.toMatchObject({ execution_mode: "shortcuts" });
     connection.close();
   });
 

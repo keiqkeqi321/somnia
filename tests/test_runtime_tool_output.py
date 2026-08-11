@@ -603,7 +603,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             provider=SimpleNamespace(name="openai", model="kimi-k2.5"),
         )
         runtime.mcp_registry = SimpleNamespace(all_servers=[], server_tools={})
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
         runtime.current_working_file_context = lambda: (
             "Active working file cache:\n"
@@ -1370,7 +1370,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
     def test_authorize_tool_call_blocks_gitnexus_mcp_tools_by_default(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1406,9 +1406,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("requires broader tool access", group_sync_blocked)
         self.assertIn("requires broader tool access", blocked_other_mcp)
 
-    def test_authorize_tool_call_blocks_file_edits_in_plan_mode(self) -> None:
+    def test_authorize_tool_call_blocks_file_edits_in_read_only_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1456,7 +1456,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
-        for mode in ("shortcuts", "plan", "accept_edits"):
+        for mode in ("shortcuts", "accept_edits"):
             runtime.execution_mode = mode
             with self.subTest(mode=mode):
                 result = OpenAgentRuntime.authorize_tool_call(
@@ -1498,9 +1498,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIsNone(shutdown)
         self.assertIsNone(approval)
 
-    def test_authorize_tool_call_blocks_task_mutations_in_plan_mode(self) -> None:
+    def test_authorize_tool_call_blocks_task_mutations_in_read_only_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1513,9 +1513,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("persistent task mutations are not allowed", blocked)
         self.assertIn("request_mode_switch", blocked)
 
-    def test_authorize_tool_call_blocks_team_collaboration_tools_in_plan_mode(self) -> None:
+    def test_authorize_tool_call_blocks_team_collaboration_tools_in_read_only_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1528,9 +1528,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertIn("agent-team collaboration tools are not allowed", blocked)
         self.assertIn("request_mode_switch", blocked)
 
-    def test_authorize_tool_call_blocks_explore_subagent_in_plan_mode(self) -> None:
+    def test_authorize_tool_call_blocks_explore_subagent_in_read_only_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1542,9 +1542,9 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertIn("requires explicit user approval", blocked)
 
-    def test_authorize_tool_call_blocks_general_purpose_subagent_in_plan_mode(self) -> None:
+    def test_authorize_tool_call_blocks_general_purpose_subagent_in_read_only_mode(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
 
@@ -1623,7 +1623,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
     def test_request_authorization_grants_workspace_scope(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
         runtime.authorization_request_handler = lambda **kwargs: {
@@ -1975,7 +1975,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         data_dir = root / ".open_somnia"
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
         runtime.authorization_request_handler = lambda **kwargs: {
@@ -2008,7 +2008,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
@@ -2033,7 +2033,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         builtin_path.write_text(json.dumps({"allow": ["mcp__codegraph__*"]}), encoding="utf-8")
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
@@ -2062,7 +2062,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.BUILTIN_PERMISSIONS_FILE = builtin_path
         runtime.settings = SimpleNamespace(storage=SimpleNamespace(data_dir=data_dir))
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime._builtin_authorized_tools = OpenAgentRuntime._load_builtin_authorizations(runtime)
         runtime._workspace_authorized_tools = set()
         runtime._once_authorized_tools = {}
@@ -2079,7 +2079,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
     def test_request_mode_switch_rejects_yolo_target(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
 
         result = OpenAgentRuntime.request_mode_switch(runtime, "yolo", "Need full autonomy")
 
@@ -2087,7 +2087,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
     def test_request_mode_switch_updates_runtime_mode_when_approved(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime.mode_switch_request_handler = lambda **kwargs: {
             "approved": True,
             "active_mode": "accept_edits",
@@ -2104,11 +2104,19 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.execution_mode = "accept_edits"
         runtime.mode_switch_request_handler = lambda **kwargs: self.fail("downgrade should not require prompting")
 
-        result = OpenAgentRuntime.request_mode_switch(runtime, "plan", "Implementation is complete")
+        result = OpenAgentRuntime.request_mode_switch(runtime, "shortcuts", "Implementation is complete")
 
         self.assertIn('"status": "approved"', result)
-        self.assertIn('"current_mode": "plan"', result)
-        self.assertEqual(runtime.execution_mode, "plan")
+        self.assertIn('"current_mode": "shortcuts"', result)
+        self.assertEqual(runtime.execution_mode, "shortcuts")
+
+    def test_legacy_plan_mode_normalizes_to_shortcuts(self) -> None:
+        from open_somnia.runtime.execution_mode import normalize_execution_mode
+
+        self.assertEqual(normalize_execution_mode("plan"), "shortcuts")
+        self.assertEqual(normalize_execution_mode(" Plan "), "shortcuts")
+        self.assertEqual(normalize_execution_mode("shortcuts"), "shortcuts")
+        self.assertEqual(normalize_execution_mode("bogus"), "accept_edits")
 
     def test_build_system_prompt_is_stable_after_mode_switch(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -2118,7 +2126,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
             provider=SimpleNamespace(name="openai", model="kimi-k2.5"),
         )
         runtime.skill_loader = SimpleNamespace(descriptions=lambda: "none")
-        runtime.execution_mode = "plan"
+        runtime.execution_mode = "shortcuts"
         runtime.mode_switch_request_handler = lambda **kwargs: {
             "approved": True,
             "active_mode": "accept_edits",

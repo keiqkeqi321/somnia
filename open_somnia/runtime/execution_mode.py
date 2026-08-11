@@ -6,8 +6,8 @@ DEFAULT_EXECUTION_MODE = "accept_edits"
 AUTHORIZATION_TOOL_NAME = "request_authorization"
 MODE_SWITCH_TOOL_NAME = "request_mode_switch"
 ASK_USER_QUESTION_TOOL_NAME = "ask_user_question"
-EXECUTION_MODE_ORDER = ("shortcuts", "plan", "accept_edits", "yolo")
-NON_YOLO_EXECUTION_MODES = ("shortcuts", "plan", "accept_edits")
+EXECUTION_MODE_ORDER = ("shortcuts", "accept_edits", "yolo")
+NON_YOLO_EXECUTION_MODES = ("shortcuts", "accept_edits")
 READ_ONLY_TOOL_NAMES = frozenset(
     {
         "tree",
@@ -68,8 +68,7 @@ class ExecutionModeSpec:
 
 
 SHORTCUTS_BADGE = "?"
-PLAN_BADGE = "\u23f8"
-ACCEPT_EDITS_BADGE = "\u23f5\u23f5"
+ACCEPT_EDITS_BADGE = "⏵⏵"
 YOLO_BADGE = "!"
 
 
@@ -86,23 +85,7 @@ EXECUTION_MODES: dict[str, ExecutionModeSpec] = {
             "- Keep workspace files read-only.\n"
             "- Use lightweight, read-only tools only.\n"
             "- Use request_authorization for one-off blocked tool calls.\n"
-            "- Use request_mode_switch when the task has clearly moved into planning or implementation."
-        ),
-    ),
-    "plan": ExecutionModeSpec(
-        key="plan",
-        badge=PLAN_BADGE,
-        label="plan mode on",
-        color="fg:#22d3ee bold",
-        ansi_color="\x1b[38;5;51m",
-        guidance=(
-            "Execution mode:\n"
-            "- Current mode: \u23f8 plan mode on.\n"
-            "- Keep workspace files read-only.\n"
-            "- Inspect context with read-only tools when needed.\n"
-            "- Return a concrete implementation plan before asking for a higher-permission mode.\n"
-            "- Use request_mode_switch to move into accept_edits when the user confirms implementation.\n"
-            "- Use request_authorization only for isolated blocked tool calls that do not change the overall phase."
+            "- Use request_mode_switch when the task has clearly moved into implementation."
         ),
     ),
     "accept_edits": ExecutionModeSpec(
@@ -119,7 +102,7 @@ EXECUTION_MODES: dict[str, ExecutionModeSpec] = {
             "- You may also use agent-team collaboration tools such as teammate spawn, inbox, and messaging.\n"
             "- You may also run shell commands in the background with background_run.\n"
             "- Treat blocked non-edit tools as one-off exceptions that require request_authorization.\n"
-            "- Use request_mode_switch only to move back to shortcuts, plan, or remain in accept_edits.\n"
+            "- Use request_mode_switch only to move back to shortcuts or remain in accept_edits.\n"
         ),
     ),
     "yolo": ExecutionModeSpec(
@@ -138,8 +121,15 @@ EXECUTION_MODES: dict[str, ExecutionModeSpec] = {
 }
 
 
+# Removed modes map to their nearest surviving permission level. Never let a
+# legacy persisted value escalate: "plan" was read-only, so it degrades to
+# "shortcuts" rather than falling through to DEFAULT_EXECUTION_MODE.
+LEGACY_EXECUTION_MODE_ALIASES = {"plan": "shortcuts"}
+
+
 def normalize_execution_mode(mode: str | None) -> str:
     key = str(mode or DEFAULT_EXECUTION_MODE).strip().lower()
+    key = LEGACY_EXECUTION_MODE_ALIASES.get(key, key)
     return key if key in EXECUTION_MODES else DEFAULT_EXECUTION_MODE
 
 

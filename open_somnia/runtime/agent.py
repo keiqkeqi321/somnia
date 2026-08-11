@@ -2739,7 +2739,7 @@ class OpenAgentRuntime:
             ToolDefinition(
                 name=MODE_SWITCH_TOOL_NAME,
                 description=(
-                    "Request that the user switch execution mode to shortcuts, plan, or accept_edits only."
+                    "Request that the user switch execution mode to shortcuts or accept_edits only."
                 ),
                 input_schema={
                     "type": "object",
