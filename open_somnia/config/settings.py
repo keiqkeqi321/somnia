@@ -144,8 +144,26 @@ def global_hooks_root() -> Path:
     return Path.home() / APP_DIRNAME / HOOKS_DIRNAME
 
 
+def _strip_windows_verbatim_prefix(path_str: str) -> str:
+    """Strip a Windows verbatim ``\\\\?\\`` prefix so a workspace path hashes
+    identically regardless of how the caller resolved it.
+
+    Rust's ``std::fs::canonicalize`` (used by the Tauri sidecar) returns a
+    verbatim ``\\\\?\\D:\\...`` path on Windows, and Python's ``Path.resolve()``
+    preserves that prefix. Without stripping, ``project_state_key`` would hash
+    the same directory to two different keys (the CLI passes ``D:\\...``; the
+    desktop sidecar passes ``\\\\?\\D:\\...``), so the desktop would read an
+    empty sibling state dir. ``os.path.normcase`` does not remove the prefix.
+    """
+    if path_str.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path_str[len("\\\\?\\UNC\\"):]
+    if path_str.startswith("\\\\?\\"):
+        return path_str[len("\\\\?\\"):]
+    return path_str
+
+
 def project_state_key(workspace_root: Path) -> str:
-    resolved = Path(os.path.normcase(str(workspace_root.resolve())))
+    resolved = Path(os.path.normcase(_strip_windows_verbatim_prefix(str(workspace_root.resolve()))))
     digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:10]
     drive = resolved.drive.rstrip(":").rstrip("\\").lower()
     parts = [part for part in resolved.parts if part not in (resolved.anchor, resolved.drive)]
