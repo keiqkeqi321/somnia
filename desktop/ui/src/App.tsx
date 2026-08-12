@@ -5056,7 +5056,7 @@ function TaskGraphWorkspacePanel({ tasks, onClose }: { tasks: TaskGraphItem[]; o
       <div className="task-graph-workspace-canvas">
         <TaskGraphSvg graph={graph} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
       </div>
-      {selectedTask ? <TaskGraphDetail task={selectedTask} onClose={() => setSelectedTaskId(null)} /> : null}
+      {selectedTask ? <TaskGraphDetail task={selectedTask} tasks={sortedTasks} onClose={() => setSelectedTaskId(null)} /> : null}
     </section>
   );
 }
@@ -5098,7 +5098,7 @@ function TaskGraphSvg({
         {graph.nodes.map((node) => (
           <g
             key={node.task.id}
-            className={`task-graph-node ${taskStatus(node.task)} ${selectedTaskId === node.task.id ? "selected" : ""}`}
+            className={`task-graph-node ${taskStatus(node.task)} ${selectedTaskId === node.task.id ? "selected" : ""} ${(node.task.labels ?? []).includes("ready-for-agent") ? "ready" : ""}`}
             transform={`translate(${node.x} ${node.y})`}
             role="button"
             tabIndex={0}
@@ -5130,9 +5130,23 @@ function TaskGraphSvg({
   );
 }
 
-function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () => void }) {
+function TaskGraphDetail({ task, tasks, onClose }: { task: TaskGraphItem; tasks: TaskGraphItem[]; onClose: () => void }) {
   const { t } = useI18n();
   const blockedBy = task.blockedBy ?? [];
+  const taskById = new Map(tasks.map((item) => [Number(item.id), item]));
+  const acceptance = Array.isArray(task.acceptance) ? task.acceptance : [];
+  const acceptanceDone = Array.isArray(task.acceptance_done) ? task.acceptance_done : [];
+  const labels = Array.isArray(task.labels) ? task.labels : [];
+  const blockerLabel = (id: number) => {
+    const blocker = taskById.get(Number(id));
+    if (!blocker) return `#${id}`;
+    return `#${id} ${blocker.subject ?? ""} (${taskStatusLabel(taskStatus(blocker))})`;
+  };
+  const parent = (() => {
+    if (!task.parent_id) return null;
+    const parentTask = taskById.get(Number(task.parent_id));
+    return parentTask ? `#${task.parent_id} ${parentTask.subject ?? ""}` : `#${task.parent_id}`;
+  })();
   return (
     <section className="task-graph-detail">
       <div className="task-graph-detail-head">
@@ -5156,8 +5170,53 @@ function TaskGraphDetail({ task, onClose }: { task: TaskGraphItem; onClose: () =
         </div>
         <div>
           <dt>{t("taskGraph.blockedBy")}</dt>
-          <dd>{blockedBy.length ? blockedBy.map((id) => `#${id}`).join(", ") : t("taskGraph.none")}</dd>
+          <dd>{blockedBy.length ? blockedBy.map(blockerLabel).join(", ") : t("taskGraph.none")}</dd>
         </div>
+        {acceptance.length > 0 ? (
+          <div>
+            <dt>{t("taskGraph.acceptance")}</dt>
+            <dd>
+              {acceptanceDone.filter(Boolean).length}/{acceptance.length}
+              <ul className="task-graph-acceptance-list">
+                {acceptance.map((item, index) => (
+                  <li key={index} className={acceptanceDone[index] ? "checked" : ""}>
+                    {acceptanceDone[index] ? "☑" : "☐"} {item}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        ) : null}
+        {labels.length > 0 ? (
+          <div>
+            <dt>{t("taskGraph.labels")}</dt>
+            <dd>{labels.join(", ")}</dd>
+          </div>
+        ) : null}
+        {task.spec_id ? (
+          <div>
+            <dt>{t("taskGraph.spec")}</dt>
+            <dd>{task.spec_id}</dd>
+          </div>
+        ) : null}
+        {parent ? (
+          <div>
+            <dt>{t("taskGraph.parent")}</dt>
+            <dd>{parent}</dd>
+          </div>
+        ) : null}
+        {task.result ? (
+          <div>
+            <dt>{t("taskGraph.result")}</dt>
+            <dd>{task.result}</dd>
+          </div>
+        ) : null}
+        {task.commit_ref ? (
+          <div>
+            <dt>{t("taskGraph.commit")}</dt>
+            <dd>{task.commit_ref}</dd>
+          </div>
+        ) : null}
       </dl>
     </section>
   );
@@ -7487,7 +7546,11 @@ function svgLine(text: string, limit: number): string {
 
 function taskNodeMeta(task: TaskGraphItem, limit: number): string {
   const owner = task.owner ? `@${task.owner}` : task.preferred_owner ? `prefers ${task.preferred_owner}` : "unassigned";
-  return compactInlineText(owner, limit);
+  const acceptance = Array.isArray(task.acceptance) ? task.acceptance : [];
+  const accTag = acceptance.length > 0 ? ` · ${((task.acceptance_done ?? []).filter(Boolean)).length}/${acceptance.length}` : "";
+  const labels = Array.isArray(task.labels) ? task.labels : [];
+  const ready = labels.includes("ready-for-agent") ? " · ready" : "";
+  return compactInlineText(`${owner}${accTag}${ready}`, limit);
 }
 
 function removeProjectActivityKeys<T>(state: Record<string, T>, projectPath: string): Record<string, T> {

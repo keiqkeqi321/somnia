@@ -35,6 +35,74 @@ def _render_task_list(tasks: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: max(0, limit - 1)] + "\u2026"
+
+
+def render_task_board(tasks: list[dict[str, Any]]) -> str:
+    """Human-friendly task board for the REPL: at most two lines per task.
+
+    Line 1: status marker, id, subject, owner, acceptance progress, ready/labels.
+    Line 2 (when useful): the blockers with their subject + status (the "key info"
+    -- you can see whether what you're waiting on is close or far), or the closure
+    note for completed tasks. Blocker subjects are resolved from the passed list.
+    """
+    if not tasks:
+        return "No tasks."
+    by_id = {int(task.get("id", 0)): task for task in tasks}
+    lines: list[str] = []
+    for task in sorted(tasks, key=lambda item: int(item.get("id", 0))):
+        lines.append(_task_board_line(task))
+        secondary = _task_board_secondary(task, by_id)
+        if secondary:
+            lines.append(secondary)
+    return "\n".join(lines)
+
+
+def _task_board_line(task: dict[str, Any]) -> str:
+    marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(task.get("status"), "[?]")
+    subject = _truncate(str(task.get("subject") or "Untitled"), 52)
+    owner = f" @{task['owner']}" if task.get("owner") else ""
+    acceptance = task.get("acceptance") or []
+    acc_tag = ""
+    if acceptance:
+        done = sum(1 for value in (task.get("acceptance_done") or []) if value)
+        acc_tag = f" [{done}/{len(acceptance)}]"
+    labels = task.get("labels") or []
+    ready = " ready" if "ready-for-agent" in labels else ""
+    other = [lbl for lbl in labels if lbl != "ready-for-agent"]
+    labels_tag = f" {{{', '.join(other)}}}" if other else ""
+    return f"{marker} #{task.get('id')}: {subject}{owner}{acc_tag}{ready}{labels_tag}"
+
+
+def _task_board_secondary(task: dict[str, Any], by_id: dict[int, dict[str, Any]]) -> str:
+    status = task.get("status")
+    if status == "completed":
+        note = str(task.get("result") or "").strip()
+        commit = str(task.get("commit_ref") or "").strip()
+        parts = []
+        if note:
+            parts.append(f"result: {_truncate(note, 60)}")
+        if commit:
+            parts.append(f"commit: {_truncate(commit, 40)}")
+        return f"    \u21b3 {' \u00b7 '.join(parts)}" if parts else ""
+    blocked = [int(b) for b in (task.get("blockedBy") or [])]
+    if not blocked:
+        return ""
+    pieces: list[str] = []
+    for blocker_id in blocked:
+        blocker = by_id.get(blocker_id)
+        if blocker is None:
+            pieces.append(f"#{blocker_id} (missing)")
+            continue
+        blocker_subject = _truncate(str(blocker.get("subject") or "Untitled"), 24)
+        blocker_status = {"pending": "pending", "in_progress": "in_progress", "completed": "done"}.get(
+            blocker.get("status"), str(blocker.get("status"))
+        )
+        pieces.append(f"#{blocker_id} '{blocker_subject}' {blocker_status}")
+    return "    \u21b3 blocked by " + ", ".join(pieces)
+
+
 def register_task_tools(registry, task_store, *, allow_dep_removal: bool = True) -> None:
     def _context_session_id(ctx: Any) -> str | None:
         session_id = getattr(getattr(ctx, "session", None), "id", None)

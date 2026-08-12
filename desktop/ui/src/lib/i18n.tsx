@@ -308,6 +308,12 @@ const translations = {
     "taskGraph.none": "none",
     "taskGraph.inProgress": "in progress",
     "taskGraph.panelLabel": "TaskGraph panel",
+    "taskGraph.acceptance": "Acceptance",
+    "taskGraph.labels": "Labels",
+    "taskGraph.spec": "Spec",
+    "taskGraph.parent": "Parent",
+    "taskGraph.result": "Result",
+    "taskGraph.commit": "Commit",
 
     /* ── Execution activity ── */
     "activity.executionActivity": "Execution Activity",
@@ -748,6 +754,12 @@ const translations = {
     "taskGraph.none": "无",
     "taskGraph.inProgress": "进行中",
     "taskGraph.panelLabel": "任务图面板",
+    "taskGraph.acceptance": "验收",
+    "taskGraph.labels": "标签",
+    "taskGraph.spec": "规格",
+    "taskGraph.parent": "父任务",
+    "taskGraph.result": "结果",
+    "taskGraph.commit": "提交",
 
     /* ── Execution activity ── */
     "activity.executionActivity": "执行活动",

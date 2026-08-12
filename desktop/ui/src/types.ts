@@ -233,6 +233,13 @@ export interface TaskGraphItem {
   preferred_owner?: string | null;
   session_id?: string | null;
   blockedBy?: number[];
+  acceptance?: string[];
+  acceptance_done?: boolean[];
+  spec_id?: string | null;
+  labels?: string[];
+  result?: string | null;
+  commit_ref?: string | null;
+  parent_id?: number | null;
   created_at?: number;
   updated_at?: number;
   [key: string]: unknown;

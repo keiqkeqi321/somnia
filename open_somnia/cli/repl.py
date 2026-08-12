@@ -66,6 +66,7 @@ from open_somnia.runtime.messages import (
 )
 from open_somnia.runtime.project_init import build_project_init_prompt
 from open_somnia.tools.filesystem import safe_path
+from open_somnia.tools.tasks import render_task_board
 from open_somnia.tools.todo import TODO_CLOSED_STATUSES, TODO_STATUS_MARKERS, TODO_VISIBLE_STATUSES
 
 try:
@@ -3175,11 +3176,7 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     continue
                 if stripped == "/tasks":
                     tasks = runtime.task_store.list_all()
-                    if not tasks:
-                        print("No tasks.")
-                    else:
-                        for task in tasks:
-                            print(json.dumps(task, ensure_ascii=False, indent=2))
+                    print(render_task_board(tasks))
                     continue
                 if stripped == "/team":
                     print(runtime.team_manager.list_all(session_id=session.id))
