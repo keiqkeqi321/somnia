@@ -431,8 +431,6 @@ const translations = {
     /* ── Execution mode options ── */
     "mode.shortcuts.title": "? for shortcuts",
     "mode.shortcuts.description": "Read-only shortcuts and lightweight inspection.",
-    "mode.plan.title": "⏸ plan mode on",
-    "mode.plan.description": "Read-only planning before edits.",
     "mode.acceptEdits.title": "⏵⏵ accept edits on",
     "mode.acceptEdits.description": "Allow file edits and task updates.",
     "mode.yolo.title": "! Yolo",
@@ -873,8 +871,6 @@ const translations = {
     /* ── Execution mode options ── */
     "mode.shortcuts.title": "? 快捷键",
     "mode.shortcuts.description": "只读快捷键和轻量检查。",
-    "mode.plan.title": "⏸ 规划模式",
-    "mode.plan.description": "编辑前的只读规划。",
     "mode.acceptEdits.title": "⏵⏵ 允许编辑",
     "mode.acceptEdits.description": "允许文件编辑和任务更新。",
     "mode.yolo.title": "! Yolo",

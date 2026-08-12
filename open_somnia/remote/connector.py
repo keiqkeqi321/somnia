@@ -292,7 +292,7 @@ class LocalSidecarBridge:
             )
         if method == "execution.mode":
             mode = _required_text(params, "mode").lower()
-            if mode not in {"shortcuts", "plan", "accept_edits", "yolo"}:
+            if mode not in {"shortcuts", "accept_edits", "yolo"}:
                 raise ValueError("Unsupported remote execution mode.")
             return self._request("POST", "/execution-mode", {"mode": mode})
         if method == "workspace.paths":

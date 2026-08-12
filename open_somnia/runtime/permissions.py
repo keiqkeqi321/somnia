@@ -221,7 +221,7 @@ class PermissionManager:
         if normalized_target == "yolo" or normalized_target not in NON_YOLO_EXECUTION_MODES:
             return (
                 "Mode switch request failed: target_mode must be one of "
-                "'shortcuts', 'plan', or 'accept_edits'."
+                "'shortcuts' or 'accept_edits'."
             )
         current_mode = normalize_execution_mode(getattr(self.runtime, "execution_mode", DEFAULT_EXECUTION_MODE))
         if normalized_target == current_mode:

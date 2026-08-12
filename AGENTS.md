@@ -115,12 +115,16 @@ Do not change storage shape without updating load/save paths.
 
 ## REPL Execution Modes
 
-Four modes ordered by risk (`Shift+Tab` cycles):
+Three modes ordered by risk (`Shift+Tab` cycles):
 
 1. `? shortcuts` — read-only workspace access
-2. `⏸ plan mode` — read-only + planning-first
-3. `⏵⏵ accept edits` — file edits, task mutations, team collaboration
-4. `! Yolo` — full autonomy
+2. `⏵⏵ accept edits` — file edits, task mutations, team collaboration
+3. `! Yolo` — full autonomy
+
+(The former `⏸ plan mode` was removed: its tool gating was identical to
+shortcuts, so it carried no real constraint. Legacy persisted `plan` values
+normalize to `shortcuts` — degraded, never escalated. Planning discipline is
+expected to come from skills and tracker artifacts, not from a permission mode.)
 
 Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode switches via `request_mode_switch`. "Allow in this workspace" persists to `.open_somnia/permissions.json`.
 

@@ -315,7 +315,6 @@ Somnia 的交互式 REPL 将执行权限按风险分层，`Shift+Tab` 可循环�
 | 模式 | 说明 |
 | --- | --- |
 | `? shortcuts` | 只读工作区访问 |
-| `plan mode` | 只读 + 先规划 |
 | `accept edits` | 允许文件编辑、任务变更和协作操作 |
 | `Yolo` | 全自动执行 |
 

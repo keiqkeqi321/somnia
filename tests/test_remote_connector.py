@@ -498,7 +498,7 @@ class RemoteConnectorTests(unittest.TestCase):
                 ),
                 {"resolved": True, "approved": True, "active_mode": "yolo"},
             )
-            self.assertEqual(bridge.execute("execution.mode", {"mode": "plan"}), {"message": "Execution mode set.", "execution_mode": "plan"})
+            self.assertEqual(bridge.execute("execution.mode", {"mode": "shortcuts"}), {"message": "Execution mode set.", "execution_mode": "shortcuts"})
             self.assertEqual(bridge.execute("execution.mode", {"mode": "yolo"}), {"message": "Execution mode set.", "execution_mode": "yolo"})
             with self.assertRaisesRegex(ValueError, "Unsupported remote execution mode"):
                 bridge.execute("execution.mode", {"mode": "bogus"})
