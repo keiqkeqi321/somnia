@@ -35,7 +35,7 @@ def _render_task_list(tasks: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def register_task_tools(registry, task_store) -> None:
+def register_task_tools(registry, task_store, *, allow_dep_removal: bool = True) -> None:
     def _context_session_id(ctx: Any) -> str | None:
         session_id = getattr(getattr(ctx, "session", None), "id", None)
         if session_id:
@@ -84,13 +84,15 @@ def register_task_tools(registry, task_store) -> None:
         )
 
     def update_task(ctx: Any, payload: dict[str, Any]) -> str:
-        if payload.get("add_blocked_by") or payload.get("blocked_by") or payload.get("depends_on"):
-            raise ValueError("Task dependencies must be declared with task_create_batch; dependency updates are not allowed")
+        # Removing dependency edges is gated behind task_remove_blocked_by (it
+        # triggers request_authorization); task_update may only add edges.
+        if payload.get("remove_blocked_by") or payload.get("depends_on"):
+            raise ValueError("Removing dependency edges is not supported here; use task_remove_blocked_by.")
         session_id = _context_session_id(ctx)
         task = task_store.update(
             int(payload["task_id"]),
             payload.get("status"),
-            None,
+            payload.get("add_blocked_by"),
             None,
             payload.get("preferred_owner"),
             acceptance_done=payload.get("acceptance_done"),
@@ -98,6 +100,7 @@ def register_task_tools(registry, task_store) -> None:
             spec_id=payload.get("spec_id"),
             result=payload.get("result"),
             commit_ref=payload.get("commit_ref"),
+            parent_id=payload.get("parent_id"),
             session_id=session_id,
         )
         if payload.get("status") == "completed":
@@ -119,6 +122,41 @@ def register_task_tools(registry, task_store) -> None:
             require_ready_label=not force,
         )
         return f"Claimed task #{task['id']} for {owner}"
+
+    def remove_blocked_by_task(ctx: Any, payload: dict[str, Any]) -> str:
+        session_id = _context_session_id(ctx)
+        task = task_store.update(
+            int(payload["task_id"]),
+            remove_blocked_by=payload.get("remove") or payload.get("remove_blocked_by"),
+            session_id=session_id,
+        )
+        # Removing a blocker may unblock this (or another) task -> re-run auto-assign.
+        _assign_claimable(ctx, session_id)
+        return json.dumps(task, indent=2, ensure_ascii=False)
+
+    def claimable_tasks(ctx: Any, payload: dict[str, Any]) -> str:
+        session_id = _context_session_id(ctx)
+        claimable = task_store.list_claimable(session_id=session_id)
+        ready = [t for t in claimable if "ready-for-agent" in (t.get("labels") or [])]
+        not_ready = [t for t in claimable if "ready-for-agent" not in (t.get("labels") or [])]
+        return json.dumps(
+            {"ready_for_agent": ready, "claimable_unspecced": not_ready},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    def close_task(ctx: Any, payload: dict[str, Any]) -> str:
+        session_id = _context_session_id(ctx)
+        task = task_store.update(
+            int(payload["task_id"]),
+            "completed",
+            acceptance_done=payload.get("acceptance_done"),
+            result=payload.get("result"),
+            commit_ref=payload.get("commit_ref"),
+            session_id=session_id,
+        )
+        _assign_claimable(ctx, session_id)
+        return json.dumps(task, indent=2, ensure_ascii=False)
 
     registry.register(
         ToolDefinition(
@@ -145,6 +183,7 @@ def register_task_tools(registry, task_store) -> None:
                                 },
                                 "spec_id": {"type": "string", "description": "Free-form slug grouping this task under a spec/feature/epic."},
                                 "labels": {"type": "array", "items": {"type": "string"}, "description": "Free-form labels; use 'ready-for-agent' to make the task auto-claimable."},
+                                "parent_id": {"type": ["integer", "string"], "description": "Parent (map/epic) task id or earlier task key."},
                             },
                             "required": ["subject"],
                         },
@@ -171,9 +210,10 @@ def register_task_tools(registry, task_store) -> None:
         ToolDefinition(
             name="task_update",
             description=(
-                "Update a task: status, preferred owner, acceptance checks, labels, spec_id, or closure notes "
-                "(result / commit_ref). Closing (status=completed) requires all acceptance criteria checked and "
-                "all blockers completed. Dependency edges are declared with task_create_batch and cannot be changed."
+                "Update a task: status, preferred owner, acceptance checks, labels, spec_id, closure notes "
+                "(result / commit_ref), add dependency edges, or parent. Closing (status=completed) requires all "
+                "acceptance criteria checked and all blockers completed. Adding edges is allowed here; removing "
+                "edges requires task_remove_blocked_by (it asks the user for approval)."
             ),
             input_schema={
                 "type": "object",
@@ -193,6 +233,15 @@ def register_task_tools(registry, task_store) -> None:
                     "spec_id": {"type": "string"},
                     "result": {"type": "string", "description": "Closure note: what was done, anything notable. Written when completing the task."},
                     "commit_ref": {"type": "string", "description": "Commit SHA / branch / PR link for the work that closed this task."},
+                    "add_blocked_by": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Add dependency edges: these tasks must complete before this one.",
+                    },
+                    "parent_id": {
+                        "type": "integer",
+                        "description": "Set this task's parent (map/epic) task id. Use 0 to clear.",
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -225,3 +274,56 @@ def register_task_tools(registry, task_store) -> None:
             handler=claim_task,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name="task_claimable",
+            description="Show the work frontier: tasks that are pending, unowned, and unblocked, split into ready-for-agent (auto-claimable) and unspecced-but-unblocked.",
+            input_schema={"type": "object", "properties": {}},
+            handler=claimable_tasks,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="task_close",
+            description="Close a task as completed. Requires all acceptance criteria checked and all blockers completed. Optionally record a result note and commit_ref.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "acceptance_done": {
+                        "type": "array",
+                        "items": {"type": "boolean"},
+                        "description": "Replace the whole acceptance check list; length must match the task's acceptance criteria.",
+                    },
+                    "result": {"type": "string", "description": "Closure note: what was done, anything notable."},
+                    "commit_ref": {"type": "string", "description": "Commit SHA / branch / PR link for the work that closed this task."},
+                },
+                "required": ["task_id"],
+            },
+            handler=close_task,
+        )
+    )
+    if allow_dep_removal:
+        registry.register(
+            ToolDefinition(
+                name="task_remove_blocked_by",
+                description=(
+                    "Remove dependency edges from a task (re-plan its blockers). This reorganizes the plan, so it "
+                    "requires explicit user approval (request_authorization) outside Yolo. Removing a blocker may "
+                    "unblock this task and trigger auto-assignment."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "integer"},
+                        "remove": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "Task ids to remove from this task's blocked-by list.",
+                        },
+                    },
+                    "required": ["task_id"],
+                },
+                handler=remove_blocked_by_task,
+            )
+        )

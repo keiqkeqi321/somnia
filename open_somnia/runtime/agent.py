@@ -2696,7 +2696,7 @@ class OpenAgentRuntime:
         register_shell_tool(registry)
         register_filesystem_tools(registry)
         register_web_fetch_tool(registry)
-        register_task_tools(registry, self.task_store)
+        register_task_tools(registry, self.task_store, allow_dep_removal=False)
         self._register_worker_local_tools(registry)
 
     def _register_local_tools(self, registry: ToolRegistry) -> None:

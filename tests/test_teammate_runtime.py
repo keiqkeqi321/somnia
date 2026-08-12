@@ -1331,7 +1331,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual(task_store.incomplete_blockers(created["id"], session_id="session-1"), [])
             self.assertEqual([item["id"] for item in task_store.list_claimable(session_id="session-1")], [created["id"]])
 
-    def test_dependency_updates_are_rejected(self) -> None:
+    def test_add_blocked_by_allowed_for_pending_gated_for_started_and_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
             blocker = task_store.create("Dependency", session_id="session-1")
@@ -1342,11 +1342,14 @@ class TeammateRuntimeTests(unittest.TestCase):
             task_store.claim(started["id"], "Worker", session_id="session-1")
             task_store.update(done["id"], status="completed", session_id="session-1")
 
-            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
-                task_store.update(pending["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
-            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
+            # Adding a dependency edge to a pending task is allowed (mutable deps).
+            updated = task_store.update(pending["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
+            self.assertEqual(updated["blockedBy"], [blocker["id"]])
+            # Adding an *incomplete* blocker to an in_progress / completed task is
+            # rejected by the blocker gate, not by an immutability rule.
+            with self.assertRaisesRegex(ValueError, "blocked by"):
                 task_store.update(started["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
-            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
+            with self.assertRaisesRegex(ValueError, "blocked by"):
                 task_store.update(done["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
 
     def test_task_create_batch_accepts_existing_dependency_atomically(self) -> None:
@@ -1391,28 +1394,34 @@ class TeammateRuntimeTests(unittest.TestCase):
             task_update_schema = next(schema for schema in registry.schemas() if schema["name"] == "task_update")
             self.assertNotIn("add_blocks", task_update_schema["input_schema"]["properties"])
 
-    def test_task_update_tool_rejects_dependency_edges(self) -> None:
+    def test_task_update_tool_allows_add_but_routes_remove_to_separate_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             task_store = TaskStore(Path(tmpdir) / "tasks")
             blocker = task_store.create("Dependency", session_id="session-1")
             task = task_store.create("Task", session_id="session-1")
             registry = ToolRegistry()
             register_task_tools(registry, task_store)
-
-            output = registry.execute(
-                ToolExecutionContext(
-                    runtime=SimpleNamespace(),
-                    session=SimpleNamespace(id="session-1"),
-                    actor="lead",
-                    trace_id="test",
-                ),
-                "task_update",
-                {"task_id": task["id"], "add_blocked_by": [blocker["id"]]},
+            ctx = ToolExecutionContext(
+                runtime=SimpleNamespace(),
+                session=SimpleNamespace(id="session-1"),
+                actor="lead",
+                trace_id="test",
             )
 
+            # Adding an edge via task_update is allowed (mutable deps).
+            added = json.loads(
+                registry.execute(ctx, "task_update", {"task_id": task["id"], "add_blocked_by": [blocker["id"]]})
+            )
+            self.assertEqual(added["blockedBy"], [blocker["id"]])
+            self.assertEqual(task_store.get(task["id"], session_id="session-1")["blockedBy"], [blocker["id"]])
+
+            # Removing an edge via task_update is rejected; it must go through the
+            # separately-gated task_remove_blocked_by (which asks the user).
+            output = registry.execute(
+                ctx, "task_update", {"task_id": task["id"], "remove_blocked_by": [blocker["id"]]}
+            )
             self.assertEqual(output["status"], "error")
-            self.assertIn("dependency updates are not allowed", output["message"])
-            self.assertEqual(task_store.get(task["id"], session_id="session-1")["blockedBy"], [])
+            self.assertIn("task_remove_blocked_by", output["message"])
 
     def test_task_update_tool_ignores_legacy_add_blocks_input(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1592,7 +1601,7 @@ class TeammateRuntimeTests(unittest.TestCase):
                 task_store.update(blocked["id"], status="completed", session_id="session-1")
             started = task_store.create("Already started", session_id="session-1")
             task_store.claim(started["id"], "Worker", session_id="session-1")
-            with self.assertRaisesRegex(ValueError, "dependency updates are not allowed"):
+            with self.assertRaisesRegex(ValueError, "blocked by"):
                 task_store.update(started["id"], add_blocked_by=[blocker["id"]], session_id="session-1")
 
             task_store.update(blocker["id"], status="completed", session_id="session-1")

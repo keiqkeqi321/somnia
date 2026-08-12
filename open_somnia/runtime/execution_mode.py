@@ -24,6 +24,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         ASK_USER_QUESTION_TOOL_NAME,
         "TodoWrite",
         "task_get",
+        "task_claimable",
         "task_list",
         "list_teammates",
         "check_background",
@@ -36,6 +37,7 @@ TASK_MUTATION_TOOL_NAMES = frozenset(
     {
         "task_create_batch",
         "task_update",
+        "task_close",
         "claim_task",
     }
 )

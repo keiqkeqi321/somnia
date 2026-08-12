@@ -84,6 +84,7 @@ class TaskStore:
         task.setdefault("result", None)
         task.setdefault("commit_ref", None)
         task.setdefault("labels", [])
+        task.setdefault("parent_id", None)
         return task
 
     def _read_task_file(self, path: Path) -> dict[str, Any]:
@@ -197,6 +198,21 @@ class TaskStore:
             if blocker_id == target or visit(blocker_id, set()):
                 raise ValueError(f"Adding dependency would create a cycle involving task {task_id}")
 
+    def _assert_no_parent_cycle(self, task_id: int, parent_id: int, session_id: str | None = None) -> None:
+        """Walk the parent chain from ``parent_id``; a revisit of ``task_id`` is a cycle."""
+        current = int(parent_id)
+        seen: set[int] = set()
+        while current is not None and current not in seen:
+            if current == task_id:
+                raise ValueError(f"Setting parent {parent_id} would create a parent cycle involving task {task_id}")
+            seen.add(current)
+            try:
+                node = self.get(current, session_id=session_id)
+            except ValueError:
+                break
+            mapped = node.get("parent_id")
+            current = int(mapped) if mapped else None
+
     def create(
         self,
         subject: str,
@@ -208,6 +224,7 @@ class TaskStore:
         acceptance: list[str] | None = None,
         spec_id: str | None = None,
         labels: list[str] | None = None,
+        parent_id: int | None = None,
     ) -> dict[str, Any]:
         """创建新任务.
 
@@ -225,6 +242,15 @@ class TaskStore:
         acceptance_items = [str(item).strip() for item in (acceptance or []) if str(item).strip()]
         label_items = [str(item).strip() for item in (labels or []) if str(item).strip()]
         spec_value = spec_id.strip() if isinstance(spec_id, str) and spec_id.strip() else None
+        parent_value: int | None = None
+        if parent_id:
+            try:
+                parent_value = int(parent_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid task parent_id: {parent_id}") from exc
+            if parent_value == task_id:
+                raise ValueError(f"Task {task_id} cannot be its own parent")
+            self.get(parent_value, session_id=session_id)
         task = {
             "id": task_id,
             "subject": subject,
@@ -240,6 +266,7 @@ class TaskStore:
             "labels": label_items,
             "result": None,
             "commit_ref": None,
+            "parent_id": parent_value,
             "created_at": now_ts(),
             "updated_at": now_ts(),
         }
@@ -281,6 +308,18 @@ class TaskStore:
             raw_spec = item.get("spec_id")
             spec_value = raw_spec.strip() if isinstance(raw_spec, str) and raw_spec.strip() else None
             label_items = [str(lbl).strip() for lbl in (item.get("labels") or []) if str(lbl).strip()]
+            raw_parent = item.get("parent_id")
+            if raw_parent is None:
+                parent_value = None
+            elif isinstance(raw_parent, str) and raw_parent.strip() in key_to_id:
+                parent_value = key_to_id[raw_parent.strip()]
+            else:
+                try:
+                    parent_value = int(raw_parent)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"Invalid task parent_id reference: {raw_parent}") from exc
+                if parent_value <= 0:
+                    parent_value = None
             task = {
                 "id": task_id,
                 "subject": subject,
@@ -300,6 +339,7 @@ class TaskStore:
                 "labels": label_items,
                 "result": None,
                 "commit_ref": None,
+                "parent_id": parent_value,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -322,6 +362,37 @@ class TaskStore:
 
         for task in tasks:
             visit(int(task["id"]), set())
+
+        # Validate parent links (exist in batch or store) and contain no cycle.
+        for task in tasks:
+            parent_value = task.get("parent_id")
+            if parent_value is None:
+                continue
+            if int(task["id"]) == parent_value:
+                raise ValueError(f"Task {task['id']} cannot be its own parent")
+            if parent_value not in task_by_id:
+                self.get(parent_value, session_id=session_id)
+
+        def parent_of(node_id: int) -> int | None:
+            node = task_by_id.get(node_id)
+            if node is None:
+                try:
+                    node = self.get(node_id, session_id=session_id)
+                except ValueError:
+                    return None
+            mapped = node.get("parent_id")
+            return int(mapped) if mapped else None
+
+        for task in tasks:
+            start = int(task["id"])
+            current = parent_of(start)
+            seen_parents: set[int] = set()
+            while current is not None and current not in seen_parents:
+                if current == start:
+                    raise ValueError(f"Task parent graph contains a cycle at task {start}")
+                seen_parents.add(current)
+                current = parent_of(current)
+
         for task in tasks:
             self.save(task)
         return tasks
@@ -387,11 +458,13 @@ class TaskStore:
         add_blocks: list[int] | None = None,
         preferred_owner: str | None | object = None,
         *,
+        remove_blocked_by: list[int] | None = None,
         acceptance_done: list[bool] | None = None,
         labels: list[str] | None = None,
         spec_id: str | None = None,
         result: str | None = None,
         commit_ref: str | None = None,
+        parent_id: int | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any] | None:
         task = self.get(task_id, session_id=session_id)
@@ -400,8 +473,29 @@ class TaskStore:
             if path is not None and path.exists():
                 path.unlink()
             return None
+        # Dependency edges: add is cycle-checked, remove can't cycle. Both are
+        # policy-free here; the tool layer routes removal through a separately
+        # gated tool (task_remove_blocked_by) so it triggers request_authorization.
         if add_blocked_by:
-            raise ValueError("Task dependencies must be declared at creation time; dependency updates are not allowed")
+            new_ids = self._normalize_task_ids(add_blocked_by)
+            for blocker_id in new_ids:
+                self.get(blocker_id, session_id=session_id)
+            self._assert_no_cycle(task_id, new_ids, session_id=session_id)
+            existing = self._normalize_task_ids(task.get("blockedBy", []))
+            task["blockedBy"] = self._normalize_task_ids(existing + new_ids)
+        if remove_blocked_by:
+            remove_ids = set(self._normalize_task_ids(remove_blocked_by))
+            task["blockedBy"] = [b for b in self._normalize_task_ids(task.get("blockedBy", [])) if b not in remove_ids]
+        if parent_id is not None:
+            parent_int = int(parent_id)
+            if parent_int <= 0:
+                task["parent_id"] = None
+            else:
+                if parent_int == task_id:
+                    raise ValueError(f"Task {task_id} cannot be its own parent")
+                self.get(parent_int, session_id=session_id)
+                self._assert_no_parent_cycle(task_id, parent_int, session_id=session_id)
+                task["parent_id"] = parent_int
         # Apply field updates before running gates, so a single call can check
         # off acceptance criteria and close in one go.
         if acceptance_done is not None:
@@ -507,3 +601,8 @@ class TaskStore:
             for task in self.list_claimable(session_id=session_id)
             if READY_FOR_AGENT in (task.get("labels") or [])
         ]
+
+    def list_children(self, parent_id: int, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Direct children of a parent task (the wayfinder map -> child tickets grouping)."""
+        parent_int = int(parent_id)
+        return [task for task in self.list_all(session_id=session_id) if task.get("parent_id") == parent_int]
