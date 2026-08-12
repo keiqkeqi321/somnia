@@ -9,7 +9,7 @@ Take the current conversation and codebase understanding and produce a **spec** 
 a markdown PRD. Do NOT interview the user; synthesize what you already know.
 
 The spec is written to `.scratch/specs/<slug>.md`. The `<slug>` becomes the
-`spec_id` that `to-tickets` later stamps on every ticket it splits out of this
+`spec_id` that `to-tasks` later stamps on every task it splits out of this
 spec, so pick a short, stable slug (e.g. `orders-v2`).
 
 ## Process
@@ -70,8 +70,8 @@ Anything else relevant.
 
 ## After the spec
 
-The natural next step is `/+to-tickets`: break this spec into tracer-bullet
-tickets in the task engine, each stamped with `spec_id` = this spec's slug,
+The natural next step is `/+to-tasks`: break this spec into tracer-bullet
+tasks in the task engine, each stamped with `spec_id` = this spec's slug,
 `acceptance` criteria drawn from the User Stories, and blocking edges declared up
 front. Do not start implementing straight from the spec for anything bigger than
-a single context window — go through tickets first.
+a single context window — go through tasks first.

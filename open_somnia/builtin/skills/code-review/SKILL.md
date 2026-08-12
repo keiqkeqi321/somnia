@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Two-axis review of the diff since a fixed point - Standards (repo standards + a Fowler smell baseline) and Spec (does it do what the task/spec asked) - run as parallel subagents. Use on 'review this', 'review the branch/PR', 'review since X', or before committing a ticket.
+description: Two-axis review of the diff since a fixed point - Standards (repo standards + a Fowler smell baseline) and Spec (does it do what the task/spec asked) - run as parallel subagents. Use on 'review this', 'review the branch/PR', 'review since X', or before committing a task.
 ---
 
 # Code Review
@@ -31,7 +31,7 @@ before spawning anything.
 
 Look for the originating spec, in this order:
 
-1. The current task's `acceptance` criteria (if you're reviewing a ticket's
+1. The current task's `acceptance` criteria (if you're reviewing a task's
    work) — fetch with `task_get`.
 2. The spec document under `.scratch/specs/<spec_id>.md` if the task carries a
    `spec_id`, or a path the user passed.
