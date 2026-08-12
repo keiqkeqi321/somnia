@@ -11,6 +11,12 @@ from typing import Any
 
 from open_somnia.storage.common import get_lock, now_ts, read_json, write_json
 
+# A task carrying this label is considered specified and auto-assignable.
+# Distinct from the computed "claimable" frontier (deps done + unowned): a task
+# can be claimable but not yet ready-for-agent (still being specced). The
+# auto-assigner only picks from the intersection — see ``list_ready``.
+READY_FOR_AGENT = "ready-for-agent"
+
 
 class TaskStore:
     """任务存储类.
@@ -59,8 +65,29 @@ class TaskStore:
             return self._session_task_path(int(task["id"]), session_id)
         return self._task_path(int(task["id"]))
 
+    def _normalize_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Backfill ticket fields on old task dicts (lazy, non-destructive).
+
+        Task files created before the ticket model lack acceptance / labels /
+        spec_id / result / commit_ref. This fills the defaults in-memory so every
+        caller can assume the full shape. The on-disk file is rewritten with the
+        new fields only on the next ``save()``.
+        """
+        task.setdefault("acceptance", [])
+        task.setdefault("acceptance_done", [])
+        acceptance = task.get("acceptance") or []
+        done = list(task.get("acceptance_done") or [])
+        if len(done) < len(acceptance):
+            done.extend([False] * (len(acceptance) - len(done)))
+        task["acceptance_done"] = done
+        task.setdefault("spec_id", None)
+        task.setdefault("result", None)
+        task.setdefault("commit_ref", None)
+        task.setdefault("labels", [])
+        return task
+
     def _read_task_file(self, path: Path) -> dict[str, Any]:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return self._normalize_task(json.loads(path.read_text(encoding="utf-8")))
 
     def _locate_task_path(self, task_id: int, session_id: str | None = None) -> Path | None:
         normalized_session_id = self._normalize_session_id(session_id)
@@ -178,6 +205,9 @@ class TaskStore:
         preferred_owner: str | None = None,
         blocked_by: list[int] | None = None,
         session_id: str | None = None,
+        acceptance: list[str] | None = None,
+        spec_id: str | None = None,
+        labels: list[str] | None = None,
     ) -> dict[str, Any]:
         """创建新任务.
 
@@ -192,6 +222,9 @@ class TaskStore:
         blocker_ids = self._normalize_task_ids(blocked_by)
         for blocker_id in blocker_ids:
             self.get(blocker_id, session_id=session_id)
+        acceptance_items = [str(item).strip() for item in (acceptance or []) if str(item).strip()]
+        label_items = [str(item).strip() for item in (labels or []) if str(item).strip()]
+        spec_value = spec_id.strip() if isinstance(spec_id, str) and spec_id.strip() else None
         task = {
             "id": task_id,
             "subject": subject,
@@ -201,6 +234,12 @@ class TaskStore:
             "preferred_owner": preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None,
             "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
             "blockedBy": blocker_ids,
+            "acceptance": acceptance_items,
+            "acceptance_done": [False] * len(acceptance_items),
+            "spec_id": spec_value,
+            "labels": label_items,
+            "result": None,
+            "commit_ref": None,
             "created_at": now_ts(),
             "updated_at": now_ts(),
         }
@@ -238,6 +277,10 @@ class TaskStore:
             if not subject:
                 raise ValueError("Task subject is required")
             blocked_by = resolve_ids(item.get("blocked_by") or item.get("blockedBy") or item.get("depends_on"))
+            acceptance_items = [str(a).strip() for a in (item.get("acceptance") or []) if str(a).strip()]
+            raw_spec = item.get("spec_id")
+            spec_value = raw_spec.strip() if isinstance(raw_spec, str) and raw_spec.strip() else None
+            label_items = [str(lbl).strip() for lbl in (item.get("labels") or []) if str(lbl).strip()]
             task = {
                 "id": task_id,
                 "subject": subject,
@@ -251,6 +294,12 @@ class TaskStore:
                 ),
                 "session_id": session_id.strip() if isinstance(session_id, str) and session_id.strip() else None,
                 "blockedBy": blocked_by,
+                "acceptance": acceptance_items,
+                "acceptance_done": [False] * len(acceptance_items),
+                "spec_id": spec_value,
+                "labels": label_items,
+                "result": None,
+                "commit_ref": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -337,6 +386,12 @@ class TaskStore:
         add_blocked_by: list[int] | None = None,
         add_blocks: list[int] | None = None,
         preferred_owner: str | None | object = None,
+        *,
+        acceptance_done: list[bool] | None = None,
+        labels: list[str] | None = None,
+        spec_id: str | None = None,
+        result: str | None = None,
+        commit_ref: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any] | None:
         task = self.get(task_id, session_id=session_id)
@@ -347,12 +402,37 @@ class TaskStore:
             return None
         if add_blocked_by:
             raise ValueError("Task dependencies must be declared at creation time; dependency updates are not allowed")
+        # Apply field updates before running gates, so a single call can check
+        # off acceptance criteria and close in one go.
+        if acceptance_done is not None:
+            acceptance_items = task.get("acceptance") or []
+            if len(acceptance_done) != len(acceptance_items):
+                raise ValueError(
+                    f"acceptance_done length {len(acceptance_done)} does not match acceptance length {len(acceptance_items)}"
+                )
+            task["acceptance_done"] = [bool(value) for value in acceptance_done]
+        if labels is not None:
+            task["labels"] = [str(lbl).strip() for lbl in labels if str(lbl).strip()]
+        if spec_id is not None:
+            task["spec_id"] = spec_id.strip() if isinstance(spec_id, str) and spec_id.strip() else None
+        if result is not None:
+            task["result"] = result.strip() if isinstance(result, str) and result.strip() else None
+        if commit_ref is not None:
+            task["commit_ref"] = commit_ref.strip() if isinstance(commit_ref, str) and commit_ref.strip() else None
         if status:
             task["status"] = status
         incomplete_blockers = self._incomplete_blockers(task, session_id=session_id)
         if task.get("status") in {"in_progress", "completed"} and incomplete_blockers:
             blockers = ", ".join(str(item) for item in incomplete_blockers)
             raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
+        # Close discipline gate: a task with acceptance criteria cannot be
+        # completed until every criterion is checked off. An empty acceptance
+        # list (legacy / quick-capture tasks) closes vacuously.
+        if task.get("status") == "completed":
+            acceptance_items = task.get("acceptance") or []
+            acceptance_done_state = task.get("acceptance_done") or []
+            if acceptance_items and not all(acceptance_done_state[: len(acceptance_items)]):
+                raise ValueError(f"Task {task_id} cannot be completed: not all acceptance criteria are checked")
         if preferred_owner is not None:
             task["preferred_owner"] = (
                 preferred_owner.strip() if isinstance(preferred_owner, str) and preferred_owner.strip() else None
@@ -360,7 +440,13 @@ class TaskStore:
         self.save(task)
         return task
 
-    def claim(self, task_id: int, owner: str, session_id: str | None = None) -> dict[str, Any]:
+    def claim(
+        self,
+        task_id: int,
+        owner: str,
+        session_id: str | None = None,
+        require_ready_label: bool = False,
+    ) -> dict[str, Any]:
         task = self.get(task_id, session_id=session_id)
         if task.get("status") == "completed":
             raise ValueError(f"Task {task_id} is already completed")
@@ -368,6 +454,14 @@ class TaskStore:
         if incomplete_blockers:
             blockers = ", ".join(str(item) for item in incomplete_blockers)
             raise ValueError(f"Task {task_id} is blocked by task(s): {blockers}")
+        # The ready-for-agent gate is opt-in at this primitive layer: the
+        # claim_task tool turns it on for manual agent claims (with a force
+        # override), and the auto-assigner draws only from list_ready so its
+        # tasks already carry the label. The primitive itself stays policy-free.
+        if require_ready_label and READY_FOR_AGENT not in (task.get("labels") or []):
+            raise ValueError(
+                f"Task {task_id} is not ready-for-agent; stamp the '{READY_FOR_AGENT}' label or claim with force=True"
+            )
         task["owner"] = owner
         task["status"] = "in_progress"
         self.save(task)
@@ -399,3 +493,17 @@ class TaskStore:
         preferred = [task for task in claimable if task.get("preferred_owner") == owner_name]
         neutral = [task for task in claimable if not task.get("preferred_owner")]
         return preferred + neutral
+
+    def list_ready(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """The auto-assign frontier: claimable tasks that also carry ready-for-agent.
+
+        ``list_claimable`` is the dependency frontier (pending, unowned, all
+        blockers completed). A task is only auto-assignable once it has *also*
+        been stamped specified — the ``ready-for-agent`` label. This is that
+        intersection, and is what the teammate auto-assigner draws from.
+        """
+        return [
+            task
+            for task in self.list_claimable(session_id=session_id)
+            if READY_FOR_AGENT in (task.get("labels") or [])
+        ]

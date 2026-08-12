@@ -1200,11 +1200,13 @@ class TeammateRuntimeTests(unittest.TestCase):
                         "subject": "Follow-up two",
                         "preferred_owner": "Planner",
                         "depends_on": [first["id"]],
+                        "labels": ["ready-for-agent"],
                     },
                     {
                         "subject": "Follow-up three",
                         "preferred_owner": "Writer",
                         "depends_on": [first["id"]],
+                        "labels": ["ready-for-agent"],
                     },
                 ],
                 session_id="session-1",
@@ -1484,8 +1486,8 @@ class TeammateRuntimeTests(unittest.TestCase):
                 "task_create_batch",
                 {
                     "tasks": [
-                        {"key": "plan", "subject": "Plan", "preferred_owner": "Planner"},
-                        {"key": "write", "subject": "Write", "depends_on": ["plan"]},
+                        {"key": "plan", "subject": "Plan", "preferred_owner": "Planner", "labels": ["ready-for-agent"]},
+                        {"key": "write", "subject": "Write", "depends_on": ["plan"], "labels": ["ready-for-agent"]},
                     ],
                 },
             )

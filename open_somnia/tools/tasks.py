@@ -19,7 +19,19 @@ def _render_task_list(tasks: list[dict[str, Any]]) -> str:
         owner = f" @{task['owner']}" if task.get("owner") else ""
         preferred_owner = f" (prefers: {task['preferred_owner']})" if task.get("preferred_owner") else ""
         blocked = f" (depends on: {task['blockedBy']})" if task.get("blockedBy") else ""
-        lines.append(f"{marker} #{task['id']}: {task['subject']}{owner}{preferred_owner}{blocked}")
+        acceptance = task.get("acceptance") or []
+        if acceptance:
+            done_count = sum(1 for value in (task.get("acceptance_done") or []) if value)
+            acceptance_tag = f" [{done_count}/{len(acceptance)}]"
+        else:
+            acceptance_tag = ""
+        labels = task.get("labels") or []
+        ready_tag = " (ready)" if "ready-for-agent" in labels else ""
+        other_labels = [lbl for lbl in labels if lbl != "ready-for-agent"]
+        labels_tag = f" {{{', '.join(other_labels)}}}" if other_labels else ""
+        lines.append(
+            f"{marker} #{task['id']}: {task['subject']}{owner}{preferred_owner}{blocked}{acceptance_tag}{ready_tag}{labels_tag}"
+        )
     return "\n".join(lines)
 
 
@@ -81,6 +93,11 @@ def register_task_tools(registry, task_store) -> None:
             None,
             None,
             payload.get("preferred_owner"),
+            acceptance_done=payload.get("acceptance_done"),
+            labels=payload.get("labels"),
+            spec_id=payload.get("spec_id"),
+            result=payload.get("result"),
+            commit_ref=payload.get("commit_ref"),
             session_id=session_id,
         )
         if payload.get("status") == "completed":
@@ -94,7 +111,13 @@ def register_task_tools(registry, task_store) -> None:
 
     def claim_task(ctx: Any, payload: dict[str, Any]) -> str:
         owner = payload.get("owner", ctx.actor)
-        task = task_store.claim(int(payload["task_id"]), owner, session_id=_context_session_id(ctx))
+        force = bool(payload.get("force", False))
+        task = task_store.claim(
+            int(payload["task_id"]),
+            owner,
+            session_id=_context_session_id(ctx),
+            require_ready_label=not force,
+        )
         return f"Claimed task #{task['id']} for {owner}"
 
     registry.register(
@@ -115,6 +138,13 @@ def register_task_tools(registry, task_store) -> None:
                                 "preferred_owner": {"type": "string"},
                                 "blocked_by": {"type": "array", "items": {"type": ["integer", "string"]}},
                                 "depends_on": {"type": "array", "items": {"type": ["integer", "string"]}},
+                                "acceptance": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Acceptance criteria; all must be checked off before the task can be completed.",
+                                },
+                                "spec_id": {"type": "string", "description": "Free-form slug grouping this task under a spec/feature/epic."},
+                                "labels": {"type": "array", "items": {"type": "string"}, "description": "Free-form labels; use 'ready-for-agent' to make the task auto-claimable."},
                             },
                             "required": ["subject"],
                         },
@@ -140,7 +170,11 @@ def register_task_tools(registry, task_store) -> None:
     registry.register(
         ToolDefinition(
             name="task_update",
-            description="Update task status or preferred owner. Dependency edges are declared with task_create_batch and cannot be changed after creation.",
+            description=(
+                "Update a task: status, preferred owner, acceptance checks, labels, spec_id, or closure notes "
+                "(result / commit_ref). Closing (status=completed) requires all acceptance criteria checked and "
+                "all blockers completed. Dependency edges are declared with task_create_batch and cannot be changed."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -150,6 +184,15 @@ def register_task_tools(registry, task_store) -> None:
                         "enum": ["pending", "in_progress", "completed", "deleted"],
                     },
                     "preferred_owner": {"type": "string"},
+                    "acceptance_done": {
+                        "type": "array",
+                        "items": {"type": "boolean"},
+                        "description": "Replace the whole acceptance check list; length must match the task's acceptance criteria.",
+                    },
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "spec_id": {"type": "string"},
+                    "result": {"type": "string", "description": "Closure note: what was done, anything notable. Written when completing the task."},
+                    "commit_ref": {"type": "string", "description": "Commit SHA / branch / PR link for the work that closed this task."},
                 },
                 "required": ["task_id"],
             },
@@ -167,10 +210,16 @@ def register_task_tools(registry, task_store) -> None:
     registry.register(
         ToolDefinition(
             name="claim_task",
-            description="Claim a task for the current actor.",
+            description="Claim a task for the current actor. Requires the ready-for-agent label unless force is set.",
             input_schema={
                 "type": "object",
-                "properties": {"task_id": {"type": "integer"}},
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "force": {
+                        "type": "boolean",
+                        "description": "Claim even if the task lacks the ready-for-agent label (human override).",
+                    },
+                },
                 "required": ["task_id"],
             },
             handler=claim_task,

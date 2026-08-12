@@ -432,13 +432,18 @@ class TeammateRuntimeManager:
         is_paused = getattr(self.task_store, "is_auto_assign_paused", None)
         if callable(is_paused) and is_paused(normalized_session_id):
             return 0
+        list_ready = getattr(self.task_store, "list_ready", None)
         list_claimable = getattr(self.task_store, "list_claimable", None)
-        if not callable(list_claimable):
+        # Auto-assign only takes tasks stamped ready-for-agent (specified, not
+        # just unblocked). Fall back to list_claimable for stores that predate
+        # the ready-for-agent gate.
+        source = list_ready if callable(list_ready) else list_claimable
+        if not callable(source):
             return 0
         try:
-            claimable = list(list_claimable(session_id=normalized_session_id) or [])
+            claimable = list(source(session_id=normalized_session_id) or [])
         except TypeError:
-            claimable = list(list_claimable() or [])
+            claimable = list(source() or [])
         if not claimable:
             return 0
 
