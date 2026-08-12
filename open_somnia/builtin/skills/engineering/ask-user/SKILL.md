@@ -17,54 +17,9 @@ below is for work that is bigger, fuzzier, or genuinely benefits from a spec /
 tests / review. When in doubt, prefer this path — the flows exist to add
 discipline, not ceremony, to small clear tasks.
 
-## The map
-
-```mermaid
-flowchart TD
-    classDef router fill:#d1fae5,stroke:#059669,color:#000
-    classDef flow fill:#fef3c7,stroke:#d97706,color:#000
-    classDef onramp fill:#dbeafe,stroke:#2563eb,color:#000
-    classDef standalone fill:#e5e7eb,stroke:#6b7280,color:#000
-    classDef vocab fill:#f3e8ff,stroke:#7c3aed,color:#000
-    classDef fast fill:#bbf7d0,stroke:#16a34a,color:#000
-    classDef gate fill:#fee2e2,stroke:#dc2626,color:#000
-
-    Enter([user request / agent enters]):::router
-    Enter --> Ask["ask-user - router"]:::router
-    Ask --> Sit{situation?}:::gate
-
-    Sit -->|"clear goal + small change"| Fast["TodoWrite plan -> execute directly"]:::fast
-
-    Sit -->|"idea / build a feature"| Grill["grill-with-docs - sharpen the idea"]:::flow
-    Grill --> Qproto{needs a runnable answer?}:::gate
-    Qproto -->|yes| Proto["prototype - throwaway"]:::standalone
-    Qproto -->|no| Qsess
-    Proto --> Qsess{multi-session build?}:::gate
-    Qsess -->|"yes, clear"| ToSpec["to-spec - synthesize spec + seams"]:::flow
-    Qsess -->|"no, single session"| Impl["implement"]
-    ToSpec --> ToTasks["to-tasks - tracer-bullet graph<br/>blocked_by + ready-for-agent + acceptance"]:::flow
-    ToTasks --> Impl
-    Impl --> TDD["tdd - red->green at the seam"]:::flow
-    TDD --> CR["code-review - two-axis parallel"]:::flow
-
-    Sit -->|"broken / slow / failing"| Diag["diagnosing-bugs - red loop -> fix"]:::onramp
-    Diag -.->|fix lands| TDD
-    Sit -->|"huge + path not visible"| Way["wayfinder - decision map (parent_id) + fog-of-war"]:::onramp
-    Way -.->|way clear| ToSpec
-
-    Sit -->|"merge / rebase conflict"| Merge["resolving-merge-conflicts - by intent, never --abort"]:::standalone
-
-    subgraph Vocab["vocabulary / primitive layer - loaded by name"]
-        V1["codebase-design"]:::vocab
-        V2["domain-modeling"]:::vocab
-        V3["grilling"]:::vocab
-    end
-    V1 -.-> TDD & CR
-    V2 & V3 -.-> Grill
-
-    Fast --> Done([done]):::router
-    CR --> Done
-```
+The visual mind-map of all engineering skills (and how they chain) lives in the
+`engineering` index skill — load it for the catalog + the map. The routing below
+is the situational prose version.
 
 ## The main flow: idea → ship
 
