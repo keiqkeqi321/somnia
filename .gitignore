@@ -29,6 +29,6 @@ desktop/ui/src-tauri/target/
 *.tsbuildinfo
 playwright-mcp
 .playwright-mcp
-skills
+/skills/
 .scratch/remote-somnia/logs
 .env
