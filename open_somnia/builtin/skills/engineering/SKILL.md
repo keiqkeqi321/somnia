@@ -1,19 +1,25 @@
 ---
 name: engineering
-description: Index + routing map of Somnia's engineering skills. Load to browse the catalog (what each does + how they chain) and pick one - ask-user, to-spec, to-tasks, implement, tdd, code-review, diagnosing-bugs, wayfinder, prototype, resolving-merge-conflicts + the vocabulary layer.
+description: Index + routing map of Somnia's engineering skills. Load to browse the catalog (what each does + how they chain) and pick one - to-spec, to-tasks, implement, tdd, code-review, diagnosing-bugs, wayfinder, prototype, resolving-merge-conflicts + the vocabulary layer.
 ---
 
 # Engineering Skills — Index
 
-This is the index of Somnia's engineering skills. They all live under this
-bundle; load any with `load_skill <name>` (or `/+<name>`). For "which skill fits
-my situation", load `ask-user`.
+This is the index and router for Somnia's engineering skills — the catalog, the
+routing map, and the context rules. All skills live under this bundle; load any
+with `load_skill <name>` (or `/+<name>`). Read the map to pick one.
+
+## Trivial path — clear goal, small change
+
+If the user's goal is unambiguous **and** the change is small (a single focused
+edit, a one-off fix, a tiny addition), skip the skill machinery — lay out a short
+plan with `TodoWrite` and execute it directly. The flows below add discipline, not
+ceremony; prefer this path for small clear tasks.
 
 ## Catalog
 
 | skill | what it does | composes with |
 |---|---|---|
-| `ask-user` | route a situation to the right skill/flow; trivial small tasks → `TodoWrite` + execute | → any below |
 | `grill-with-docs` | relentless interview to sharpen an idea; writes `CONTEXT.md`/ADRs | `grilling`, `domain-modeling` |
 | `to-spec` | synthesize the conversation into a spec + decide the testing seams | → `to-tasks` |
 | `to-tasks` | break a spec into a tracer-bullet task graph (`blocked_by`, `ready-for-agent`, `acceptance`) | → `implement` |
@@ -41,7 +47,7 @@ flowchart TD
     classDef gate fill:#fee2e2,stroke:#dc2626,color:#000
 
     Enter([user request / agent enters]):::router
-    Enter --> Ask["ask-user - router"]:::router
+    Enter --> Ask["engineering - this index"]:::router
     Ask --> Sit{situation?}:::gate
 
     Sit -->|"clear goal + small change"| Fast["TodoWrite plan -> execute directly"]:::fast
@@ -79,8 +85,14 @@ flowchart TD
 
 ## How to use
 
-Load the skill you need with `load_skill <name>` (or `/+<name>`). If you're not
-sure which, `ask-user` routes by situation. Keep the grilling → spec → tasks
-steps in one unbroken context window; each `implement` then starts fresh from its
-task. For a small, unambiguous change, skip the machinery — `TodoWrite` a short
-plan and execute it directly.
+Load the skill you need with `load_skill <name>` (or `/+<name>`); the map above
+routes by situation.
+
+## Context hygiene
+
+Keep the grilling → spec → tasks steps in **one unbroken context window** (don't
+compact or clear until after `to-tasks`), so the spec and the task graph build on
+the same thinking. Each `implement` then starts fresh from its task. At any phase
+boundary the move is, in order: **Continue** (if the next phase needs this one as
+primary source) → `/clear` (if disposable) → handoff/subagent → `/compact`
+(default, but last resort).
