@@ -90,10 +90,23 @@ routes by situation.
 
 ## Context hygiene
 
-Keep the grilling → spec → tasks steps in **one unbroken context window** (don't
-compact or clear until after `to-tasks`), so the spec and the task graph build on
-the same thinking. Each `implement` then starts fresh from its task. At any phase
-boundary the move is, in order: **Continue** (if the next phase needs this one as
-primary source) → `request_new_session` (if disposable — pass `handoff` text when
-the fresh window needs pointers; that is the cross-session handoff) → subagent →
-`compress` (default, but last resort).
+Context is scarce. One question at every boundary: **does the next step need
+this window's thinking as its primary source?**
+
+- **Yes → stay.** Continue here, or hold the global view and delegate to
+  `general-purpose` subagents (orchestrate).
+- **No → spin off.** Disposable self-contained unit needing only its result →
+  `subagent`. Full execution unit for its own session → `request_new_session`
+  (pass `handoff` text — that is the cross-session handoff).
+- **Last resort → `compress`** (harness auto-default; lossy and in-window).
+
+**Phases** (grilling → spec → tasks → implement): keep in **one unbroken
+window** — don't compact or clear until after `to-tasks`, so spec and task graph
+build on the same thinking.
+
+**Tasks** (task → task): pick by coupling.
+- Independent, clean seams, mechanically verifiable → the new-session chain.
+- Tightly coupled, global judgment, or quality in doubt → stay / orchestrate.
+- Middle ground → orchestrate from the main window, every `result`/`commit_ref`
+  into the task engine; `request_new_session` once the window grows heavy — the
+  task board is the external memory the next executive rebuilds from.
