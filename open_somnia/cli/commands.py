@@ -236,7 +236,6 @@ def _print_service_tool_event(payload: dict[str, Any]) -> None:
     print()
     for line in rendered_lines:
         print(str(line))
-    print()
 
 
 _TOKEN_USAGE_KEYS = (

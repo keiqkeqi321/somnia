@@ -1358,7 +1358,6 @@ class TurnQueueRunner:
         print()
         for line in rendered_lines:
             print(str(line))
-        print()
         sys.stdout.flush()
 
     def _worker_loop(self) -> None:
