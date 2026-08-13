@@ -2674,10 +2674,14 @@ def _start_fresh_session(service, runtime, session, runner: TurnQueueRunner):
     """Swap in a brand-new session (/new): the old one is already persisted
     and stays resumable; the fresh one follows the runtime's current
     provider/model. A per-session provider/model pin carries over so the swap
-    drops context, never settings."""
+    drops context, never settings. The task board carries over too, so a
+    /new chain keeps working the same board."""
     fresh = (service or runtime).create_session()
     fresh.provider_override = getattr(session, "provider_override", None)
     fresh.model_override = getattr(session, "model_override", None)
+    inherit_board = getattr(runtime, "inherit_task_board", None)
+    if callable(inherit_board):
+        inherit_board(fresh, session)
     runner.session = fresh
     print(f"[new session {fresh.id}]")
     return fresh

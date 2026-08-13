@@ -13,17 +13,19 @@ class SessionService:
 
     def new_session(self, session: AgentSession) -> AgentSession:
         """Start a fresh session that succeeds ``session`` and inherits its
-        provider/model pin.
+        provider/model pin and its task board.
 
         The old session is left untouched and stays resumable; the fresh one
         is validated and persisted by ``set_session_provider_model`` when a
-        pin exists.
+        pin exists. The task board carries over so a /new chain keeps working
+        the same board.
         """
         fresh = self.create_session()
         provider = getattr(session, "provider_override", None)
         model = getattr(session, "model_override", None)
         if provider and model:
             self.runtime.set_session_provider_model(fresh, provider, model)
+        self.runtime.inherit_task_board(fresh, session)
         return fresh
 
     def list_sessions(self) -> list[AgentSession]:

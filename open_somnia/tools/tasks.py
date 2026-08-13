@@ -105,9 +105,13 @@ def _task_board_secondary(task: dict[str, Any], by_id: dict[int, dict[str, Any]]
 
 def register_task_tools(registry, task_store, *, allow_dep_removal: bool = True) -> None:
     def _context_session_id(ctx: Any) -> str | None:
-        session_id = getattr(getattr(ctx, "session", None), "id", None)
-        if session_id:
-            return str(session_id)
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            # A session created via /new inherits its predecessor's task board
+            # (task_session_id); fall back to the session's own id otherwise.
+            board_id = getattr(session, "task_session_id", None) or getattr(session, "id", None)
+            if board_id:
+                return str(board_id)
         manager = getattr(getattr(ctx, "runtime", None), "team_manager", None)
         getter = getattr(manager, "_member_session_id", None)
         if callable(getter):

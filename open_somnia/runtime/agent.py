@@ -2839,7 +2839,8 @@ class OpenAgentRuntime:
                     "End the current turn and start a fresh session, optionally passing handoff "
                     "text that becomes the new session's first prompt. Use at task/phase boundaries "
                     "when the remaining context is disposable. The previous session is preserved "
-                    "and stays resumable; the provider/model selection carries over."
+                    "and stays resumable; the provider/model selection carries over. The task board "
+                    "carries over too — the fresh session keeps reading and claiming the same tasks."
                 ),
                 input_schema={
                     "type": "object",
@@ -3057,6 +3058,16 @@ class OpenAgentRuntime:
         session = self.session_manager.create()
         self._hook_manager().on_session_start(session)
         return session
+
+    def inherit_task_board(self, fresh: AgentSession, old: AgentSession) -> None:
+        """Bind ``fresh`` to ``old``'s task board (every /new swap inherits).
+
+        The board keeps the id of the session that founded it; the first swap
+        lazily migrates that session's task files into the boards/ layout.
+        """
+        old_board = getattr(old, "task_session_id", None) or self.task_store.ensure_board(old.id)
+        fresh.task_session_id = old_board
+        self.session_manager.save(fresh)
 
     def latest_session(self) -> AgentSession:
         self._current_working_file = None

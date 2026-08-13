@@ -59,11 +59,57 @@ class TaskStore:
     def _session_task_path(self, task_id: int, session_id: str) -> Path:
         return self._session_root(session_id) / f"task_{task_id}.json"
 
+    def _board_root(self, board_id: str) -> Path:
+        return self.root / "boards" / board_id
+
+    def _board_task_path(self, task_id: int, board_id: str) -> Path:
+        return self._board_root(board_id) / f"task_{task_id}.json"
+
     def _path_for_task(self, task: dict[str, Any]) -> Path:
         session_id = self._normalize_session_id(task.get("session_id"))
         if session_id:
-            return self._session_task_path(int(task["id"]), session_id)
+            # Writes always land in the boards/ layout. The stamp value doubles
+            # as the board id (the board is named after its founding session).
+            return self._board_task_path(int(task["id"]), session_id)
         return self._task_path(int(task["id"]))
+
+    def ensure_board(self, session_id: str) -> str:
+        """Migrate ``session_id``'s task files into the boards/ layout, lazily.
+
+        Idempotent: safe to call on every /new swap. Moves legacy
+        ``sessions/<sid>/task_*.json`` files (plus any root-level files stamped
+        with this sid) into ``boards/<sid>/`` and returns the board id (the
+        founding session's id).
+        """
+        board_id = self._normalize_session_id(session_id)
+        if not board_id:
+            raise ValueError("ensure_board requires a session id")
+        board_root = self._board_root(board_id)
+        if board_root.is_dir():
+            return board_id
+        with get_lock(self.meta_path):
+            if board_root.is_dir():
+                return board_id
+            board_root.mkdir(parents=True, exist_ok=True)
+            legacy_root = self._session_root(board_id)
+            if legacy_root.is_dir():
+                for path in sorted(legacy_root.glob("task_*.json")):
+                    if path.is_file():
+                        path.replace(board_root / path.name)
+                try:
+                    legacy_root.rmdir()
+                except OSError:
+                    pass  # non-task files remain; leave the dir alone
+            for path in sorted(self.root.glob("task_*.json")):
+                if not path.is_file():
+                    continue
+                try:
+                    task = self._read_task_file(path)
+                except Exception:
+                    continue
+                if self._matches_session(task, board_id):
+                    path.replace(board_root / path.name)
+        return board_id
 
     def _normalize_task(self, task: dict[str, Any]) -> dict[str, Any]:
         """Backfill ticket fields on old task dicts (lazy, non-destructive).
@@ -93,6 +139,9 @@ class TaskStore:
     def _locate_task_path(self, task_id: int, session_id: str | None = None) -> Path | None:
         normalized_session_id = self._normalize_session_id(session_id)
         if normalized_session_id:
+            board_path = self._board_task_path(task_id, normalized_session_id)
+            if board_path.exists():
+                return board_path
             session_path = self._session_task_path(task_id, normalized_session_id)
             if session_path.exists():
                 return session_path
@@ -105,6 +154,9 @@ class TaskStore:
         legacy_path = self._task_path(task_id)
         if legacy_path.exists():
             return legacy_path
+        for path in sorted((self.root / "boards").glob(f"*/task_{task_id}.json")):
+            if path.is_file():
+                return path
         for path in sorted((self.root / "sessions").glob(f"*/task_{task_id}.json")):
             if path.is_file():
                 return path
@@ -422,13 +474,16 @@ class TaskStore:
         seen_ids: set[int] = set()
         normalized_session_id = self._normalize_session_id(session_id)
         if normalized_session_id:
-            session_root = self._session_root(normalized_session_id)
-            for path in sorted(session_root.glob("task_*.json")):
-                if not path.is_file():
-                    continue
-                task = self._read_task_file(path)
-                tasks.append(task)
-                seen_ids.add(int(task.get("id", 0)))
+            for scoped_root in (self._board_root(normalized_session_id), self._session_root(normalized_session_id)):
+                for path in sorted(scoped_root.glob("task_*.json")):
+                    if not path.is_file():
+                        continue
+                    task = self._read_task_file(path)
+                    task_id = int(task.get("id", 0))
+                    if task_id in seen_ids:
+                        continue
+                    tasks.append(task)
+                    seen_ids.add(task_id)
         for path in sorted(self.root.glob("task_*.json")):
             task = self._read_task_file(path)
             task_id = int(task.get("id", 0))
@@ -438,16 +493,16 @@ class TaskStore:
                 tasks.append(task)
                 seen_ids.add(task_id)
         if not normalized_session_id:
-            sessions_root = self.root / "sessions"
-            for path in sorted(sessions_root.glob("*/task_*.json")):
-                if not path.is_file():
-                    continue
-                task = self._read_task_file(path)
-                task_id = int(task.get("id", 0))
-                if task_id in seen_ids:
-                    continue
-                tasks.append(task)
-                seen_ids.add(task_id)
+            for scoped_glob in ("boards", "sessions"):
+                for path in sorted((self.root / scoped_glob).glob("*/task_*.json")):
+                    if not path.is_file():
+                        continue
+                    task = self._read_task_file(path)
+                    task_id = int(task.get("id", 0))
+                    if task_id in seen_ids:
+                        continue
+                    tasks.append(task)
+                    seen_ids.add(task_id)
         return tasks
 
     def update(

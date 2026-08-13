@@ -125,6 +125,14 @@ State is split between the workspace and a centralized per-project store:
 - `StorageSettings.data_dir` is the workspace dir; `StorageSettings.state_dir`
   is the centralized dir. The 8 store sub-dirs derive from `state_dir`.
 
+Task storage layout: stamped tasks live in `tasks/boards/<board-id>/` (board id
+= the session that founded the board). Legacy `tasks/sessions/<sid>/` files are
+lazily migrated into `boards/` by `TaskStore.ensure_board` on the first `/new`
+swap; reads fall back boards → sessions → root. A session's `task_session_id`
+(persisted on `AgentSession`) binds it to a board; every `/new` swap inherits it
+via `runtime.inherit_task_board`, so the board survives context resets while
+unrelated conversations stay isolated on their own boards.
+
 Do not change storage shape without updating load/save paths.
 
 ## REPL Execution Modes
@@ -144,7 +152,7 @@ Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode 
 
 `ask_user_question` lets the agent ask the user a multiple-choice question (options + optional custom answer) mid-turn. It is read-only in every mode and silent in the tool-event renderer. Interactive answers travel the same channels as authorization: the REPL main-thread prompt drain (CLI) or `InteractionService` → sidecar `POST /interactions/<id>/question` → desktop `InteractionDecisionCard` (kind `ask_user_question`, event `question_requested`). Non-interactive sessions (`somnia run`) auto-resolve it as `cancelled`.
 
-`request_new_session(handoff?)` lets the agent end the current turn and continue in a fresh session — the skills' context-hygiene move (`/new` for the user). Read-only in every mode and auto-approved (the old session stays persisted and resumable). The agent loop stops right after the tool call; the session driver executes the swap at the turn boundary: the REPL worker consumes `runtime.consume_pending_new_session` (no-service path) or the drained `new_session_approved` event (service path; `RuntimeHost` consumes the flag and emits the event), swaps in the fresh session, and queues the handoff as its first prompt. The desktop reacts to the same event (`newSession` + start the handoff turn). Non-interactive `somnia run` never consumes the flag, so it is a no-op there beyond ending the turn.
+`request_new_session(handoff?)` lets the agent end the current turn and continue in a fresh session — the skills' context-hygiene move (`/new` for the user). Read-only in every mode and auto-approved (the old session stays persisted and resumable). The agent loop stops right after the tool call; the session driver executes the swap at the turn boundary: the REPL worker consumes `runtime.consume_pending_new_session` (no-service path) or the drained `new_session_approved` event (service path; `RuntimeHost` consumes the flag and emits the event), swaps in the fresh session, and queues the handoff as its first prompt. The desktop reacts to the same event (`newSession` + start the handoff turn). Every swap inherits the old session's task board (`task_session_id`), so task work continues seamlessly across `/new`. Non-interactive `somnia run` never consumes the flag, so it is a no-op there beyond ending the turn.
 
 ## TodoWrite Behavior
 

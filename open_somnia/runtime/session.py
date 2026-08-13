@@ -26,6 +26,10 @@ class AgentSession:
     # Per-session model selection; None follows the workspace-wide default.
     provider_override: str | None = None
     model_override: str | None = None
+    # Task board this session works on: the id of the session that founded the
+    # board. None means the session's own id (its own board). Inherited across
+    # /new swaps so the task board survives context resets.
+    task_session_id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "AgentSession":
@@ -42,6 +46,7 @@ class AgentSession:
             undo_stack=list(payload.get("undo_stack", [])),
             provider_override=payload.get("provider_override") or None,
             model_override=payload.get("model_override") or None,
+            task_session_id=payload.get("task_session_id") or None,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -58,6 +63,7 @@ class AgentSession:
             "undo_stack": self.undo_stack,
             "provider_override": self.provider_override,
             "model_override": self.model_override,
+            "task_session_id": self.task_session_id,
         }
 
 

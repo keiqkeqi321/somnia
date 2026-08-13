@@ -1610,7 +1610,7 @@ class TeammateRuntimeTests(unittest.TestCase):
             self.assertEqual(claimed["owner"], "Worker")
             self.assertEqual(claimed["status"], "in_progress")
 
-    def test_session_scoped_storage_writes_into_session_paths(self) -> None:
+    def test_session_scoped_storage_writes_into_scoped_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             task_store = TaskStore(root / "tasks")
@@ -1623,7 +1623,9 @@ class TeammateRuntimeTests(unittest.TestCase):
             team_store.reset_log("Lead", {"type": "session_started", "prompt": "hello", "session_id": "session-1"}, session_id="session-1")
             team_store.append_log("Lead", {"type": "assistant_message", "content": "working", "session_id": "session-1"}, session_id="session-1")
 
-            self.assertTrue((root / "tasks" / "sessions" / "session-1" / f"task_{task['id']}.json").exists())
+            # Stamped tasks live in the boards/ layout (board id = founding
+            # session id); inbox/team stay under sessions/.
+            self.assertTrue((root / "tasks" / "boards" / "session-1" / f"task_{task['id']}.json").exists())
             self.assertTrue((root / "inbox" / "sessions" / "session-1" / "lead.jsonl").exists())
             self.assertTrue((root / "team" / "sessions" / "session-1" / "team.json").exists())
             self.assertTrue((root / "team" / "sessions" / "session-1" / "logs" / "Lead.jsonl").exists())
