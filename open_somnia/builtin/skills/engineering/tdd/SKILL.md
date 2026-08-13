@@ -29,12 +29,12 @@ behaviour without reaching inside. Tests live at seams, never against internals.
 
 **Test only at pre-agreed seams.** Before writing any test, write down the seams
 under test and confirm them (for a spec'd feature these were agreed in `to-spec`;
-for ad-hoc work, agree them with the user now). No test is written at an
+for ad-hoc work, agree them with the user now via `ask_user_question`). No test is written at an
 unconfirmed seam. You can't test everything — agreeing the seams up front is how
 testing effort lands on the critical paths and complex logic instead of every
 edge case.
 
-Ask: "What's the public interface, and which seams should we test?"
+Ask: "What's the public interface, and which seams should we test?" (use `ask_user_question`).
 
 When the shape of the interface is itself in question — how deep the module is,
 where the seam belongs, what to expose — use the `codebase-design` skill for the

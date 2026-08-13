@@ -88,6 +88,10 @@ flowchart TD
 Load the skill you need with `load_skill <name>` (or `/skill <name>`); the map above
 routes by situation.
 
+## Asking the user
+
+When you need to ask / check / confirm / quiz the user, use the `ask_user_question` tool with options (recommended first) — not prose.
+
 ## Context hygiene
 
 Context is scarce. One question at every boundary: **does the next step need

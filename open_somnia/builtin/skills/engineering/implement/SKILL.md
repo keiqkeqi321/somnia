@@ -17,7 +17,7 @@ Implement a single task from the task engine, then close it out cleanly.
 
 2. **Build test-first at the pre-agreed seams.** Drive the `tdd` skill — red →
    green, one vertical slice at a time. The seams were agreed in the spec; don't
-   invent new ones without checking with the user.
+   invent new ones without checking with the user (use `ask_user_question`).
 
 3. **Run checks regularly** via the shell tool: typecheck often, the single
    relevant test every cycle, and the full test suite once at the end.

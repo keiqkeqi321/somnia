@@ -22,7 +22,7 @@ spec, so pick a short, stable slug (e.g. `orders-v2`).
    existing seams to new ones; use the highest seam possible; the fewer seams
    across the codebase, the better (the ideal is one). If new seams are needed,
    propose them at the highest point you can. Check with the user that these
-   seams match their expectations. (This is the single most important decision
+   seams match their expectations (use `ask_user_question`). (This is the single most important decision
    the spec makes — `tdd` will only ever test at these pre-agreed seams.)
 
 3. Write the spec using the template below.

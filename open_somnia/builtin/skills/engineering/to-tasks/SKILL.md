@@ -57,7 +57,7 @@ blocked-by every migrate batch).
 Present the breakdown as a numbered list. For each task show: **subject**,
 **blocked-by**, **what it delivers** (end-to-end behaviour). Ask: granularity
 right? blocking edges correct — each task only depends on tasks that genuinely
-gate it? merge or split further? Iterate until the user approves.
+gate it? merge or split further? Iterate until the user approves (use `ask_user_question`).
 
 ### 5. Create the graph
 
@@ -100,6 +100,6 @@ subagents). When you orchestrate, subagents do the work and return a summary —
 ### Re-edges
 
 Adding a dependency discovered later is free: `task_update` with
-`add_blocked_by`. **Removing or re-planning edges needs the user's approval** —
+`add_blocked_by`. **Removing or re-planning edges needs the user's approval** (use `ask_user_question`). It
 it uses `task_remove_blocked_by`, which re-runs auto-assignment after unblocking
 but prompts for authorization because it reorganizes the plan.

@@ -19,7 +19,7 @@ context, then this skill aggregates their findings side by side.
 ### 1. Pin the fixed point
 
 Whatever the user said — a commit SHA, branch, tag, `main`, `HEAD~5`, etc. If
-they didn't specify one, ask. Capture the diff once (run via the shell tool):
+they didn't specify one, ask via `ask_user_question`. Capture the diff once (run via the shell tool):
 
 - `git diff <fixed-point>...HEAD` (three-dot, against the merge-base)
 - `git log <fixed-point>..HEAD --oneline`
@@ -35,7 +35,7 @@ Look for the originating spec, in this order:
    work) — fetch with `task_get`.
 2. The spec document under `.scratch/specs/<spec_id>.md` if the task carries a
    `spec_id`, or a path the user passed.
-3. If nothing is found, ask. If there genuinely isn't one, the **Spec** subagent
+3. If nothing is found, ask via `ask_user_question`. If there genuinely isn't one, the **Spec** subagent
    skips and reports "no spec available".
 
 ### 3. Identify the standards sources
