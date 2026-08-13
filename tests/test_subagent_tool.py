@@ -839,6 +839,56 @@ class SubagentToolTests(unittest.TestCase):
             self.assertIn("interrupted", placeholder_item["content"])
             self.assertIn("resume_from", placeholder_item["content"])
 
+    def test_placeholder_assistant_message_preserves_thinking_blocks(self) -> None:
+        """Regression (400 "content[].thinking ... must be passed back"): the
+        placeholder assistant message is the ONLY persisted record of a
+        subagent-only round (the round-end append skips placeholder ids), so it
+        must carry the turn's thinking blocks -- thinking-enabled providers
+        reject an assistant message whose tool_use lacks its thinking blocks.
+        Text blocks stay out (mixed rounds persist them via the round-end
+        append; placeholder-only rounds carry no user-facing text)."""
+        from open_somnia.providers.anthropic_provider import _to_anthropic_messages
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            session = runtime.create_session()
+            tc = ToolCall("sa3", "subagent", {"prompt": "explore C"})
+            plan = SimpleNamespace(tool_call=tc, tool_name="subagent")
+            turn = AssistantTurn(
+                stop_reason="tool_use",
+                text_blocks=["interim"],
+                tool_calls=[tc],
+                content_blocks=[
+                    {"type": "thinking", "thinking": "plan first", "signature": "sig-1"},
+                    {"type": "text", "text": "interim"},
+                    {"type": "tool_call", "id": "sa3", "name": "subagent", "input": {"prompt": "explore C"}},
+                ],
+            )
+            assistant_msg, _items = runtime._append_subagent_placeholders(session, [plan], turn=turn)
+            self.assertIs(session.messages[-2], assistant_msg)
+            self.assertEqual(
+                [block["type"] for block in assistant_msg["content"]],
+                ["thinking", "tool_call"],
+            )
+            self.assertEqual(assistant_msg["content"][0]["signature"], "sig-1")
+            # The Anthropic payload conversion must then emit the thinking
+            # block ahead of the tool_use block.
+            converted = _to_anthropic_messages([assistant_msg])
+            self.assertEqual(
+                [block["type"] for block in converted[0]["content"]],
+                ["thinking", "tool_use"],
+            )
+
+    def test_placeholder_assistant_message_without_turn_stays_tool_call_only(self) -> None:
+        """The legacy no-turn path (defensive) keeps the old shape."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            session = runtime.create_session()
+            tc = ToolCall("sa4", "subagent", {"prompt": "explore D"})
+            plan = SimpleNamespace(tool_call=tc, tool_name="subagent")
+            assistant_msg, _items = runtime._append_subagent_placeholders(session, [plan])
+            self.assertEqual([block["type"] for block in assistant_msg["content"]], ["tool_call"])
+
     def test_no_programmatic_auto_resume_on_new_turn(self) -> None:
         """Regression: a new turn must NOT programmatically resume interrupted
         subagents. The old _auto_resume_interrupted_subagents is gone; resume is

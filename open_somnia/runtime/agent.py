@@ -93,7 +93,7 @@ from open_somnia.runtime.subagent_runner import SubagentRunner
 from open_somnia.runtime.system_prompt import SystemPromptBuilder
 from open_somnia.runtime.prompt_sections import cache_optimized_system_prompt
 from open_somnia.runtime.teammate import TeammateRuntimeManager
-from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, strip_thinking_log_blocks_from_message
+from open_somnia.runtime.thinking import ThinkingLogWriter, extract_thinking_blocks, is_thinking_block, strip_thinking_log_blocks_from_message
 from open_somnia.runtime.tool_events import ToolEventRenderer
 from open_somnia.skills.loader import SkillLoader
 from open_somnia.storage.inbox import InboxStore
@@ -3836,7 +3836,7 @@ class OpenAgentRuntime:
             thinking_callback({"event": "finished", **marker})
         return message
 
-    def _append_subagent_placeholders(self, session, seg_plans):
+    def _append_subagent_placeholders(self, session, seg_plans, *, turn=None):
         """Pre-write the subagent tool_call + a placeholder tool_result into
         ``session.messages`` (and the transcript) BEFORE the subagents run.
 
@@ -3847,6 +3847,15 @@ class OpenAgentRuntime:
         resume. By writing the tool_call + a ``running`` placeholder up front we
         guarantee the lead sees the subagent on the next turn no matter what.
 
+        ``turn`` is the provider turn the tool calls came from. Its thinking
+        blocks must ride along: thinking-enabled providers reject the next
+        request when an assistant message carries tool_use without the thinking
+        blocks that preceded it ("content[].thinking ... must be passed back"),
+        and this placeholder message is the ONLY persisted record of the turn's
+        tool calls (the round-end append skips placeholder ids). Text blocks
+        stay out -- mixed rounds persist them via the round-end append, and
+        placeholder-only rounds carry no user-facing text.
+
         Returns ``(assistant_message, placeholder_items)``: the appended
         assistant message (so the caller can drop it from the round-end append
         to avoid a duplicate) and the list of placeholder tool_result items
@@ -3854,6 +3863,9 @@ class OpenAgentRuntime:
         or interrupt).
         """
         blocks: list[dict[str, Any]] = []
+        for block in getattr(turn, "content_blocks", None) or []:
+            if is_thinking_block(block):
+                blocks.append(dict(block))
         for p in seg_plans:
             tool_call = p.tool_call
             block = {
@@ -4429,7 +4441,7 @@ class OpenAgentRuntime:
                         # turn's lead to decide whether to resume. See
                         # _append_subagent_placeholders / _finalize_*.
                         _placeholder_assistant, _placeholder_items = (
-                            self._append_subagent_placeholders(session, seg_plans)
+                            self._append_subagent_placeholders(session, seg_plans, turn=turn)
                         )
                         placeholder_assistant_messages.append(_placeholder_assistant)
                         placeholder_tool_call_ids.update(p.tool_call.id for p in seg_plans)
@@ -4480,7 +4492,7 @@ class OpenAgentRuntime:
                                 "lead", "subagent", current.tool_call.input, tool_call_id=slot_id
                             )
                             subagent_started_ids = {slot_id}
-                            _ph_asst, _ph_items = self._append_subagent_placeholders(session, [current])
+                            _ph_asst, _ph_items = self._append_subagent_placeholders(session, [current], turn=turn)
                             placeholder_assistant_messages.append(_ph_asst)
                             placeholder_tool_call_ids.add(current.tool_call.id)
                             try:
