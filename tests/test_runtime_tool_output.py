@@ -5784,6 +5784,67 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertLess(order.index(("thinking", "27")), order.index(("tool", "bash")))
         self.assertLess(order.index(("thinking", "27")), order.index(("print_tool", "bash")))
 
+    def test_agent_loop_fires_tool_started_before_execution(self) -> None:
+        # Regression: ``print_tool_started`` must fire BEFORE the tool executes
+        # so the REPL/desktop "tool running" indicator is visible during
+        # execution. A parallel-dispatch refactor had moved the start event to
+        # after execution, which (combined with the CLI's execute-wrapper guard)
+        # left ``_active_tools`` empty the whole time and hid the indicator.
+        # Pre-firing the start event restores the invariant; the post-execute
+        # loop must NOT re-emit it (that would leave a stale "running" entry).
+        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
+        runtime.settings = SimpleNamespace(
+            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            provider=SimpleNamespace(max_tokens=1024),
+        )
+        runtime.background_manager = SimpleNamespace(drain=lambda: [])
+        runtime.bus = SimpleNamespace(read_inbox=lambda actor: [])
+        runtime.compact_manager = SimpleNamespace(auto_compact=lambda session_id, messages, preserve_from_index=None: messages)
+        runtime.todo_manager = SimpleNamespace(has_open_items=lambda session: False)
+        runtime.session_manager = SimpleNamespace(save=lambda session: None)
+        transcript_root = self._stable_test_dir("tool-started-before-exec") / "transcripts"
+        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
+        runtime.print_tool_event = lambda *args, **kwargs: order.append(("tool_event", args[1]))
+        runtime.print_tool_started = lambda *args, **kwargs: order.append(("tool_started", args[1]))
+        runtime.build_system_prompt = lambda: "system"
+        runtime._capture_turn_file_changes = lambda session: None
+        order: list[tuple[str, str]] = []
+
+        class _Registry:
+            def schemas(self):
+                return []
+
+            def execute(self, ctx, name, payload):
+                order.append(("exec", name))
+                return "ok"
+
+        turns = iter(
+            [
+                AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("call-1", "bash", {"command": "pwd"})],
+                ),
+                AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+            ]
+        )
+        runtime.complete = lambda *args, **kwargs: next(turns)
+        runtime.registry = _Registry()
+        session = AgentSession(id="session-1")
+
+        result = OpenAgentRuntime.run_turn(runtime, session, "run pwd")
+
+        self.assertEqual(result, "Done.")
+        self.assertIn(("tool_started", "bash"), order)
+        self.assertIn(("exec", "bash"), order)
+        # The start event precedes execution (the running indicator's window).
+        self.assertLess(order.index(("tool_started", "bash")), order.index(("exec", "bash")))
+        # And it fires exactly once -- the post-execute loop skips the redundant
+        # re-emit for pre-fired tools instead of leaving a lingering entry.
+        self.assertEqual(
+            [item for item in order if item == ("tool_started", "bash")],
+            [("tool_started", "bash")],
+        )
+
     def test_agent_loop_emits_thinking_finished_before_streamed_text(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(

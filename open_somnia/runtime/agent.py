@@ -4402,6 +4402,11 @@ class OpenAgentRuntime:
                     else:
                         run_end = cursor + 1
                     seg_plans = plan[cursor:run_end]
+                    # Tool-call ids for which ``print_tool_started`` was pre-fired
+                    # BEFORE execution (normal tools), so the side-effect loop
+                    # below skips the redundant post-execute start event. Subagents
+                    # track their own pre-fire via ``subagent_started_ids``.
+                    pre_fired_tool_ids: set[str] = set()
                     # Execute the segment.
                     if current.decision != "execute":
                         seg_records = [
@@ -4473,6 +4478,16 @@ class OpenAgentRuntime:
                         # results; they are already in session.messages.
                         self._finalize_placeholders_completed(_placeholder_items, seg_records)
                     elif run_end - cursor > 1:
+                        # Pre-fire ``print_tool_started`` for every parallel-safe
+                        # tool BEFORE dispatch so the UI registers each as running
+                        # while the pool executes them (mirrors the subagent
+                        # branch). The side-effect loop skips the now-redundant
+                        # post-execute start for these ids.
+                        for p in seg_plans:
+                            self.print_tool_started(
+                                "lead", p.tool_name, p.tool_call.input, tool_call_id=p.tool_call.id
+                            )
+                            pre_fired_tool_ids.add(p.tool_call.id)
                         seg_records = dispatch_parallel_segment(
                             self.registry,
                             _lead_ctx,
@@ -4509,6 +4524,10 @@ class OpenAgentRuntime:
                                 raise
                             self._finalize_placeholders_completed(_ph_items, seg_records)
                         else:
+                            self.print_tool_started(
+                                "lead", current.tool_name, current.tool_call.input, tool_call_id=current.tool_call.id
+                            )
+                            pre_fired_tool_ids.add(current.tool_call.id)
                             seg_records = [
                                 execute_tool_call(
                                     self.registry,
@@ -4538,7 +4557,12 @@ class OpenAgentRuntime:
                                 # Pre-fired above; emit the matching finish so the
                                 # UI clears the active-subagent slot now it's done.
                                 self._print_tool_finished_subagent(tool_call)
-                            else:
+                            elif tool_call.id not in pre_fired_tool_ids:
+                                # Not pre-fired before execution; emit the start
+                                # event here. Pre-fired normal tools already had
+                                # their start emitted before execution, so they
+                                # are skipped to avoid a stale duplicate that
+                                # would render as a lingering "running" entry.
                                 self.print_tool_started("lead", tool_name, tool_call.input, tool_call_id=tool_call.id)
                         if record.repair_hint is not None:
                             pending_tool_repair_hints.append(record.repair_hint)
