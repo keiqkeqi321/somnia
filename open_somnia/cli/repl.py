@@ -101,8 +101,6 @@ HOOK_EVENT_ORDER = (
 AUTHORIZATION_PROMPT_SENTINEL = "__open_somnia_authorization__"
 CLIPBOARD_TEMP_DIRNAME = "temp"
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-THINKING_BULLET = "\u25cf"
-THINKING_BULLET_ANSI = "\x1b[38;2;167;139;250m\u25cf\x1b[0m"
 
 
 def _parse_skill_command(query: str) -> tuple[str, str] | None:
@@ -565,31 +563,6 @@ def _assistant_tool_calls(content: object) -> list[dict[str, object]]:
     return calls
 
 
-def _assistant_thinking_logs(content: object) -> list[dict[str, object]]:
-    if not isinstance(content, list):
-        return []
-    logs: list[dict[str, object]] = []
-    for item in content:
-        if isinstance(item, dict) and item.get("type") == "thinking_log":
-            logs.append(item)
-    return logs
-
-
-def _thinking_log_label(characters: int, path: str, *, ansi: bool = False) -> str:
-    bullet = THINKING_BULLET_ANSI if ansi else THINKING_BULLET
-    label = f"{bullet} think {characters} chars"
-    if path:
-        label = f"{label} -> {path}"
-    return label
-
-
-def _supports_repl_ansi(runtime: object | None, *, fallback: bool = False) -> bool:
-    supports_ansi = getattr(runtime, "_supports_ansi_output", None)
-    if callable(supports_ansi):
-        return bool(supports_ansi())
-    return fallback
-
-
 def _tool_result_map(content: object) -> dict[str, object]:
     if not isinstance(content, list):
         return {}
@@ -644,13 +617,12 @@ def _print_resumed_assistant_content_in_order(content: list[object], runtime, to
         if item_type == "text":
             pending_text.append(str(item.get("text", "")))
             continue
-        flush_text()
         if item_type == "thinking_log":
-            path = str(item.get("path", "")).strip()
-            characters = int(item.get("characters") or 0)
-            print(_thinking_log_label(characters, path, ansi=_supports_repl_ansi(runtime)))
-            printed_any = True
+            # Think entries stay out of the scrollback; the live dynamic
+            # preview already surfaced them while the turn was running.
+            flush_text()
             continue
+        flush_text()
         if item_type == "tool_call" and runtime is not None:
             _print_resumed_tool_call(
                 runtime,
@@ -1740,18 +1712,9 @@ class TurnQueueRunner:
         event = str(payload.get("event", "")).strip()
         if event == "finished":
             path = str(payload.get("path", "")).strip()
-            characters = int(payload.get("characters") or 0)
             with self._lock:
                 self._thinking_preview_text = ""
                 self._thinking_log_path = path or self._thinking_log_path
-            if path:
-                print(
-                    _thinking_log_label(
-                        characters,
-                        path,
-                        ansi=_supports_repl_ansi(self.runtime, fallback=sys.stdout.isatty()),
-                    )
-                )
             self._invalidate_ui()
             return
         delta = str(payload.get("delta", "") or "")
