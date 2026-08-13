@@ -6,6 +6,7 @@ DEFAULT_EXECUTION_MODE = "accept_edits"
 AUTHORIZATION_TOOL_NAME = "request_authorization"
 MODE_SWITCH_TOOL_NAME = "request_mode_switch"
 ASK_USER_QUESTION_TOOL_NAME = "ask_user_question"
+NEW_SESSION_TOOL_NAME = "request_new_session"
 EXECUTION_MODE_ORDER = ("shortcuts", "accept_edits", "yolo")
 NON_YOLO_EXECUTION_MODES = ("shortcuts", "accept_edits")
 READ_ONLY_TOOL_NAMES = frozenset(
@@ -19,6 +20,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "web_fetch",
         "load_skill",
         "compress",
+        NEW_SESSION_TOOL_NAME,
         AUTHORIZATION_TOOL_NAME,
         MODE_SWITCH_TOOL_NAME,
         ASK_USER_QUESTION_TOOL_NAME,

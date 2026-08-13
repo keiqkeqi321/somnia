@@ -425,6 +425,10 @@ class RemoteConnectorTests(unittest.TestCase):
                 bridge.execute("session.janitor", {"session_id": "session-1"}),
                 {"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}},
             )
+            self.assertEqual(
+                bridge.execute("session.new", {"session_id": "session-1"}),
+                {"session": {"id": "session-2", "messages": []}, "previous_session_id": "session-1"},
+            )
             self.assertEqual(bridge.execute("tool_log.list", {"limit": 5}), {"tool_logs": [{"id": "log-1"}]})
             self.assertEqual(bridge.execute("tool_log.get", {"log_id": "log-1"}), {"id": "log-1", "rendered": "done"})
             self.assertEqual(bridge.execute("thinking_log.get", {"path": "safe/log.jsonl"}), {"path": "safe/log.jsonl", "text": "reasoning"})
@@ -557,6 +561,9 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/sessions/session-1/janitor":
             self._send({"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}})
+            return
+        if self.path == "/sessions/session-1/new":
+            self._send({"session": {"id": "session-2", "messages": []}, "previous_session_id": "session-1"})
             return
         if self.path == "/workspace/images":
             self._send({"path": ".open_somnia/clipboard-images/paste.png", "absolute_path": "C:/workspace/paste.png", "media_type": body.get("media_type")})

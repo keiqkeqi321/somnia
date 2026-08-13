@@ -37,6 +37,9 @@ class AppService:
     def create_session(self) -> AgentSession:
         return self.session_service.create_session()
 
+    def new_session(self, session: AgentSession) -> AgentSession:
+        return self.session_service.new_session(session)
+
     def list_sessions(self) -> list[AgentSession]:
         return self.session_service.list_sessions()
 

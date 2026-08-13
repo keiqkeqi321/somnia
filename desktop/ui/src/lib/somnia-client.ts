@@ -60,6 +60,11 @@ export interface SomniaClient extends SomniaConnection {
   compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
   janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
   /**
+   * Start a fresh session that succeeds the given one. The old session stays
+   * persisted; a provider/model pin carries over to the fresh session.
+   */
+  newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }>;
+  /**
    * Pin a session to a provider/model (both set) or clear the pin so the
    * session follows the workspace default (both null). Only this session is
    * affected; the workspace-wide default and other sessions are untouched.
@@ -258,6 +263,10 @@ export class DirectSomniaClient implements SomniaClient {
 
   janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
     return this.rest.janitorSession(sessionId);
+  }
+
+  newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }> {
+    return this.rest.newSession(sessionId);
   }
 
   setSessionModel(

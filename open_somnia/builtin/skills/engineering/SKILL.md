@@ -94,5 +94,6 @@ Keep the grilling → spec → tasks steps in **one unbroken context window** (d
 compact or clear until after `to-tasks`), so the spec and the task graph build on
 the same thinking. Each `implement` then starts fresh from its task. At any phase
 boundary the move is, in order: **Continue** (if the next phase needs this one as
-primary source) → `/clear` (if disposable) → handoff/subagent → `/compact`
-(default, but last resort).
+primary source) → `request_new_session` (if disposable — pass `handoff` text when
+the fresh window needs pointers; that is the cross-session handoff) → subagent →
+`compress` (default, but last resort).

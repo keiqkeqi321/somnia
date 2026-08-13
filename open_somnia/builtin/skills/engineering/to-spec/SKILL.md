@@ -70,7 +70,7 @@ Anything else relevant.
 
 ## After the spec
 
-The natural next step is `/skill to-tasks`: break this spec into tracer-bullet
+The natural next step is `load_skill to-tasks`: break this spec into tracer-bullet
 tasks in the task engine, each stamped with `spec_id` = this spec's slug,
 `acceptance` criteria drawn from the User Stories, and blocking edges declared up
 front. Do not start implementing straight from the spec for anything bigger than

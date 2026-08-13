@@ -36,6 +36,7 @@ from open_somnia.cli.repl import (
     _resolve_authorization_requests,
     _resolve_mode_switch_requests,
     _resolve_question_requests,
+    _start_fresh_session,
     run_repl,
     _save_windows_clipboard_image,
 )
@@ -1789,6 +1790,220 @@ class ReplTodoTests(unittest.TestCase):
             _handle_undo_command(runtime, session)
 
         mock_print.assert_not_called()
+
+    def test_start_fresh_session_uses_service_and_carries_model_pin(self) -> None:
+        old = SimpleNamespace(id="session-1", provider_override="anthropic", model_override="glm-5")
+        fresh = SimpleNamespace(id="session-2", provider_override=None, model_override=None)
+        service = SimpleNamespace(create_session=lambda: fresh)
+        runtime = SimpleNamespace(
+            execution_mode="accept_edits",
+            create_session=lambda: self.fail("runtime.create_session must not run when a service is present"),
+        )
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True)
+
+        with patch("builtins.print") as mock_print:
+            result = _start_fresh_session(service, runtime, old, runner)
+
+        self.assertIs(result, fresh)
+        self.assertIs(runner.session, fresh)
+        self.assertEqual(fresh.provider_override, "anthropic")
+        self.assertEqual(fresh.model_override, "glm-5")
+        self.assertEqual(old.provider_override, "anthropic")
+        mock_print.assert_called_once_with("[new session session-2]")
+
+    def test_start_fresh_session_falls_back_to_runtime(self) -> None:
+        old = SimpleNamespace(id="session-1")
+        fresh = SimpleNamespace(id="session-3", provider_override=None, model_override=None)
+        runtime = SimpleNamespace(execution_mode="accept_edits", create_session=lambda: fresh)
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True)
+
+        with patch("builtins.print") as mock_print:
+            result = _start_fresh_session(None, runtime, old, runner)
+
+        self.assertIs(result, fresh)
+        self.assertIs(runner.session, fresh)
+        self.assertIsNone(fresh.provider_override)
+        self.assertIsNone(fresh.model_override)
+        mock_print.assert_called_once_with("[new session session-3]")
+
+    def test_run_repl_new_swaps_in_fresh_session(self) -> None:
+        class _BrokenPromptSession:
+            app = SimpleNamespace(invalidate=lambda: None, exit=lambda result=None: None)
+
+            def prompt(self, *args, **kwargs):
+                raise OSError(10055, "buffer space unavailable")
+
+        created = []
+
+        def _create_session():
+            fresh = SimpleNamespace(
+                id=f"session-{len(created) + 2}",
+                provider_override=None,
+                model_override=None,
+            )
+            created.append(fresh)
+            return fresh
+
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=Path.cwd(),
+                provider=SimpleNamespace(name="anthropic", model="glm-5"),
+            ),
+            execution_mode="accept_edits",
+            create_session=_create_session,
+        )
+        session = SimpleNamespace(id="session-1", todo_items=[])
+
+        with patch("open_somnia.cli.repl.create_prompt_session", return_value=_BrokenPromptSession()):
+            with patch("open_somnia.cli.repl.patch_stdout", None):
+                with patch("builtins.input", side_effect=["/new", "/exit"]):
+                    with patch("builtins.print") as mock_print:
+                        exit_code = run_repl(runtime, session)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(created), 1)
+        printed = [call.args[0] for call in mock_print.call_args_list if call.args]
+        self.assertIn("[new session session-2]", printed)
+
+    def test_run_repl_new_refuses_while_busy(self) -> None:
+        class _BrokenPromptSession:
+            app = SimpleNamespace(invalidate=lambda: None, exit=lambda result=None: None)
+
+            def prompt(self, *args, **kwargs):
+                raise OSError(10055, "buffer space unavailable")
+
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=Path.cwd(),
+                provider=SimpleNamespace(name="anthropic", model="glm-5"),
+            ),
+            execution_mode="accept_edits",
+            create_session=lambda: self.fail("create_session must not run while busy"),
+        )
+        session = SimpleNamespace(id="session-1", todo_items=[])
+
+        with patch.object(TurnQueueRunner, "has_inflight_work", return_value=True):
+            with patch("open_somnia.cli.repl.create_prompt_session", return_value=_BrokenPromptSession()):
+                with patch("open_somnia.cli.repl.patch_stdout", None):
+                    with patch("builtins.input", side_effect=["/new", "/exit"]):
+                        with patch("builtins.print") as mock_print:
+                            exit_code = run_repl(runtime, session)
+
+        self.assertEqual(exit_code, 0)
+        printed = [call.args[0] for call in mock_print.call_args_list if call.args]
+        self.assertIn("[busy; wait for queued responses before /new]", printed)
+
+    def test_run_repl_new_with_handoff_enqueues_prompt_in_fresh_session(self) -> None:
+        class _BrokenPromptSession:
+            app = SimpleNamespace(invalidate=lambda: None, exit=lambda result=None: None)
+
+            def prompt(self, *args, **kwargs):
+                raise OSError(10055, "buffer space unavailable")
+
+        runtime = SimpleNamespace(
+            settings=SimpleNamespace(
+                workspace_root=Path.cwd(),
+                provider=SimpleNamespace(name="anthropic", model="glm-5"),
+            ),
+            execution_mode="accept_edits",
+            create_session=lambda: SimpleNamespace(id="session-2", provider_override=None, model_override=None),
+        )
+        session = SimpleNamespace(id="session-1", todo_items=[])
+
+        with patch.object(TurnQueueRunner, "enqueue", autospec=True, return_value=(False, 0)) as mock_enqueue:
+            with patch("open_somnia.cli.repl.create_prompt_session", return_value=_BrokenPromptSession()):
+                with patch("open_somnia.cli.repl.patch_stdout", None):
+                    with patch("open_somnia.cli.repl.print_user_message") as mock_user_message:
+                        with patch("builtins.input", side_effect=["/new continue task 3", "/exit"]):
+                            with patch("builtins.print"):
+                                exit_code = run_repl(runtime, session)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(mock_enqueue.call_count, 1)
+        enqueue_args = mock_enqueue.call_args[0]
+        self.assertEqual(enqueue_args[1], "continue task 3")
+        # The runner's session is swapped before the handoff is enqueued.
+        self.assertEqual(enqueue_args[0].session.id, "session-2")
+        mock_user_message.assert_called_once_with("continue task 3")
+
+    def test_pending_new_session_swaps_and_enqueues_handoff(self) -> None:
+        old = SimpleNamespace(id="session-1", provider_override=None, model_override=None)
+        fresh = SimpleNamespace(id="session-2", provider_override=None, model_override=None)
+        runtime = SimpleNamespace(
+            execution_mode="accept_edits",
+            create_session=lambda: fresh,
+            consume_pending_new_session=lambda session_id: "continue task 3",
+        )
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True)
+
+        with patch("open_somnia.cli.repl.print_user_message") as mock_user_message, patch.object(
+            TurnQueueRunner, "enqueue", autospec=True, return_value=(False, 0)
+        ) as mock_enqueue, patch("builtins.print"):
+            runner._maybe_start_pending_new_session()
+
+        self.assertIs(runner.session, fresh)
+        self.assertEqual(fresh.provider_override, None)
+        mock_user_message.assert_called_once_with("continue task 3")
+        self.assertEqual(mock_enqueue.call_args[0][1], "continue task 3")
+
+    def test_pending_new_session_without_handoff_swaps_without_enqueue(self) -> None:
+        old = SimpleNamespace(id="session-1", provider_override=None, model_override=None)
+        fresh = SimpleNamespace(id="session-2", provider_override=None, model_override=None)
+        runtime = SimpleNamespace(
+            execution_mode="accept_edits",
+            create_session=lambda: fresh,
+            consume_pending_new_session=lambda session_id: "",
+        )
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True)
+
+        with patch("open_somnia.cli.repl.print_user_message") as mock_user_message, patch.object(
+            TurnQueueRunner, "enqueue", autospec=True, return_value=(False, 0)
+        ) as mock_enqueue, patch("builtins.print"):
+            runner._maybe_start_pending_new_session()
+
+        self.assertIs(runner.session, fresh)
+        mock_user_message.assert_not_called()
+        mock_enqueue.assert_not_called()
+
+    def test_pending_new_session_absent_is_noop(self) -> None:
+        old = SimpleNamespace(id="session-1")
+        runtime = SimpleNamespace(
+            execution_mode="accept_edits",
+            consume_pending_new_session=lambda session_id: None,
+            create_session=lambda: self.fail("create_session must not run without a pending swap"),
+        )
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True)
+
+        with patch("builtins.print"):
+            runner._maybe_start_pending_new_session()
+
+        self.assertIs(runner.session, old)
+
+    def test_pending_new_session_service_path_uses_captured_event(self) -> None:
+        old = SimpleNamespace(id="session-1", provider_override=None, model_override=None)
+        fresh = SimpleNamespace(id="session-2", provider_override=None, model_override=None)
+        service = SimpleNamespace(create_session=lambda: fresh)
+        runtime = SimpleNamespace(execution_mode="accept_edits")
+        runner = TurnQueueRunner(runtime, old, stable_prompt=True, service=service)
+        runner._pending_new_session_handoff = "handoff via event"
+
+        with patch("open_somnia.cli.repl.print_user_message"), patch.object(
+            TurnQueueRunner, "enqueue", autospec=True, return_value=(False, 0)
+        ) as mock_enqueue, patch("builtins.print"):
+            runner._maybe_start_pending_new_session()
+
+        self.assertIs(runner.session, fresh)
+        self.assertIsNone(runner._pending_new_session_handoff)
+        self.assertEqual(mock_enqueue.call_args[0][1], "handoff via event")
+
+    def test_service_event_new_session_approved_captures_handoff(self) -> None:
+        runtime = SimpleNamespace(execution_mode="accept_edits")
+        runner = TurnQueueRunner(runtime, SimpleNamespace(id="session-1", todo_items=[]), stable_prompt=True)
+        event = SimpleNamespace(type="new_session_approved", payload={"handoff": "continue task 3"})
+
+        runner._process_service_event(event, SimpleNamespace())
+
+        self.assertEqual(runner._pending_new_session_handoff, "continue task 3")
 
     def test_mutating_command_requires_accept_edits_mode(self) -> None:
         runtime = SimpleNamespace(execution_mode="shortcuts")

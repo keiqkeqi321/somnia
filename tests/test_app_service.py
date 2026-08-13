@@ -263,6 +263,62 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_request_new_session_queues_handoff_and_emits_event(self) -> None:
+        root = self._stable_test_dir("app-service-new-session")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            turns = iter(
+                [
+                    AssistantTurn(
+                        stop_reason="tool_use",
+                        tool_calls=[ToolCall("call-1", "request_new_session", {"handoff": "continue task 3"})],
+                    ),
+                    # The loop must stop right after the tool call: a second
+                    # provider call would raise StopIteration and fail the turn.
+                ]
+            )
+            runtime.complete = lambda *args, **kwargs: next(turns)
+
+            handle = service.run_turn(session, "start a fresh session please")
+            result = handle.wait(timeout=2.0)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.status, "completed")
+            events = handle.drain_events()
+            event = next(item for item in events if item.type == "new_session_approved")
+            self.assertEqual(event.session_id, session.id)
+            self.assertEqual(event.payload["handoff"], "continue task 3")
+            # The runtime-side flag was consumed when the event was emitted.
+            self.assertEqual(runtime._pending_new_sessions, {})
+        finally:
+            service.close()
+
+    def test_request_new_session_records_pending_and_consumes_once(self) -> None:
+        root = self._stable_test_dir("app-service-new-session-unit")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        try:
+            payload = json.loads(runtime.request_new_session("  continue task 3  ", session_id="s-1"))
+            self.assertEqual(payload["status"], "approved")
+            self.assertEqual(payload["handoff"], "continue task 3")
+
+            again = json.loads(runtime.request_new_session("other", session_id="s-1"))
+            self.assertEqual(again["status"], "already_pending")
+            self.assertEqual(again["handoff"], "continue task 3")
+
+            self.assertEqual(runtime.consume_pending_new_session("s-1"), "continue task 3")
+            self.assertIsNone(runtime.consume_pending_new_session("s-1"))
+
+            blank = json.loads(runtime.request_new_session("", session_id="s-2"))
+            self.assertEqual(blank["status"], "approved")
+            self.assertEqual(blank["handoff"], "")
+            self.assertIn("blank", blank["message"])
+
+            self.assertIn("session_id is required", runtime.request_new_session("x", session_id=""))
+        finally:
+            runtime.close()
+
     def test_tool_finished_event_includes_structured_content_blocks(self) -> None:
         root = self._stable_test_dir("app-service-tool-image")
         runtime = OpenAgentRuntime(self._make_settings(root))

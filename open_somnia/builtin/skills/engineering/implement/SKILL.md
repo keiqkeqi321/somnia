@@ -35,6 +35,6 @@ Implement a single task from the task engine, then close it out cleanly.
 ## Context hygiene
 
 Work **one task per fresh context window** — that is the whole point of
-slicing into tasks. `/clear` between tasks; the next task's context is
-disposable. If a single task turns out to need more than one session, it was
-sized too coarsely — split it with `to-tasks` first.
+slicing into tasks. Call `request_new_session` between tasks; the next task's
+context is disposable. If a single task turns out to need more than one
+session, it was sized too coarsely — split it with `to-tasks` first.

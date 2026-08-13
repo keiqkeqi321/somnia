@@ -22,6 +22,7 @@ SESSION_UPDATED = "session_updated"
 TODO_UPDATED = "todo_updated"
 CONTEXT_USAGE_UPDATED = "context_usage_updated"
 LOOP_USER_MESSAGE_INJECTED = "loop_user_message_injected"
+NEW_SESSION_APPROVED = "new_session_approved"
 ERROR = "error"
 
 EVENT_TYPES = frozenset(
@@ -43,6 +44,7 @@ EVENT_TYPES = frozenset(
         TODO_UPDATED,
         CONTEXT_USAGE_UPDATED,
         LOOP_USER_MESSAGE_INJECTED,
+        NEW_SESSION_APPROVED,
         ERROR,
     }
 )

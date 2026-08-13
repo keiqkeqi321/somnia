@@ -481,6 +481,21 @@ REPL_COMMANDS: list[CommandSpec] = [
         section="repl",
     ),
     CommandSpec(
+        name="/new",
+        description="Start a fresh session in place, optionally with handoff text.",
+        usage="/new [handoff text]",
+        detail=(
+            "Discards the current conversation context and starts a brand-new "
+            "session without leaving the REPL. With trailing text, that text is "
+            "sent immediately as the first prompt of the new session — write a "
+            "handoff summary there to carry intent across sessions. The previous "
+            "session is preserved and stays resumable via `somnia -r`. The active "
+            "provider/model selection carries over to the new session."
+        ),
+        section="repl",
+        examples=("/new", "/new Continue task #3; the spec is in .scratch/spec.md"),
+    ),
+    CommandSpec(
         name="/cancel",
         description="Cancel a queued prompt by its queue id.",
         usage="/cancel <queue-id>",

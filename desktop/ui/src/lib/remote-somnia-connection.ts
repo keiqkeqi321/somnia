@@ -171,6 +171,10 @@ export class RemoteSomniaConnection implements SomniaClient {
     return this.sendRequest<{ message: string; session: AgentSession }>("session.janitor", { session_id: sessionId });
   }
 
+  newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }> {
+    return this.sendRequest<{ session: AgentSession; previous_session_id: string }>("session.new", { session_id: sessionId });
+  }
+
   setSessionModel(
     sessionId: string,
     providerName: string | null,

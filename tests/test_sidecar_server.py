@@ -949,6 +949,96 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_new_session_starts_fresh_and_carries_model_pin(self) -> None:
+        root = self._stable_test_dir("sidecar-session-new")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            ws = self._connect_websocket(server.host, server.port)
+            try:
+                _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+                old_id = create_payload["session"]["id"]
+                status, _ = self._request_json(
+                    "POST",
+                    f"{server.base_url}/sessions/{old_id}/model",
+                    {"provider_name": "openai", "model": "fake-model-mini"},
+                )
+                self.assertEqual(status, 200)
+
+                status, new_payload = self._request_json("POST", f"{server.base_url}/sessions/{old_id}/new", {})
+                self.assertEqual(status, 200)
+                fresh = new_payload["session"]
+                self.assertEqual(new_payload["previous_session_id"], old_id)
+                self.assertNotEqual(fresh["id"], old_id)
+                self.assertEqual(fresh["messages"], [])
+                self.assertEqual(fresh["provider_override"], "openai")
+                self.assertEqual(fresh["model_override"], "fake-model-mini")
+
+                # The carried pin is persisted, not just in memory.
+                _, reload_payload = self._request_json("GET", f"{server.base_url}/sessions/{fresh['id']}")
+                self.assertEqual(reload_payload["session"]["provider_override"], "openai")
+                self.assertEqual(reload_payload["session"]["model_override"], "fake-model-mini")
+
+                # The old session is untouched and still loads.
+                status, old_payload = self._request_json("GET", f"{server.base_url}/sessions/{old_id}")
+                self.assertEqual(status, 200)
+                self.assertEqual(old_payload["session"]["id"], old_id)
+
+                # The swap is announced as a session_created event.
+                events = self._collect_events_until(
+                    ws,
+                    lambda event: event.get("type") == "session_created" and event.get("session_id") == fresh["id"],
+                )
+                self.assertTrue(
+                    any(
+                        event.get("type") == "session_created" and event.get("session_id") == fresh["id"]
+                        for event in events
+                    )
+                )
+            finally:
+                self._close_websocket(ws)
+        finally:
+            server.close()
+
+    def test_sidecar_new_session_without_pin_follows_default(self) -> None:
+        root = self._stable_test_dir("sidecar-session-new-default")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            old_id = create_payload["session"]["id"]
+
+            status, new_payload = self._request_json("POST", f"{server.base_url}/sessions/{old_id}/new", {})
+            self.assertEqual(status, 200)
+            fresh = new_payload["session"]
+            self.assertNotEqual(fresh["id"], old_id)
+            self.assertIsNone(fresh.get("provider_override"))
+            self.assertIsNone(fresh.get("model_override"))
+        finally:
+            server.close()
+
+    def test_sidecar_new_session_unknown_id_returns_404(self) -> None:
+        root = self._stable_test_dir("sidecar-session-new-404")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("POST", f"{server.base_url}/sessions/nope/new", {})
+            self.assertEqual(context.exception.code, 404)
+            # The same missing-session contract holds for the other session routes.
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("GET", f"{server.base_url}/sessions/nope")
+            self.assertEqual(context.exception.code, 404)
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("POST", f"{server.base_url}/sessions/nope/compact", {})
+            self.assertEqual(context.exception.code, 404)
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("POST", f"{server.base_url}/sessions/nope/janitor", {})
+            self.assertEqual(context.exception.code, 404)
+        finally:
+            server.close()
+
     def test_sidecar_session_context_usage_uses_pinned_model_window(self) -> None:
         root = self._stable_test_dir("sidecar-session-context-usage-pin")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)

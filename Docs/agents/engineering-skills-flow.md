@@ -50,7 +50,7 @@ flowchart TD
     ToSpec --> ToTickets["/to-tickets<br/>拆 tracer-bullet 垂直切片<br/>声明 blocking edges · 🏷️ ready-for-agent"]:::user
     ToTickets --> G1{用户批准<br/>粒度与依赖图?}:::gate
     G1 -->|否,迭代| ToTickets
-    G1 -->|是| Frontier["工作 frontier<br/>取无阻塞的票,一张一张做<br/>⏳ 每张之间 /clear 开新窗口"]
+    G1 -->|是| Frontier["工作 frontier<br/>取无阻塞的票,一张一张做<br/>⏳ 每张之间 /new 开新窗口"]
 
     Frontier --> Implement["/implement<br/>单票: tdd → code-review → commit"]:::user
     Implement --> TDD["/tdd<br/>red → green<br/>📍 只在 to-spec 预先同意的 seam 上"]:::model
@@ -93,7 +93,7 @@ flowchart TD
     %% ===== phase boundary: 阶段之间, 5 选 1 有序树, 第一个 yes 赢 =====
     Commit -.-> PB{phase 之间<br/>如何处理上下文?<br/>第一个 yes 赢}:::gate
     PB -->|"1 还能继续?"| Continue["Continue<br/>先排除: 零损耗, primary 源不降级"]:::start
-    PB -->|"2 后续无关?"| Clear["/clear<br/>最便宜, 旧会话仍可 resume"]:::start
+    PB -->|"2 后续无关?"| New["agent 自行 request_new_session<br/>(用户侧 /new)<br/>最便宜, 旧会话仍可 resume<br/>带 handoff 文本即跨会话交接"]:::start
     PB -->|"3 换 harness/dir/同事/分叉?"| Handoff["/handoff<br/>买的是可移植性, 仍 lossy"]:::standalone
     PB -->|"4 能 AFK?"| Sub["subagent<br/>紧 scoped, 报告回"]:::standalone
     PB -->|"5 其它"| Compact["/compact<br/>默认但最后才用<br/>primary → lossy summary"]:::standalone

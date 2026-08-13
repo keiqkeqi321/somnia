@@ -18,6 +18,7 @@ from open_somnia.app_service.events import (
     INTERRUPT_COMPLETED,
     INTERRUPT_REQUESTED,
     LOOP_USER_MESSAGE_INJECTED,
+    NEW_SESSION_APPROVED,
     SESSION_UPDATED,
     SUBAGENT_ACTIVITY,
     THINKING_DELTA,
@@ -714,6 +715,14 @@ class RuntimeHost:
                     context_window_usage=self._latest_context_usage_payload(active_turn),
                 ),
             )
+            # An agent-approved session swap (request_new_session) is consumed
+            # here, on the runtime that ran the turn, and surfaced as an event
+            # so the session driver (REPL worker / desktop UI) can swap in the
+            # fresh session and run the handoff.
+            if active_turn.runtime is not None:
+                pending_handoff = active_turn.runtime.consume_pending_new_session(active_turn.session.id)
+                if pending_handoff is not None:
+                    self._emit_for_turn(active_turn, NEW_SESSION_APPROVED, handoff=pending_handoff)
             if turn_result is None:
                 turn_result = TurnRunResult(
                     session=active_turn.session,

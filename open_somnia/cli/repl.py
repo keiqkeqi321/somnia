@@ -20,6 +20,7 @@ from open_somnia.app_service.events import (
     ASSISTANT_DELTA,
     AUTHORIZATION_REQUESTED,
     MODE_SWITCH_REQUESTED,
+    NEW_SESSION_APPROVED,
     QUESTION_REQUESTED,
     SESSION_UPDATED,
     SUBAGENT_ACTIVITY,
@@ -783,6 +784,9 @@ class TurnQueueRunner:
         self._active_subagents: dict[str, dict[str, object]] = {}
         self._thinking_preview_text = ""
         self._thinking_log_path: str | None = None
+        # Handoff text captured from a drained new_session_approved event
+        # (service path); consumed by _maybe_start_pending_new_session.
+        self._pending_new_session_handoff: str | None = None
 
     def start(self) -> None:
         self._worker.start()
@@ -1336,6 +1340,11 @@ class TurnQueueRunner:
                 request_id=str(payload.get("request_id", "")).strip() or None,
             )
             return
+        if event_type == NEW_SESSION_APPROVED:
+            # The agent queued a session swap (request_new_session); the worker
+            # executes it once this turn has fully finished.
+            self._pending_new_session_handoff = str(payload.get("handoff", "") or "").strip()
+            return
         if event_type in {TODO_UPDATED, SESSION_UPDATED}:
             self._invalidate_ui()
 
@@ -1412,7 +1421,30 @@ class TurnQueueRunner:
                     self._thinking_preview_text = ""
                     self._thinking_log_path = None
                 self._set_status(self._status_for_response(response))
+                self._maybe_start_pending_new_session()
                 self._queue.task_done()
+
+    def _maybe_start_pending_new_session(self) -> None:
+        """Execute an agent-requested session swap (request_new_session) now
+        that the turn has fully finished: swap in a fresh session and queue
+        the handoff text as its first prompt."""
+        handoff: str | None = None
+        if self.service is not None:
+            # Captured from the new_session_approved event drained mid-turn;
+            # RuntimeHost already consumed the runtime-side flag.
+            handoff = self._pending_new_session_handoff
+            self._pending_new_session_handoff = None
+        else:
+            consumer = getattr(self.runtime, "consume_pending_new_session", None)
+            session = self.session
+            if callable(consumer) and session is not None:
+                handoff = consumer(session.id)
+        if handoff is None:
+            return
+        self.session = _start_fresh_session(self.service, self.runtime, self.session, self)
+        if handoff:
+            print_user_message(handoff)
+            self.enqueue(handoff)
 
     def _set_status(self, status: str) -> None:
         with self._lock:
@@ -2638,6 +2670,19 @@ def _handle_hooks_command(runtime) -> None:
             continue
 
 
+def _start_fresh_session(service, runtime, session, runner: TurnQueueRunner):
+    """Swap in a brand-new session (/new): the old one is already persisted
+    and stays resumable; the fresh one follows the runtime's current
+    provider/model. A per-session provider/model pin carries over so the swap
+    drops context, never settings."""
+    fresh = (service or runtime).create_session()
+    fresh.provider_override = getattr(session, "provider_override", None)
+    fresh.model_override = getattr(session, "model_override", None)
+    runner.session = fresh
+    print(f"[new session {fresh.id}]")
+    return fresh
+
+
 def _handle_undo_command(runtime, session) -> None:
     undo_stack = list(getattr(session, "undo_stack", []) or [])
     if not undo_stack:
@@ -2990,6 +3035,9 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                 stripped = query.strip()
                 if not stripped:
                     continue
+                # The worker may have swapped in a fresh session behind an
+                # agent-run request_new_session; follow it before dispatch.
+                session = runner.session
                 if _is_exit_command(stripped):
                     active, queued = runner.stats()
                     if queued:
@@ -3008,6 +3056,16 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     if (was_active or queued_before) and not runner.stable_prompt:
                         ahead = queued_before + (1 if was_active else 0)
                         print(f"[queued compact; {ahead} item(s) ahead]")
+                    continue
+                if stripped == "/new" or stripped.startswith("/new "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /new]")
+                        continue
+                    session = _start_fresh_session(service, runtime, session, runner)
+                    handoff = stripped[len("/new") :].strip()
+                    if handoff:
+                        runner.enqueue(handoff)
+                        print_user_message(handoff)
                     continue
                 if stripped == "/init" or stripped.startswith("/init "):
                     if runner.has_inflight_work():

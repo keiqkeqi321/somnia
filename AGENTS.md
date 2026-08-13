@@ -144,6 +144,8 @@ Blocked tools trigger `request_authorization`. Agents may request non-Yolo mode 
 
 `ask_user_question` lets the agent ask the user a multiple-choice question (options + optional custom answer) mid-turn. It is read-only in every mode and silent in the tool-event renderer. Interactive answers travel the same channels as authorization: the REPL main-thread prompt drain (CLI) or `InteractionService` → sidecar `POST /interactions/<id>/question` → desktop `InteractionDecisionCard` (kind `ask_user_question`, event `question_requested`). Non-interactive sessions (`somnia run`) auto-resolve it as `cancelled`.
 
+`request_new_session(handoff?)` lets the agent end the current turn and continue in a fresh session — the skills' context-hygiene move (`/new` for the user). Read-only in every mode and auto-approved (the old session stays persisted and resumable). The agent loop stops right after the tool call; the session driver executes the swap at the turn boundary: the REPL worker consumes `runtime.consume_pending_new_session` (no-service path) or the drained `new_session_approved` event (service path; `RuntimeHost` consumes the flag and emits the event), swaps in the fresh session, and queues the handoff as its first prompt. The desktop reacts to the same event (`newSession` + start the handoff turn). Non-interactive `somnia run` never consumes the flag, so it is a no-op there beyond ending the turn.
+
 ## TodoWrite Behavior
 
 - Session-scoped; shown in REPL status while any item is open (☐ pending, ⏳ in progress, ✅ completed)

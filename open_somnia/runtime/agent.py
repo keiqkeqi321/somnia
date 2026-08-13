@@ -64,6 +64,7 @@ from open_somnia.runtime.execution_mode import (
     AUTHORIZATION_TOOL_NAME,
     DEFAULT_EXECUTION_MODE,
     MODE_SWITCH_TOOL_NAME,
+    NEW_SESSION_TOOL_NAME,
     NON_YOLO_EXECUTION_MODES,
 )
 from open_somnia.runtime.events import ToolExecutionContext
@@ -308,6 +309,10 @@ class OpenAgentRuntime:
         self.authorization_request_handler = None
         self.mode_switch_request_handler = None
         self.ask_user_question_handler = None
+        # Sessions the agent asked to swap out of (via request_new_session),
+        # keyed by session id -> handoff text. Consumed at the turn boundary
+        # by whoever drives the session (REPL runner / RuntimeHost).
+        self._pending_new_sessions: dict[str, str] = {}
         self.permission_manager = PermissionManager(self)
         self.subagent_runner = SubagentRunner(self)
         self.system_prompt_builder = SystemPromptBuilder(self)
@@ -642,6 +647,58 @@ class OpenAgentRuntime:
 
     def request_mode_switch(self, target_mode: str, reason: str = "") -> str:
         return self._permission_manager().request_mode_switch(target_mode, reason)
+
+    def request_new_session(self, handoff: str = "", *, session_id: str) -> str:
+        """Queue a session swap for the turn boundary (request_new_session tool).
+
+        Auto-approved: the previous session stays persisted and resumable, so
+        this never needs a confirmation round-trip. The swap itself is executed
+        by the session driver (REPL runner / RuntimeHost consumer) once the
+        current turn has finished.
+        """
+        normalized_handoff = str(handoff or "").strip()
+        normalized_session = str(session_id or "").strip()
+        if not normalized_session:
+            return "request_new_session failed: session_id is required."
+        pending = self._new_session_pendings()
+        if normalized_session in pending:
+            return json.dumps(
+                {
+                    "status": "already_pending",
+                    "handoff": pending[normalized_session],
+                    "message": "A new session is already queued for this turn boundary; stop the turn now.",
+                },
+                ensure_ascii=False,
+            )
+        pending[normalized_session] = normalized_handoff
+        return json.dumps(
+            {
+                "status": "approved",
+                "handoff": normalized_handoff,
+                "message": (
+                    "This turn ends now. A fresh session starts immediately"
+                    + (
+                        " with your handoff text as its first prompt. Make sure the handoff carries everything the new context needs."
+                        if normalized_handoff
+                        else ". No handoff text was given, so the new session starts blank."
+                    )
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def consume_pending_new_session(self, session_id: str) -> str | None:
+        """Pop the handoff text queued by request_new_session, if any."""
+        return self._new_session_pendings().pop(str(session_id or "").strip(), None)
+
+    def _new_session_pendings(self) -> dict[str, str]:
+        # Lazy so __new__-built test runtimes (no __init__) still work.
+        return self.__dict__.setdefault("_pending_new_sessions", {})
+
+    def _new_session_pending_for(self, tool_name: str, session: AgentSession) -> bool:
+        """True when a request_new_session call just queued a swap, so the agent
+        loop must end the turn right after this tool call."""
+        return tool_name == NEW_SESSION_TOOL_NAME and session.id in self._new_session_pendings()
 
     def ask_user_question(self, question: str, options: list[str], allow_custom: bool = True) -> str:
         normalized_question = str(question).strip()
@@ -2777,6 +2834,25 @@ class OpenAgentRuntime:
         )
         registry.register(
             ToolDefinition(
+                name=NEW_SESSION_TOOL_NAME,
+                description=(
+                    "End the current turn and start a fresh session, optionally passing handoff "
+                    "text that becomes the new session's first prompt. Use at task/phase boundaries "
+                    "when the remaining context is disposable. The previous session is preserved "
+                    "and stays resumable; the provider/model selection carries over."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {"handoff": {"type": "string"}},
+                },
+                handler=lambda ctx, payload: self.request_new_session(
+                    payload.get("handoff", ""),
+                    session_id=str(getattr(getattr(ctx, "session", None), "id", "") or ""),
+                ),
+            )
+        )
+        registry.register(
+            ToolDefinition(
                 name="compress",
                 description="Manually compact the current conversation context.",
                 input_schema={"type": "object", "properties": {}},
@@ -4465,7 +4541,7 @@ class OpenAgentRuntime:
                         if tool_call.id in placeholder_tool_call_ids:
                             if tool_name == "TodoWrite":
                                 used_todo = True
-                            if planned.is_turn_boundary:
+                            if planned.is_turn_boundary or self._new_session_pending_for(tool_name, session):
                                 end_turn_after_tool = True
                                 seg_broke = True
                                 break
@@ -4494,7 +4570,7 @@ class OpenAgentRuntime:
                         )
                         if tool_name == "TodoWrite":
                             used_todo = True
-                        if planned.is_turn_boundary:
+                        if planned.is_turn_boundary or self._new_session_pending_for(tool_name, session):
                             end_turn_after_tool = True
                             seg_broke = True
                             break
@@ -4549,6 +4625,15 @@ class OpenAgentRuntime:
                     except Exception:
                         pass
                 self.session_manager.save(session)
+                if session.id in self._new_session_pendings():
+                    # request_new_session queued a swap: end the turn hard, right
+                    # after the tool result is persisted, instead of starting
+                    # another round the fresh session would never see.
+                    return self._agent_loop_result(
+                        final_text or "Session swap queued; continuing in a fresh session.",
+                        status="completed",
+                        session=session,
+                    )
                 if pending_todo_reconcile and used_todo:
                     if executed_tool_calls and all(tool_call.name == "TodoWrite" for tool_call in executed_tool_calls):
                         if not self.todo_manager.has_open_items(session):

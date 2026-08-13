@@ -684,7 +684,7 @@ class SidecarServer:
     def load_session(self, session_id: str) -> dict[str, Any]:
         try:
             session = self.service.load_session(session_id)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         return self._serialize_session(session)
 
@@ -1097,7 +1097,7 @@ class SidecarServer:
     def compact_session(self, session_id: str) -> dict[str, Any]:
         try:
             session = self.service.load_session(session_id)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         payload = {"message": self.service.compact_session(session), "session": self._serialize_session(session)}
         self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
@@ -1106,12 +1106,22 @@ class SidecarServer:
     def janitor_session(self, session_id: str) -> dict[str, Any]:
         try:
             session = self.service.load_session(session_id)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
         message = self.service.run_semantic_janitor(session)
         payload = {"message": message, "session": self._serialize_session(session)}
         self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
         return payload
+
+    def new_session(self, session_id: str) -> dict[str, Any]:
+        try:
+            old = self.service.load_session(session_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
+        fresh = self.service.new_session(old)
+        serialized = self._serialize_session(fresh)
+        self.broadcast_event(make_sidecar_event("session_created", payload={"session": serialized}, session_id=fresh.id))
+        return {"session": serialized, "previous_session_id": old.id}
 
     def interrupt_turn(self, turn_id: str) -> dict[str, Any]:
         interrupted = self.service.interrupt_turn(turn_id)
@@ -1533,6 +1543,8 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return self.sidecar.compact_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "janitor":
             return self.sidecar.janitor_session(path_parts[1]), HTTPStatus.OK
+        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "new":
+            return self.sidecar.new_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "model":
             session_id = path_parts[1]
             raw_provider = body.get("provider_name")

@@ -11,6 +11,21 @@ class SessionService:
     def create_session(self) -> AgentSession:
         return self.runtime.create_session()
 
+    def new_session(self, session: AgentSession) -> AgentSession:
+        """Start a fresh session that succeeds ``session`` and inherits its
+        provider/model pin.
+
+        The old session is left untouched and stays resumable; the fresh one
+        is validated and persisted by ``set_session_provider_model`` when a
+        pin exists.
+        """
+        fresh = self.create_session()
+        provider = getattr(session, "provider_override", None)
+        model = getattr(session, "model_override", None)
+        if provider and model:
+            self.runtime.set_session_provider_model(fresh, provider, model)
+        return fresh
+
     def list_sessions(self) -> list[AgentSession]:
         return self.runtime.list_sessions()
 

@@ -145,6 +145,7 @@ const COMMAND_SPECS = [
   { command: "/rollback", descriptionKey: "cmd.rollback" as const },
   { command: "/compact", descriptionKey: "cmd.compact" as const },
   { command: "/janitor", descriptionKey: "cmd.janitor" as const },
+  { command: "/new", descriptionKey: "cmd.new" as const },
   { command: "/skills", descriptionKey: "cmd.skills" as const },
   { command: "/tasks", descriptionKey: "cmd.tasks" as const },
   { command: "/team", descriptionKey: "cmd.team" as const },
@@ -241,7 +242,7 @@ type TaskGraphLayout = {
   nodeHeight: number;
 };
 type ConfigCommandTarget = SettingsConfigSectionKey | "skills";
-type ContextCommandTarget = "compact" | "janitor";
+type ContextCommandTarget = "compact" | "janitor" | "new";
 type UiCommandTarget =
   | { kind: "config"; target: ConfigCommandTarget }
   | { kind: "model" }
@@ -1925,6 +1926,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       }
       return;
     }
+    if (event.type === "new_session_approved") {
+      // The agent queued a session swap (request_new_session) mid-turn; now
+      // that the turn finished, start the successor and run the handoff.
+      const handoff = typeof event.payload.handoff === "string" ? event.payload.handoff.trim() : "";
+      if (event.session_id) {
+        void handleAgentNewSession(projectPath, event.session_id, handoff);
+      }
+      return;
+    }
     if (conversationTransition?.effect.type === "turn_started") {
       const coreState = conversationTransition.state;
       if (coreState.sessionId) {
@@ -2690,6 +2700,12 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   async function handleSendPrompt() {
     const commandTarget = pendingUiCommandTarget(draft, pendingImages);
     if (commandTarget) {
+      if (commandTarget.kind === "context" && commandTarget.command === "new") {
+        // /new takes optional trailing handoff text; pass it through.
+        const handoff = draft.trim().slice("/new".length).trim();
+        await handleNewSession(handoff || undefined);
+        return;
+      }
       openUiCommandTarget(commandTarget);
       return;
     }
@@ -3007,7 +3023,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }
 
   function applyCommandSuggestion(command: string) {
-    const uiTarget = uiCommandTarget(command);
+    // /new accepts trailing handoff text, so picking it only seeds the draft
+    // instead of executing immediately.
+    const uiTarget = command === "/new" ? null : uiCommandTarget(command);
     if (uiTarget) {
       openUiCommandTarget(uiTarget);
       return;
@@ -3025,6 +3043,10 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
   }
 
   async function handleContextCommand(command: ContextCommandTarget) {
+    if (command === "new") {
+      await handleNewSession();
+      return;
+    }
     const client = clientRef.current;
     const session = currentSessionRef.current;
     const projectPath = selectedProjectPathRef.current;
@@ -3091,6 +3113,73 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         setActiveTurnId((current) => (current === operationId ? null : current));
       }
       setBusyAction(null);
+    }
+  }
+
+  async function handleNewSession(handoffText?: string) {
+    const client = clientRef.current;
+    const session = currentSessionRef.current;
+    const projectPath = selectedProjectPathRef.current;
+    const handoff = handoffText?.trim() ?? "";
+    if (!client || !session) {
+      setBannerMessage("Select a session before starting a new one.");
+      return;
+    }
+    if (projectPath && (activeProjectTurns[projectPath] ?? []).some((turn) => turn.sessionId === session.id)) {
+      setBannerMessage("Wait for the active turn to finish before starting a new session.");
+      return;
+    }
+    setBusyAction("session-new");
+    setDraft("");
+    setCommandPickerOpen(false);
+    setPathPickerOpen(false);
+    setHistoryCursor(null);
+    try {
+      const result = await client.newSession(session.id);
+      upsertProjectSession(projectPath, result.session);
+      setSelectedSessionId(result.session.id);
+      setCurrentSession(result.session);
+      if (projectPath) {
+        persistLastOpenedSession(projectPath, result.session.id);
+      }
+      clearConversationRuntimeState(projectPath, result.session.id);
+      setContextPopoverOpen(false);
+      if (handoff) {
+        // Cross-session handoff: the trailing text becomes the fresh
+        // session's first turn.
+        rememberPrompt(handoff);
+        await startPromptTurn(client, projectPath, result.session, handoff, []);
+        setBannerMessage("Started a new session; handoff sent.");
+      } else {
+        setBannerMessage("Started a new session.");
+      }
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleAgentNewSession(projectPath: string, previousSessionId: string, handoff: string) {
+    const client = projectClientsRef.current[projectPath] ?? clientRef.current;
+    if (!client) {
+      return;
+    }
+    try {
+      const result = await client.newSession(previousSessionId);
+      upsertProjectSession(projectPath, result.session);
+      if (selectedProjectPathRef.current === projectPath) {
+        setSelectedSessionId(result.session.id);
+        setCurrentSession(result.session);
+        persistLastOpenedSession(projectPath, result.session.id);
+      }
+      if (handoff) {
+        rememberPrompt(handoff);
+        await startPromptTurn(client, projectPath, result.session, handoff, []);
+      }
+      setBannerMessage(handoff ? "Agent started a new session; handoff sent." : "Agent started a new session.");
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
     }
   }
 
@@ -4821,6 +4910,13 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                             disabled={!currentSession || currentSessionRunning || busyAction !== null}
                           >
                             {t("context.semanticJanitor")}
+                          </button>
+                          <button
+                            className="action secondary"
+                            onClick={() => void handleContextCommand("new")}
+                            disabled={!currentSession || currentSessionRunning || busyAction !== null}
+                          >
+                            {t("context.newSession")}
                           </button>
                         </div>
                       </div>
@@ -7190,6 +7286,9 @@ function uiCommandTarget(command: string): UiCommandTarget | null {
   }
   if (normalized === "/janitor") {
     return { kind: "context", command: "janitor" };
+  }
+  if (normalized === "/new") {
+    return { kind: "context", command: "new" };
   }
   return null;
 }
