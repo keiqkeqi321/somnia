@@ -88,11 +88,14 @@ After `task_create_batch`, unblocked `ready-for-agent` tasks are auto-assigned t
 idle teammates (if any). To see what is takeable yourself, call `task_claimable`
 — it splits the frontier into `ready_for_agent` (auto-claimable) and
 `claimable_unspecced` (unblocked but not yet stamped ready). Take one with
-`claim_task`. Work **one task per fresh context window** — call
-`request_new_session` between tasks; each task is self-contained, so the last
-one's context is disposable. Close with
-`task_close`, checking off every acceptance item and recording `result` (what was
-done, anything notable) and `commit_ref`.
+`claim_task`, then **load the `implement` skill** — it owns the execution
+detail (TDD at the seams, one-task-per-window discipline, closing with
+`task_close`).
+
+Cross-window execution follows the index's Context hygiene rule (independent
+tasks → new-session chain; coupled → orchestrate with `general-purpose`
+subagents). When you orchestrate, subagents do the work and return a summary —
+**you** call `task_close`, since they have no task tools.
 
 ### Re-edges
 
