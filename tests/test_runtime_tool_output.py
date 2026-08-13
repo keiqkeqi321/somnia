@@ -525,9 +525,12 @@ class RuntimeToolOutputTests(unittest.TestCase):
         rendered = fake_stdout.getvalue()
         self.assertEqual(log_id, "bash-log")
         self.assertIn('Bash(cd "D:\\Project\\Git\\learn-claude-code-new\\OpenAgent" && python -c', rendered)
-        self.assertIn("All files compile OK", rendered)
+        # Successful tools collapse to a single heading line; the result body
+        # and tool-log hint stay out of the scrollback for a tidy output area.
+        self.assertNotIn("\u23bf", rendered)
+        self.assertNotIn("Log: /toollog", rendered)
 
-    def test_long_bash_result_is_truncated_and_shows_toollog_hint(self) -> None:
+    def test_long_failed_bash_result_is_truncated_and_shows_toollog_hint(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.tool_log_store = SimpleNamespace(
             write=lambda **kwargs: {"id": "bash-long"},
@@ -541,7 +544,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 return True
 
         fake_stdout = _Stdout()
-        long_output = "0123456789" * 10
+        long_output = "error: " + "0123456789" * 10
         with patch("sys.stdout", fake_stdout):
             OpenAgentRuntime.print_tool_event(
                 runtime,
@@ -551,6 +554,8 @@ class RuntimeToolOutputTests(unittest.TestCase):
                 long_output,
             )
 
+        # Failed tools still expand their output body; a long one is truncated
+        # and gets a /toollog hint so the full result remains reachable.
         rendered = fake_stdout.getvalue()
         self.assertIn("Log: /toollog bash-long", rendered)
         self.assertIn("...", rendered)

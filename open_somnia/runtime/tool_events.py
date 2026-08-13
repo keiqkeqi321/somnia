@@ -70,6 +70,11 @@ class ToolEventRenderer:
         if self._is_file_change_event(tool_name, output):
             return self._render_file_change_event_lines(tool_name, tool_input, output, log_id=log_id)
         lines = [self._format_tool_heading(tool_name, tool_input, output)]
+        # Successful non-edit tools render as a single heading line to keep the
+        # output area tidy; the full result stays in the tool log (/toollog <id>)
+        # and is shown in full when the tool fails. File edits keep their diff.
+        if not self._tool_event_failed(output):
+            return lines
         lines.extend(self._format_tool_result_lines(tool_name, tool_input, output, log_id))
         return lines
 
