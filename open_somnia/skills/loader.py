@@ -29,7 +29,6 @@ class SkillLoader:
         return cls(
             [
                 BUILTIN_SKILLS_DIR,
-                Path.home() / ".claude" / "skills",
                 Path.home() / ".open_somnia" / "skills",
                 workspace_root / "skills",
                 workspace_root / ".claude" / "skills",
@@ -71,9 +70,6 @@ class SkillLoader:
         home_skills_dir = Path.home() / ".open_somnia" / "skills"
         if source_dir == home_skills_dir:
             return "global"
-        home_claude_skills_dir = Path.home() / ".claude" / "skills"
-        if source_dir == home_claude_skills_dir:
-            return "global-claude"
         if source_dir.name == "skills" and source_dir.parent.name == ".open_somnia":
             return "workspace"
         if source_dir.name == "skills" and source_dir.parent.name == ".claude":
@@ -175,6 +171,6 @@ class SkillLoader:
             lines: list[str] = []
             for entry in entries:
                 lines.append(f"- {entry['name']} [{entry['scope']}] - {entry['description']}")
-                lines.append(f"  use: /+{entry['name']}")
+                lines.append(f"  use: /skill {entry['name']}")
                 lines.append(f"  path: {entry['path']}")
             return "\n".join(lines)

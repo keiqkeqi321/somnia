@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from open_somnia.skills.loader import DEFAULT_SKILL_PROMPT_DESCRIPTION_CHARS, SkillLoader
@@ -45,7 +46,7 @@ class SkillLoaderTests(unittest.TestCase):
             rendered = loader.render_listing()
 
             self.assertIn("- Review [workspace] - review code", rendered)
-            self.assertIn("use: /+Review", rendered)
+            self.assertIn("use: /skill Review", rendered)
 
     def test_for_workspace_includes_builtin_somnia_config_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -112,6 +113,22 @@ class SkillLoaderTests(unittest.TestCase):
             self.assertIn("gitnexus-exploring", loader.names())
             self.assertIn("claude skill body", loader.load("gitnexus-exploring"))
             self.assertIn("- gitnexus-exploring [workspace-claude] - explore with graph", loader.render_listing())
+
+    def test_for_workspace_ignores_home_claude_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fake_home = root / "home"
+            home_claude_dir = fake_home / ".claude" / "skills" / "Legacy"
+            home_claude_dir.mkdir(parents=True)
+            (home_claude_dir / "SKILL.md").write_text(
+                "---\ndescription: home claude\n---\nhome claude body\n",
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch("pathlib.Path.home", return_value=fake_home):
+                loader = SkillLoader.for_workspace(root / "workspace")
+
+            self.assertNotIn("Legacy", loader.names())
 
     def test_workspace_somnia_skill_overrides_project_claude_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

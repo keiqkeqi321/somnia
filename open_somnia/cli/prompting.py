@@ -52,6 +52,7 @@ HIDDEN_COMMAND_SPECS = [
 COMMAND_SPECS = VISIBLE_COMMAND_SPECS + HIDDEN_COMMAND_SPECS
 
 TOKEN_PATTERN = re.compile(r"(?:^|\s)([@/])([^\s]*)$")
+SKILL_NAME_TOKEN_PATTERN = re.compile(r"^\s*/skill\s+([^\s]*)$")
 PROMPT_BORDER = "\u2500" * 58
 PROMPT_TEXT = "\u276f "
 PROMPT_ANSI = "\u276f "
@@ -284,6 +285,10 @@ class OpenAgentCompleter(Completer):
         self._last_top_level_scan_at = 0.0
 
     def get_completions(self, document, complete_event):
+        skill_name_match = SKILL_NAME_TOKEN_PATTERN.match(document.text_before_cursor)
+        if skill_name_match is not None:
+            yield from self._skill_name_completions(skill_name_match.group(1))
+            return
         token = self._current_token(document.text_before_cursor)
         if token is None:
             return
@@ -304,9 +309,6 @@ class OpenAgentCompleter(Completer):
         return symbol, query
 
     def _command_completions(self, query: str):
-        if query.startswith("+"):
-            yield from self._skill_command_completions(query)
-            return
         lowered = query.lower()
         matches: list[tuple[tuple[int, int, int], str, str]] = []
         for index, (command, description) in enumerate(VISIBLE_COMMAND_SPECS):
@@ -333,19 +335,19 @@ class OpenAgentCompleter(Completer):
                 display_meta=description,
             )
 
-    def _skill_command_completions(self, query: str):
+    def _skill_name_completions(self, query: str):
         getter = self.skill_names_getter
         if getter is None:
             return
-        lowered = query[1:].lower()
+        lowered = query.lower()
         for skill_name in getter():
             haystack = skill_name.lower()
             if lowered and lowered not in haystack:
                 continue
             yield Completion(
-                text=f"+{skill_name}",
+                text=skill_name,
                 start_position=-len(query),
-                display=f"/+{skill_name}",
+                display=skill_name,
                 display_meta="skill",
             )
 

@@ -240,19 +240,21 @@ class PromptingTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(applied, ["model"])
 
-    def test_command_completion_shows_skill_suggestions_only_for_plus_prefix(self) -> None:
+    def test_command_completion_shows_skill_suggestions_after_skill_command(self) -> None:
         completer = OpenAgentCompleter(
             Path("."),
             skill_names_getter=lambda: ["unity", "review"],
         )
 
         slash_only = list(completer.get_completions(Document(text="/", cursor_position=1), None))
-        plus_prefixed = list(completer.get_completions(Document(text="/+u", cursor_position=3), None))
+        skill_names = list(completer.get_completions(Document(text="/skill ", cursor_position=7), None))
+        filtered = list(completer.get_completions(Document(text="/skill u", cursor_position=8), None))
 
         self.assertTrue(any(item.display_text == "/model" for item in slash_only))
-        self.assertTrue(any(item.display_text == "/reloadplugin" for item in slash_only))
-        self.assertFalse(any(item.display_text == "/+unity" for item in slash_only))
-        self.assertEqual([item.display_text for item in plus_prefixed], ["/+unity"])
+        self.assertTrue(any(item.display_text == "/skill" for item in slash_only))
+        self.assertFalse(any(item.display_text == "unity" for item in slash_only))
+        self.assertEqual({item.display_text for item in skill_names}, {"unity", "review"})
+        self.assertEqual([item.display_text for item in filtered], ["unity"])
 
     def test_command_completion_prefers_command_name_matches_over_description_matches(self) -> None:
         completer = OpenAgentCompleter(Path("."))

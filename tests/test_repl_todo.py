@@ -1536,10 +1536,20 @@ class ReplTodoTests(unittest.TestCase):
             skill_loader=SimpleNamespace(load=lambda name: f"<skill name=\"{name}\">body</skill>"),
         )
 
-        expanded = _expand_skill_command(runtime, "/+unity inspect this folder")
+        expanded = _expand_skill_command(runtime, "/skill unity inspect this folder")
 
         self.assertIn("<skill name=\"unity\">body</skill>", expanded)
         self.assertIn("The user explicitly requested skill 'unity'.", expanded)
+        self.assertTrue(expanded.endswith("inspect this folder"))
+
+    def test_expand_skill_command_accepts_legacy_plus_alias(self) -> None:
+        runtime = SimpleNamespace(
+            skill_loader=SimpleNamespace(load=lambda name: f"<skill name=\"{name}\">body</skill>"),
+        )
+
+        expanded = _expand_skill_command(runtime, "/+unity inspect this folder")
+
+        self.assertIn("<skill name=\"unity\">body</skill>", expanded)
         self.assertTrue(expanded.endswith("inspect this folder"))
 
     def test_skills_command_returns_selected_skill_prefix(self) -> None:
@@ -1559,7 +1569,7 @@ class ReplTodoTests(unittest.TestCase):
         with patch("open_somnia.cli.repl.choose_item_interactively", return_value="Review"):
             prefix = _handle_skills_command(runtime)
 
-        self.assertEqual(prefix, "/+Review ")
+        self.assertEqual(prefix, "/skill Review ")
 
     def test_skills_command_prints_no_skills_when_empty(self) -> None:
         runtime = SimpleNamespace(skill_loader=SimpleNamespace(list_entries=lambda: []))

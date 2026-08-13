@@ -107,9 +107,13 @@ THINKING_BULLET_ANSI = "\x1b[38;2;167;139;250m\u25cf\x1b[0m"
 
 def _parse_skill_command(query: str) -> tuple[str, str] | None:
     stripped = query.strip()
-    if not stripped.startswith("/+"):
+    if stripped.startswith("/skill "):
+        payload = stripped[len("/skill ") :].strip()
+    elif stripped.startswith("/+"):
+        # Legacy alias for /skill.
+        payload = stripped[2:].strip()
+    else:
         return None
-    payload = stripped[2:].strip()
     if not payload:
         return None
     parts = payload.split(maxsplit=1)
@@ -2814,7 +2818,7 @@ def _handle_skills_command(runtime) -> str | None:
     )
     if not selected:
         return None
-    return f"/+{selected} "
+    return f"/skill {selected} "
 
 
 def _resolve_authorization_requests(runner: TurnQueueRunner) -> bool:
@@ -3109,7 +3113,7 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     if not runner.stable_prompt and not was_active and queued_before == 0:
                         print_user_message(query)
                     continue
-                if stripped == "/skills":
+                if stripped == "/skills" or stripped == "/skill":
                     skill_prefix = _handle_skills_command(runtime)
                     if skill_prefix is not None:
                         pending_query_prefix = skill_prefix

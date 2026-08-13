@@ -509,6 +509,17 @@ REPL_COMMANDS: list[CommandSpec] = [
         section="repl",
     ),
     CommandSpec(
+        name="/skill",
+        description="Apply a skill to the prompt.",
+        usage="/skill <name> [task]",
+        detail=(
+            "Runs the prompt with the named skill applied: the skill body is loaded "
+            "and the model is instructed to follow it for this task. With no name, "
+            "opens the interactive skill picker (same as /skills)."
+        ),
+        section="repl",
+    ),
+    CommandSpec(
         name="/skills",
         description="Choose a skill to apply to the next prompt.",
         usage="/skills",

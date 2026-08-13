@@ -7,7 +7,7 @@ description: Index + routing map of Somnia's engineering skills. Load to browse 
 
 This is the index and router for Somnia's engineering skills — the catalog, the
 routing map, and the context rules. All skills live under this bundle; load any
-with `load_skill <name>` (or `/+<name>`). Read the map to pick one.
+with `load_skill <name>` (or `/skill <name>`). Read the map to pick one.
 
 ## Trivial path — clear goal, small change
 
@@ -85,7 +85,7 @@ flowchart TD
 
 ## How to use
 
-Load the skill you need with `load_skill <name>` (or `/+<name>`); the map above
+Load the skill you need with `load_skill <name>` (or `/skill <name>`); the map above
 routes by situation.
 
 ## Context hygiene

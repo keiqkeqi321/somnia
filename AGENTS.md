@@ -46,11 +46,25 @@ pip install -e .
 # Run key regression tests (unittest)
 python -m unittest tests.test_cli_resume tests.test_process_output tests.test_repl_todo tests.test_runtime_tool_output
 
-# Run all tests
+# Run all tests (~1000 tests, under 2 min is normal)
 python -m unittest discover -s tests -p "test_*.py"
 
 # Version is in VERSION file (currently 0.5.2)
 ```
+
+Watching the full suite: never pipe it through `grep`/`head` — grep
+block-buffers when stdout is a pipe or file, progress dots are filtered out,
+and the summary lines only print at the end, so a healthy run looks hung for
+minutes. To observe progress, redirect verbose output straight to a file and
+poll it:
+
+```bash
+python -u -m unittest discover -s tests -p "test_*.py" -v > .scratch/test_run.log 2>&1
+tail .scratch/test_run.log   # poll to confirm it is advancing
+```
+
+For per-test timings and lingering-thread diagnostics use the existing harness:
+`python .scratch/time_tests.py [topN]`.
 
 Dependencies (from `pyproject.toml`): `anthropic>=0.25.0`, `Pillow>=10.3.0`, `prompt_toolkit>=3.0.43`, `tiktoken>=0.8.0`, `pathspec>=0.12,<2` (used by `open_somnia/tools/gitignore.py` for gitignore matching). Requires Python >=3.11.
 
