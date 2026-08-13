@@ -584,7 +584,6 @@ def _print_resumed_tool_call(runtime, tool_name: str, payload: dict[str, object]
     print()
     for line in runtime.render_tool_event_lines(tool_name, payload, output, log_id=log_id):
         print(line)
-    print()
 
 
 def _print_resumed_assistant_text(text: str) -> bool:

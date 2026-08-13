@@ -28,7 +28,6 @@ class ToolEventRenderer:
         print()
         for line in self.render_tool_started_lines(tool_name, tool_input):
             print(line)
-        print()
         sys.stdout.flush()
 
     def print_tool_event(self, actor: str, tool_name: str, tool_input: dict[str, Any], output: Any) -> str:
@@ -49,7 +48,6 @@ class ToolEventRenderer:
         print()
         for line in self.render_tool_event_lines(tool_name, tool_input, output, log_id=log_entry["id"]):
             print(line)
-        print()
         return log_entry["id"]
 
     def render_tool_started_lines(self, tool_name: str, tool_input: dict[str, Any]) -> list[str]:
