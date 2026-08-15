@@ -144,7 +144,6 @@ const COMMAND_SPECS = [
   { command: "/checkpoint", descriptionKey: "cmd.checkpoint" as const },
   { command: "/rollback", descriptionKey: "cmd.rollback" as const },
   { command: "/compact", descriptionKey: "cmd.compact" as const },
-  { command: "/janitor", descriptionKey: "cmd.janitor" as const },
   { command: "/new", descriptionKey: "cmd.new" as const },
   { command: "/skills", descriptionKey: "cmd.skills" as const },
   { command: "/tasks", descriptionKey: "cmd.tasks" as const },
@@ -242,7 +241,7 @@ type TaskGraphLayout = {
   nodeHeight: number;
 };
 type ConfigCommandTarget = SettingsConfigSectionKey | "skills";
-type ContextCommandTarget = "compact" | "janitor" | "new";
+type ContextCommandTarget = "compact" | "new";
 type UiCommandTarget =
   | { kind: "config"; target: ConfigCommandTarget }
   | { kind: "model" }
@@ -3050,8 +3049,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     const client = clientRef.current;
     const session = currentSessionRef.current;
     const projectPath = selectedProjectPathRef.current;
-    const actionLabel = command === "compact" ? t("context.compactContext") : t("context.semanticJanitor");
-    const placeholderText = command === "compact" ? t("context.compactContext") : t("context.semanticJanitor");
+    const actionLabel = t("context.compactContext");
+    const placeholderText = t("context.compactContext");
     if (!client || !session) {
       setBannerMessage("Select a session before changing context.");
       return;
@@ -3094,7 +3093,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     setHistoryCursor(null);
     setBannerMessage(`${actionLabel} started.`);
     try {
-      const result = command === "compact" ? await client.compactSession(session.id) : await client.janitorSession(session.id);
+      const result = await client.compactSession(session.id);
       upsertProjectSession(projectPath, result.session);
       setCurrentSession(result.session);
       setContextPopoverOpen(false);
@@ -4902,14 +4901,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                             onClick={() => void handleContextCommand("compact")}
                             disabled={!currentSession || currentSessionRunning || busyAction !== null}
                           >
-{t("context.compactContext")}
-                          </button>
-                          <button
-                            className="action secondary"
-                            onClick={() => void handleContextCommand("janitor")}
-                            disabled={!currentSession || currentSessionRunning || busyAction !== null}
-                          >
-                            {t("context.semanticJanitor")}
+                          {t("context.compactContext")}
                           </button>
                           <button
                             className="action secondary"
@@ -7283,9 +7275,6 @@ function uiCommandTarget(command: string): UiCommandTarget | null {
   }
   if (normalized === "/compact") {
     return { kind: "context", command: "compact" };
-  }
-  if (normalized === "/janitor") {
-    return { kind: "context", command: "janitor" };
   }
   if (normalized === "/new") {
     return { kind: "context", command: "new" };

@@ -78,7 +78,6 @@ except Exception:  # pragma: no cover - prompt_toolkit may be unavailable in fal
 
 READ_ONLY_COMMAND_PREFIXES = (
     "/symbols",
-    "/janitor",
     "/reloadplugin",
     "/providers",
     "/skills",
@@ -3087,17 +3086,6 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                         print_user_message(stripped)
                     if not runner.stable_prompt and not was_active and queued_before == 0:
                         print_user_message(stripped)
-                    continue
-                if stripped == "/janitor":
-                    if runner.has_inflight_work():
-                        print("[busy; wait for queued responses before /janitor]")
-                        continue
-                    print("[janitor started]")
-                    if service is not None:
-                        print(service.run_semantic_janitor(session))
-                    else:
-                        print(runtime.run_semantic_janitor(session))
-                    print("[janitor complete]")
                     continue
                 if stripped == "/symbols" or stripped.startswith("/symbols "):
                     if runner.has_inflight_work():

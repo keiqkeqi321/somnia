@@ -35,8 +35,6 @@ function relayResultFor(method: string): unknown {
       return { session_id: loadedSession.id, deleted: true };
     case "session.compact":
       return { message: "Context compacted.", session: loadedSession };
-    case "session.janitor":
-      return { message: "Janitor complete.", session: loadedSession };
     case "session.new":
       return { session: { ...loadedSession, id: "session-2", messages: [] }, previous_session_id: loadedSession.id };
     case "session.set_model":
@@ -129,7 +127,6 @@ describe("Remote Somnia Connection", () => {
     openStream();
 
     await expect(connection.compactSession("session-1")).resolves.toMatchObject({ message: "Context compacted." });
-    await expect(connection.janitorSession("session-1")).resolves.toMatchObject({ message: "Janitor complete." });
     await expect(connection.newSession("session-1")).resolves.toMatchObject({ previous_session_id: "session-1", session: { id: "session-2" } });
     await expect(connection.listWorkspacePaths("src", 30)).resolves.toEqual([{ path: "src", basename: "src", kind: "dir" }]);
     await expect(connection.stageInlineImage({ name: "paste.png", mediaType: "image/png", dataUrl: "data:image/png;base64,cG5n" })).resolves.toMatchObject({ media_type: "image/png" });

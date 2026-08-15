@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remove the semantic janitor context-governance subsystem (semantic dehydration, topic-shift assist, `request_original_context` tool, `/janitor` REPL command, sidecar `POST /sessions/{id}/janitor` route, desktop janitor entrypoints, and the `runtime.janitor_trigger_ratio` setting). Context governance now consists of payload normalization plus auto-compact at the 0.82 threshold.
+
 ## 0.5.3 (2026-05-25)
 
 - ignore (480343d)

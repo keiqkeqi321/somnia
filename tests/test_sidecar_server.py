@@ -1033,9 +1033,6 @@ class SidecarServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as context:
                 self._request_json("POST", f"{server.base_url}/sessions/nope/compact", {})
             self.assertEqual(context.exception.code, 404)
-            with self.assertRaises(urllib.error.HTTPError) as context:
-                self._request_json("POST", f"{server.base_url}/sessions/nope/janitor", {})
-            self.assertEqual(context.exception.code, 404)
         finally:
             server.close()
 

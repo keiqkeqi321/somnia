@@ -49,15 +49,9 @@ from open_somnia.runtime.compact import (
     AUTO_COMPACT_TRIGGER_RATIO,
     CompactManager,
     ContextWindowUsage,
-    SEMANTIC_JANITOR_TRIGGER_RATIO,
-    SemanticCompressionDecision,
-    ToolResultCandidate,
     build_payload_messages,
     estimate_payload_tokens,
-    extract_tool_result_candidates,
-    persist_semantic_compression,
     should_auto_compact,
-    should_run_semantic_janitor,
 )
 from open_somnia.runtime.execution_mode import (
     ASK_USER_QUESTION_TOOL_NAME,
@@ -252,18 +246,6 @@ class OpenAgentRuntime:
     EMPTY_RESPONSE_REASONING_BUMP_FACTOR = 2.0
     EMPTY_RESPONSE_REASONING_BUMP_MAX_TOKENS = 65_536
     EMPTY_RESPONSE_REASONING_BUDGET_RATIO = 0.90
-    JANITOR_REARM_RATIO = 0.45
-    JANITOR_FORCE_RATIO = 0.70
-    JANITOR_MIN_TOKEN_DELTA = 8_000
-    JANITOR_MIN_MESSAGE_DELTA = 6
-    MANUAL_JANITOR_MIN_RATIO = 0.20
-    JANITOR_MIN_USAGE_DELTA_RATIO = 0.05
-    JANITOR_MIN_USAGE_DELTA_TOKENS = 1_000
-    JANITOR_MIN_PRUNABLE_CANDIDATES = 1
-    JANITOR_PRUNABLE_OUTPUT_CHARS = 240
-    JANITOR_LOW_YIELD_RATIO = 0.10
-    JANITOR_LOW_YIELD_MAX_AUTO_RUNS = 1
-    JANITOR_PREEMPTIVE_COMPACT_GAP = 0.02
     _ansi_output_enabled: bool | None = None
     DEFAULT_SYSTEM_PROMPT_TEMPLATE = (
         "You are {name}, a top-rated AI assistant.\n"
@@ -347,7 +329,6 @@ class OpenAgentRuntime:
         self._payload_message_cache: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
         self._recent_context_usage: dict[str, ContextWindowUsage] = {}
         self._context_governance_events: dict[str, dict[str, Any]] = {}
-        self._janitor_state: dict[str, dict[str, Any]] = {}
         self._current_working_file: dict[str, Any] | None = None
         # One-shot max_tokens override for reasoning-budget recovery (see
         # _maybe_raise_reasoning_budget / _consume_transient_max_tokens_override).
@@ -806,7 +787,6 @@ class OpenAgentRuntime:
             self._context_usage_cache = {}
             self._payload_message_cache = {}
             self._recent_context_usage = {}
-            self._janitor_state = {}
         return f"{message} Reasoning level set to '{normalized_level or 'auto'}'."
 
     def session_effective_provider(self, session: AgentSession) -> tuple[str, str]:
@@ -831,7 +811,6 @@ class OpenAgentRuntime:
         self._context_usage_cache = {}
         self._payload_message_cache = {}
         self._recent_context_usage = {}
-        self._janitor_state = {}
         persist_provider_selection(self.settings, normalized_provider, normalized_model)
         return (
             f"Switched to provider '{self.settings.provider.name}' with model "
@@ -859,7 +838,6 @@ class OpenAgentRuntime:
         self._context_usage_cache = {}
         self._payload_message_cache = {}
         self._recent_context_usage = {}
-        self._janitor_state = {}
         persist_provider_reasoning_level(self.settings, provider_name, model_name, normalized_level)
         if clear_requested:
             return (
@@ -890,7 +868,6 @@ class OpenAgentRuntime:
         self._context_usage_cache = {}
         self._payload_message_cache = {}
         self._recent_context_usage = {}
-        self._janitor_state = {}
         persist_vision_model(
             self.settings,
             normalized_vision_provider or None,
@@ -936,7 +913,6 @@ class OpenAgentRuntime:
         self._context_usage_cache = {}
         self._payload_message_cache = {}
         self._recent_context_usage = {}
-        self._janitor_state = {}
 
     def reload_hook_configuration(self) -> None:
         reloaded = load_settings(
@@ -1079,16 +1055,6 @@ class OpenAgentRuntime:
             return -2
         return 0
 
-    def _tool_importance_review_priority(self, importance: str | None) -> int:
-        normalized = str(importance or "").strip().lower()
-        if normalized == "glance":
-            return 2
-        if normalized == "investigate":
-            return 1
-        if normalized == "foundation":
-            return 0
-        return 1
-
     def _context_usage_cache_key(
         self,
         session: AgentSession,
@@ -1157,11 +1123,9 @@ class OpenAgentRuntime:
         messages: list[dict[str, Any]],
         *,
         session: AgentSession | None = None,
-        semantic_decisions: list[SemanticCompressionDecision] | None = None,
     ) -> list[dict[str, Any]]:
         return build_payload_messages(
             messages,
-            semantic_decisions=semantic_decisions,
             preserve_thinking_blocks=self._preserve_provider_thinking_blocks(),
         )
 
@@ -1553,437 +1517,6 @@ class OpenAgentRuntime:
             return cached_usage[1]
         return None
 
-    def _janitor_state_for(self, session: AgentSession | None) -> dict[str, Any] | None:
-        if session is None:
-            return None
-        session_id = str(getattr(session, "id", "")).strip()
-        if not session_id:
-            return None
-        states = getattr(self, "_janitor_state", None)
-        if states is None:
-            states = {}
-            self._janitor_state = states
-        return states.setdefault(
-            session_id,
-            {
-                "armed": True,
-                "last_run_used_tokens": 0,
-                "last_run_message_count": 0,
-                "last_run_ratio": 0.0,
-                "last_reduction_ratio": 0.0,
-                "saturated": False,
-                "auto_low_yield_streak": 0,
-                "disabled": False,
-            },
-        )
-
-    def _record_context_janitor_run(
-        self,
-        session: AgentSession | None,
-        before_usage: ContextWindowUsage,
-        after_usage: ContextWindowUsage,
-        *,
-        message_count: int,
-        automatic: bool,
-    ) -> None:
-        state = self._janitor_state_for(session)
-        if state is None:
-            return
-        before_tokens = max(0, int(before_usage.used_tokens or 0))
-        after_tokens = max(0, int(after_usage.used_tokens or 0))
-        reduction_ratio = 0.0
-        if before_tokens > 0 and after_tokens <= before_tokens:
-            reduction_ratio = max(0.0, (before_tokens - after_tokens) / before_tokens)
-        state["armed"] = False
-        state["last_run_used_tokens"] = after_tokens
-        state["last_run_message_count"] = max(0, int(message_count))
-        state["last_run_ratio"] = float(after_usage.usage_ratio or 0.0)
-        state["last_reduction_ratio"] = reduction_ratio
-        state["saturated"] = False
-        if automatic:
-            if reduction_ratio < self.JANITOR_LOW_YIELD_RATIO:
-                state["auto_low_yield_streak"] = int(state.get("auto_low_yield_streak") or 0) + 1
-                if state["auto_low_yield_streak"] >= self.JANITOR_LOW_YIELD_MAX_AUTO_RUNS:
-                    state["disabled"] = True
-            else:
-                state["auto_low_yield_streak"] = 0
-
-    def _should_run_manual_context_janitor(self, usage: ContextWindowUsage) -> bool:
-        ratio = usage.usage_ratio
-        return ratio is not None and ratio >= self.MANUAL_JANITOR_MIN_RATIO
-
-    def _semantic_janitor_trigger_ratio(self) -> float:
-        runtime_settings = getattr(getattr(self, "settings", None), "runtime", None)
-        configured = getattr(runtime_settings, "janitor_trigger_ratio", SEMANTIC_JANITOR_TRIGGER_RATIO)
-        try:
-            ratio = float(configured)
-        except (TypeError, ValueError):
-            ratio = float(SEMANTIC_JANITOR_TRIGGER_RATIO)
-        return max(0.0, min(1.0, ratio))
-
-    def _janitor_preemptive_compact_ratio(self) -> float:
-        return max(self._semantic_janitor_trigger_ratio(), AUTO_COMPACT_TRIGGER_RATIO - self.JANITOR_PREEMPTIVE_COMPACT_GAP)
-
-    def _janitor_candidates(self, messages: list[dict[str, Any]]) -> list[ToolResultCandidate]:
-        return extract_tool_result_candidates(messages, preserve_recent_rounds=2)
-
-    def _selected_janitor_candidates(self, messages: list[dict[str, Any]]) -> list[ToolResultCandidate]:
-        candidates = self._janitor_candidates(messages)
-        if not candidates:
-            return []
-        selected = sorted(
-            candidates,
-            key=lambda item: (
-                self._tool_importance_review_priority(item.importance),
-                item.output_length,
-                item.age,
-            ),
-            reverse=True,
-        )[:12]
-        selected.sort(key=lambda item: (item.locator.message_index, item.locator.item_index))
-        return selected
-
-    def _count_prunable_janitor_candidates(self, messages: list[dict[str, Any]]) -> int:
-        return sum(1 for candidate in self._janitor_candidates(messages) if candidate.output_length >= self.JANITOR_PRUNABLE_OUTPUT_CHARS)
-
-    def _topic_shift_candidate_pressure(self, messages: list[dict[str, Any]]) -> int:
-        pressure = 0
-        for candidate in self._janitor_candidates(messages):
-            if candidate.output_length < self.JANITOR_PRUNABLE_OUTPUT_CHARS:
-                continue
-            pressure += self._tool_importance_review_priority(candidate.importance)
-        return pressure
-
-    def _apply_context_janitor_decisions(
-        self,
-        session: AgentSession,
-        *,
-        messages: list[dict[str, Any]],
-        system_prompt: str,
-        tools: list[dict[str, Any]],
-        actor: str,
-        role: str,
-        automatic: bool,
-        governance_label: str,
-    ) -> ContextWindowUsage:
-        payload_cache = getattr(self, "_payload_message_cache", None)
-        if payload_cache is None:
-            payload_cache = {}
-            self._payload_message_cache = payload_cache
-        usage_cache = getattr(self, "_context_usage_cache", None)
-        if usage_cache is None:
-            usage_cache = {}
-            self._context_usage_cache = usage_cache
-        cache_key = self._payload_message_cache_key(
-            session,
-            actor=actor,
-            role=role,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        payload_messages = self._build_payload_messages(messages, session=session)
-        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        final_usage = baseline_usage
-        decisions = self._analyze_context_relevance(
-            session=session,
-            messages=messages,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        if decisions:
-            changed_results = sum(1 for decision in decisions if decision.state != "original")
-            persist_semantic_compression(messages, decisions)
-            payload_messages = self._build_payload_messages(
-                messages,
-                session=session,
-                semantic_decisions=decisions,
-            )
-            final_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-            if changed_results > 0:
-                self._note_context_governance(
-                    session.id,
-                    "janitor",
-                    f"{governance_label} reduced {changed_results} tool result(s)",
-                )
-        self._record_context_janitor_run(
-            session,
-            baseline_usage,
-            final_usage,
-            message_count=len(messages),
-            automatic=automatic,
-        )
-        payload_cache[session.id] = (cache_key, payload_messages)
-        usage_cache[session.id] = (cache_key, final_usage)
-        self._remember_context_usage(session.id, final_usage)
-        return final_usage
-
-    def _recent_dialogue_excerpt(self, messages: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
-        excerpt: list[str] = []
-        for message in reversed(messages):
-            if len(excerpt) >= limit:
-                break
-            if not self._is_visible_conversation_message(message):
-                continue
-            text = self._context_compact_text(render_text_content(message.get("content", "")), limit=240)
-            if not text:
-                continue
-            excerpt.append(f"{message.get('role', 'user')}: {text}")
-        excerpt.reverse()
-        return excerpt
-
-    def _topic_shift_snapshot(self, session: AgentSession, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        topic_context = self._extract_recent_topic_context(messages)
-        todo_context = self._todo_hint_context(session)
-        return {
-            "active_files": list(topic_context.get("active_files", []))[:8],
-            "active_symbols": list(topic_context.get("active_symbols", []))[:12],
-            "keywords": list(topic_context.get("keywords", []))[:18],
-            "todo_in_progress": list(todo_context.get("open_items", []))[:6],
-        }
-
-    def _build_topic_shift_prompt(
-        self,
-        *,
-        topic_snapshot: dict[str, Any],
-        recent_dialogue_excerpt: list[str],
-        latest_user_message: str,
-    ) -> str:
-        lines = [
-            "Decide whether the latest user message starts a clearly new topic relative to the current topic snapshot.",
-            "Be conservative. Small follow-ups, nearby-file work, tests, fixes, review, or commit requests usually remain the same topic.",
-            "Return strict JSON only with keys context_shift (boolean) and reason (string).",
-            "",
-            "Current topic snapshot:",
-            f"- Active files: {', '.join(topic_snapshot.get('active_files', [])) or '(none)'}",
-            f"- Active symbols: {', '.join(topic_snapshot.get('active_symbols', [])) or '(none)'}",
-            f"- Keywords: {', '.join(topic_snapshot.get('keywords', [])) or '(none)'}",
-            f"- Todo in progress: {', '.join(topic_snapshot.get('todo_in_progress', [])) or '(none)'}",
-            "",
-            "Recent dialogue excerpt:",
-        ]
-        for item in recent_dialogue_excerpt or ["(none)"]:
-            lines.append(f"- {item}")
-        lines.extend(
-            [
-                "",
-                f"Latest user message: {latest_user_message or '(none)'}",
-            ]
-        )
-        return "\n".join(lines)
-
-    def _parse_topic_shift_response(self, text: str) -> tuple[bool, str]:
-        cleaned = self._strip_json_fence(text)
-        payload = json.loads(cleaned)
-        if not isinstance(payload, dict):
-            raise ValueError("Topic shift response must be a JSON object.")
-        raw_context_shift = payload.get("context_shift")
-        if isinstance(raw_context_shift, bool):
-            context_shift = raw_context_shift
-        else:
-            context_shift = str(raw_context_shift or "").strip().lower() in {"1", "true", "yes", "on"}
-        reason = str(payload.get("reason", "")).strip()
-        return context_shift, reason
-
-    def _should_check_topic_shift(
-        self,
-        usage: ContextWindowUsage,
-        *,
-        session: AgentSession | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        latest_user_message: str = "",
-    ) -> bool:
-        ratio = usage.usage_ratio
-        if ratio is None or ratio < self.MANUAL_JANITOR_MIN_RATIO:
-            return False
-        if ratio >= self._semantic_janitor_trigger_ratio():
-            return False
-        if not str(latest_user_message).strip():
-            return False
-        state = self._janitor_state_for(session)
-        if state is not None and bool(state.get("disabled")):
-            return False
-        if messages is not None and self._topic_shift_candidate_pressure(messages) <= 0:
-            return False
-        return True
-
-    def _detect_topic_shift(
-        self,
-        *,
-        session: AgentSession,
-        messages: list[dict[str, Any]],
-        latest_user_message: str,
-    ) -> tuple[bool, str]:
-        history_messages = list(messages[:-1]) if messages else []
-        topic_snapshot = self._topic_shift_snapshot(session, history_messages)
-        dialogue_excerpt = self._recent_dialogue_excerpt(history_messages)
-        topic_shift_system_prompt = (
-            "You are a topic-shift detector for a coding agent.\n"
-            "Judge only whether the latest user message starts a clearly new topic.\n"
-            "Return strict JSON only."
-        )
-        topic_shift_messages = [
-            {
-                "role": "user",
-                "content": self._build_topic_shift_prompt(
-                    topic_snapshot=topic_snapshot,
-                    recent_dialogue_excerpt=dialogue_excerpt,
-                    latest_user_message=latest_user_message,
-                ),
-            }
-        ]
-        dump_path = self._dump_provider_payload_if_enabled(
-            session=session,
-            system_prompt=topic_shift_system_prompt,
-            payload_messages=topic_shift_messages,
-            tools=[],
-            max_tokens=min(160, self.settings.provider.max_tokens),
-            actor="lead",
-            stream=False,
-            kind="topic_shift",
-        )
-        started_at = time.monotonic()
-        try:
-            turn = self.provider.complete(
-                system_prompt=topic_shift_system_prompt,
-                messages=topic_shift_messages,
-                tools=[],
-                max_tokens=min(160, self.settings.provider.max_tokens),
-            )
-        except Exception as exc:
-            self._record_provider_payload_result(
-                dump_path,
-                error=exc,
-                latency_ms=(time.monotonic() - started_at) * 1000,
-            )
-            return False, ""
-        self._record_provider_payload_result(
-            dump_path,
-            turn=turn,
-            latency_ms=(time.monotonic() - started_at) * 1000,
-        )
-        try:
-            return self._parse_topic_shift_response("\n".join(getattr(turn, "text_blocks", []) or []).strip())
-        except Exception:
-            return False, ""
-
-    def _run_topic_shift_assist(
-        self,
-        session: AgentSession,
-        *,
-        latest_user_message: str,
-        actor: str = "lead",
-        role: str = "lead coding agent",
-    ) -> ContextWindowUsage:
-        payload_cache = getattr(self, "_payload_message_cache", None)
-        if payload_cache is None:
-            payload_cache = {}
-            self._payload_message_cache = payload_cache
-        usage_cache = getattr(self, "_context_usage_cache", None)
-        if usage_cache is None:
-            usage_cache = {}
-            self._context_usage_cache = usage_cache
-        messages = getattr(session, "messages", None)
-        if not isinstance(messages, list):
-            messages = []
-        try:
-            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
-        except TypeError:
-            system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
-        cache_key = self._payload_message_cache_key(
-            session,
-            actor=actor,
-            role=role,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        payload_messages = self._build_payload_messages(messages, session=session)
-        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        if not self._should_check_topic_shift(
-            baseline_usage,
-            session=session,
-            messages=messages,
-            latest_user_message=latest_user_message,
-        ):
-            payload_cache[session.id] = (cache_key, payload_messages)
-            usage_cache[session.id] = (cache_key, baseline_usage)
-            self._remember_context_usage(session.id, baseline_usage)
-            return baseline_usage
-        context_shift, _reason = self._detect_topic_shift(
-            session=session,
-            messages=messages,
-            latest_user_message=latest_user_message,
-        )
-        if not context_shift:
-            payload_cache[session.id] = (cache_key, payload_messages)
-            usage_cache[session.id] = (cache_key, baseline_usage)
-            self._remember_context_usage(session.id, baseline_usage)
-            return baseline_usage
-        return self._apply_context_janitor_decisions(
-            session,
-            messages=messages,
-            system_prompt=system_prompt,
-            tools=tools,
-            actor=actor,
-            role=role,
-            automatic=True,
-            governance_label="topic-shift janitor",
-        )
-
-    def _run_automatic_context_janitor(
-        self,
-        session: AgentSession,
-        *,
-        actor: str = "lead",
-        role: str = "lead coding agent",
-    ) -> ContextWindowUsage:
-        messages = getattr(session, "messages", None)
-        if not isinstance(messages, list):
-            messages = []
-        try:
-            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
-        except TypeError:
-            system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
-        cache_key = self._payload_message_cache_key(
-            session,
-            actor=actor,
-            role=role,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        payload_cache = getattr(self, "_payload_message_cache", None)
-        if payload_cache is None:
-            payload_cache = {}
-            self._payload_message_cache = payload_cache
-        usage_cache = getattr(self, "_context_usage_cache", None)
-        if usage_cache is None:
-            usage_cache = {}
-            self._context_usage_cache = usage_cache
-        payload_messages = self._build_payload_messages(messages, session=session)
-        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        message_count = len(messages)
-        if self._should_run_context_janitor(
-            baseline_usage,
-            session=session,
-            message_count=message_count,
-            messages=messages,
-        ):
-            return self._apply_context_janitor_decisions(
-                session,
-                messages=messages,
-                system_prompt=system_prompt,
-                tools=tools,
-                actor=actor,
-                role=role,
-                automatic=True,
-                governance_label="janitor",
-            )
-        payload_cache[session.id] = (cache_key, payload_messages)
-        usage_cache[session.id] = (cache_key, baseline_usage)
-        self._remember_context_usage(session.id, baseline_usage)
-        return baseline_usage
-
     def _messages_for_model(
         self,
         messages: list[dict[str, Any]],
@@ -2257,208 +1790,11 @@ class OpenAgentRuntime:
         self._remember_context_usage(session.id, usage)
         return usage
 
-    def _should_run_context_janitor(
-        self,
-        usage: ContextWindowUsage,
-        *,
-        session: AgentSession | None = None,
-        message_count: int | None = None,
-        messages: list[dict[str, Any]] | None = None,
-        force: bool = False,
-    ) -> bool:
-        ratio = usage.usage_ratio
-        if ratio is None:
-            return False
-        state = self._janitor_state_for(session)
-        if not should_run_semantic_janitor(usage, trigger_ratio=self._semantic_janitor_trigger_ratio()):
-            if state is not None and ratio <= self.JANITOR_REARM_RATIO:
-                state["armed"] = True
-                state["saturated"] = False
-            return False
-        if state is not None and bool(state.get("disabled")):
-            return False
-        if not force and ratio >= self._janitor_preemptive_compact_ratio():
-            if state is not None:
-                state["saturated"] = False
-            return False
-        if messages is not None:
-            prunable_count = self._count_prunable_janitor_candidates(messages)
-            if state is not None:
-                state["saturated"] = prunable_count == 0
-            if prunable_count < self.JANITOR_MIN_PRUNABLE_CANDIDATES:
-                return False
-        if force or session is None or state is None:
-            return True
-        last_used_tokens = int(state.get("last_run_used_tokens") or 0)
-        last_ratio = float(state.get("last_run_ratio") or 0.0)
-        token_delta = max(0, usage.used_tokens - last_used_tokens)
-        ratio_delta = max(0.0, ratio - last_ratio)
-        if last_used_tokens > 0 and token_delta < self.JANITOR_MIN_USAGE_DELTA_TOKENS and ratio_delta < self.JANITOR_MIN_USAGE_DELTA_RATIO:
-            return False
-        if bool(state.get("armed", True)):
-            return True
-        if ratio >= self.JANITOR_FORCE_RATIO:
-            return True
-        last_message_count = int(state.get("last_run_message_count") or 0)
-        if token_delta >= self.JANITOR_MIN_TOKEN_DELTA:
-            return True
-        if max(0, int(message_count or 0) - last_message_count) >= self.JANITOR_MIN_MESSAGE_DELTA:
-            return True
-        return False
-
     def _context_compact_text(self, text: str, *, limit: int = 220) -> str:
         compact = " ".join(str(text).split())
         if len(compact) <= limit:
             return compact
         return compact[: max(0, limit - 3)] + "..."
-
-    def _extract_topic_tokens(self, text: str) -> set[str]:
-        stopwords = {
-            "the",
-            "and",
-            "that",
-            "with",
-            "from",
-            "this",
-            "into",
-            "have",
-            "need",
-            "when",
-            "then",
-            "than",
-            "were",
-            "been",
-            "about",
-            "after",
-            "before",
-            "using",
-            "used",
-            "user",
-            "assistant",
-            "tool",
-            "result",
-            "output",
-            "current",
-            "should",
-            "would",
-            "could",
-            "there",
-            "their",
-            "them",
-            "file",
-            "files",
-            "line",
-            "lines",
-        }
-        return {
-            token.lower()
-            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text)
-            if token.lower() not in stopwords
-        }
-
-    def _extract_recent_topic_context(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        visible: list[dict[str, str]] = []
-        for message in reversed(messages):
-            if len(visible) >= 4:
-                break
-            if not self._is_visible_conversation_message(message):
-                continue
-            text = render_text_content(message.get("content", ""))
-            compact = self._context_compact_text(text, limit=400)
-            if not compact:
-                continue
-            visible.append({"role": str(message.get("role", "user")), "text": compact})
-        visible.reverse()
-        combined = "\n".join(f"{item['role']}: {item['text']}" for item in visible)
-        active_files = sorted(
-            {
-                match
-                for match in re.findall(r"[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+", combined)
-                if "." in match and len(match) > 2
-            }
-        )[:8]
-        symbol_candidates = {
-            token
-            for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", combined)
-            if token.lower()
-            not in {
-                "user",
-                "assistant",
-                "error",
-                "output",
-                "current",
-                "context",
-                "please",
-                "also",
-                "check",
-                "compare",
-                "inspect",
-            }
-        }
-        active_symbols = sorted(
-            symbol_candidates,
-            key=lambda token: (
-                0 if ("_" in token or any(char.isupper() for char in token[1:])) else 1,
-                token.lower(),
-            ),
-        )[:12]
-        keywords = sorted(self._extract_topic_tokens(combined))[:18]
-        return {
-            "conversation_excerpt": combined,
-            "active_files": active_files,
-            "active_symbols": active_symbols,
-            "keywords": keywords,
-        }
-
-    def _todo_hint_context(self, session: AgentSession) -> dict[str, Any]:
-        open_items: list[str] = []
-        completed_items: list[str] = []
-        open_tokens: set[str] = set()
-        completed_tokens: set[str] = set()
-        for item in getattr(session, "todo_items", []) or []:
-            content = str(item.get("content", "")).strip()
-            if not content:
-                continue
-            status = str(item.get("status", "pending")).lower()
-            if status in {"pending", "in_progress"}:
-                open_items.append(content)
-                open_tokens.update(self._extract_topic_tokens(content))
-            elif status == "completed":
-                completed_items.append(content)
-                completed_tokens.update(self._extract_topic_tokens(content))
-        return {
-            "open_items": open_items[:6],
-            "completed_items": completed_items[:6],
-            "open_tokens": open_tokens,
-            "completed_tokens": completed_tokens,
-        }
-
-    def _tool_candidate_haystack(self, candidate: ToolResultCandidate) -> str:
-        tool_input = json.dumps(candidate.tool_input, ensure_ascii=False, default=str)
-        return " ".join(
-            part for part in (candidate.tool_name, tool_input, candidate.content, candidate.output_preview) if part
-        ).lower()
-
-    def _candidate_target_path(self, candidate: ToolResultCandidate) -> str:
-        path = candidate.tool_input.get("path")
-        if path is None:
-            return ""
-        return str(path).strip().replace("\\", "/").lower()
-
-    def _render_condensed_context(self, candidate: ToolResultCandidate, summary: str | None) -> str:
-        prefix = f"[Semantic Summary | {candidate.tool_name}"
-        if candidate.log_id:
-            prefix += f" | log {candidate.log_id}"
-        prefix += "]"
-        body = self._context_compact_text(summary or candidate.output_preview or "Relevant prior tool output reviewed earlier.", limit=260)
-        return f"{prefix} {body}".strip()
-
-    def _render_evicted_context(self, candidate: ToolResultCandidate) -> str:
-        prefix = f"[Context Evicted | {candidate.tool_name}"
-        if candidate.log_id:
-            prefix += f" | log {candidate.log_id}"
-        prefix += "]"
-        return f"{prefix} Output removed from payload. Use request_original_context if needed."
 
     def _candidate_relevance_score(
         self,
@@ -2495,247 +1831,6 @@ class OpenAgentRuntime:
         if candidate.age >= 10:
             score -= 1
         return score
-
-    def _fallback_context_relevance_decisions(
-        self,
-        session: AgentSession,
-        candidates: list[ToolResultCandidate],
-        topic_context: dict[str, Any],
-    ) -> list[SemanticCompressionDecision]:
-        todo_context = self._todo_hint_context(session)
-        active_files = {value.lower() for value in topic_context.get("active_files", [])}
-        active_symbols = {value.lower() for value in topic_context.get("active_symbols", [])}
-        topic_tokens = {value.lower() for value in topic_context.get("keywords", [])}
-        latest_snapshot_by_path: dict[str, ToolResultCandidate] = {}
-        for candidate in sorted(candidates, key=lambda item: (item.locator.message_index, item.locator.item_index)):
-            candidate_path = self._candidate_target_path(candidate)
-            if candidate_path and candidate.tool_name in {"read_file", "write_file", "edit_file"}:
-                latest_snapshot_by_path[candidate_path] = candidate
-        decisions: list[SemanticCompressionDecision] = []
-        for candidate in candidates:
-            candidate_path = self._candidate_target_path(candidate)
-            latest_snapshot = latest_snapshot_by_path.get(candidate_path) if candidate_path else None
-            if candidate.tool_name == "read_file" and latest_snapshot is not None and latest_snapshot.locator != candidate.locator:
-                decisions.append(
-                    SemanticCompressionDecision(
-                        message_index=candidate.locator.message_index,
-                        item_index=candidate.locator.item_index,
-                        state="evicted",
-                        summary=self._render_evicted_context(candidate),
-                    )
-                )
-                continue
-            if latest_snapshot is not None and latest_snapshot.locator == candidate.locator and candidate.tool_name in {"read_file", "write_file", "edit_file"}:
-                decisions.append(
-                    SemanticCompressionDecision(
-                        message_index=candidate.locator.message_index,
-                        item_index=candidate.locator.item_index,
-                        state="original",
-                        summary=None,
-                    )
-                )
-                continue
-            score = self._candidate_relevance_score(
-                candidate,
-                active_files=active_files,
-                active_symbols=active_symbols,
-                topic_tokens=topic_tokens,
-                open_todo_tokens={value.lower() for value in todo_context["open_tokens"]},
-                completed_todo_tokens={value.lower() for value in todo_context["completed_tokens"]},
-            )
-            if candidate.has_error or score >= 5:
-                state = "original"
-                summary = None
-            elif score >= 2 or candidate.output_length >= 900 or candidate.tool_name in {"grep", "bash"}:
-                state = "condensed"
-                summary = self._render_condensed_context(candidate, None)
-            elif candidate.tool_name in {"pwd", "cd", "ls", "tree", "glob"} and candidate.age >= 2:
-                state = "evicted"
-                summary = self._render_evicted_context(candidate)
-            else:
-                state = "condensed"
-                summary = self._render_condensed_context(candidate, None)
-            decisions.append(
-                SemanticCompressionDecision(
-                    message_index=candidate.locator.message_index,
-                    item_index=candidate.locator.item_index,
-                    state=state,
-                    summary=summary,
-                )
-            )
-        return decisions
-
-    def _strip_json_fence(self, text: str) -> str:
-        stripped = text.strip()
-        if not stripped.startswith("```"):
-            return stripped
-        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
-        stripped = re.sub(r"\s*```$", "", stripped)
-        return stripped.strip()
-
-    def _parse_semantic_janitor_response(
-        self,
-        text: str,
-        candidates: list[ToolResultCandidate],
-    ) -> list[SemanticCompressionDecision]:
-        cleaned = self._strip_json_fence(text)
-        payload = json.loads(cleaned)
-        if not isinstance(payload, list):
-            raise ValueError("Semantic janitor response must be a JSON list.")
-        candidates_by_locator = {candidate.locator: candidate for candidate in candidates}
-        decisions: list[SemanticCompressionDecision] = []
-        seen: set[tuple[int, int]] = set()
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            message_index = int(item.get("message_index"))
-            item_index = int(item.get("item_index"))
-            locator = (message_index, item_index)
-            if locator in seen:
-                continue
-            candidate = candidates_by_locator.get(
-                SemanticCompressionDecision(
-                    message_index=message_index,
-                    item_index=item_index,
-                    state="original",
-                ).locator
-            )
-            if candidate is None:
-                continue
-            state = str(item.get("state", "original")).strip().lower()
-            if state not in {"original", "condensed", "evicted"}:
-                continue
-            summary_text = str(item.get("summary", "")).strip()
-            summary: str | None = None
-            if state == "condensed":
-                summary = self._render_condensed_context(candidate, summary_text or None)
-            elif state == "evicted":
-                summary = self._render_evicted_context(candidate)
-            decisions.append(
-                SemanticCompressionDecision(
-                    message_index=message_index,
-                    item_index=item_index,
-                    state=state,
-                    summary=summary,
-                )
-            )
-            seen.add(locator)
-        return decisions
-
-    def _build_semantic_janitor_prompt(
-        self,
-        topic_context: dict[str, Any],
-        todo_context: dict[str, Any],
-        candidates: list[ToolResultCandidate],
-    ) -> str:
-        topic_lines = [
-            "Current recent topic:",
-            f"- Conversation excerpt: {topic_context.get('conversation_excerpt', '(none)') or '(none)'}",
-            f"- Active files: {', '.join(topic_context.get('active_files', [])) or '(none)'}",
-            f"- Active symbols: {', '.join(topic_context.get('active_symbols', [])) or '(none)'}",
-            f"- Keywords: {', '.join(topic_context.get('keywords', [])) or '(none)'}",
-            "",
-            "Todo hints:",
-            f"- Open items: {', '.join(todo_context.get('open_items', [])) or '(none)'}",
-            f"- Completed items: {', '.join(todo_context.get('completed_items', [])) or '(none)'}",
-            "",
-            "Candidate tool results:",
-        ]
-        for candidate in candidates:
-            topic_lines.extend(
-                [
-                    (
-                        f"- message_index={candidate.locator.message_index} item_index={candidate.locator.item_index} "
-                        f"tool={candidate.tool_name} age={candidate.age} importance={candidate.importance or 'investigate'}"
-                    ),
-                    f"  log_id={candidate.log_id or '(none)'}",
-                    f"  input={self._context_compact_text(json.dumps(candidate.tool_input, ensure_ascii=False, default=str), limit=180)}",
-                    f"  output_preview={candidate.output_preview or '(no output)'}",
-                    f"  output_length={candidate.output_length}",
-                ]
-            )
-        topic_lines.extend(
-            [
-                "",
-                "Return strict JSON only.",
-                "Each item must contain message_index, item_index, state.",
-                "Allowed states: original, condensed, evicted.",
-                "Include summary only when state is condensed.",
-            ]
-        )
-        return "\n".join(topic_lines)
-
-    def _analyze_context_relevance(
-        self,
-        *,
-        session: AgentSession,
-        messages: list[dict[str, Any]],
-        system_prompt: str,
-        tools: list[dict[str, Any]],
-    ) -> list[SemanticCompressionDecision]:
-        del system_prompt, tools
-        selected = self._selected_janitor_candidates(messages)
-        if not selected:
-            return []
-        topic_context = self._extract_recent_topic_context(messages)
-        todo_context = self._todo_hint_context(session)
-        fallback = self._fallback_context_relevance_decisions(session, selected, topic_context)
-        try:
-            janitor_system_prompt = (
-                "You are a context janitor for a coding agent.\n"
-                "Prioritize the current recent topic. Todo items are only weak hints.\n"
-                "Decide whether each old tool result should remain original, be condensed into one factual sentence, or be evicted.\n"
-                "Return strict JSON only."
-            )
-            janitor_messages = [{"role": "user", "content": self._build_semantic_janitor_prompt(topic_context, todo_context, selected)}]
-            dump_path = self._dump_provider_payload_if_enabled(
-                session=session,
-                system_prompt=janitor_system_prompt,
-                payload_messages=janitor_messages,
-                tools=[],
-                max_tokens=min(900, self.settings.provider.max_tokens),
-                actor="janitor",
-                stream=False,
-                kind="janitor",
-            )
-            started_at = time.monotonic()
-            try:
-                turn = self.provider.complete(
-                    system_prompt=janitor_system_prompt,
-                    messages=janitor_messages,
-                    tools=[],
-                    max_tokens=min(900, self.settings.provider.max_tokens),
-                )
-            except Exception as exc:
-                self._record_provider_payload_result(
-                    dump_path,
-                    error=exc,
-                    latency_ms=(time.monotonic() - started_at) * 1000,
-                )
-                raise
-            self._record_provider_payload_result(
-                dump_path,
-                turn=turn,
-                latency_ms=(time.monotonic() - started_at) * 1000,
-            )
-            text = "\n".join(getattr(turn, "text_blocks", []) or []).strip()
-            if not text:
-                return fallback
-            parsed = self._parse_semantic_janitor_response(text, selected)
-            return parsed or fallback
-        except Exception:
-            return fallback
-
-    def request_original_context(self, log_id: str) -> str:
-        normalized_log_id = str(log_id).strip()
-        if not normalized_log_id:
-            return "log_id is required."
-        entry = self.tool_log_store.get(normalized_log_id)
-        if not entry:
-            return f"No tool log found for '{normalized_log_id}'."
-        tool_name = str(entry.get("tool_name", "tool")).strip() or "tool"
-        output = str(entry.get("output", ""))
-        return f"[Restored tool output | {tool_name} | log {normalized_log_id}]\n{output or '(no output)'}"
 
     def _register_core_tools(self, registry: ToolRegistry) -> None:
         register_shell_tool(registry)
@@ -2858,18 +1953,6 @@ class OpenAgentRuntime:
                 description="Manually compact the current conversation context.",
                 input_schema={"type": "object", "properties": {}},
                 handler=lambda ctx, payload: "Compressing...",
-            )
-        )
-        registry.register(
-            ToolDefinition(
-                name="request_original_context",
-                description="Reload the full original output for a prior tool result by log id.",
-                input_schema={
-                    "type": "object",
-                    "properties": {"log_id": {"type": "string"}},
-                    "required": ["log_id"],
-                },
-                handler=lambda ctx, payload: self.request_original_context(payload["log_id"]),
             )
         )
 
@@ -3339,89 +2422,6 @@ class OpenAgentRuntime:
         except Exception:
             pass
         self.session_manager.save(session)
-
-    def run_semantic_janitor(
-        self,
-        session: AgentSession,
-        *,
-        actor: str = "lead",
-        role: str = "lead coding agent",
-    ) -> str:
-        messages = getattr(session, "messages", None)
-        if not isinstance(messages, list) or not messages:
-            return "Janitor skipped: no conversation history."
-        try:
-            system_prompt = self.build_system_prompt(actor=actor, role=role, session=session)
-        except TypeError:
-            system_prompt = self.build_system_prompt()
-        tools = self._context_usage_tools(actor)
-        cache_key = self._payload_message_cache_key(
-            session,
-            actor=actor,
-            role=role,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        payload_messages = self._build_payload_messages(messages, session=session)
-        baseline_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        if not self._should_run_manual_context_janitor(baseline_usage):
-            self._payload_message_cache[session.id] = (cache_key, payload_messages)
-            self._context_usage_cache[session.id] = (cache_key, baseline_usage)
-            self._remember_context_usage(session.id, baseline_usage)
-            usage_label = (
-                f"{baseline_usage.usage_percent:.1f}%"
-                if baseline_usage.usage_percent is not None
-                else f"{baseline_usage.used_tokens} tokens"
-            )
-            return (
-                f"Janitor skipped: current payload usage is {usage_label}, "
-                f"below the manual {self.MANUAL_JANITOR_MIN_RATIO * 100:.0f}% trigger."
-            )
-
-        decisions = self._analyze_context_relevance(
-            session=session,
-            messages=messages,
-            system_prompt=system_prompt,
-            tools=tools,
-        )
-        changed_results = sum(1 for decision in decisions if decision.state != "original")
-        if decisions:
-            persist_semantic_compression(messages, decisions)
-            payload_messages = self._build_payload_messages(
-                messages,
-                session=session,
-                semantic_decisions=decisions,
-            )
-        reduced_usage = self._count_payload_usage(system_prompt, payload_messages, tools)
-        self._payload_message_cache[session.id] = (cache_key, payload_messages)
-        self._context_usage_cache[session.id] = (cache_key, reduced_usage)
-        self._remember_context_usage(session.id, reduced_usage)
-        self._record_context_janitor_run(
-            session,
-            baseline_usage,
-            reduced_usage,
-            message_count=len(messages),
-            automatic=False,
-        )
-        if changed_results > 0:
-            self._note_context_governance(session.id, "janitor", f"janitor reduced {changed_results} tool result(s)")
-        saver = getattr(getattr(self, "session_manager", None), "save", None)
-        if callable(saver) and decisions:
-            saver(session)
-        before_label = (
-            f"{baseline_usage.usage_percent:.1f}%"
-            if baseline_usage.usage_percent is not None
-            else f"{baseline_usage.used_tokens} tokens"
-        )
-        after_label = (
-            f"{reduced_usage.usage_percent:.1f}%"
-            if reduced_usage.usage_percent is not None
-            else f"{reduced_usage.used_tokens} tokens"
-        )
-        return (
-            f"Janitor reviewed {len(decisions)} candidate tool result(s), reduced {changed_results}, "
-            f"and lowered payload usage from {before_label} to {after_label}."
-        )
 
     def checkpoint_session(self, session: AgentSession, tag: str) -> dict[str, Any]:
         """Create a named checkpoint of the session for later rollback.
@@ -3974,11 +2974,9 @@ class OpenAgentRuntime:
         activator = getattr(getattr(self, "team_manager", None), "activate_session", None)
         if callable(activator):
             activator(session.id)
-        task_anchor_message, latest_user_message = self._normalize_user_input_message(user_input)
+        task_anchor_message, _latest_user_message = self._normalize_user_input_message(user_input)
         session.messages.append(task_anchor_message)
         self._append_transcript_entry(session.id, task_anchor_message)
-        self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
-        self._run_automatic_context_janitor(session)
         return self._agent_loop(
             session,
             text_callback=text_callback,
@@ -4022,11 +3020,9 @@ class OpenAgentRuntime:
                 if callable(take_next_loop_user_message):
                     loop_user_message = take_next_loop_user_message()
                 if loop_user_message:
-                    task_anchor_message, latest_user_message = self._normalize_user_input_message(loop_user_message)
+                    task_anchor_message, _latest_user_message = self._normalize_user_input_message(loop_user_message)
                     session.messages.append(task_anchor_message)
                     self._append_transcript_entry(session.id, task_anchor_message)
-                    self._run_topic_shift_assist(session, latest_user_message=latest_user_message)
-                    self._run_automatic_context_janitor(session)
                 background_notifications = self.background_manager.drain()
                 if background_notifications:
                     text = "\n".join(

@@ -101,9 +101,6 @@ class AppService:
         self.runtime.compact_session(session)
         return "Context compacted."
 
-    def run_semantic_janitor(self, session: AgentSession) -> str:
-        return self.runtime.run_semantic_janitor(session)
-
     def switch_provider_model(self, provider_name: str, model: str) -> str:
         return self.provider_service.switch_provider_model(provider_name, model)
 

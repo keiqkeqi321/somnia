@@ -169,7 +169,6 @@ Controls local runtime behavior.
 
 ```toml
 [runtime]
-janitor_trigger_ratio = 0.6
 command_timeout_seconds = 120
 background_poll_interval_seconds = 2
 teammate_idle_timeout_seconds = 60
@@ -182,7 +181,6 @@ max_subagent_resumes = 3
 
 Fields:
 
-- `janitor_trigger_ratio`: context cleanup trigger ratio. Default: `0.6`.
 - `command_timeout_seconds`: default shell/tool command timeout. Default: `120`.
 - `background_poll_interval_seconds`: background job poll interval. Default: `2`.
 - `teammate_idle_timeout_seconds`: teammate idle timeout. Default: `60`.

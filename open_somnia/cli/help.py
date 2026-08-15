@@ -507,13 +507,6 @@ REPL_COMMANDS: list[CommandSpec] = [
         examples=("/cancel 2",),
     ),
     CommandSpec(
-        name="/janitor",
-        description="Run semantic janitor on the current payload.",
-        usage="/janitor",
-        detail="Runs the semantic janitor over the current payload to trim or clean context.",
-        section="repl",
-    ),
-    CommandSpec(
         name="/reloadplugin",
         description="Reload MCP tools, skills, and project instructions.",
         usage="/reloadplugin",
