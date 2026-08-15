@@ -156,7 +156,7 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _is_dangerous_command(command: str) -> bool:
+def is_dangerous_command(command: str) -> bool:
     lowered = f" {command.lower()} "
     if any(snippet in lowered for snippet in DANGEROUS_SNIPPETS):
         return True
@@ -208,24 +208,34 @@ def _windows_shell_guidance(command: str) -> str | None:
     return None
 
 
+def prepare_shell_command(command: str) -> tuple[str | list[str], bool, str | None]:
+    """Adapt a raw command string for the platform's shell.
+
+    Returns ``(run_args, use_shell, guidance)`` for ``run_command``. On
+    Windows, known Unix commands are translated to PowerShell and executed
+    with ``use_shell=False``; untranslatable Unix syntax yields guidance text
+    instead (mirroring the ``bash`` tool's error response), in which case the
+    caller must surface the guidance and not execute the command.
+    """
+    if not _is_windows():
+        return command, True, None
+    translated = _translate_windows_command(command)
+    if translated is None:
+        guidance = _windows_shell_guidance(command)
+        if guidance is not None:
+            return command, True, guidance
+        translated = command
+    return ["powershell", "-NoLogo", "-NoProfile", "-Command", translated], False, None
+
+
 def run_shell(ctx: Any, payload: dict[str, Any]) -> str:
     command = str(payload["command"])
-    if _is_dangerous_command(command):
+    if is_dangerous_command(command):
         return "Error: Dangerous command blocked"
 
-    run_args: str | list[str]
-    use_shell = True
-    if _is_windows():
-        translated = _translate_windows_command(command)
-        if translated is None:
-            guidance = _windows_shell_guidance(command)
-            if guidance is not None:
-                return guidance
-            translated = command
-        run_args = ["powershell", "-NoLogo", "-NoProfile", "-Command", translated]
-        use_shell = False
-    else:
-        run_args = command
+    run_args, use_shell, guidance = prepare_shell_command(command)
+    if guidance is not None:
+        return guidance
 
     try:
         completed = run_command(

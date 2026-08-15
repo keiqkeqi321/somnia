@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from open_somnia.runtime.interrupts import TurnInterrupted
+from open_somnia.storage.jobs import JobStore
 from open_somnia.tools.background import BackgroundManager
 from open_somnia.tools.process import CommandResult, decode_output, drop_windows_extended_prefix, run_command
 from open_somnia.tools.shell import run_shell
@@ -30,6 +31,15 @@ class _FakeJobStore:
 
     def get(self, job_id: str):
         return self.jobs.get(job_id)
+
+    def fail_running_jobs(self, result: str) -> int:
+        changed = 0
+        for job in self.jobs.values():
+            if job.get("status") == "running":
+                job["status"] = "error"
+                job["result"] = result
+                changed += 1
+        return changed
 
     def list_all(self):
         return self.jobs
@@ -286,6 +296,67 @@ class ProcessOutputTests(unittest.TestCase):
 
         self.assertEqual(store.jobs["job1"]["status"], "completed")
         self.assertEqual(store.jobs["job1"]["result"], "submit git chinese infor")
+
+    def test_background_manager_marks_zombie_running_jobs_as_error(self) -> None:
+        root = self._stable_test_dir("process-output-zombie")
+        store = JobStore(root)
+        store.create("zombie", {"id": "zombie", "command": "sleep 999", "status": "running", "result": None})
+        store.create("done", {"id": "done", "command": "ls", "status": "completed", "result": "ok"})
+
+        BackgroundManager(store, root, default_timeout=30, max_output_chars=500)
+
+        zombie = store.get("zombie")
+        self.assertEqual(zombie["status"], "error")
+        self.assertIn("interrupted", zombie["result"])
+        self.assertEqual(store.get("done")["status"], "completed")
+
+    def test_background_run_blocks_dangerous_command(self) -> None:
+        store = _FakeJobStore()
+        root = self._stable_test_dir("process-output-bg-danger")
+        manager = BackgroundManager(store, root, default_timeout=30, max_output_chars=500)
+
+        with patch("open_somnia.tools.background.threading.Thread") as mock_thread:
+            result = manager.run("format C:")
+
+        self.assertEqual(result, "Error: Dangerous command blocked")
+        mock_thread.assert_not_called()
+        self.assertEqual(store.jobs, {})
+
+    def test_background_execute_translates_unix_commands_on_windows(self) -> None:
+        store = _FakeJobStore()
+        root = self._stable_test_dir("process-output-bg-win")
+        manager = BackgroundManager(store, root, default_timeout=30, max_output_chars=500)
+        store.create("job1", {"id": "job1", "command": "ls", "status": "running", "result": None})
+
+        with (
+            patch("open_somnia.tools.shell._is_windows", return_value=True),
+            patch("open_somnia.tools.background.run_command") as mock_run,
+        ):
+            mock_run.return_value = CommandResult(args=["powershell"], returncode=0, stdout="ok", stderr="")
+            manager._execute("job1", "ls", 30)
+
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["powershell", "-NoLogo", "-NoProfile", "-Command", "Get-ChildItem -Force"],
+        )
+        self.assertFalse(mock_run.call_args.kwargs["shell"])
+        self.assertEqual(store.jobs["job1"]["status"], "completed")
+
+    def test_background_execute_returns_guidance_for_untranslatable_unix_command(self) -> None:
+        store = _FakeJobStore()
+        root = self._stable_test_dir("process-output-bg-guidance")
+        manager = BackgroundManager(store, root, default_timeout=30, max_output_chars=500)
+        store.create("job1", {"id": "job1", "command": "grep foo bar", "status": "running", "result": None})
+
+        with (
+            patch("open_somnia.tools.shell._is_windows", return_value=True),
+            patch("open_somnia.tools.background.run_command") as mock_run,
+        ):
+            manager._execute("job1", "grep foo bar", 30)
+
+        mock_run.assert_not_called()
+        self.assertEqual(store.jobs["job1"]["status"], "error")
+        self.assertIn("Select-String", store.jobs["job1"]["result"])
 
     def test_drop_windows_extended_prefix_strips_drive_prefix(self) -> None:
         self.assertEqual(

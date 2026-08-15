@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import queue
-import subprocess
 import threading
 import uuid
 from typing import Any
@@ -9,6 +8,7 @@ from typing import Any
 from open_somnia.storage.common import now_ts
 from open_somnia.tools.process import run_command
 from open_somnia.tools.registry import ToolDefinition
+from open_somnia.tools.shell import is_dangerous_command, prepare_shell_command
 
 
 class BackgroundManager:
@@ -18,8 +18,13 @@ class BackgroundManager:
         self.default_timeout = default_timeout
         self.max_output_chars = max_output_chars
         self.notifications: queue.Queue[dict[str, Any]] = queue.Queue()
+        # Worker threads are daemons and die with the process, so a job still
+        # marked running at startup is a zombie from a previous run.
+        self.job_store.fail_running_jobs("(interrupted: process restarted)")
 
     def run(self, command: str, timeout: int | None = None) -> str:
+        if is_dangerous_command(command):
+            return "Error: Dangerous command blocked"
         job_id = uuid.uuid4().hex[:8]
         self.job_store.create(
             job_id,
@@ -37,14 +42,18 @@ class BackgroundManager:
 
     def _execute(self, job_id: str, command: str, timeout: int) -> None:
         try:
-            completed = run_command(
-                command,
-                shell=True,
-                cwd=self.workspace_root,
-                timeout=timeout,
-            )
-            result = completed.combined_output().strip() or "(no output)"
-            job = self.job_store.update(job_id, status="completed", result=result[: self.max_output_chars])
+            run_args, use_shell, guidance = prepare_shell_command(command)
+            if guidance is not None:
+                job = self.job_store.update(job_id, status="error", result=guidance)
+            else:
+                completed = run_command(
+                    run_args,
+                    shell=use_shell,
+                    cwd=self.workspace_root,
+                    timeout=timeout,
+                )
+                result = completed.combined_output().strip() or "(no output)"
+                job = self.job_store.update(job_id, status="completed", result=result[: self.max_output_chars])
         except Exception as exc:
             job = self.job_store.update(job_id, status="error", result=str(exc))
         notification = {
