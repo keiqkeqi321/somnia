@@ -30,6 +30,16 @@ from open_somnia.tools.registry import ToolDefinition
 
 
 class SidecarServerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Runtime reloads merge the user's global config (~/.open_somnia/...) with
+        # the test workspace; isolate HOME so real MCP servers and provider
+        # profiles on the dev machine never leak into these tests.
+        home = Path.cwd() / ".tmp-tests" / f"sidecar-home-{time.time_ns()}"
+        (home / ".open_somnia").mkdir(parents=True, exist_ok=True)
+        patcher = patch("open_somnia.config.settings.Path.home", return_value=home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _socket_buffer(self, client: socket.socket) -> bytearray:
         buffers = getattr(self, "_socket_buffers", None)
         if buffers is None:
@@ -118,7 +128,9 @@ class SidecarServerTests(unittest.TestCase):
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=2.0) as response:
+        # 15s: provider/MCP reload handlers can legitimately take seconds on
+        # slow machines (SDK client SSL setup, stdio MCP spawn); 2s flakes.
+        with urllib.request.urlopen(request, timeout=15.0) as response:
             body = response.read().decode("utf-8")
             return response.status, json.loads(body)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -339,14 +340,22 @@ def _is_stream_json_parse_error(exc: Exception) -> bool:
     )
 
 
+@lru_cache(maxsize=8)
+def _shared_anthropic_client(api_key: str | None, base_url: str | None) -> Anthropic:
+    # SDK client construction pays httpx/SSL setup that can take seconds on
+    # slow machines; the client is model-independent, so share one per
+    # (api_key, base_url) endpoint across provider instances.
+    kwargs: dict[str, Any] = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+    return Anthropic(**kwargs)
+
+
 class AnthropicProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
-        kwargs: dict[str, Any] = {}
-        if settings.base_url:
-            kwargs["base_url"] = settings.base_url
-        if settings.api_key:
-            kwargs["api_key"] = settings.api_key
-        self.client = Anthropic(**kwargs)
+        self.client = _shared_anthropic_client(settings.api_key, settings.base_url)
         self.settings = settings
 
     def count_tokens(

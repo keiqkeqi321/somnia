@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix two environment-dependent sidecar test failures: isolate HOME in sidecar tests so the dev machine's global MCP servers never leak into runtime reloads, and relax the HTTP request timeout to 15s for handlers that legitimately take seconds (SDK client SSL setup, stdio MCP spawn)
+- Reuse SDK clients across provider instantiations: share Anthropic clients per (api_key, base_url) and build the OpenAI client once per provider instance instead of once per request, eliminating repeated httpx/SSL setup cost on model switches
 - Remove the semantic janitor context-governance subsystem (semantic dehydration, topic-shift assist, `request_original_context` tool, `/janitor` REPL command, sidecar `POST /sessions/{id}/janitor` route, desktop janitor entrypoints, and the `runtime.janitor_trigger_ratio` setting). Context governance now consists of payload normalization plus auto-compact at the 0.82 threshold.
 
 ## 0.5.3 (2026-05-25)
