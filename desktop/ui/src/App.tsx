@@ -4398,9 +4398,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                                     <span className="session-decision-indicator" aria-label={t("sidebar.waitingDecision")} />
                                   ) : isAnswering ? (
                                     <span className="session-answering-indicator" aria-label={t("sidebar.agentResponding")}>
-                                      <span aria-hidden="true" />
-                                      <span aria-hidden="true" />
-                                      <span aria-hidden="true" />
+                                      <PixelLoader />
                                     </span>
                                   ) : (
                                     <div className="session-menu" ref={sessionMenuOpenKey === sessionMenuKey ? sessionMenuRef : null}>
@@ -4601,10 +4599,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       ) : null}
                       {row.isLoading ? (
                         <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
-                          <span />
-                          <span />
-                          <span />
-                        </span>
+                                      <PixelLoader />
+                                    </span>
                       ) : null}
                       {!row.parts?.length && row.toolCalls?.length ? (
                         <div className="tool-call-stack">
@@ -4620,10 +4616,8 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                       ) : null}
                       {row.id === latestStreamingAssistantRowId && currentSessionRunning ? (
                         <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
-                          <span aria-hidden="true" />
-                          <span aria-hidden="true" />
-                          <span aria-hidden="true" />
-                        </span>
+                                      <PixelLoader />
+                                    </span>
                       ) : null}
                     </article>
                   </div>
@@ -5418,10 +5412,8 @@ function WorkerOutputView({
       {state.error ? <div className="empty-card">{state.error}</div> : null}
       {state.loading && !rendered ? (
         <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
-          <span />
-          <span />
-          <span />
-        </span>
+                                      <PixelLoader />
+                                    </span>
       ) : null}
       {entries.length > 0 ? (
         <div className="worker-log-events">
@@ -5462,10 +5454,8 @@ function SubagentOutputView({
       {state.error ? <div className="empty-card">{state.error}</div> : null}
       {state.loading && entries.length === 0 ? (
         <span className="typing-indicator" aria-label={t("conversation.waitingAssistant")}>
-          <span />
-          <span />
-          <span />
-        </span>
+                                      <PixelLoader />
+                                    </span>
       ) : null}
       {entries.length > 0 ? (
         <div className="worker-log-events">
@@ -5768,6 +5758,24 @@ function renderMarkdownBlocksCached(text: string): ReactNode {
   }
   markdownRenderCache.set(text, rendered);
   return rendered;
+}
+
+/* 3x3 pixel grid loader (Beautiful UI "Loading State"): a chevron wavefront
+ * sweeps across the grid; delays derive from each cell's column distance. */
+const PIXEL_LOADER_DELAYS = Array.from({ length: 9 }, (_, i) => {
+  const row = Math.floor(i / 3);
+  const col = i % 3;
+  return (col + Math.abs(row - 1)) * 90;
+});
+
+function PixelLoader() {
+  return (
+    <>
+      {PIXEL_LOADER_DELAYS.map((delay, i) => (
+        <span key={i} aria-hidden="true" style={{ animationDelay: `${delay}ms` }} />
+      ))}
+    </>
+  );
 }
 
 const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
