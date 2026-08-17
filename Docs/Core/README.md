@@ -11,7 +11,7 @@
 | 03 | [TodoWrite](./03-TodoWrite.md) | 会话级待办清单：数据模型、状态、约束规则 |
 | 04 | [探索能力](./04-探索能力.md) | 即时探索能力：`/symbols` 及其他探索工具 |
 | 05 | [上下文回滚](./05-上下文回滚.md) | Checkpoint / Rollback 机制：会话状态检查点与回滚 |
-| 06 | [上下文治理与压缩](./06-上下文治理与压缩.md) | Payload Normalization + Semantic Janitor + Auto Compact 三层上下文治理 |
+| 06 | [上下文治理与压缩](./06-上下文治理与压缩.md) | Payload Normalization + Auto Compact 两层上下文治理 |
 | 07 | [Subagent](./07-Subagent.md) | 隔离子代理：Explore / general-purpose 模式、权限控制 |
 | 08 | [Skills](./08-Skills.md) | 可扩展知识库：技能文件结构、搜索路径、加载流程 |
 | 09 | [MCP](./09-MCP.md) | Model Context Protocol：传输协议、工具注册、配置 |

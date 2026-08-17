@@ -533,17 +533,22 @@ def _first_openai_choice(body: dict[str, Any]) -> dict[str, Any]:
 class OpenAIProvider(LLMProvider):
     def __init__(self, settings: ProviderSettings):
         self.settings = settings
+        self._openai_client: OpenAI | None = None
 
     def _client(self) -> OpenAI:
-        kwargs: dict[str, Any] = {
-            "api_key": self.settings.api_key,
-            "timeout": self.settings.timeout_seconds,
-        }
-        if self.settings.base_url:
-            kwargs["base_url"] = self.settings.base_url
-        if self.settings.organization:
-            kwargs["organization"] = self.settings.organization
-        return OpenAI(**kwargs)
+        # SDK client construction pays httpx/SSL setup; build it once per
+        # provider instance instead of once per request.
+        if self._openai_client is None:
+            kwargs: dict[str, Any] = {
+                "api_key": self.settings.api_key,
+                "timeout": self.settings.timeout_seconds,
+            }
+            if self.settings.base_url:
+                kwargs["base_url"] = self.settings.base_url
+            if self.settings.organization:
+                kwargs["organization"] = self.settings.organization
+            self._openai_client = OpenAI(**kwargs)
+        return self._openai_client
 
     def count_tokens(
         self,

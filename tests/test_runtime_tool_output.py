@@ -21,9 +21,6 @@ from open_somnia.providers.openai_provider import OpenAIProvider
 from open_somnia.runtime.agent import OpenAgentRuntime, TurnInterrupted
 from open_somnia.runtime.compact import (
     ContextWindowUsage,
-    SemanticCompressionDecision,
-    ToolResultCandidate,
-    ToolResultLocator,
     build_payload_messages,
 )
 from open_somnia.runtime.messages import (
@@ -910,349 +907,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(restored.id, "session-1")
         self.assertFalse(hasattr(restored, "read_file_overlap_state"))
-
-    def test_request_original_context_returns_tool_log_output(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.tool_log_store = SimpleNamespace(
-            get=lambda log_id: {
-                "tool_name": "bash",
-                "output": "full original output",
-            }
-            if log_id == "log-1"
-            else None
-        )
-
-        restored = OpenAgentRuntime.request_original_context(runtime, "log-1")
-        missing = OpenAgentRuntime.request_original_context(runtime, "missing")
-
-        self.assertIn("[Restored tool output | bash | log log-1]", restored)
-        self.assertIn("full original output", restored)
-        self.assertIn("No tool log found", missing)
-
-    def test_extract_recent_topic_context_collects_recent_files_symbols_and_keywords(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        messages = [
-            {"role": "user", "content": "Please inspect open_somnia/runtime/agent.py and the request_original_context tool."},
-            {"role": "assistant", "content": "I will compare context_window_usage with build_payload_messages."},
-            {"role": "user", "content": "<background-results>\nignore this\n</background-results>"},
-            {"role": "user", "content": "Also check tests/test_compact.py for SemanticCompressionDecision coverage."},
-        ]
-
-        topic = OpenAgentRuntime._extract_recent_topic_context(runtime, messages)
-
-        self.assertIn("open_somnia/runtime/agent.py", topic["active_files"])
-        self.assertIn("tests/test_compact.py", topic["active_files"])
-        self.assertIn("request_original_context", topic["active_symbols"])
-        self.assertIn("context_window_usage", topic["active_symbols"])
-        self.assertIn("semanticcompressiondecision", {value.lower() for value in topic["keywords"]})
-
-    def test_fallback_context_relevance_decisions_respects_error_pwd_and_relevant_read_file(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        session = AgentSession(
-            id="session-1",
-            todo_items=[
-                {"content": "inspect agent runtime", "status": "in_progress", "activeForm": "inspecting agent runtime"},
-                {"content": "old directory walk", "status": "completed", "activeForm": "completed old walk"},
-            ],
-        )
-        topic_context = {
-            "active_files": ["open_somnia/runtime/agent.py"],
-            "active_symbols": ["request_original_context"],
-            "keywords": ["agent", "runtime", "request_original_context"],
-        }
-        candidates = [
-            self._candidate(
-                message_index=1,
-                item_index=0,
-                tool_name="bash",
-                content="Traceback: RuntimeError connection failed in open_somnia/runtime/agent.py",
-                tool_input={"command": "pytest tests/test_runtime_tool_output.py"},
-                log_id="err-log",
-                has_error=True,
-            ),
-            self._candidate(
-                message_index=3,
-                item_index=0,
-                tool_name="pwd",
-                content="D:/Project/Git/somnia",
-                tool_input={"command": "pwd"},
-                log_id="pwd-log",
-                age=5,
-            ),
-            self._candidate(
-                message_index=5,
-                item_index=0,
-                tool_name="read_file",
-                content="def request_original_context(self, log_id: str) -> str:\n    ...",
-                tool_input={"path": "open_somnia/runtime/agent.py"},
-                log_id="read-log",
-            ),
-        ]
-
-        decisions = OpenAgentRuntime._fallback_context_relevance_decisions(runtime, session, candidates, topic_context)
-        by_locator = {(item.message_index, item.item_index): item for item in decisions}
-
-        self.assertEqual(by_locator[(1, 0)].state, "original")
-        self.assertEqual(by_locator[(3, 0)].state, "evicted")
-        self.assertIn("[Context Evicted | pwd | log pwd-log]", by_locator[(3, 0)].summary)
-        self.assertEqual(by_locator[(5, 0)].state, "original")
-
-    def test_fallback_context_relevance_decisions_evicts_stale_read_for_same_path(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        session = AgentSession(id="session-1")
-        topic_context = {
-            "active_files": ["frontend/src/App.tsx"],
-            "active_symbols": ["renderSidebar"],
-            "keywords": ["sidebar", "selection"],
-        }
-        candidates = [
-            self._candidate(
-                message_index=1,
-                item_index=0,
-                tool_name="read_file",
-                content="old file snapshot",
-                tool_input={"path": "frontend/src/App.tsx"},
-                log_id="read-old",
-                age=6,
-            ),
-            self._candidate(
-                message_index=3,
-                item_index=0,
-                tool_name="edit_file",
-                content='{"status":"ok"}',
-                tool_input={
-                    "path": "frontend/src/App.tsx",
-                    "edits": [{"old_text": "old", "new_text": "new"}],
-                },
-                log_id="edit-new",
-                age=4,
-            ),
-        ]
-
-        decisions = OpenAgentRuntime._fallback_context_relevance_decisions(runtime, session, candidates, topic_context)
-        by_locator = {(item.message_index, item.item_index): item for item in decisions}
-
-        self.assertEqual(by_locator[(1, 0)].state, "evicted")
-        self.assertIn("[Context Evicted | read_file | log read-old]", by_locator[(1, 0)].summary)
-        self.assertEqual(by_locator[(3, 0)].state, "original")
-
-    def test_run_semantic_janitor_primes_cached_payload(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 70_000 if "Semantic Summary" not in str(messages) else 55_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._context_governance_events = {}
-        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
-        runtime._payload_message_cache_key = OpenAgentRuntime._payload_message_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_tools = OpenAgentRuntime._context_usage_tools.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime._note_context_governance = OpenAgentRuntime._note_context_governance.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_cache_key = OpenAgentRuntime._context_usage_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime._analyze_context_relevance = lambda **kwargs: [
-            SemanticCompressionDecision(
-                message_index=1,
-                item_index=0,
-                state="condensed",
-                summary="[Semantic Summary | read_file | log log-1] Latest file snapshot already captured.",
-            )
-        ]
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
-            ],
-        )
-
-        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
-        cache_key, cached_payload = runtime._payload_message_cache["session-1"]
-        _, cached_usage = runtime._context_usage_cache["session-1"]
-
-        self.assertIn("Janitor reviewed", message)
-        self.assertIsInstance(cache_key, tuple)
-        self.assertIn("[Semantic Summary | read_file | log log-1]", cached_payload[1]["content"][0]["content"])
-        self.assertEqual(cached_usage.used_tokens, 55_000)
-        self.assertIn("[Semantic Summary | read_file | log log-1]", session.messages[1]["content"][0]["content"])
-        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
-        self.assertNotIn("raw_output", session.messages[1]["content"][0])
-
-    def test_run_semantic_janitor_manual_command_runs_above_manual_threshold(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 30_000 if "Semantic Summary" not in str(messages) else 24_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._context_governance_events = {}
-        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
-        runtime._payload_message_cache_key = OpenAgentRuntime._payload_message_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_tools = OpenAgentRuntime._context_usage_tools.__get__(runtime, OpenAgentRuntime)
-        runtime._note_context_governance = OpenAgentRuntime._note_context_governance.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_cache_key = OpenAgentRuntime._context_usage_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime._analyze_context_relevance = lambda **kwargs: [
-            SemanticCompressionDecision(
-                message_index=1,
-                item_index=0,
-                state="condensed",
-                summary="[Semantic Summary | read_file | log log-1] Manual janitor reduced older snapshot.",
-            )
-        ]
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
-            ],
-        )
-
-        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
-
-        self.assertIn("Janitor reviewed", message)
-        self.assertIn("[Semantic Summary | read_file | log log-1]", session.messages[1]["content"][0]["content"])
-
-    def test_run_semantic_janitor_manual_command_skips_below_manual_threshold(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 19_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}])
-
-        message = OpenAgentRuntime.run_semantic_janitor(runtime, session)
-
-        self.assertIn("below the manual 20% trigger", message)
-
-    def test_parse_semantic_janitor_response_accepts_valid_json_and_ignores_extra_fields(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        candidates = [
-            self._candidate(
-                message_index=1,
-                item_index=0,
-                tool_name="grep",
-                content="needle found",
-                tool_input={"pattern": "needle"},
-                log_id="grep-log",
-            ),
-            self._candidate(
-                message_index=3,
-                item_index=0,
-                tool_name="pwd",
-                content="D:/Project/Git/somnia",
-                tool_input={"command": "pwd"},
-                log_id="pwd-log",
-            ),
-        ]
-
-        parsed = OpenAgentRuntime._parse_semantic_janitor_response(
-            runtime,
-            """```json
-[
-  {"message_index": 1, "item_index": 0, "state": "condensed", "summary": "Confirmed needle location.", "extra": "ignored"},
-  {"message_index": 3, "item_index": 0, "state": "evicted", "why": "old pwd"},
-  {"message_index": 999, "item_index": 0, "state": "original"}
-]
-```""",
-            candidates,
-        )
-
-        self.assertEqual(len(parsed), 2)
-        self.assertEqual(parsed[0].state, "condensed")
-        self.assertIn("[Semantic Summary | grep | log grep-log]", parsed[0].summary)
-        self.assertEqual(parsed[1].state, "evicted")
-        self.assertIn("[Context Evicted | pwd | log pwd-log]", parsed[1].summary)
-
-    def test_parse_semantic_janitor_response_rejects_invalid_json_and_missing_fields(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        candidates = [self._candidate(message_index=1, item_index=0, tool_name="grep", content="needle found")]
-
-        with self.assertRaises(Exception):
-            OpenAgentRuntime._parse_semantic_janitor_response(runtime, "{not json", candidates)
-
-        with self.assertRaises(Exception):
-            OpenAgentRuntime._parse_semantic_janitor_response(
-                runtime,
-                '[{"message_index": 1, "state": "condensed", "summary": "missing item index"}]',
-                candidates,
-            )
-
-    def test_evicted_restore_end_to_end_returns_original_tool_output(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.tool_log_store = SimpleNamespace(
-            get=lambda log_id: {
-                "tool_name": "pwd",
-                "output": "D:/Project/Git/somnia",
-            }
-            if log_id == "pwd-log"
-            else None
-        )
-        messages = [
-            {
-                "role": "assistant",
-                "content": [{"type": "tool_call", "id": "call-1", "name": "pwd", "input": {"command": "pwd"}}],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": "call-1",
-                        "content": "D:/Project/Git/somnia",
-                        "raw_output": "D:/Project/Git/somnia",
-                        "log_id": "pwd-log",
-                    }
-                ],
-            },
-        ]
-
-        payload = build_payload_messages(
-            messages,
-            semantic_decisions=[
-                SemanticCompressionDecision(
-                    message_index=1,
-                    item_index=0,
-                    state="evicted",
-                    summary="[Context Evicted | pwd | log pwd-log] Output removed from payload. Use request_original_context if needed.",
-                )
-            ],
-        )
-        restored = OpenAgentRuntime.request_original_context(runtime, "pwd-log")
-
-        self.assertIn("[Context Evicted | pwd | log pwd-log]", payload[1]["content"][0]["content"])
-        self.assertIn("[Restored tool output | pwd | log pwd-log]", restored)
-        self.assertIn("D:/Project/Git/somnia", restored)
 
     def test_build_payload_messages_preserves_large_duplicate_tool_results(self) -> None:
         duplicate_content = "x" * 400
@@ -2430,170 +2084,11 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(usage.counter_name, "anthropic_native")
         self.assertEqual(usage.usage_percent, 25.0)
 
-    def test_context_window_usage_does_not_apply_semantic_janitor_side_effects_when_threshold_crossed(self) -> None:
-        captured_messages: list[dict] = []
-        analyzer_calls: list[int] = []
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-
-        def _count_tokens(system_prompt, messages, tools):
-            captured_messages.clear()
-            captured_messages.extend(messages)
-            return 70_000
-
-        runtime.provider = SimpleNamespace(
-            count_tokens=_count_tokens,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._analyze_context_relevance = lambda **kwargs: analyzer_calls.append(len(kwargs["messages"])) or []
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "ls -R"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "a" * 1000, "raw_output": "a" * 1000, "log_id": "log-call-1"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "needle", "raw_output": "needle", "log_id": "log-call-2"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-call-3"}]},
-            ],
-        )
-
-        usage = OpenAgentRuntime.context_window_usage(runtime, session)
-
-        self.assertEqual(usage.used_tokens, 70_000)
-        self.assertEqual(captured_messages[1]["content"][0]["content"], "a" * 1000)
-        self.assertEqual(session.messages[1]["content"][0]["content"], "a" * 1000)
-        self.assertNotIn("semantic_state", session.messages[1]["content"][0])
-        self.assertIn("raw_output", session.messages[1]["content"][0])
-        self.assertEqual(session.messages[1]["content"][0]["log_id"], "log-call-1")
-        self.assertEqual(analyzer_calls, [])
-
-    def test_run_turn_runs_auto_janitor_before_agent_loop_and_includes_current_user_message_in_topic(self) -> None:
-        analyzer_inputs: list[str] = []
-        loop_messages: list[dict] = []
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 70_000 if "Semantic Summary" not in str(messages) else 55_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._recent_context_usage = {}
-        runtime._context_governance_events = {}
-        runtime._janitor_state = {}
-        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
-        runtime._payload_message_cache_key = OpenAgentRuntime._payload_message_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_tools = OpenAgentRuntime._context_usage_tools.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime._note_context_governance = OpenAgentRuntime._note_context_governance.__get__(runtime, OpenAgentRuntime)
-        runtime._context_usage_cache_key = OpenAgentRuntime._context_usage_cache_key.__get__(runtime, OpenAgentRuntime)
-        runtime._remember_context_usage = OpenAgentRuntime._remember_context_usage.__get__(runtime, OpenAgentRuntime)
-        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
-        runtime._run_automatic_context_janitor = OpenAgentRuntime._run_automatic_context_janitor.__get__(runtime, OpenAgentRuntime)
-        transcript_root = self._stable_test_dir("visible-progress-thinking") / "transcripts"
-        runtime.transcript_store = SimpleNamespace(root=transcript_root, append=lambda *args, **kwargs: None)
-
-        def _analyze(**kwargs):
-            visible_messages = kwargs["messages"]
-            analyzer_inputs.append(str(visible_messages[-1]["content"]))
-            return [
-                SemanticCompressionDecision(
-                    message_index=1,
-                    item_index=0,
-                    state="condensed",
-                    summary="[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
-                )
-            ]
-
-        runtime._analyze_context_relevance = _analyze
-        runtime._agent_loop = lambda session, **kwargs: loop_messages.extend(session.messages) or "loop-result"
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "ls -R"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "a" * 1000, "raw_output": "a" * 1000, "log_id": "log-call-1"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "needle", "raw_output": "needle", "log_id": "log-call-2"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-call-3"}]},
-                {"role": "assistant", "content": "Ready for the next request."},
-            ],
-        )
-
-        result = OpenAgentRuntime.run_turn(runtime, session, "please continue in main.py")
-
-        self.assertEqual(result, "loop-result")
-        self.assertEqual(analyzer_inputs, ["please continue in main.py"])
-        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
-        self.assertIn("[Semantic Summary | bash | log log-call-1]", session.messages[1]["content"][0]["content"])
-        self.assertEqual(loop_messages[-1]["content"], "please continue in main.py")
-
-    def test_run_turn_skips_topic_shift_detection_below_manual_janitor_threshold(self) -> None:
-        detection_calls: list[str] = []
-        transcript_entries: list[dict] = []
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 15_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._recent_context_usage = {}
-        runtime._context_governance_events = {}
-        runtime._janitor_state = {}
-        runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
-        runtime._detect_topic_shift = lambda **kwargs: detection_calls.append(kwargs["latest_user_message"]) or (True, "shift")
-        runtime._agent_loop = lambda session, **kwargs: "loop-result"
-
-        session = AgentSession(id="session-1", messages=[{"role": "assistant", "content": "Ready."}])
-
-        result = OpenAgentRuntime.run_turn(runtime, session, "new question")
-
-        self.assertEqual(result, "loop-result")
-        self.assertEqual(detection_calls, [])
-        self.assertEqual(transcript_entries, [{"role": "user", "content": "new question"}])
-
     def test_run_turn_accepts_embedded_user_multimodal_message(self) -> None:
-        detection_calls: list[str] = []
         transcript_entries: list[dict] = []
         loop_messages: list[dict] = []
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
-        runtime._run_topic_shift_assist = lambda session, latest_user_message: detection_calls.append(latest_user_message)
-        runtime._run_automatic_context_janitor = lambda session: None
         runtime._agent_loop = lambda session, **kwargs: loop_messages.extend(session.messages) or "loop-result"
 
         session = AgentSession(id="session-1", messages=[{"role": "assistant", "content": "Ready."}])
@@ -2614,7 +2109,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         result = OpenAgentRuntime.run_turn(runtime, session, encoded_message)
 
         self.assertEqual(result, "loop-result")
-        self.assertEqual(detection_calls, ["look at this image"])
         self.assertEqual(transcript_entries[0]["role"], "user")
         self.assertEqual(transcript_entries[0]["content"][0], {"type": "text", "text": "look at this image"})
         self.assertEqual(transcript_entries[0]["content"][1]["type"], IMAGE_REFERENCE_BLOCK_TYPE)
@@ -2960,119 +2454,13 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(blocks, [])
 
-    def test_run_turn_topic_shift_detection_can_trigger_janitor_without_polluting_transcript(self) -> None:
-        detection_calls: list[str] = []
-        loop_messages: list[dict] = []
-        transcript_entries: list[dict] = []
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 30_000 if "Semantic Summary" not in str(messages) else 22_000,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-        )
-        runtime.registry = SimpleNamespace(schemas=lambda: [])
-        runtime.worker_registry = SimpleNamespace(schemas=lambda: [])
-        runtime.build_system_prompt = lambda actor="lead", role="lead coding agent", session=None: "system"
-        runtime.execution_mode = "accept_edits"
-        runtime._context_usage_cache = {}
-        runtime._payload_message_cache = {}
-        runtime._recent_context_usage = {}
-        runtime._context_governance_events = {}
-        runtime._janitor_state = {}
-        runtime.transcript_store = SimpleNamespace(append=lambda session_id, payload: transcript_entries.append(payload))
-        runtime._detect_topic_shift = lambda **kwargs: detection_calls.append(kwargs["latest_user_message"]) or (True, "new topic")
-        runtime._agent_loop = lambda session, **kwargs: loop_messages.extend(session.messages) or "loop-result"
-
-        def _analyze(**kwargs):
-            return [
-                SemanticCompressionDecision(
-                    message_index=1,
-                    item_index=0,
-                    state="condensed",
-                    summary="[Semantic Summary | bash | log log-call-1] Earlier directory scan already reviewed.",
-                )
-            ]
-
-        runtime._analyze_context_relevance = _analyze
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "bash", "input": {"command": "ls -R"}, "importance": "glance"}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "a" * 1000, "raw_output": "a" * 1000, "log_id": "log-call-1"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "needle", "raw_output": "needle", "log_id": "log-call-2"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}, "importance": "foundation"}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-call-3"}]},
-                {"role": "assistant", "content": "Ready for the next request."},
-            ],
-        )
-
-        result = OpenAgentRuntime.run_turn(runtime, session, "now switch to auth.py")
-
-        self.assertEqual(result, "loop-result")
-        self.assertEqual(detection_calls, ["now switch to auth.py"])
-        self.assertEqual(session.messages[1]["content"][0]["semantic_state"], "condensed")
-        self.assertIn("[Semantic Summary | bash | log log-call-1]", session.messages[1]["content"][0]["content"])
-        self.assertEqual(loop_messages[-1]["content"], "now switch to auth.py")
-        self.assertEqual(transcript_entries, [{"role": "user", "content": "now switch to auth.py"}])
-
-    def test_topic_shift_candidate_pressure_ignores_foundation_only_candidates(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._topic_shift_candidate_pressure = OpenAgentRuntime._topic_shift_candidate_pressure.__get__(runtime, OpenAgentRuntime)
-        runtime._tool_importance_review_priority = OpenAgentRuntime._tool_importance_review_priority.__get__(runtime, OpenAgentRuntime)
-        runtime.JANITOR_PRUNABLE_OUTPUT_CHARS = OpenAgentRuntime.JANITOR_PRUNABLE_OUTPUT_CHARS
-
-        messages = [
-            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "main.py"}, "importance": "foundation"}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 800, "raw_output": "x" * 800, "log_id": "log-1"}]},
-            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "needle"}}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "recent", "raw_output": "recent", "log_id": "log-2"}]},
-            {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "grep", "input": {"pattern": "other"}}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "most recent", "raw_output": "most recent", "log_id": "log-3"}]},
-        ]
-
-        pressure = OpenAgentRuntime._topic_shift_candidate_pressure(runtime, messages)
-
-        self.assertEqual(pressure, 0)
-
-    def test_candidate_relevance_score_applies_importance_bonus(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime._tool_candidate_haystack = OpenAgentRuntime._tool_candidate_haystack.__get__(runtime, OpenAgentRuntime)
-        runtime._tool_importance_preservation_score = OpenAgentRuntime._tool_importance_preservation_score.__get__(runtime, OpenAgentRuntime)
-
-        foundation_score = OpenAgentRuntime._candidate_relevance_score(
-            runtime,
-            self._candidate(message_index=1, item_index=0, tool_name="read_file", content="plain content", importance="foundation"),
-            active_files=set(),
-            active_symbols=set(),
-            topic_tokens=set(),
-            open_todo_tokens=set(),
-            completed_todo_tokens=set(),
-        )
-        glance_score = OpenAgentRuntime._candidate_relevance_score(
-            runtime,
-            self._candidate(message_index=1, item_index=0, tool_name="read_file", content="plain content", importance="glance"),
-            active_files=set(),
-            active_symbols=set(),
-            topic_tokens=set(),
-            open_todo_tokens=set(),
-            completed_todo_tokens=set(),
-        )
-
-        self.assertGreater(foundation_score, glance_score)
-
     def test_context_window_usage_cache_invalidates_after_session_messages_change(self) -> None:
         provider_calls: list[int] = []
         analyzer_calls: list[int] = []
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
+            runtime=SimpleNamespace(),
         )
 
         def _count_tokens(system_prompt, messages, tools):
@@ -3116,7 +2504,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
             provider=SimpleNamespace(name="openai", model="gpt-4.1", context_window_tokens=100_000),
-            runtime=SimpleNamespace(janitor_trigger_ratio=0.6),
+            runtime=SimpleNamespace(),
         )
 
         def _count_tokens(system_prompt, messages, tools):
@@ -3140,176 +2528,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(usage.used_tokens, 30_000)
         self.assertIs(recent, usage)
         self.assertEqual(provider_calls, [1])
-
-    def test_context_janitor_uses_cooldown_until_usage_grows_meaningfully(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.JANITOR_REARM_RATIO = OpenAgentRuntime.JANITOR_REARM_RATIO
-        runtime.JANITOR_FORCE_RATIO = OpenAgentRuntime.JANITOR_FORCE_RATIO
-        runtime.JANITOR_MIN_TOKEN_DELTA = OpenAgentRuntime.JANITOR_MIN_TOKEN_DELTA
-        runtime.JANITOR_MIN_MESSAGE_DELTA = OpenAgentRuntime.JANITOR_MIN_MESSAGE_DELTA
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1", messages=[{"role": "user", "content": "hello"}] * 10)
-
-        first = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=60_000, max_tokens=100_000),
-            session=session,
-            message_count=10,
-        )
-        OpenAgentRuntime._record_context_janitor_run(
-            runtime,
-            session,
-            ContextWindowUsage(used_tokens=60_000, max_tokens=100_000),
-            ContextWindowUsage(used_tokens=54_000, max_tokens=100_000),
-            message_count=10,
-            automatic=True,
-        )
-        second = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=61_000, max_tokens=100_000),
-            session=session,
-            message_count=12,
-        )
-        rearm = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=43_000, max_tokens=100_000),
-            session=session,
-            message_count=12,
-        )
-        third = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=61_000, max_tokens=100_000),
-            session=session,
-            message_count=13,
-        )
-
-        self.assertTrue(first)
-        self.assertFalse(second)
-        self.assertFalse(rearm)
-        self.assertTrue(third)
-
-    def test_context_janitor_skips_when_prunable_candidates_are_exhausted(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400))
-
-        should_run = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=60_000, max_tokens=100_000),
-            session=session,
-            message_count=len(session.messages),
-            messages=session.messages,
-        )
-
-        self.assertFalse(should_run)
-        self.assertTrue(runtime._janitor_state["session-1"]["saturated"])
-
-    def test_context_janitor_skips_when_close_to_auto_compact_threshold(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400, "c" * 400, "d" * 400, "e" * 400))
-
-        should_run = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=80_000, max_tokens=100_000),
-            session=session,
-            message_count=len(session.messages),
-            messages=session.messages,
-        )
-
-        self.assertFalse(should_run)
-
-    def test_context_janitor_skips_when_usage_delta_since_last_run_is_too_small(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.JANITOR_REARM_RATIO = OpenAgentRuntime.JANITOR_REARM_RATIO
-        runtime.JANITOR_FORCE_RATIO = OpenAgentRuntime.JANITOR_FORCE_RATIO
-        runtime.JANITOR_MIN_TOKEN_DELTA = OpenAgentRuntime.JANITOR_MIN_TOKEN_DELTA
-        runtime.JANITOR_MIN_MESSAGE_DELTA = OpenAgentRuntime.JANITOR_MIN_MESSAGE_DELTA
-        runtime.JANITOR_MIN_USAGE_DELTA_RATIO = OpenAgentRuntime.JANITOR_MIN_USAGE_DELTA_RATIO
-        runtime.JANITOR_MIN_USAGE_DELTA_TOKENS = OpenAgentRuntime.JANITOR_MIN_USAGE_DELTA_TOKENS
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._should_run_context_janitor = OpenAgentRuntime._should_run_context_janitor.__get__(runtime, OpenAgentRuntime)
-        runtime._count_prunable_janitor_candidates = OpenAgentRuntime._count_prunable_janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._semantic_janitor_trigger_ratio = OpenAgentRuntime._semantic_janitor_trigger_ratio.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_preemptive_compact_ratio = OpenAgentRuntime._janitor_preemptive_compact_ratio.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1", messages=self._tool_round_messages("a" * 400, "b" * 400, "c" * 400, "d" * 400, "e" * 400))
-        runtime._janitor_state["session-1"] = {
-            "armed": True,
-            "last_run_used_tokens": 50_000,
-            "last_run_message_count": len(session.messages),
-            "last_run_ratio": 0.50,
-            "last_reduction_ratio": 0.20,
-            "saturated": False,
-            "auto_low_yield_streak": 0,
-            "disabled": False,
-        }
-
-        should_run = OpenAgentRuntime._should_run_context_janitor(
-            runtime,
-            ContextWindowUsage(used_tokens=50_500, max_tokens=100_000),
-            session=session,
-            message_count=len(session.messages),
-            messages=session.messages,
-        )
-
-        self.assertFalse(should_run)
-
-    def test_context_janitor_single_low_yield_auto_run_disables_future_auto_janitor(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.JANITOR_LOW_YIELD_RATIO = OpenAgentRuntime.JANITOR_LOW_YIELD_RATIO
-        runtime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS = OpenAgentRuntime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1")
-
-        OpenAgentRuntime._record_context_janitor_run(
-            runtime,
-            session,
-            ContextWindowUsage(used_tokens=100_000, max_tokens=100_000),
-            ContextWindowUsage(used_tokens=95_000, max_tokens=100_000),
-            message_count=10,
-            automatic=True,
-        )
-
-        self.assertEqual(runtime._janitor_state["session-1"]["auto_low_yield_streak"], 1)
-        self.assertTrue(runtime._janitor_state["session-1"]["disabled"])
-
-    def test_manual_janitor_run_does_not_count_toward_auto_low_yield_fuse(self) -> None:
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.JANITOR_LOW_YIELD_RATIO = OpenAgentRuntime.JANITOR_LOW_YIELD_RATIO
-        runtime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS = OpenAgentRuntime.JANITOR_LOW_YIELD_MAX_AUTO_RUNS
-        runtime._janitor_state = {}
-        runtime._janitor_state_for = OpenAgentRuntime._janitor_state_for.__get__(runtime, OpenAgentRuntime)
-        runtime._record_context_janitor_run = OpenAgentRuntime._record_context_janitor_run.__get__(runtime, OpenAgentRuntime)
-        session = AgentSession(id="session-1")
-
-        OpenAgentRuntime._record_context_janitor_run(
-            runtime,
-            session,
-            ContextWindowUsage(used_tokens=100_000, max_tokens=100_000),
-            ContextWindowUsage(used_tokens=99_000, max_tokens=100_000),
-            message_count=10,
-            automatic=False,
-        )
-
-        self.assertEqual(runtime._janitor_state["session-1"]["auto_low_yield_streak"], 0)
-        self.assertFalse(runtime._janitor_state["session-1"]["disabled"])
 
     def test_context_window_usage_falls_back_to_payload_estimate(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
@@ -3557,96 +2775,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         self.assertEqual(dumped["provider_error"]["type"], "RuntimeError")
         self.assertEqual(dumped["provider_error"]["message"], "boom")
         self.assertEqual(dumped["latency_ms"], 12.0)
-
-    def test_analyze_context_relevance_dumps_janitor_provider_payload_when_enabled(self) -> None:
-        root = self._stable_test_dir("janitor-provider-payload")
-        data_dir = root / ".open_somnia"
-        logs_dir = data_dir / "logs"
-        transcripts_dir = data_dir / "transcripts"
-        sessions_dir = data_dir / "sessions"
-        runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
-        runtime.settings = SimpleNamespace(
-            storage=SimpleNamespace(logs_dir=logs_dir, transcripts_dir=transcripts_dir, sessions_dir=sessions_dir),
-            provider=SimpleNamespace(
-                name="openai",
-                provider_type="openai",
-                model="gpt-4.1",
-                base_url="https://api.example.test/v1",
-                max_tokens=4096,
-                context_window_tokens=100_000,
-            ),
-        )
-        runtime.provider = SimpleNamespace(
-            count_tokens=lambda system_prompt, messages, tools: 12_345,
-            token_counter_name=lambda: "tiktoken",
-            context_window_tokens=lambda: 100_000,
-            debug_request_payload=lambda system_prompt, messages, tools, max_tokens, stream=False: {
-                "url": "https://api.example.test/v1/chat/completions",
-                "body": {"model": "gpt-4.1", "stream": stream, "messages": messages},
-            },
-            complete=lambda **kwargs: AssistantTurn(
-                stop_reason="end_turn",
-                text_blocks=['[{"message_index":1,"item_index":0,"state":"condensed","summary":"condensed"}]'],
-            ),
-        )
-        runtime._provider_payload_dump_enabled = OpenAgentRuntime._provider_payload_dump_enabled.__get__(runtime, OpenAgentRuntime)
-        runtime._dump_provider_payload_if_enabled = OpenAgentRuntime._dump_provider_payload_if_enabled.__get__(runtime, OpenAgentRuntime)
-        runtime._serialize_provider_response = OpenAgentRuntime._serialize_provider_response.__get__(runtime, OpenAgentRuntime)
-        runtime._record_provider_payload_result = OpenAgentRuntime._record_provider_payload_result.__get__(runtime, OpenAgentRuntime)
-        runtime._count_payload_usage = OpenAgentRuntime._count_payload_usage.__get__(runtime, OpenAgentRuntime)
-        runtime._selected_janitor_candidates = OpenAgentRuntime._selected_janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._janitor_candidates = OpenAgentRuntime._janitor_candidates.__get__(runtime, OpenAgentRuntime)
-        runtime._extract_recent_topic_context = OpenAgentRuntime._extract_recent_topic_context.__get__(runtime, OpenAgentRuntime)
-        runtime._todo_hint_context = lambda session: {"open_items": [], "completed_items": [], "open_tokens": set(), "completed_tokens": set()}
-        runtime._fallback_context_relevance_decisions = OpenAgentRuntime._fallback_context_relevance_decisions.__get__(runtime, OpenAgentRuntime)
-        runtime._build_semantic_janitor_prompt = OpenAgentRuntime._build_semantic_janitor_prompt.__get__(runtime, OpenAgentRuntime)
-        runtime._parse_semantic_janitor_response = OpenAgentRuntime._parse_semantic_janitor_response.__get__(runtime, OpenAgentRuntime)
-        runtime._strip_json_fence = OpenAgentRuntime._strip_json_fence.__get__(runtime, OpenAgentRuntime)
-        runtime._render_condensed_context = OpenAgentRuntime._render_condensed_context.__get__(runtime, OpenAgentRuntime)
-        runtime._render_evicted_context = OpenAgentRuntime._render_evicted_context.__get__(runtime, OpenAgentRuntime)
-        runtime._context_compact_text = OpenAgentRuntime._context_compact_text.__get__(runtime, OpenAgentRuntime)
-        runtime._candidate_target_path = OpenAgentRuntime._candidate_target_path.__get__(runtime, OpenAgentRuntime)
-        runtime._candidate_relevance_score = OpenAgentRuntime._candidate_relevance_score.__get__(runtime, OpenAgentRuntime)
-        runtime._extract_topic_tokens = OpenAgentRuntime._extract_topic_tokens.__get__(runtime, OpenAgentRuntime)
-        runtime._is_visible_conversation_message = OpenAgentRuntime._is_visible_conversation_message.__get__(runtime, OpenAgentRuntime)
-        runtime.transcript_store = SimpleNamespace(transcript_path=lambda session_id: transcripts_dir / f"{session_id}.jsonl")
-        session = AgentSession(
-            id="session-1",
-            messages=[
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-1", "name": "read_file", "input": {"path": "demo.txt"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-1", "content": "x" * 1200, "raw_output": "x" * 1200, "log_id": "log-1"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-2", "name": "grep", "input": {"pattern": "demo"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-2", "content": "demo hit", "raw_output": "demo hit", "log_id": "log-2"}]},
-                {"role": "assistant", "content": [{"type": "tool_call", "id": "call-3", "name": "read_file", "input": {"path": "main.py"}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "call-3", "content": "print('hello')", "raw_output": "print('hello')", "log_id": "log-3"}]},
-                {"role": "assistant", "content": "please keep demo.txt context"},
-            ],
-        )
-
-        with patch.dict(os.environ, {OpenAgentRuntime.DEBUG_PROVIDER_PAYLOAD_ENV: "1"}, clear=False):
-            decisions = OpenAgentRuntime._analyze_context_relevance(
-                runtime,
-                session=session,
-                messages=session.messages,
-                system_prompt="ignored",
-                tools=[],
-            )
-
-        self.assertEqual(len(decisions), 1)
-        dump_files = list((logs_dir / "provider_payloads").glob("*.json"))
-        self.assertEqual(len(dump_files), 1)
-        dumped = json.loads(dump_files[0].read_text(encoding="utf-8"))
-        self.assertEqual(dumped["kind"], "janitor")
-        self.assertEqual(dumped["actor"], "janitor")
-        self.assertEqual(dumped["stream"], False)
-        self.assertEqual(dumped["provider_request"]["body"]["stream"], False)
-        self.assertEqual(dumped["provider_response"]["stop_reason"], "end_turn")
-        self.assertEqual(
-            dumped["response_text"],
-            '[{"message_index":1,"item_index":0,"state":"condensed","summary":"condensed"}]',
-        )
-        self.assertIsNone(dumped["provider_error"])
-        self.assertIsInstance(dumped["latency_ms"], float)
 
     def test_undo_last_turn_normalizes_workspace_root_before_boundary_check(self) -> None:
         class _FakeResolvedPath:
@@ -5323,7 +4451,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_reraises_turn_interrupted_from_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=1, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5336,8 +4464,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
-        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
-        runtime._run_automatic_context_janitor = lambda session: None
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
@@ -5367,7 +4493,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_consumes_ephemeral_images_after_payload_build_and_clears_caches(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=1, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5380,8 +4506,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.print_tool_event = lambda *args, **kwargs: None
         runtime.build_system_prompt = lambda session=None: "system"
         runtime._capture_turn_file_changes = lambda session: None
-        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
-        runtime._run_automatic_context_janitor = lambda session: None
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
@@ -5435,7 +4559,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_stops_turn_after_request_authorization_and_replans(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5507,7 +4631,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.settings = SimpleNamespace(
             runtime=SimpleNamespace(
                 max_agent_rounds=1,
-                janitor_trigger_ratio=0.6,
                 max_tool_output_chars=5000,
                 max_tool_calls_per_turn=64,
             ),
@@ -5530,8 +4653,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
-        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
-        runtime._run_automatic_context_janitor = lambda session: None
 
         executed_tools: list[str] = []
         runtime.registry = SimpleNamespace(
@@ -5563,7 +4684,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.settings = SimpleNamespace(
             runtime=SimpleNamespace(
                 max_agent_rounds=1,
-                janitor_trigger_ratio=0.6,
                 max_tool_output_chars=5000,
                 max_tool_calls_per_turn=2,
             ),
@@ -5586,8 +4706,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime._record_provider_payload_result = lambda *args, **kwargs: None
         runtime._record_session_token_usage = lambda *args, **kwargs: None
         runtime._normalize_turn_usage = lambda *args, **kwargs: None
-        runtime._run_topic_shift_assist = lambda session, latest_user_message="": None
-        runtime._run_automatic_context_janitor = lambda session: None
 
         executed_tools: list[str] = []
         runtime.registry = SimpleNamespace(
@@ -5615,7 +4733,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_flushes_streamed_text_before_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5678,7 +4796,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_emits_unstreamed_tool_turn_text_before_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5731,7 +4849,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_emits_thinking_finished_before_tool_execution(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5794,7 +4912,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         # loop must NOT re-emit it (that would leave a stale "running" entry).
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5848,7 +4966,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_emits_thinking_finished_before_streamed_text(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5906,7 +5024,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
         captured: dict[str, object] = {}
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -5959,7 +5077,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_todo_reminder_persists_while_items_remain_open_and_stops_after_completion(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=5, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6048,7 +5166,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_does_not_inject_open_todo_reminder_every_round(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=5, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6129,7 +5247,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_injects_stale_todo_status_reminder_after_three_rounds_without_todowrite(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=1, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6172,7 +5290,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_runs_one_todo_reconcile_round_before_finishing_when_open_todos_remain(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=5, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6259,7 +5377,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_does_not_loop_forever_if_todo_reconcile_is_ignored_once(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=5, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6307,7 +5425,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_injects_exploration_summary_reminder_after_soft_limit(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6360,7 +5478,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_resets_exploration_streak_after_visible_summary_text(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6417,7 +5535,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_stops_exploration_after_hard_streak_limit(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6476,7 +5594,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
         runtime.settings = SimpleNamespace(
             runtime=SimpleNamespace(
                 max_agent_rounds=5,
-                janitor_trigger_ratio=0.6,
                 max_tool_output_chars=5000,
                 exploration_hard_total_limit=hard_total_limit,
             ),
@@ -6547,7 +5664,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_injects_next_user_message_after_current_tool_boundary(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6582,19 +5699,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
             on_assistant_response=lambda *args, **kwargs: None,
             on_turn_failed=lambda *args, **kwargs: None,
         )
-        topic_shift_messages: list[str] = []
-        janitor_runs: list[int] = []
-        runtime._run_topic_shift_assist = (
-            lambda session, latest_user_message, actor="lead", role="lead coding agent": topic_shift_messages.append(
-                latest_user_message
-            )
-            or ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        )
-        runtime._run_automatic_context_janitor = (
-            lambda session, actor="lead", role="lead coding agent": janitor_runs.append(len(session.messages))
-            or ContextWindowUsage(used_tokens=10_000, max_tokens=100_000)
-        )
-
         executed_commands: list[str] = []
 
         class _Registry:
@@ -6656,8 +5760,6 @@ class RuntimeToolOutputTests(unittest.TestCase):
 
         self.assertEqual(result, "Handled queued message.")
         self.assertEqual(executed_commands, ["pwd"])
-        self.assertEqual(topic_shift_messages, ["inspect", "queued follow-up"])
-        self.assertEqual(len(janitor_runs), 2)
         self.assertEqual(session.messages[0]["content"], "inspect")
         self.assertEqual(session.messages[3]["content"], "queued follow-up")
         self.assertEqual(len(session.messages[1]["content"]), 1)
@@ -6672,7 +5774,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_returns_explicit_status_when_max_rounds_end_with_open_todos(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=2, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=2, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6736,7 +5838,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_returns_explicit_status_when_max_rounds_end_without_open_todos(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=1, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=1, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6774,7 +5876,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_does_not_complete_or_notify_on_empty_assistant_response(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=2, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=2, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6825,7 +5927,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_injects_repair_hint_once_and_keeps_compact_error_afterward(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=5, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=5, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])
@@ -6907,7 +6009,7 @@ class RuntimeToolOutputTests(unittest.TestCase):
     def test_agent_loop_accumulates_token_usage_sum(self) -> None:
         runtime = OpenAgentRuntime.__new__(OpenAgentRuntime)
         runtime.settings = SimpleNamespace(
-            runtime=SimpleNamespace(max_agent_rounds=4, janitor_trigger_ratio=0.6, max_tool_output_chars=5000),
+            runtime=SimpleNamespace(max_agent_rounds=4, max_tool_output_chars=5000),
             provider=SimpleNamespace(max_tokens=1024),
         )
         runtime.background_manager = SimpleNamespace(drain=lambda: [])

@@ -422,10 +422,6 @@ class RemoteConnectorTests(unittest.TestCase):
                 {"message": "Context compacted.", "session": {"id": "session-1", "messages": []}},
             )
             self.assertEqual(
-                bridge.execute("session.janitor", {"session_id": "session-1"}),
-                {"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}},
-            )
-            self.assertEqual(
                 bridge.execute("session.new", {"session_id": "session-1"}),
                 {"session": {"id": "session-2", "messages": []}, "previous_session_id": "session-1"},
             )
@@ -558,9 +554,6 @@ class _SidecarStubHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/sessions/session-1/compact":
             self._send({"message": "Context compacted.", "session": {"id": "session-1", "messages": []}})
-            return
-        if self.path == "/sessions/session-1/janitor":
-            self._send({"message": "Janitor complete.", "session": {"id": "session-1", "messages": []}})
             return
         if self.path == "/sessions/session-1/new":
             self._send({"session": {"id": "session-2", "messages": []}, "previous_session_id": "session-1"})

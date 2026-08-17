@@ -310,7 +310,7 @@ class ReplTodoTests(unittest.TestCase):
                 max_tokens=200_000,
                 counter_name="tiktoken",
             ),
-            recent_context_governance_label=lambda session: "janitor reduced 1 tool result(s)",
+            recent_context_governance_label=lambda session: "auto-compacted older history",
         )
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
 
@@ -321,7 +321,7 @@ class ReplTodoTests(unittest.TestCase):
                 ("fg:#64748b", " | "),
                 ("fg:#22c55e", "ctx: 20.0% (40.0k / 200.0k tokens)"),
                 ("fg:#64748b", " | "),
-                ("fg:#67e8f9", "janitor reduced 1 tool result(s)"),
+                ("fg:#67e8f9", "auto-compacted older history"),
             ],
         )
 
@@ -488,17 +488,6 @@ class ReplTodoTests(unittest.TestCase):
         self.assertEqual(runner._ready_loop_injection_ids, [])
         # The still-pending second prompt remains listed with its cancel hint.
         self.assertEqual(runner._queue_preview_lines(), ["second  (/cancel 2)"])
-
-    def test_prompt_message_shows_recent_janitor_hint_before_mode_and_prompt(self) -> None:
-        runtime = SimpleNamespace(
-            recent_context_governance_label=lambda session: "janitor reduced 2 tool result(s)",
-        )
-        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
-
-        rendered = _render_prompt_text(runner.prompt_message())
-
-        self.assertIn("janitor reduced 2 tool result(s)", rendered)
-        self.assertLess(rendered.index("janitor reduced 2 tool result(s)"), rendered.index("accept edits on"))
 
     def test_prompt_message_shows_recent_auto_compact_hint_before_mode_and_prompt(self) -> None:
         runtime = SimpleNamespace(

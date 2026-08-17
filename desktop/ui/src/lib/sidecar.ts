@@ -130,16 +130,6 @@ export class SidecarClient {
     );
   }
 
-  async janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
-    return parseResponse<{ message: string; session: AgentSession }>(
-      await fetch(`${this.baseUrl}/sessions/${sessionId}/janitor`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }),
-    );
-  }
-
   async newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }> {
     return parseResponse<{ session: AgentSession; previous_session_id: string }>(
       await fetch(`${this.baseUrl}/sessions/${sessionId}/new`, {

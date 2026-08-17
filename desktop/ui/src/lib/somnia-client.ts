@@ -58,7 +58,6 @@ export interface SomniaClient extends SomniaConnection {
   loadSession(sessionId: string): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<{ session_id: string; deleted: boolean }>;
   compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
-  janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }>;
   /**
    * Start a fresh session that succeeds the given one. The old session stays
    * persisted; a provider/model pin carries over to the fresh session.
@@ -259,10 +258,6 @@ export class DirectSomniaClient implements SomniaClient {
 
   compactSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
     return this.rest.compactSession(sessionId);
-  }
-
-  janitorSession(sessionId: string): Promise<{ message: string; session: AgentSession }> {
-    return this.rest.janitorSession(sessionId);
   }
 
   newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }> {

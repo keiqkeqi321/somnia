@@ -124,16 +124,10 @@ class AppServiceTests(unittest.TestCase):
         def fake_compact(target_session):
             calls.append(("compact", target_session.id))
 
-        def fake_janitor(target_session):
-            calls.append(("janitor", target_session.id))
-            return "Janitor reduced context."
-
         runtime.compact_session = fake_compact
-        runtime.run_semantic_janitor = fake_janitor
 
         self.assertEqual(service.compact_session(session), "Context compacted.")
-        self.assertEqual(service.run_semantic_janitor(session), "Janitor reduced context.")
-        self.assertEqual(calls, [("compact", session.id), ("janitor", session.id)])
+        self.assertEqual(calls, [("compact", session.id)])
 
     def test_run_turn_emits_stream_events_without_repl(self) -> None:
         root = self._stable_test_dir("app-service-stream")

@@ -1451,7 +1451,6 @@ def _load_settings_once(
 
     runtime_raw = raw.get("runtime", {})
     runtime = RuntimeSettings(
-        janitor_trigger_ratio=float(runtime_raw.get("janitor_trigger_ratio", 0.6)),
         command_timeout_seconds=int(runtime_raw.get("command_timeout_seconds", 120)),
         background_poll_interval_seconds=int(runtime_raw.get("background_poll_interval_seconds", 2)),
         teammate_idle_timeout_seconds=int(runtime_raw.get("teammate_idle_timeout_seconds", 60)),

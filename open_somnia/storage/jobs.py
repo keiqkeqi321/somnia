@@ -32,6 +32,26 @@ class JobStore:
         jobs = read_json(self.jobs_path, {})
         return jobs.get(job_id)
 
+    def fail_running_jobs(self, result: str) -> int:
+        """Mark every job still in ``running`` state as errored.
+
+        Called once at BackgroundManager startup: background threads are
+        daemons and die with the process, and no worker thread exists yet at
+        that point, so a ``running`` record can only be a zombie from a
+        previous process.
+        """
+        jobs = read_json(self.jobs_path, {})
+        changed = 0
+        for job in jobs.values():
+            if job.get("status") == "running":
+                job["status"] = "error"
+                job["result"] = result
+                job["updated_at"] = now_ts()
+                changed += 1
+        if changed:
+            write_json(self.jobs_path, jobs)
+        return changed
+
     def list_all(self) -> dict[str, Any]:
         return read_json(self.jobs_path, {})
 

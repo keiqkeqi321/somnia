@@ -7,12 +7,8 @@ from open_somnia.runtime.agent import OpenAgentRuntime
 from open_somnia.runtime.compact import (
     CompactManager,
     ContextWindowUsage,
-    SemanticCompressionDecision,
     build_payload_messages,
-    extract_tool_result_candidates,
-    persist_semantic_compression,
     should_auto_compact,
-    should_run_semantic_janitor,
 )
 from open_somnia.runtime.session import AgentSession
 
@@ -167,111 +163,6 @@ class CompactTests(unittest.TestCase):
         self.assertEqual(payload_messages, [{"role": "user", "content": "inspect"}])
         self.assertEqual(messages[1]["content"][0]["type"], "thinking_log")
 
-    def test_build_payload_messages_can_apply_semantic_compression_without_mutating_history(self) -> None:
-        messages = [
-            _tool_call("call-1", "grep"),
-            _tool_result("call-1", "needle found in main.py:12"),
-        ]
-
-        payload_messages = build_payload_messages(
-            messages,
-            semantic_decisions=[
-                SemanticCompressionDecision(
-                    message_index=1,
-                    item_index=0,
-                    state="condensed",
-                    summary="[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
-                )
-            ],
-        )
-
-        self.assertEqual(messages[1]["content"][0]["content"], "needle found in main.py:12")
-        self.assertEqual(
-            payload_messages[1]["content"][0]["content"],
-            "[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
-        )
-        self.assertNotIn("raw_output", payload_messages[1]["content"][0])
-        self.assertNotIn("log_id", payload_messages[1]["content"][0])
-
-    def test_persist_semantic_compression_updates_history_and_drops_raw_output(self) -> None:
-        messages = [
-            _tool_call("call-1", "grep"),
-            _tool_result("call-1", "needle found in main.py:12"),
-        ]
-
-        changed = persist_semantic_compression(
-            messages,
-            semantic_decisions=[
-                SemanticCompressionDecision(
-                    message_index=1,
-                    item_index=0,
-                    state="condensed",
-                    summary="[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
-                )
-            ],
-        )
-
-        self.assertTrue(changed)
-        self.assertEqual(
-            messages[1]["content"][0]["content"],
-            "[Semantic Summary | grep | log log-call-1] Confirmed the needle appears in main.py around line 12.",
-        )
-        self.assertEqual(messages[1]["content"][0]["semantic_state"], "condensed")
-        self.assertNotIn("raw_output", messages[1]["content"][0])
-        self.assertIn("log_id", messages[1]["content"][0])
-
-    def test_extract_tool_result_candidates_skips_already_compacted_items(self) -> None:
-        messages = [
-            _tool_call("call-1", "grep"),
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_call_id": "call-1",
-                        "content": "[Semantic Summary | grep | log log-call-1] compacted",
-                        "log_id": "log-call-1",
-                        "semantic_state": "condensed",
-                    }
-                ],
-            },
-            _tool_call("call-2", "read_file"),
-            _tool_result("call-2", "fresh content"),
-            _tool_call("call-3", "grep"),
-            _tool_result("call-3", "recent content"),
-        ]
-
-        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=1)
-
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0].tool_call_id, "call-2")
-
-    def test_extract_tool_result_candidates_preserves_tool_importance(self) -> None:
-        messages = [
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_call",
-                        "id": "call-1",
-                        "name": "read_file",
-                        "input": {"path": "main.py"},
-                        "importance": "foundation",
-                    }
-                ],
-            },
-            _tool_result("call-1", "print('hello')"),
-            _tool_call("call-2", "grep"),
-            _tool_result("call-2", "recent content"),
-            _tool_call("call-3", "grep"),
-            _tool_result("call-3", "most recent content"),
-        ]
-
-        candidates = extract_tool_result_candidates(messages, preserve_recent_rounds=2)
-
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0].importance, "foundation")
-
     def test_should_auto_compact_uses_ratio_only(self) -> None:
         self.assertTrue(
             should_auto_compact(ContextWindowUsage(used_tokens=82_000, max_tokens=100_000))
@@ -281,17 +172,6 @@ class CompactTests(unittest.TestCase):
         )
         self.assertFalse(
             should_auto_compact(ContextWindowUsage(used_tokens=100_000, max_tokens=None))
-        )
-
-    def test_should_run_semantic_janitor_uses_ratio_only(self) -> None:
-        self.assertTrue(
-            should_run_semantic_janitor(ContextWindowUsage(used_tokens=60_000, max_tokens=100_000))
-        )
-        self.assertFalse(
-            should_run_semantic_janitor(ContextWindowUsage(used_tokens=59_000, max_tokens=100_000))
-        )
-        self.assertFalse(
-            should_run_semantic_janitor(ContextWindowUsage(used_tokens=40_000, max_tokens=None))
         )
 
     def test_auto_compact_can_preserve_recent_task_window_while_summarizing_older_history(self) -> None:

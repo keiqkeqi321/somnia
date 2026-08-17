@@ -106,7 +106,7 @@
 - 为保持 provider prompt cache 前缀稳定，payload 构建不会再对重复 `read_file` 结果做 exact dedupe
 - payload 构建也不会再根据后续 `read_file` 结果裁剪、替换或折叠更早的同文件重叠区间
 
-换句话说，避免重复读取现在主要依赖模型按范围读取、Active Working File Cache 提示，以及必要时由 Semantic Janitor / Auto Compact 做显式上下文治理。
+换句话说，避免重复读取现在主要依赖模型按范围读取、Active Working File Cache 提示，以及必要时由 Auto Compact 做显式上下文治理。
 
 ---
 ## 相关代码

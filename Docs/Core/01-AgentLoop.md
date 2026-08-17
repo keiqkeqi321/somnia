@@ -28,11 +28,6 @@ Agent Loop 是 Somnia 的核心执行循环，驱动 Agent 从接收用户指令
         │
         ▼
 ┌─────────────────────────────┐
-│  0. turn-boundary janitor   │  只在用户发问后检查
-│     - 用户消息已入列         │  - 必要时语义脱水
-└──────────────┬──────────────┘
-               ▼
-┌─────────────────────────────┐
 │  1. build_system_prompt     │  动态构建系统提示
 │     - 角色/名称注入          │  - 工具 schema 注入
 │     - 执行模式指引           │  - 环境指引
@@ -102,7 +97,7 @@ turn = self.provider.complete(
 3. **Strip stale media/tool blocks**（清理过期图片块和旧工具结果的富内容块）
 4. **返回最终 payload**
 
-`_messages_for_model()` 现在是**无副作用**的。自动 `Semantic Janitor` 不在这里执行，而是在新 user message 入列后的 turn boundary 先完成。
+`_messages_for_model()` 是**无副作用**的：它只做 payload 级归一化，不改写会话历史。
 
 在进入 `_messages_for_model()` 之前，调用方还可能临时扩展消息列表。例如 Todo reconcile、空响应修复、工具修复提示或探索预算提醒会被合并成一条**仅当前轮次可见**的 `<runtime-notice>`，再把扩展后的列表送入 `_messages_for_model()`。这条 notice 不会写回会话历史。
 
@@ -177,11 +172,10 @@ Agent Loop 不只有“正常完成”这一种退出方式：
 
 ## 上下文治理集成
 
-上下文治理的触发点现在拆成两层：
+上下文治理在 Agent Loop 内执行：
 
 | 触发条件 | 动作 | 阈值 |
 |----------|------|------|
-| 新 user message 入列后，且 `usage_ratio >= runtime.janitor_trigger_ratio`（默认 `0.60`） | Semantic Janitor | 语义脱水 |
 | Agent Loop 内，且 `usage_ratio >= 0.82` | Auto Compact | 整体摘要压缩 |
 
 ---

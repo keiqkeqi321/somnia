@@ -124,17 +124,6 @@ TodoWrite 的常规规则写在稳定 system prompt 中，不再因为存在 ope
 - 如果 Agent Loop 达到 `max_agent_rounds`（默认 100）时仍有 open todo，runtime 会返回显式状态 `stopped_with_open_todos`
 
 ---
-## 与上下文治理的关系
-
-Todo 在上下文治理（Semantic Janitor）中仅作为**弱锚点**使用：
-
-- 命中 `in_progress` todo：提高保留概率
-- 仅服务于 `completed` todo：提高压缩概率
-- 无 todo 命中：不直接判定为无价值
-
-参见 [14-上下文治理优化方案](./14-上下文治理优化方案.md)。
-
----
 
 ## 存储位置
 

@@ -1103,16 +1103,6 @@ class SidecarServer:
         self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
         return payload
 
-    def janitor_session(self, session_id: str) -> dict[str, Any]:
-        try:
-            session = self.service.load_session(session_id)
-        except (FileNotFoundError, ValueError) as exc:
-            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
-        message = self.service.run_semantic_janitor(session)
-        payload = {"message": message, "session": self._serialize_session(session)}
-        self.broadcast_event(make_sidecar_event("session_updated", payload={"session": payload["session"]}, session_id=session.id))
-        return payload
-
     def new_session(self, session_id: str) -> dict[str, Any]:
         try:
             old = self.service.load_session(session_id)
@@ -1541,8 +1531,6 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return self.sidecar.start_turn(session_id, body["user_input"]), HTTPStatus.ACCEPTED
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "compact":
             return self.sidecar.compact_session(path_parts[1]), HTTPStatus.OK
-        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "janitor":
-            return self.sidecar.janitor_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "new":
             return self.sidecar.new_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "model":

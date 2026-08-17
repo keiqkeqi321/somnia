@@ -18,23 +18,9 @@ Somnia 是一个本地运行的 AI Agent 运行时。它把模型调用、工具
 
 Somnia 的核心特点是**上下文自治**：Agent 不只是逐轮调用工具，还会持续管理自己的工作记忆，让长任务始终保持连贯、关键信息不被噪音淹没。
 
-**Context Janitor · 语义化三态裁剪**
+**Payload Normalization · 载荷清洗**：每次请求前自动剥离 thinking 块、工具结果元数据、陈旧图片块等只在当轮有意义的载荷内容，保证发给模型的历史干净且稳定。
 
-Janitor 不是简单截断或粗暴压缩，而是对每条历史工具结果做语义化三态判定：
-
-- **original（保留）**：与当前任务强相关，原样保留。
-- **condensed（摘要）**：仍有参考价值但不是焦点，压缩成一句事实摘要 + `log_id`。
-- **evicted（驱逐）**：已与当前任务无关，从 payload 移除，仅留 `log_id`。
-
-**以当前话题为锚**：Janitor 从最近对话中抽取活跃文件、活跃符号和关键词作为「当前关注点」，据此判断每条旧结果的相关性；同一个文件的多次读写只保留最新快照，避免陈旧内容污染上下文。
-
-**Todo 作为弱信号**：进行中的 todo 会提升相关结果的优先级，已完成的 todo 在话题无关时反而降权——上下文随任务推进自动演化。
-
-**可恢复驱逐**：被驱逐的结果不是丢失，Agent 可用 `request_original_context` 工具按 `log_id` 随时取回原文。
-
-**低收益熔断**：当连续自动运行的压缩率过低，Janitor 会自我禁用，避免无意义消耗。
-
-**Context Compact · 兜底压缩**：当 Janitor 的日常治理不足以支撑时，Compact 对整体会话历史做摘要压缩，作为上下文膨胀的最后一道防线。
+**Context Compact · 兜底压缩**：当上下文占用越过阈值时，Compact 对整体会话历史做摘要压缩（完整 transcript 另存快照），作为上下文膨胀的最后防线。
 
 **会话、任务、协作消息全部持久化**到本地工作区，随时可用 `-r` 恢复并继续推进。
 
@@ -113,7 +99,6 @@ somnia run "总结这个仓库的模块结构，并指出主要入口"
 | 持久化状态 | 会话、transcript、任务、inbox、team、job、log 写入 `.open_somnia/` |
 | 执行模式 | 从只读、计划模式到接受编辑和全自动模式，按风险分层 |
 | Context Compact | 长会话上下文压缩，降低上下文膨胀对连续工作的影响 |
-| Context Janitor | 语义化上下文治理，按当前目标裁剪低价值工具输出，延缓完整压缩 |
 | Skills | 按任务加载专门工作流，可使用用户级、项目级和内置技能 |
 | Hooks | 在 Agent 事件前后运行本地命令，适合集成通知、审计和自动化 |
 | Agent Team | teammate、inbox、message bus 与子任务协作原语 |
@@ -128,7 +113,7 @@ Somnia Desktop 是 Somnia 的桌面端应用，安装即用。它不是一套独
 - 聊天、工具调用、后台运行状态和 runtime event 的可视化。
 - Provider、模型、vision model、reasoning level 的界面化切换。
 - 工作区级配置编辑，包括 Provider、runtime、MCP、Hooks 和 system prompt。
-- 会话压缩、janitor、归档会话、工具日志、team/task 状态查看。
+- 会话压缩、归档会话、工具日志、team/task 状态查看。
 
 ## 远程访问（Remote）
 
@@ -216,7 +201,6 @@ somnia providers
 | --- | --- |
 | `/symbols` | 查找符号并预览源码位置 |
 | `/compact` | 手动压缩当前会话上下文 |
-| `/janitor` | 运行语义化上下文治理，清理低价值工具结果 |
 | `/model` | 查看或切换当前模型 |
 | `/reasoning` | 调整 reasoning 偏好 |
 | `/vision` | 设置图像输入模型 |

@@ -284,7 +284,6 @@ const translations = {
     "context.noSessionHint": "Choose a session from the sidebar to inspect its details.",
     "context.resizePanel": "Resize session details panel",
     "context.compactContext": "Compact context",
-    "context.semanticJanitor": "Semantic janitor",
     "context.newSession": "New session",
 
     /* ── CTX popover ── */
@@ -426,7 +425,6 @@ const translations = {
     "cmd.checkpoint": "Save a named checkpoint of the current session state",
     "cmd.rollback": "Roll back to a previous checkpoint",
     "cmd.compact": "Compact the current session context",
-    "cmd.janitor": "Run semantic janitor on the current payload",
     "cmd.new": "Start a fresh session, optionally with handoff text",
     "cmd.skills": "Choose a skill to apply to the next prompt",
     "cmd.tasks": "Show persistent tasks",
@@ -732,7 +730,6 @@ const translations = {
     "context.noSessionHint": "从侧边栏选择一个会话以查看详情。",
     "context.resizePanel": "调整详情面板大小",
     "context.compactContext": "压缩上下文",
-    "context.semanticJanitor": "语义脱水",
     "context.newSession": "新会话",
 
     /* ── CTX popover ── */
@@ -874,7 +871,6 @@ const translations = {
     "cmd.checkpoint": "保存当前会话状态的命名检查点",
     "cmd.rollback": "回滚到之前的检查点",
     "cmd.compact": "压缩当前会话上下文",
-    "cmd.janitor": "对当前载荷执行语义脱水",
     "cmd.new": "开启新会话，可附带交接文本",
     "cmd.skills": "选择一个 skill 应用到下一个 prompt",
     "cmd.tasks": "显示持久任务",

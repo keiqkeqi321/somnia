@@ -893,11 +893,9 @@ class TeammateRuntimeManager:
     def _compact_context_if_needed(self, name: str, system_prompt: str, messages: list[dict], registry: ToolRegistry, session_id: str | None = None) -> None:
         """Auto-compact the working message list once it crosses the 0.82 usage ratio.
 
-        This is the teammate loop's only context governance: the semantic
-        janitor chain depends on session state that teammates do not have, so
-        it is deliberately not reproduced here. Compaction failures are logged
-        and swallowed — a teammate thread must not die from a counting or
-        summarization error.
+        This is the teammate loop's only context governance. Compaction failures
+        are logged and swallowed — a teammate thread must not die from a
+        counting or summarization error.
         """
         try:
             usage = self.runtime._count_payload_usage(system_prompt, messages, registry.schemas())
