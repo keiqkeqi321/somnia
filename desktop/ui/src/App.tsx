@@ -1712,7 +1712,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       return;
     }
     const toolInput = isRecord(event.payload.tool_input) ? event.payload.tool_input : {};
-    const activityId = readEventString(event.payload.trace_id, `subagent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // The backend keys subagent logs by the subagent's activity id: the lead
+    // tool_call id for a fresh run (the checkpointed resume_from id for a
+    // resume) -- both carried by TOOL_STARTED as tool_call_id. The lead
+    // trace_id ("<session>-<turn>") only matches the legacy fallback key, so
+    // prefer tool_call_id when fetching the log by this id.
+    const activityId = readEventString(
+      event.payload.tool_call_id,
+      readEventString(event.payload.trace_id, `subagent-${Date.now()}-${Math.random().toString(36).slice(2)}`),
+    );
     const prompt = readEventString(toolInput.prompt, "working");
     const agentType = readEventString(toolInput.agent_type, "Explore");
     setActiveSubagents((previous) => ({
@@ -1784,8 +1792,9 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     const agentType = readEventString(toolInput.agent_type, "Explore");
     setActiveSubagents((previous) => {
       const current = previous[key] ?? {};
+      const callId = readEventString(event.payload.tool_call_id, "");
       const traceId = readEventString(event.payload.trace_id, "");
-      let removeId = traceId && current[traceId] ? traceId : "";
+      let removeId = callId && current[callId] ? callId : traceId && current[traceId] ? traceId : "";
       if (!removeId) {
         removeId =
           Object.values(current).find((item) => item.prompt === prompt && item.agentType === agentType)?.id ??
