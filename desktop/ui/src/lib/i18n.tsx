@@ -382,6 +382,10 @@ const translations = {
     "toolCall.running": "(running)",
     "toolCall.noOutput": "(no output)",
 
+    /* ── Exploration group ── */
+    "exploration.title": "Explored",
+    "exploration.thinking": "Thinking",
+
     /* ── Todo status bar ── */
     "todo.title": "Todo",
     "todo.progress": "{completed}/{total} done",
@@ -827,6 +831,10 @@ const translations = {
     "toolCall.update": "更新",
     "toolCall.running": "(运行中)",
     "toolCall.noOutput": "(无输出)",
+
+    /* ── Exploration group ── */
+    "exploration.title": "探索",
+    "exploration.thinking": "思考",
 
     /* ── Todo status bar ── */
     "todo.title": "待办",

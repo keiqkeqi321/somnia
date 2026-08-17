@@ -18,6 +18,9 @@
   --ink: #f2f3f4;
   --ink-2: #a5a8ad;
   --ink-3: #9a9da3;
+  /* Reading text: softer than --ink so long answers don't glare; headings,
+   * bold and inline code stay at full white to keep the hierarchy legible. */
+  --prose: #c9ccd1;
   --line: #2e3033;
   --line-strong: #3a3c40;
   --accent: #3d9aff;
@@ -2117,15 +2120,16 @@ button {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 8px 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   border-radius: 12px;
-  background: linear-gradient(180deg, rgba(24, 28, 36, 0.96), rgba(16, 19, 24, 0.92));
+  background: transparent;
   color: var(--ink);
   text-align: left;
 }
 
 .project-toggle:hover {
-  border-color: var(--line-strong);
+  border-color: transparent;
+  background: var(--hover);
 }
 
 .project-toggle-button {
@@ -2306,14 +2310,20 @@ button {
 }
 
 .sidebar-new {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   line-height: 1;
+}
+
+.sidebar-new svg {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .sidebar-notice {
@@ -2774,7 +2784,7 @@ button {
 }
 
 .todo-status-item.in_progress p {
-  color: var(--orange-tint);
+  color: var(--orange);
 }
 
 .todo-status-item.completed {
@@ -2782,15 +2792,19 @@ button {
 }
 
 .mode-pill {
+  height: 28px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   border: 0;
-  border-radius: var(--radius-chip);
-  padding: 4px 8px;
-  font-size: 0.72rem;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 0.78rem;
   font-weight: 500;
   letter-spacing: 0.02em;
-  background: var(--inset);
-  box-shadow: var(--shadow-hairline);
-  color: var(--ink-2);
+  white-space: nowrap;
   cursor: pointer;
   transition: background 100ms ease, color 100ms ease;
 }
@@ -2854,6 +2868,8 @@ button {
 
 .bubble.user {
   align-self: flex-end;
+  background: var(--hover-2);
+  box-shadow: var(--shadow-hairline);
 }
 
 .bubble.user.pending {
@@ -2862,8 +2878,8 @@ button {
 
 .bubble.assistant {
   align-self: flex-start;
-  width: min(100%, 62rem);
-  max-width: min(100%, 62rem);
+  width: min(100%, 48rem);
+  max-width: min(100%, 48rem);
   padding: 2px 0;
   border: 0;
   border-radius: 0;
@@ -2890,7 +2906,7 @@ button {
 
 .decision-card {
   align-self: stretch;
-  width: min(100%, 62rem);
+  width: min(100%, 48rem);
   padding: 14px 16px;
   border: 0;
   border-radius: var(--radius-card);
@@ -2916,11 +2932,11 @@ button {
 
 .prompt-queue-card {
   align-self: stretch;
-  width: min(100%, 62rem);
+  width: min(100%, 48rem);
   padding: 14px 16px;
-  border: 1px solid rgba(61, 154, 255, 0.22);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: rgba(15, 18, 24, 0.86);
+  background: var(--surface);
 }
 
 .prompt-queue-head {
@@ -2937,8 +2953,8 @@ button {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(61, 154, 255, 0.14);
-  color: var(--ink);
+  background: var(--field);
+  color: var(--ink-2);
   font-size: 0.76rem;
 }
 
@@ -2984,14 +3000,14 @@ button {
 }
 
 .queue-inject-button {
-  border: 1px solid rgba(61, 154, 255, 0.22);
-  background: rgba(61, 154, 255, 0.1);
-  color: var(--ink);
+  border: 1px solid transparent;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
 }
 
 .queue-inject-button:hover:not(:disabled) {
-  border-color: rgba(61, 154, 255, 0.42);
-  background: rgba(61, 154, 255, 0.18);
+  border-color: transparent;
+  background: rgba(61, 154, 255, 0.24);
 }
 
 .queue-inject-button:disabled {
@@ -3028,13 +3044,13 @@ button {
 }
 
 .bubble.assistant > pre {
-  color: #ffffff;
+  color: var(--prose);
   font-size: 0.98rem;
   line-height: 1.62;
 }
 
 .markdown-content {
-  color: var(--ink);
+  color: var(--prose);
   font-size: 0.88rem;
   line-height: 1.65;
   overflow-wrap: anywhere;
@@ -3059,7 +3075,7 @@ button {
 .markdown-content h5,
 .markdown-content h6 {
   margin: 1rem 0 0.45rem;
-  color: var(--accent);
+  color: #ffffff;
   font-weight: 700;
   line-height: 1.25;
 }
@@ -3093,11 +3109,11 @@ button {
 }
 
 .markdown-content li::marker {
-  color: var(--accent);
+  color: var(--muted);
 }
 
 .markdown-content strong {
-  color: var(--orange);
+  color: #ffffff;
   font-weight: 700;
 }
 
@@ -3108,27 +3124,32 @@ button {
 .markdown-content blockquote {
   margin: 0.8rem 0;
   padding: 0.2rem 0 0.2rem 0.9rem;
-  border-left: 3px solid rgba(79, 198, 222, 0.48);
+  border-left: 3px solid var(--line-strong);
   color: var(--text-subtle);
 }
 
+/* Neutral inline code: quiet chip that sits inside the text line without
+ * pulling an accent color or inflating the line height. Background and text
+ * stay a step brighter than prose so the annotation doesn't get lost. */
 .markdown-content code {
-  border: 1px solid rgba(226, 163, 74, 0.22);
-  border-radius: 6px;
-  padding: 0.08rem 0.32rem;
-  background: rgba(226, 163, 74, 0.08);
-  color: var(--orange);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 0.04em 0.32em;
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: 0.86em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 .markdown-content .markdown-code-block {
   position: relative;
   margin: 0.85rem 0;
   padding: 0.9rem 1rem;
-  border: 1px solid rgba(61, 154, 255, 0.18);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(7, 10, 16, 0.72);
+  background: var(--inset);
   overflow: auto;
 }
 
@@ -3153,9 +3174,9 @@ button {
 
 .mermaid-card {
   margin: 0.9rem 0;
-  border: 1px solid rgba(61, 154, 255, 0.18);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(7, 10, 16, 0.58);
+  background: var(--inset);
   overflow: hidden;
 }
 
@@ -3166,7 +3187,7 @@ button {
   justify-content: space-between;
   gap: 12px;
   padding: 0.48rem 0.68rem;
-  border-bottom: 1px solid rgba(61, 154, 255, 0.14);
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 650;
@@ -3183,17 +3204,17 @@ button {
 
 .mermaid-card-head button,
 .mermaid-fullscreen-head button {
-  border: 1px solid rgba(169, 200, 255, 0.24);
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: rgba(169, 200, 255, 0.1);
+  background: var(--hover);
   color: var(--ink);
   font-size: 0.78rem;
   font-weight: 650;
 }
 
 .mermaid-card-head button.active {
-  border-color: rgba(169, 200, 255, 0.5);
-  background: rgba(169, 200, 255, 0.22);
+  border-color: var(--line-strong);
+  background: var(--hover-2);
   color: #ffffff;
 }
 
@@ -3212,7 +3233,7 @@ button {
   margin: 0;
   border: 0;
   border-radius: 0;
-  background: rgba(7, 10, 16, 0.72);
+  background: var(--inset);
 }
 
 .mermaid-canvas {
@@ -3361,28 +3382,30 @@ button {
 .markdown-table {
   min-width: 100%;
   border-collapse: collapse;
-  border: 1px solid rgba(61, 154, 255, 0.18);
+  border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  background: rgba(7, 10, 16, 0.42);
+  background: var(--inset);
 }
 
 .markdown-table th,
 .markdown-table td {
   padding: 0.62rem 0.78rem;
-  border-bottom: 1px solid rgba(61, 154, 255, 0.14);
+  border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
 
 .markdown-table th {
-  background: rgba(79, 198, 222, 0.08);
-  color: var(--accent);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--ink-2);
+  font-size: 0.76rem;
   font-weight: 650;
+  letter-spacing: 0.04em;
   text-align: left;
 }
 
 .markdown-table td {
-  color: var(--ink);
+  color: var(--prose);
 }
 
 .markdown-table tbody tr:last-child td {
@@ -3396,7 +3419,13 @@ button {
 
 .bubble.user .markdown-content,
 .bubble.user pre {
-  color: var(--orange);
+  color: var(--ink);
+}
+
+.bubble.user .markdown-content code {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
 .typing-indicator {
@@ -3496,6 +3525,59 @@ button {
 .tool-call-summary-meta {
   flex: 0 1 auto;
   justify-content: flex-end;
+}
+
+.tool-call-log-id {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  opacity: 0.75;
+}
+
+/* Exploration group: a run of quiet read-only calls folded into one row.
+ * Reuses the tool-call row chrome (chevron, hover pill); the body gets the
+ * same hairline rail as tool-call details. */
+.exploration-group-segments {
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 0.72rem;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exploration-group-card .tool-call-summary-main > .exploration-group-segments {
+  flex: 0 1 auto;
+}
+
+.exploration-group-count {
+  flex: none;
+  min-width: 1.4rem;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--field);
+  color: var(--ink-3);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.exploration-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 6px 13px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+}
+
+/* What a call actually touched (command / pattern / path), plain and quiet */
+.tool-call-card summary em.tool-call-excerpt {
+  background: transparent;
+  padding: 1px 0;
+  color: var(--ink-3);
 }
 
 /* Square result pixels — success green, error red, running orange pulses */
@@ -3830,7 +3912,7 @@ button {
 
 .file-diff-line.meta {
   color: var(--ink-3);
-  background: rgba(61, 154, 255, 0.08);
+  background: var(--field);
 }
 
 .empty-conversation {
@@ -3852,13 +3934,29 @@ button {
   background: var(--surface);
 }
 
+/* Single rounded field that owns the textarea, attachments and the control
+ * row, so the whole composer reads as one control instead of stacked bars. */
+.composer-box {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--field);
+  transition: border-color 150ms ease;
+}
+
+.composer-box:focus-within {
+  border-color: var(--line-strong);
+}
+
 .composer textarea {
   resize: none;
   min-height: 0;
   line-height: 1.5;
   overflow-y: hidden;
-  padding: 10px 12px;
-  border-radius: 12px;
+  padding: 10px 12px 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .command-picker {
@@ -3924,8 +4022,9 @@ button {
 
 .composer-actions {
   justify-content: space-between;
-  align-items: flex-end;
-  margin-top: 8px;
+  align-items: center;
+  margin-top: 2px;
+  padding: 0 6px 6px;
   color: var(--muted);
   gap: 10px;
 }
@@ -3934,6 +4033,8 @@ button {
   display: none;
 }
 
+/* Composer chips: attachment, model, mode and context all share one quiet
+ * chip look — transparent until hover, same height, radius and type. */
 .attachment-action {
   flex: none;
   width: 28px;
@@ -3951,6 +4052,12 @@ button {
   transition: background 100ms ease, color 100ms ease;
 }
 
+.attachment-action svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
 .attachment-action:hover {
   background: var(--hover-2);
   color: var(--ink);
@@ -3960,7 +4067,8 @@ button {
   display: flex;
   gap: 7px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  margin-top: 6px;
+  padding: 0 6px;
 }
 
 .pending-attachment {
@@ -3982,8 +4090,8 @@ button {
 }
 
 .pending-attachment:hover {
-  border-color: rgba(61, 154, 255, 0.42);
-  background: rgba(61, 154, 255, 0.14);
+  border-color: var(--line-strong);
+  background: var(--hover);
 }
 
 .pending-attachment-thumb {
@@ -4044,7 +4152,7 @@ button {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
@@ -4056,20 +4164,49 @@ button {
   gap: 8px;
 }
 
-.composer-cta .action {
-  padding: 7px 11px;
-  font-size: 0.78rem;
-}
-
-.composer-cta .composer-icon-action {
-  width: 28px;
-  height: 28px;
+/* Round accent send button — the composer's single focal point. It shares
+ * geometry with the interrupt variant; both sit on the control row's right. */
+.composer-send {
+  flex: none;
+  width: 30px;
+  height: 30px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 1rem;
-  line-height: 1;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  transition: background 120ms ease, transform 100ms ease;
+}
+
+.composer-send:hover:not(:disabled) {
+  background: #5aabff;
+}
+
+.composer-send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.composer-send:disabled {
+  cursor: not-allowed;
+  background: var(--hover-2);
+  color: var(--ink-3);
+}
+
+.composer-send.stop {
+  background: var(--red);
+}
+
+.composer-send.stop:hover:not(:disabled) {
+  background: #f47377;
+}
+
+.composer-send svg {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 .composer-actions span {
@@ -4144,36 +4281,37 @@ button {
 .ctx-meter {
   --ctx-color: var(--accent);
   --ctx-fill: 0%;
+  height: 28px;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
   color: var(--ink-2);
   font: inherit;
   cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
 }
 
 .ctx-meter:hover,
 .ctx-meter.open {
-  border-color: color-mix(in srgb, var(--ctx-color) 45%, rgba(255, 255, 255, 0.12));
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--hover-2);
+  color: var(--ink);
 }
 
 .ctx-meter:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
+  opacity: 0.55;
 }
 
 .ctx-ring {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border-radius: 999px;
   background: conic-gradient(var(--ctx-color) var(--ctx-fill), rgba(255, 255, 255, 0.13) 0);
   position: relative;
-  box-shadow: 0 0 10px color-mix(in srgb, var(--ctx-color) 28%, transparent);
 }
 
 .ctx-ring::after {
@@ -4181,7 +4319,12 @@ button {
   position: absolute;
   inset: 4px;
   border-radius: inherit;
-  background: var(--inset);
+  background: var(--field);
+}
+
+.ctx-meter:hover .ctx-ring::after,
+.ctx-meter.open .ctx-ring::after {
+  background: var(--hover-2);
 }
 
 .ctx-popover {
@@ -4248,21 +4391,29 @@ button {
 .model-trigger {
   min-width: 0;
   max-width: min(100%, 22rem);
+  height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--inset);
-  color: var(--ink);
-  transition: border-color 120ms ease, background 120ms ease;
+  gap: 7px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 0.78rem;
+  font-weight: 500;
+  transition: background 100ms ease, color 100ms ease;
 }
 
 .model-trigger:hover:not(:disabled),
 .model-trigger.open {
-  border-color: var(--line-strong);
-  background: var(--surface);
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.model-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .model-trigger > span:first-child {
@@ -4274,11 +4425,10 @@ button {
 
 .connection-dot {
   flex: none;
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 999px;
   background: var(--warning);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .connection-dot.connected {

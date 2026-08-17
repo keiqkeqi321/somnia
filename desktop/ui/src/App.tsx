@@ -37,6 +37,13 @@ import {
   sortSessions,
   stringifyToolValue,
 } from "./lib/messages";
+import {
+  explorationGroupSummary,
+  groupExplorationParts,
+  isExplorationGroup,
+  toolCallExcerpt,
+  type ExplorationGroupPart,
+} from "./lib/exploration-group";
 import SettingsView, { ProviderProfilesEditor, type ArchivedSessionEntry, type SettingsSectionKey } from "./components/SettingsView";
 import { useI18n, type TranslationKey } from "./lib/i18n";
 import { useIsMobile } from "./lib/use-media-query";
@@ -154,6 +161,12 @@ const COMMAND_SPECS = [
   { command: "/exit", descriptionKey: "cmd.exit" as const },
 ] as const;
 const PATH_MENTION_PATTERN = /(^|\s)@([^\s]*)$/;
+
+// Windows extended-length paths (\\?\D:\...) leak from the sidecar into the
+// sidebar; strip the prefix so users see the path they actually typed.
+function displayPath(path: string): string {
+  return path.replace(/^\\\\\?\\/, "");
+}
 const EXECUTION_MODE_OPTIONS = [
   { key: "shortcuts", titleKey: "mode.shortcuts.title" as const, descriptionKey: "mode.shortcuts.description" as const },
   { key: "accept_edits", titleKey: "mode.acceptEdits.title" as const, descriptionKey: "mode.acceptEdits.description" as const },
@@ -4249,7 +4262,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
               ) : null}
               {remoteMode ? (
                 <button
-                  className="action primary sidebar-new"
+                  className="action ghost sidebar-new"
                   onClick={handleRemoteSwitchTarget}
                   title={t("remote.switchTarget")}
                   aria-label={t("remote.switchTarget")}
@@ -4258,13 +4271,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                 </button>
               ) : (
                 <button
-                  className="action primary sidebar-new"
+                  className="action ghost sidebar-new"
                   onClick={() => void handleCreateProject()}
                   disabled={busyAction !== null}
                   title={t("sidebar.newProject")}
                   aria-label={t("sidebar.newProject")}
                 >
-                  +
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
                 </button>
               )}
             </div>
@@ -4298,12 +4314,16 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                             <span className="project-toggle-caret">{isCollapsed ? "▸" : "▾"}</span>
                             <span className="project-toggle-label">
                               <strong>{group.label}</strong>
-                              <small>{group.path}</small>
+                              <small title={group.path}>{displayPath(group.path)}</small>
                               {group.connectionState === "connecting" ? <em>{t("sidebar.connecting")}</em> : null}
                               {group.connectionState === "error" && group.connectionError ? <em>{group.connectionError}</em> : null}
                             </span>
                           </span>
-                          <span className={`project-toggle-count ${group.connectionState}`}>{group.connectionState === "connected" ? group.sessions.length : "!"}</span>
+                          {group.connectionState !== "connected" || group.sessions.length > 0 ? (
+                            <span className={`project-toggle-count ${group.connectionState}`}>
+                              {group.connectionState === "connected" ? group.sessions.length : "!"}
+                            </span>
+                          ) : null}
                         </button>
                         <div className="project-menu" ref={projectMenuOpenKey === group.key ? projectMenuRef : null}>
                           <button
@@ -4565,8 +4585,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                   <div key={row.id} className={`conversation-virtual-item${index === 0 ? " first" : ""}`}>
                     <article className={`bubble ${row.role} ${row.isPending ? "pending" : ""}`}>
                       {row.parts?.length ? (
-                        row.parts.map((part) =>
-                          part.type === "text" ? (
+                        groupExplorationParts(row.parts).map((part) =>
+                          isExplorationGroup(part) ? (
+                            <ExplorationGroupCard
+                              key={part.id}
+                              group={part}
+                              client={clientRef.current}
+                              onPreviewImage={setToolImagePreview}
+                            />
+                          ) : part.type === "text" ? (
                             <MarkdownMessage key={part.id} text={part.text} />
                           ) : part.type === "thinking_log" ? (
                             <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={clientRef.current} />
@@ -4650,6 +4677,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
 
           {!selectedWorkerActive && !selectedSubagentActive ? (
           <div className="composer">
+            <div className="composer-box">
             <textarea
               ref={composerTextareaRef}
               value={draft}
@@ -4679,40 +4707,6 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                 ))}
               </div>
             ) : null}
-            {commandPickerOpen && commandSuggestions.length > 0 ? (
-              <div className="command-picker">
-                {commandSuggestions.map((item, index) => (
-                  <button
-                    key={item.command}
-                    className={`command-option ${index === selectedCommandIndex ? "selected" : ""}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      applyCommandSuggestion(item.command);
-                    }}
-                  >
-                    <strong>{item.command}</strong>
-                    <span>{t(item.descriptionKey)}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {pathPickerOpen && pathSuggestions.length > 0 ? (
-              <div className="command-picker path-picker">
-                {pathSuggestions.map((item, index) => (
-                  <button
-                    key={`${item.kind}-${item.path}`}
-                    className={`command-option path-option ${index === selectedPathIndex ? "selected" : ""}`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      applyPathSuggestion(item);
-                    }}
-                  >
-                    <strong>{item.kind === "dir" ? `${item.path}/` : item.path}</strong>
-                    <span>{item.kind === "dir" ? t("pathPicker.folder") : t("pathPicker.file")}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
             <div className="composer-actions">
               <input
                 ref={fileInputRef}
@@ -4723,13 +4717,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                 onChange={(event) => void handleImageFilesSelected(event.currentTarget.files)}
               />
               <button
-                className="action secondary composer-icon-action attachment-action"
+                className="attachment-action"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={busyAction !== null}
                 title={t("composer.attachImage")}
                 aria-label={t("composer.attachImage")}
               >
-                +
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
               </button>
               <div className="composer-meta">
                 <div className="composer-controls">
@@ -4912,7 +4908,7 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
               </div>
               <div className="composer-cta">
               <button
-                className="action primary composer-icon-action"
+                className="composer-send"
                 onClick={() => void handleSendPrompt()}
                   disabled={
                     (!draft.trim() && pendingImages.length === 0) ||
@@ -4928,21 +4924,61 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                   }
                   aria-label={t("composer.send")}
                 >
-                  ↑
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 19V5" />
+                    <path d="M5 12l7-7 7 7" />
+                  </svg>
                 </button>
                 {currentSessionTurn ? (
                   <button
-                    className="action danger composer-icon-action"
+                    className="composer-send stop"
                     onClick={() => void handleInterrupt()}
                     disabled={busyAction !== null}
                     title={t("composer.interrupt")}
                     aria-label={t("composer.interrupt")}
                   >
-                    ■
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <rect x="7" y="7" width="10" height="10" rx="2" />
+                    </svg>
                   </button>
                 ) : null}
               </div>
             </div>
+            </div>
+            {commandPickerOpen && commandSuggestions.length > 0 ? (
+              <div className="command-picker">
+                {commandSuggestions.map((item, index) => (
+                  <button
+                    key={item.command}
+                    className={`command-option ${index === selectedCommandIndex ? "selected" : ""}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyCommandSuggestion(item.command);
+                    }}
+                  >
+                    <strong>{item.command}</strong>
+                    <span>{t(item.descriptionKey)}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {pathPickerOpen && pathSuggestions.length > 0 ? (
+              <div className="command-picker path-picker">
+                {pathSuggestions.map((item, index) => (
+                  <button
+                    key={`${item.kind}-${item.path}`}
+                    className={`command-option path-option ${index === selectedPathIndex ? "selected" : ""}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyPathSuggestion(item);
+                    }}
+                  >
+                    <strong>{item.kind === "dir" ? `${item.path}/` : item.path}</strong>
+                    <span>{item.kind === "dir" ? t("pathPicker.folder") : t("pathPicker.file")}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           ) : null}
         </section>
@@ -6110,10 +6146,53 @@ function ToolCallWithImages({
   );
 }
 
+function ExplorationGroupCard({
+  group,
+  client,
+  onPreviewImage,
+}: {
+  group: ExplorationGroupPart;
+  client: SomniaClient | null;
+  onPreviewImage: (preview: ToolImagePreviewState) => void;
+}) {
+  const { t } = useI18n();
+  const summary = explorationGroupSummary(group.parts);
+  const segments = summary
+    .slice(0, 3)
+    .map((entry) => `${entry.thinking ? t("exploration.thinking") : entry.label} ×${entry.count}`);
+  if (summary.length > segments.length) {
+    segments.push(`+${summary.length - segments.length}`);
+  }
+  return (
+    <details className="tool-call-card exploration-group-card">
+      <summary>
+        <span className="tool-call-summary-main">
+          <span className="tool-result-dot success" aria-hidden="true" />
+          <span>{t("exploration.title")}</span>
+          <span className="exploration-group-segments">{segments.join(" · ")}</span>
+        </span>
+        <span className="tool-call-summary-meta">
+          <span className="exploration-group-count">{group.parts.length}</span>
+        </span>
+      </summary>
+      <div className="exploration-group-body">
+        {group.parts.map((part) =>
+          part.type === "thinking_log" ? (
+            <ThinkingLogPanel key={part.id} thinkingLog={part.thinkingLog} client={client} />
+          ) : part.type === "tool_call" ? (
+            <ToolCallWithImages key={part.id} toolCall={part.toolCall} client={client} onPreviewImage={onPreviewImage} />
+          ) : null,
+        )}
+      </div>
+    </details>
+  );
+}
+
 function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
   const { t } = useI18n();
   const resultState = toolCallResultState(toolCall);
   const fileChange = fileChangeSummary(toolCall, resultState, t);
+  const excerpt = fileChange ? "" : toolCallExcerpt(toolCall);
   return (
     <details className={`tool-call-card ${resultState}`}>
       <summary>
@@ -6121,6 +6200,7 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
           <span className={`tool-result-dot ${resultState}`} aria-hidden="true" />
           <span>{fileChange ? fileChange.actionLabel : toolCall.name}</span>
           {fileChange ? <em>{fileChange.path}</em> : null}
+          {!fileChange && excerpt ? <em className="tool-call-excerpt">{excerpt}</em> : null}
         </span>
         <span className="tool-call-summary-meta">
           {fileChange ? (
@@ -6129,7 +6209,7 @@ function ToolCallCard({ toolCall }: { toolCall: ConversationToolCall }) {
               <span className="file-change-stat removed">-{fileChange.removed}</span>
             </>
           ) : null}
-          {toolCall.logId ? <em>{toolCall.logId}</em> : null}
+          {toolCall.logId ? <span className="tool-call-log-id" title={toolCall.logId}>#{toolCall.logId}</span> : null}
         </span>
       </summary>
       {fileChange ? (
