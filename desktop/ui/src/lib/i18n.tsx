@@ -344,6 +344,8 @@ const translations = {
     "decision.answerQuestion": "Answer the question",
     "decision.customAnswerPlaceholder": "Or type a custom answer...",
     "decision.submitAnswer": "Submit answer",
+    "decision.dismissQuestion": "Dismiss question",
+    "decision.dismissQuestionReason": "Dismissed from desktop UI.",
 
     /* ── Prompt queue ── */
     "queue.queuedPrompts": "Queued prompts",
@@ -794,6 +796,8 @@ const translations = {
     "decision.answerQuestion": "回答问题",
     "decision.customAnswerPlaceholder": "或输入自定义回答…",
     "decision.submitAnswer": "提交回答",
+    "decision.dismissQuestion": "忽略此问题",
+    "decision.dismissQuestionReason": "已从桌面端忽略。",
 
     /* ── Prompt queue ── */
     "queue.queuedPrompts": "排队中的提示",

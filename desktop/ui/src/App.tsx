@@ -5626,13 +5626,11 @@ function InteractionDecisionCard({
   ) => Promise<void>;
 }) {
   const { t } = useI18n();
-  const [customAnswer, setCustomAnswer] = useState("");
   const isAuthorization = interaction.kind === "authorization";
   const isQuestion = interaction.kind === "ask_user_question";
-  const questionOptions = Array.isArray(interaction.payload.options)
-    ? interaction.payload.options.filter((option): option is string => typeof option === "string")
-    : [];
-  const allowCustomAnswer = isQuestion && interaction.payload.allow_custom === true;
+  if (isQuestion) {
+    return <QuestionDecisionCard interaction={interaction} busy={busy} onResolveQuestion={onResolveQuestion} />;
+  }
   return (
     <section className="decision-card" aria-live="polite">
       <div className="decision-copy">
@@ -5666,48 +5664,6 @@ function InteractionDecisionCard({
             {t("decision.deny")}
           </button>
         </div>
-      ) : isQuestion ? (
-        <>
-          <div className="decision-actions">
-            {questionOptions.map((option) => (
-              <button
-                key={option}
-                className="action secondary"
-                onClick={() =>
-                  void onResolveQuestion(interaction.id, { answer: option, selectedOption: option, status: "answered", reason: "" })
-                }
-                disabled={busy}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-          {allowCustomAnswer ? (
-            <div className="decision-actions">
-              <input
-                type="text"
-                value={customAnswer}
-                onChange={(event) => setCustomAnswer(event.currentTarget.value)}
-                placeholder={t("decision.customAnswerPlaceholder")}
-                disabled={busy}
-              />
-              <button
-                className="action primary"
-                onClick={() =>
-                  void onResolveQuestion(interaction.id, {
-                    answer: customAnswer.trim(),
-                    selectedOption: null,
-                    status: "answered",
-                    reason: "",
-                  })
-                }
-                disabled={busy || !customAnswer.trim()}
-              >
-                {t("decision.submitAnswer")}
-              </button>
-            </div>
-          ) : null}
-        </>
       ) : (
         <div className="decision-actions">
           <button className="action primary" onClick={() => void onResolveModeSwitch(interaction, true)} disabled={busy}>
@@ -5718,6 +5674,144 @@ function InteractionDecisionCard({
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+/* ask_user_question card — Beautiful UI approval-card language: the question
+ * is the title, options are radio rows that submit on pick (with a brief
+ * ring-fill beat), custom answer sits in the same column, and the round-less
+ * send arrow in the footer lights up once there is something to send. */
+function QuestionDecisionCard({
+  interaction,
+  busy,
+  onResolveQuestion,
+}: {
+  interaction: InteractionRequestState;
+  busy: boolean;
+  onResolveQuestion: (
+    interactionId: string,
+    options: {
+      answer: string;
+      selectedOption: string | null;
+      status: "answered" | "cancelled";
+      reason: string;
+    },
+  ) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [customAnswer, setCustomAnswer] = useState("");
+  const [pendingOption, setPendingOption] = useState<string | null>(null);
+  const question =
+    typeof interaction.payload.question === "string" && interaction.payload.question.trim()
+      ? interaction.payload.question
+      : t("decision.answerQuestion");
+  const questionOptions = Array.isArray(interaction.payload.options)
+    ? interaction.payload.options.filter((option): option is string => typeof option === "string")
+    : [];
+  const allowCustomAnswer = interaction.payload.allow_custom === true;
+  const trimmedCustom = customAnswer.trim();
+  const locked = pendingOption !== null;
+
+  const choose = (option: string) => {
+    if (busy || locked) {
+      return;
+    }
+    setPendingOption(option);
+    window.setTimeout(() => {
+      void onResolveQuestion(interaction.id, { answer: option, selectedOption: option, status: "answered", reason: "" });
+    }, 320);
+  };
+  const submitCustom = () => {
+    if (busy || locked || !trimmedCustom) {
+      return;
+    }
+    void onResolveQuestion(interaction.id, { answer: trimmedCustom, selectedOption: null, status: "answered", reason: "" });
+  };
+  const dismiss = () => {
+    if (busy || locked) {
+      return;
+    }
+    void onResolveQuestion(interaction.id, {
+      answer: "",
+      selectedOption: null,
+      status: "cancelled",
+      reason: t("decision.dismissQuestionReason"),
+    });
+  };
+
+  return (
+    <section className="decision-card question-card" aria-live="polite" style={{ animation: "fade-up 350ms cubic-bezier(0.23, 1, 0.32, 1) both" }}>
+      <div className="question-card-head">
+        <span className="question-card-title">{question}</span>
+        <button
+          type="button"
+          className="question-card-dismiss"
+          onClick={dismiss}
+          disabled={busy || locked}
+          title={t("decision.dismissQuestion")}
+          aria-label={t("decision.dismissQuestion")}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div className="question-options">
+        {questionOptions.map((option) => {
+          const on = pendingOption === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              className="question-option"
+              aria-pressed={on}
+              onClick={() => choose(option)}
+              disabled={busy || locked}
+            >
+              <span className={`question-option-ring${on ? " on" : ""}`} aria-hidden="true">
+                <span />
+              </span>
+              <span className="question-option-label">{option}</span>
+            </button>
+          );
+        })}
+        {allowCustomAnswer ? (
+          <label className="question-custom">
+            <span className="question-custom-spacer" aria-hidden="true" />
+            <input
+              type="text"
+              value={customAnswer}
+              onChange={(event) => setCustomAnswer(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitCustom();
+                }
+              }}
+              placeholder={t("decision.customAnswerPlaceholder")}
+              aria-label={t("decision.customAnswerPlaceholder")}
+              disabled={busy || locked}
+            />
+          </label>
+        ) : null}
+      </div>
+      {allowCustomAnswer ? (
+        <div className="question-card-footer">
+          <button
+            type="button"
+            className="question-send"
+            onClick={submitCustom}
+            disabled={busy || locked || !trimmedCustom}
+            title={t("decision.submitAnswer")}
+            aria-label={t("decision.submitAnswer")}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 19V5M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
