@@ -3474,6 +3474,8 @@ button {
   font-size: 0.78rem;
   font-weight: 500;
   list-style: none;
+  /* Never let row content paint over the meta column, whatever rules win */
+  overflow: hidden;
   transition: background 100ms ease;
 }
 
@@ -3573,8 +3575,9 @@ button {
   border-left: 1px solid var(--line);
 }
 
-/* What a call actually touched (command / pattern / path), plain and quiet */
-.tool-call-card summary em.tool-call-excerpt {
+/* What a call actually touched (command / pattern / path), plain and quiet.
+ * Specificity must beat the mono-chip rule for summary ems. */
+.tool-call-card summary .tool-call-summary-main em.tool-call-excerpt {
   background: transparent;
   padding: 1px 0;
   color: var(--ink-3);
@@ -3619,7 +3622,6 @@ button {
   white-space: nowrap;
 }
 
-.tool-call-card summary em,
 /* Thinking trace (Beautiful UI "Thinking"): borderless row + shimmer label */
 .thinking-log-card {
   border: 0;
