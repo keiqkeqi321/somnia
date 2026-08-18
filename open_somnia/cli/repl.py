@@ -958,8 +958,9 @@ class TurnQueueRunner:
             options=options,
             allow_custom=allow_custom,
         )
-        if not request.completed.wait(timeout=300):
-            return {"status": "cancelled", "reason": "Question timed out."}
+        # ask_user_question never times out; the main-thread drain
+        # (_resolve_question_requests) always answers or cancels it.
+        request.completed.wait()
         return request.response or {"status": "cancelled", "reason": "Question was not answered."}
 
     def drain_question_requests(self) -> list[QuestionRequest]:

@@ -257,15 +257,9 @@ class InteractionService:
             request_id=request.id,
             **request.payload,
         )
-        if not request.completed.wait(timeout=self.REQUEST_TIMEOUT_SECONDS):
-            with self._lock:
-                self._pending.pop(request.id, None)
-            return {
-                "status": "cancelled",
-                "answer": "",
-                "selected_option": None,
-                "reason": "Question timed out.",
-            }
+        # ask_user_question never times out: every removal path
+        # (resolve_question, cancel_turn_requests) sets the event.
+        request.completed.wait()
         return request.response or {
             "status": "cancelled",
             "answer": "",
