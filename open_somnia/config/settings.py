@@ -1463,6 +1463,8 @@ def _load_settings_once(
         max_subagent_rounds=int(runtime_raw.get("max_subagent_rounds", 50)),
         max_agent_rounds=int(runtime_raw.get("max_agent_rounds", 100)),
         max_subagent_resumes=int(runtime_raw.get("max_subagent_resumes", 3)),
+        context_pressure_soft_ratio=float(runtime_raw.get("context_pressure_soft_ratio", 0.70)),
+        context_pressure_urgent_ratio=float(runtime_raw.get("context_pressure_urgent_ratio", 0.78)),
     )
 
     mcp_servers = _load_mcp_servers(root, raw)

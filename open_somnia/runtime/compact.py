@@ -11,6 +11,8 @@ from open_somnia.runtime.thinking import strip_thinking_blocks_from_messages
 
 
 AUTO_COMPACT_TRIGGER_RATIO = 0.82
+CONTEXT_PRESSURE_SOFT_RATIO = 0.70
+CONTEXT_PRESSURE_URGENT_RATIO = 0.78
 
 
 @dataclass(slots=True)
@@ -167,6 +169,31 @@ def build_payload_messages(
 def should_auto_compact(usage: ContextWindowUsage) -> bool:
     ratio = usage.usage_ratio
     return ratio is not None and ratio >= AUTO_COMPACT_TRIGGER_RATIO
+
+
+def context_pressure_level(
+    usage: ContextWindowUsage,
+    *,
+    soft_ratio: float | None = None,
+    urgent_ratio: float | None = None,
+) -> str | None:
+    """Early-warning band ahead of auto-compaction: 'urgent', 'soft', or None.
+
+    Drives the persisted <context-pressure> user message that tells the model
+    to finish the current stage and hand off. Bands live strictly below the
+    hard trigger — at AUTO_COMPACT_TRIGGER_RATIO itself, compaction is the
+    active remedy and no warning is added.
+    """
+    ratio = usage.usage_ratio
+    if ratio is None or ratio >= AUTO_COMPACT_TRIGGER_RATIO:
+        return None
+    urgent = CONTEXT_PRESSURE_URGENT_RATIO if urgent_ratio is None else urgent_ratio
+    soft = CONTEXT_PRESSURE_SOFT_RATIO if soft_ratio is None else soft_ratio
+    if ratio >= urgent:
+        return "urgent"
+    if ratio >= soft:
+        return "soft"
+    return None
 
 
 class CompactManager:

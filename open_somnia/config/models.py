@@ -138,6 +138,12 @@ class RuntimeSettings:
     # Disabled by SOMNIA_NO_PARALLEL_TOOLS=1 (mirrors SOMNIA_NO_RG).
     parallel_tool_dispatch: bool = True
     parallel_tool_max_workers: int = 8
+    # Context-pressure early warnings, as a fraction of the context window.
+    # Before lossy auto-compaction (0.82) fires mid-work, a persisted user
+    # message tells the model to finish the current stage and hand off via
+    # request_new_session: soft nudges planning, urgent demands wrap-up.
+    context_pressure_soft_ratio: float = 0.70
+    context_pressure_urgent_ratio: float = 0.78
 
 
 @dataclass(slots=True)

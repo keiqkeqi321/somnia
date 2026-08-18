@@ -50,6 +50,7 @@ from open_somnia.runtime.compact import (
     CompactManager,
     ContextWindowUsage,
     build_payload_messages,
+    context_pressure_level,
     estimate_payload_tokens,
     should_auto_compact,
 )
@@ -225,6 +226,29 @@ class OpenAgentRuntime:
         "Raise the provider max_tokens, lower the reasoning level, or switch to a non-reasoning model."
     )
     RUNTIME_NOTICE_PREFIX = "Runtime notice:"
+    # Context-pressure early warnings. Unlike transient notices these are real
+    # persisted user messages (appended at the top of the next loop round), so
+    # the model keeps seeing them and the compaction summary inherits them.
+    CONTEXT_PRESSURE_SOFT_MESSAGE_TEMPLATE = (
+        "<context-pressure level=\"soft\">\n"
+        "Context window usage has reached about {percent}% ({used} of {max} tokens via {counter}). "
+        "Lossy auto-compaction triggers at {trigger}.\n"
+        "Plan the end of this stage now, while you still hold the full working context:\n"
+        "- Finish the current atomic step; avoid opening new large explorations in this window.\n"
+        "- Externalize state: update the todo list / task board so the next window can rebuild from it.\n"
+        "- When the stage is done, call request_new_session with a handoff covering the goal, "
+        "confirmed decisions, files changed, open work, and next steps.\n"
+        "</context-pressure>"
+    )
+    CONTEXT_PRESSURE_URGENT_MESSAGE_TEMPLATE = (
+        "<context-pressure level=\"urgent\">\n"
+        "Context window usage has reached about {percent}% ({used} of {max} tokens via {counter}); "
+        "lossy auto-compaction fires at {trigger} — imminent.\n"
+        "Wrap up now: finish or safely park the in-flight edit, do not start anything new, then call "
+        "request_new_session with a full handoff (goal, confirmed decisions, files changed, open work, "
+        "next steps) so the next window continues cleanly instead of losing detail to compaction.\n"
+        "</context-pressure>"
+    )
     TOOL_IMPORTANCE_VALUES = ("glance", "investigate", "foundation")
     TOOL_VALUE_PREVIEW_CHARS = 90
     TOOL_RESULT_PREVIEW_CHARS = 60
@@ -1197,6 +1221,62 @@ class OpenAgentRuntime:
             "label": str(label).strip(),
             "changed_at": time.monotonic(),
         }
+
+    def _context_pressure_bands(self) -> dict[str, str]:
+        # Last pressure band announced per session ("" = below soft). Stored
+        # via __dict__ so runtimes built without __init__ (tests) still work;
+        # refreshed unconditionally every round, so it self-corrects after a
+        # compact drops usage back into the healthy band.
+        return self.__dict__.setdefault("_context_pressure_bands_map", {})
+
+    def _maybe_append_context_pressure_message(self, session: AgentSession) -> None:
+        """Early-warning companion to auto-compaction.
+
+        Auto-compact (0.82) is lossy and fires mid-work at a round boundary.
+        Before that, once per pressure episode, append a *persisted* user
+        message — not a transient notice — so every later round still sees it
+        and the compaction summary inherits it: finish the current stage,
+        externalize state, hand off via request_new_session.
+        """
+        try:
+            usage = self.context_window_usage(session)
+        except Exception:
+            return
+        runtime_settings = getattr(self.settings, "runtime", None)
+        level = context_pressure_level(
+            usage,
+            soft_ratio=getattr(runtime_settings, "context_pressure_soft_ratio", None),
+            urgent_ratio=getattr(runtime_settings, "context_pressure_urgent_ratio", None),
+        )
+        bands = self._context_pressure_bands()
+        session_key = str(session.id)
+        if level is None:
+            bands[session_key] = ""
+            return
+        rank = {"": 0, "soft": 1, "urgent": 2}
+        if rank[level] > rank.get(bands.get(session_key, ""), 0):
+            message = make_user_text_message(self._render_context_pressure_message(level, usage))
+            session.messages.append(message)
+            try:
+                self._append_transcript_entry(session.id, message)
+            except Exception:
+                pass
+        bands[session_key] = level
+
+    def _render_context_pressure_message(self, level: str, usage: ContextWindowUsage) -> str:
+        template = (
+            self.CONTEXT_PRESSURE_URGENT_MESSAGE_TEMPLATE
+            if level == "urgent"
+            else self.CONTEXT_PRESSURE_SOFT_MESSAGE_TEMPLATE
+        )
+        ratio = usage.usage_ratio or 0.0
+        return template.format(
+            percent=f"{ratio * 100:.0f}",
+            used=f"{usage.used_tokens:,}",
+            max=f"{usage.max_tokens:,}" if usage.max_tokens else "unknown",
+            counter=usage.counter_name,
+            trigger=f"{AUTO_COMPACT_TRIGGER_RATIO * 100:.0f}%",
+        )
 
     def _provider_payload_dump_enabled(self) -> bool:
         raw = str(os.environ.get(self.DEBUG_PROVIDER_PAYLOAD_ENV, "")).strip().lower()
@@ -3045,6 +3125,9 @@ class OpenAgentRuntime:
                         self.context_window_usage(session)
                     except Exception:
                         pass
+                # Runs after the compact check: post-compact usage decides
+                # whether a pressure episode is opening, escalating, or over.
+                self._maybe_append_context_pressure_message(session)
 
                 stream_flush_callback = getattr(text_callback, "finish", None) if text_callback is not None else None
                 streamed_text_chunks: list[str] = []

@@ -104,6 +104,11 @@ this window's thinking as its primary source?**
   (pass `handoff` text — that is the cross-session handoff).
 - **Last resort → `compress`** (harness auto-default; lossy and in-window).
 
+**Runtime pressure signal**: a `<context-pressure>` user message means the
+window is filling (soft ≈70%, urgent ≈78%, lossy auto-compact at 82%). Treat it
+as a deadline: finish the current stage, externalize state (todo/task board),
+then hand off — don't let the harness compact mid-edit.
+
 **Phases** (grilling → spec → tasks → implement): keep in **one unbroken
 window** — don't compact or clear until after `to-tasks`, so spec and task graph
 build on the same thinking.
