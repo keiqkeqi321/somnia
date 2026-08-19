@@ -3671,10 +3671,6 @@ class OpenAgentRuntime:
                                 end_turn_after_tool = True
                                 seg_broke = True
                                 break
-                            if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
-                                end_turn_after_tool = True
-                                seg_broke = True
-                                break
                             if planned.end_turn_after:
                                 end_turn_after_tool = True
                                 seg_broke = True
@@ -3700,15 +3696,21 @@ class OpenAgentRuntime:
                             end_turn_after_tool = True
                             seg_broke = True
                             break
-                        if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
-                            end_turn_after_tool = True
-                            seg_broke = True
-                            break
                         if planned.end_turn_after:
                             end_turn_after_tool = True
                             seg_broke = True
                             break
                     if seg_broke:
+                        break
+                    # A promoted loop injection ends the round only after the
+                    # WHOLE segment applied its side effects. Checking per-record
+                    # would break a parallel segment mid-way: the remaining
+                    # records already executed, but their tool_finished events
+                    # and result appends would be skipped -- ghosting the REPL's
+                    # active-tool panel with a "running" entry that never
+                    # clears, and dropping executed results from the session.
+                    if callable(prepare_next_loop_user_message) and prepare_next_loop_user_message():
+                        end_turn_after_tool = True
                         break
                     cursor = run_end
 

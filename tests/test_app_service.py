@@ -974,6 +974,80 @@ class AppServiceTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_loop_injection_wait_for_segment_sibling_finish_events(self) -> None:
+        # Two parallel-safe read-only calls run as ONE segment; the queued
+        # follow-up is promoted while the turn runs. The injection must defer
+        # to the segment's end: breaking the side-effect loop after the first
+        # record would skip the sibling's tool_finished event (ghosting the
+        # REPL active-tool panel with a "running" tool that never clears) and
+        # drop its already-executed result from the session.
+        root = self._stable_test_dir("app-service-injection-segment-finish")
+        runtime = OpenAgentRuntime(self._make_settings(root))
+        service = AppService(runtime)
+        try:
+            session = service.create_session()
+            turns = iter(
+                [
+                    AssistantTurn(
+                        stop_reason="tool_use",
+                        tool_calls=[
+                            ToolCall("call-1", "read_file", {"path": "a.txt"}),
+                            ToolCall("call-2", "read_file", {"path": "b.txt"}),
+                        ],
+                    ),
+                    AssistantTurn(stop_reason="end_turn", text_blocks=["Done."]),
+                ]
+            )
+            runtime.complete = lambda *args, **kwargs: next(turns)
+
+            pending = ["queued follow-up"]
+            ready: list[str] = []
+
+            def prepare_next_loop_user_message() -> bool:
+                if pending:
+                    ready.extend(pending)
+                    pending.clear()
+                    return True
+                return False
+
+            def take_next_loop_user_message() -> str | None:
+                if ready:
+                    combined = "\n".join(ready)
+                    ready.clear()
+                    return combined
+                return None
+
+            handle = service.run_turn(
+                session,
+                "read both files",
+                take_next_loop_user_message=take_next_loop_user_message,
+                prepare_next_loop_user_message=prepare_next_loop_user_message,
+            )
+            result = handle.wait(timeout=2.0)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.text, "Done.")
+
+            events = handle.drain_events()
+            finished_files = [
+                event for event in events if event.type == "tool_finished" and event.payload.get("tool_name") == "read_file"
+            ]
+            self.assertEqual(len(finished_files), 2)
+
+            tool_result_blocks: list[str] = []
+            for message in session.messages:
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content")
+                if isinstance(content, list):
+                    tool_result_blocks.extend(
+                        str(block.get("tool_call_id")) for block in content if isinstance(block, dict)
+                    )
+            self.assertIn("call-1", tool_result_blocks)
+            self.assertIn("call-2", tool_result_blocks)
+            self.assertTrue(any("queued follow-up" in str(message.get("content", "")) for message in session.messages))
+        finally:
+            service.close()
+
     def test_service_can_queue_loop_injection_for_active_turn(self) -> None:
         root = self._stable_test_dir("app-service-active-loop-injection")
         runtime = OpenAgentRuntime(self._make_settings(root))
