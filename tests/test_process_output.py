@@ -14,7 +14,7 @@ from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.storage.jobs import JobStore
 from open_somnia.tools.background import BackgroundManager
 from open_somnia.tools.process import CommandResult, decode_output, drop_windows_extended_prefix, run_command
-from open_somnia.tools.shell import run_shell
+from open_somnia.tools.shell import _windows_shell_guidance, run_shell
 
 
 class _FakeJobStore:
@@ -387,6 +387,86 @@ class ProcessOutputTests(unittest.TestCase):
 
         self.assertNotIn("UNC", result.combined_output())
         self.assertIn(str(root), result.stdout)
+
+
+class WindowsShellGuidanceTests(unittest.TestCase):
+    """Unix-syntax guidance must only fire for command-position tokens.
+
+    Regression: the old bare word-boundary checks (`\\bhead\\b` etc.) flagged
+    `alembic upgrade head` and `python head.py`, where `head` is an argument
+    or file name, so valid PowerShell commands were refused with "Unix shell
+    syntax detected on Windows".
+    """
+
+    def test_argument_and_filename_words_are_not_unix_commands(self) -> None:
+        for cmd in (
+            r"cd D:\Project\Git\LibiCrab\backend; $env:DATABASE_URL = 'postgresql+asyncpg://tmp:tmp@127.0.0.1:55432/tmp'; .\.venv\Scripts\python.exe -m alembic upgrade head 2>&1 | Select-Object -Last 4",
+            r'powershell -Command "$env:DATABASE_URL=\'postgresql+asyncpg://tmp:tmp@127.0.0.1:55432/tmp\'; Set-Location D:\Project\Git\LibiCrab\backend; .\.venv\Scripts\python.exe -m alembic upgrade head" 2>&1 | Select-Object -Last 4',
+            "python head.py",
+            r".\scripts\head.ps1",
+            "git checkout head-branch",
+            "git checkout grep-branch",
+            'Select-String -Pattern "grep" file.txt',
+            'Write-Output "use head -5 here"',
+            "uv run ruff format pkg 2>&1",
+        ):
+            self.assertIsNone(_windows_shell_guidance(cmd), f"{cmd!r} should not trigger guidance")
+
+    def test_command_position_unix_tokens_still_flagged(self) -> None:
+        for cmd in (
+            "head -5 log.txt",
+            "cat log.txt | head",
+            "build.cmd && head f",
+            "build.cmd || head f",
+            "Get-Content f; head",
+            "Get-Content f\nhead",
+            "$(head -5 f)",
+            "cmd 2>/dev/null",
+            "ls -la",
+            "cd src; ls",
+            "grep -rn pattern .",
+            "type f | grep x",
+            "find . -name '*.py' -type f",
+        ):
+            self.assertIsNotNone(_windows_shell_guidance(cmd), f"{cmd!r} should trigger guidance")
+
+    def test_guidance_messages_still_name_the_replacement(self) -> None:
+        self.assertIn("Unix shell syntax detected", _windows_shell_guidance("head -5 f"))
+        self.assertIn("Select-Object -First", _windows_shell_guidance("cat f | head"))
+        self.assertIn("Get-ChildItem -Recurse -Filter", _windows_shell_guidance("find . -name '*.py'"))
+        self.assertIn("Get-ChildItem -Force", _windows_shell_guidance("ls -la"))
+        self.assertIn("Select-String", _windows_shell_guidance("grep x f"))
+
+    def _ctx(self):
+        return SimpleNamespace(
+            runtime=SimpleNamespace(
+                settings=SimpleNamespace(
+                    workspace_root=Path.cwd(),
+                    runtime=SimpleNamespace(command_timeout_seconds=15, max_tool_output_chars=500),
+                )
+            )
+        )
+
+    def test_run_shell_executes_alembic_upgrade_head_on_windows(self) -> None:
+        # The exact command that was misjudged in production: `head` is
+        # alembic's revision argument, so it must reach run_command untouched.
+        command = (
+            r"cd D:\Project\Git\LibiCrab\backend; $env:DATABASE_URL = "
+            r"'postgresql+asyncpg://tmp:tmp@127.0.0.1:55432/tmp'; "
+            r".\.venv\Scripts\python.exe -m alembic upgrade head 2>&1 | Select-Object -Last 4"
+        )
+        with patch("open_somnia.tools.shell._is_windows", return_value=True), patch(
+            "open_somnia.tools.shell.run_command"
+        ) as mock_run:
+            mock_run.return_value = CommandResult(args=[], returncode=0, stdout="ok", stderr="")
+
+            result = run_shell(self._ctx(), {"command": command, "timeout": 300})
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["powershell", "-NoLogo", "-NoProfile", "-Command", command],
+        )
 
 
 if __name__ == "__main__":

@@ -19,6 +19,17 @@ DANGEROUS_COMMAND_PATTERNS = [
     re.compile(r"(?im)(?:^|[;&|]\s*)format(?:\.com|\.exe)?(?:\s|$)"),
 ]
 
+# Unix-syntax detectors for `_windows_shell_guidance`, anchored to command
+# position (start of string or after a `;`/`|`/`&`/`(`/newline separator).
+# Bare word matches also hit arguments and file names: `alembic upgrade head`
+# and `python head.py` are not the Unix `head` command.
+_UNIX_COMMAND_START = r"(?:^|[;|&(\r\n]\s*)"
+
+_UNIX_HEAD_RE = re.compile(_UNIX_COMMAND_START + r"head(?:\s|$)")
+_UNIX_FIND_NAME_RE = re.compile(_UNIX_COMMAND_START + r"find\s+\.\s+-name\b")
+_UNIX_LS_RE = re.compile(_UNIX_COMMAND_START + r"ls(?:\s|$)")
+_UNIX_GREP_RE = re.compile(_UNIX_COMMAND_START + r"grep(?:\s|$)")
+
 # Read-only shell command prefixes. An Explore subagent runs in parallel with
 # its siblings, and its only write vector is `bash` (it has no write_file /
 # edit_file). To keep parallel Explore subagents free of write races, the
@@ -191,19 +202,19 @@ def _translate_windows_command(command: str) -> str | None:
 
 def _windows_shell_guidance(command: str) -> str | None:
     stripped = command.strip()
-    if "/dev/null" in stripped or re.search(r"\bhead\b", stripped):
+    if "/dev/null" in stripped or _UNIX_HEAD_RE.search(stripped):
         return (
             "Error: Unix shell syntax detected on Windows. The `bash` tool runs PowerShell-compatible commands here. "
             "Try `Get-ChildItem -Recurse -Filter *.py -File | Select-Object -First 20`."
         )
-    if re.search(r"\bfind\s+\.\s+-name\b", stripped):
+    if _UNIX_FIND_NAME_RE.search(stripped):
         return (
             "Error: `find -name` is a Unix command pattern. On Windows, use "
             "`Get-ChildItem -Recurse -Filter <pattern> -File`."
         )
-    if re.search(r"(^|\s)ls(\s|$)", stripped):
+    if _UNIX_LS_RE.search(stripped):
         return "Error: `ls` is not guaranteed on Windows. Use `Get-ChildItem -Force`."
-    if re.search(r"\bgrep\b", stripped):
+    if _UNIX_GREP_RE.search(stripped):
         return "Error: `grep` is a Unix command. On Windows, use `Select-String`."
     return None
 
