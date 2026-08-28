@@ -37,7 +37,7 @@ from __future__ import annotations
 import atexit
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, Future, wait
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 from open_somnia.runtime.events import ToolExecutionContext
@@ -390,6 +390,7 @@ def run_parallel_explore_subagents(
     session_id: str | None = None,
     extra_prompts: dict[str, str] | None = None,
     checkpoint_store: Any = None,
+    on_subagent_finished: Callable[[Any], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Run a segment of Explore-subagent calls concurrently, in input order.
 
@@ -410,6 +411,13 @@ def run_parallel_explore_subagents(
     each future completes; once an interrupt is seen we stop submitting, cancel
     pending futures, collect whatever finished, and raise ``TurnInterrupted``.
 
+    ``on_subagent_finished(tool_call)`` fires the moment EACH future completes
+    (``wait(FIRST_COMPLETED)``, not after the whole segment). The lead passes
+    its subagent finish notification so the host clears that subagent's
+    active-slot immediately -- otherwise a finished subagent keeps showing as
+    "running" (timer climbing, stale facts rotating) until the slowest sibling
+    returns, which reads as a hung loop.
+
     When parallel dispatch is disabled (``SOMNIA_NO_PARALLEL_TOOLS=1`` or
     ``runtime.parallel_tool_dispatch = false``) or the segment is a single
     call, runs serially inline -- identical to the pre-parallel behavior.
@@ -425,7 +433,10 @@ def run_parallel_explore_subagents(
             if interrupt_checker is not None and interrupt_checker():
                 raise TurnInterrupted("Interrupted by user.")
             ep = prompts_by_id.get(getattr(tool_call, "id", ""))
-            out.append(_invoke_subagent(run_subagent_fn, tool_call, interrupt_checker, session_id, ep, checkpoint_store))
+            result = _invoke_subagent(run_subagent_fn, tool_call, interrupt_checker, session_id, ep, checkpoint_store)
+            if on_subagent_finished is not None:
+                _notify_finished(on_subagent_finished, tool_call)
+            out.append(result)
         return out
 
     pool = _SUBAGENT_POOL.acquire(_max_workers(settings))
@@ -439,16 +450,31 @@ def run_parallel_explore_subagents(
 
     results: list[dict[str, Any] | None] = [None] * len(segment_calls)
     interrupted = False
-    for offset, future in futures:
-        try:
-            results[offset] = future.result()
-        except TurnInterrupted:
-            interrupted = True
-        except Exception as exc:  # pragma: no cover - defensive
-            # A subagent loop blowing up should already be converted to a
-            # structured result by its own error handling; if something escapes,
-            # surface a best-effort structured error rather than a None slot.
-            results[offset] = _subagent_failed_output(exc)
+    # Wake on FIRST_COMPLETED so each subagent's finish notification fires as
+    # soon as THAT subagent returns, instead of after the whole segment.
+    pending = list(futures)
+    while pending:
+        _, not_done = wait([f for _, f in pending], return_when=FIRST_COMPLETED)
+        next_pending: list[tuple[int, Future[dict[str, Any]]]] = []
+        for offset, future in pending:
+            if future in not_done:
+                next_pending.append((offset, future))
+                continue
+            try:
+                results[offset] = future.result()
+            except TurnInterrupted:
+                interrupted = True
+            except Exception as exc:  # pragma: no cover - defensive
+                # A subagent loop blowing up should already be converted to a
+                # structured result by its own error handling; if something escapes,
+                # surface a best-effort structured error rather than a None slot.
+                results[offset] = _subagent_failed_output(exc)
+            # Notify per completion regardless of outcome: the host must clear
+            # the slot for failed/interrupted subagents too, or it lingers as a
+            # ghost "running" entry.
+            if on_subagent_finished is not None:
+                _notify_finished(on_subagent_finished, segment_calls[offset])
+        pending = next_pending
 
     if interrupted or any(r is None for r in results):
         for _, future in futures:
@@ -457,6 +483,14 @@ def run_parallel_explore_subagents(
             raise TurnInterrupted("Interrupted by user.")
 
     return [r for r in results if r is not None]  # type: ignore[list-item]
+
+
+def _notify_finished(callback: Callable[[Any], None], tool_call: Any) -> None:
+    """Fire the per-subagent finish callback; never let it break collection."""
+    try:
+        callback(tool_call)
+    except Exception:
+        pass
 
 
 def _subagent_failed_output(exc: BaseException) -> dict[str, Any]:

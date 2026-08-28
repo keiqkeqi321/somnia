@@ -3548,6 +3548,7 @@ class OpenAgentRuntime:
                                 settings=self.settings,
                                 session_id=session.id,
                                 checkpoint_store=self.subagent_checkpoint_store,
+                                on_subagent_finished=self._print_tool_finished_subagent,
                             )
                         except TurnInterrupted:
                             # Rewrite placeholders to interrupted + resume
@@ -3646,6 +3647,11 @@ class OpenAgentRuntime:
                             if subagent_started_ids is not None and self._subagent_slot_id(tool_call) in subagent_started_ids:
                                 # Pre-fired above; emit the matching finish so the
                                 # UI clears the active-subagent slot now it's done.
+                                # The parallel path already fired this per future
+                                # via on_subagent_finished; re-firing is idempotent
+                                # on both hosts (CLI pops a missing key as a no-op,
+                                # desktop re-marks the card finished) and covers
+                                # dispatch paths that did not pass the callback.
                                 self._print_tool_finished_subagent(tool_call)
                             elif tool_call.id not in pre_fired_tool_ids:
                                 # Not pre-fired before execution; emit the start

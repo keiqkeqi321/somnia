@@ -568,6 +568,86 @@ class RunParallelExploreSubagentsTests(unittest.TestCase):
         self.assertEqual(seen["activity_id"], "orig-aid-001")
         self.assertNotEqual(seen["activity_id"], "new-call-id-999")
 
+    def test_finish_callback_fires_as_each_subagent_completes(self) -> None:
+        """The per-subagent finish callback must fire when THAT future completes,
+        not after the whole segment. Regression: parallel Explore subagents that
+        finished early kept showing as "running" (timer climbing, stale facts
+        rotating, including their own completed submit_summary output) until the
+        slowest sibling returned -- which reads as an infinite loop."""
+        events: list[tuple[str, str]] = []  # (tool_call.id, marker)
+        guard = threading.Lock()
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
+            if prompt == "p0":
+                time.sleep(0.05)  # fast sibling finishes first
+            else:
+                time.sleep(0.35)  # slow sibling keeps the segment open
+            return f"summary:{prompt}"
+
+        def on_finished(tool_call):
+            with guard:
+                events.append((tool_call.id, "finish"))
+
+        calls = self._calls(2)
+        results = run_parallel_explore_subagents(
+            run_fn, calls, settings=self._settings(), on_subagent_finished=on_finished
+        )
+        self.assertEqual([r.get("tool_result_text") for r in results], ["summary:p0", "summary:p1"])
+        # Every subagent produced exactly one finish notification...
+        self.assertEqual(sorted(cid for cid, _ in events), ["s0", "s1"])
+        # ...in completion order (fast first), not submission order.
+        self.assertEqual([cid for cid, _ in events], ["s0", "s1"])
+
+    def test_finish_callback_fires_for_failed_subagent(self) -> None:
+        """A subagent whose loop blows up must still get its finish notification:
+        otherwise its host slot lingers as a ghost running entry."""
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
+            if prompt == "p0":
+                raise RuntimeError("boom")
+            return f"summary:{prompt}"
+
+        finished: list[str] = []
+        results = run_parallel_explore_subagents(
+            run_fn,
+            self._calls(2),
+            settings=self._settings(),
+            on_subagent_finished=lambda tc: finished.append(tc.id),
+        )
+        self.assertEqual(sorted(finished), ["s0", "s1"])
+        # The escaped exception became a structured failure, not a dropped slot.
+        self.assertEqual(results[0].get("error_type"), "subagent_failed")
+        self.assertEqual(results[1].get("tool_result_text"), "summary:p1")
+
+    def test_finish_callback_fires_on_serial_path(self) -> None:
+        """Single-call / disabled-parallelism paths run inline but must still
+        notify per completion so host slot handling is uniform."""
+        finished: list[str] = []
+
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
+            return f"summary:{prompt}"
+
+        results = run_parallel_explore_subagents(
+            run_fn,
+            self._calls(1),
+            settings=self._settings(),
+            on_subagent_finished=lambda tc: finished.append(tc.id),
+        )
+        self.assertEqual(finished, ["s0"])
+        self.assertEqual(results[0].get("tool_result_text"), "summary:p0")
+
+    def test_finish_callback_exception_does_not_break_collection(self) -> None:
+        def run_fn(prompt, agent_type="Explore", *, activity_id=None, should_interrupt=None, session_id=None, extra_prompt=None, resume_from=None):
+            return f"summary:{prompt}"
+
+        def bad_callback(tool_call):
+            raise RuntimeError("host callback exploded")
+
+        results = run_parallel_explore_subagents(
+            run_fn, self._calls(2), settings=self._settings(), on_subagent_finished=bad_callback
+        )
+        self.assertEqual([r.get("tool_result_text") for r in results], ["summary:p0", "summary:p1"])
+
 
 if __name__ == "__main__":
     unittest.main()
