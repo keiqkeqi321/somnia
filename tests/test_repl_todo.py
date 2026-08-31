@@ -302,6 +302,65 @@ class ReplTodoTests(unittest.TestCase):
         self.assertIn("bash", prompt_text)
         self.assertIn("Start-Sleep -Seconds 5", prompt_text)
 
+    def test_question_request_flushes_pending_streamed_text(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        streamer = ConsoleStreamer()
+        delta_event = SimpleNamespace(type="assistant_delta", payload={"delta": "About to ask:\nwhich flavor?"})
+        question_event = SimpleNamespace(
+            type="question_requested",
+            payload={
+                "question": "Which flavor?",
+                "options": ["mint", "vanilla"],
+                "allow_custom": True,
+                "request_id": "req-1",
+            },
+        )
+
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout):
+            runner._process_service_event(delta_event, streamer)
+            streamed_before = fake_stdout.getvalue()
+            runner._process_service_event(question_event, streamer)
+
+        # While streaming, the trailing partial line stays buffered in the
+        # markdown stream renderer; the question dialog must flush it first.
+        self.assertIn("About to ask:", streamed_before)
+        self.assertNotIn("which flavor?", streamed_before)
+        self.assertIn("which flavor?", fake_stdout.getvalue())
+        pending = runner.drain_question_requests()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].question, "Which flavor?")
+
+    def test_authorization_request_flushes_pending_streamed_text(self) -> None:
+        runtime = SimpleNamespace(settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")))
+        runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
+        streamer = ConsoleStreamer()
+        delta_event = SimpleNamespace(type="assistant_delta", payload={"delta": "I need to clean up:\nthe temporary build dir"})
+        auth_event = SimpleNamespace(
+            type="authorization_requested",
+            payload={
+                "tool_name": "bash",
+                "reason": "Needs approval in shortcuts mode.",
+                "argument_summary": "Remove-Item -Recurse .scratch/bui",
+                "execution_mode": "shortcuts",
+                "request_id": "req-2",
+            },
+        )
+
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout):
+            runner._process_service_event(delta_event, streamer)
+            streamed_before = fake_stdout.getvalue()
+            runner._process_service_event(auth_event, streamer)
+
+        self.assertIn("I need to clean up:", streamed_before)
+        self.assertNotIn("the temporary build dir", streamed_before)
+        self.assertIn("the temporary build dir", fake_stdout.getvalue())
+        pending = runner.drain_authorization_requests()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].tool_name, "bash")
+
     def test_bottom_toolbar_includes_recent_context_governance_label(self) -> None:
         runtime = SimpleNamespace(
             settings=SimpleNamespace(provider=SimpleNamespace(name="openai", model="gpt-5")),

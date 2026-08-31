@@ -1312,6 +1312,12 @@ class TurnQueueRunner:
         if event_type == SUBAGENT_ACTIVITY:
             self._note_subagent_activity(payload)
             return
+        if event_type in {AUTHORIZATION_REQUESTED, MODE_SWITCH_REQUESTED, QUESTION_REQUESTED}:
+            # The interactive dialog takes over the terminal below the
+            # conversation; render whatever the markdown stream renderer is
+            # still holding back (its trailing partial line) so the
+            # assistant's text is complete before the dialog appears.
+            streamer.finish()
         if event_type == AUTHORIZATION_REQUESTED:
             self._enqueue_authorization_request(
                 tool_name=str(payload.get("tool_name", "")).strip(),
