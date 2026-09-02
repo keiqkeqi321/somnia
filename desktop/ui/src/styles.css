@@ -4441,12 +4441,22 @@ button {
   color: var(--ink-3);
 }
 
+/* Interrupt stays quiet while it sits next to send for a whole turn:
+ * a tinted chip that only goes solid red on hover, like the stat pills. */
 .composer-send.stop {
-  background: var(--red);
+  background: var(--red-tint);
+  color: var(--red);
+  transition: background 120ms ease, color 120ms ease, transform 100ms ease;
 }
 
 .composer-send.stop:hover:not(:disabled) {
-  background: #f47377;
+  background: var(--red);
+  color: #ffffff;
+}
+
+.composer-send.stop:disabled {
+  background: var(--hover-2);
+  color: var(--ink-3);
 }
 
 .composer-send svg {
