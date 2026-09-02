@@ -3757,6 +3757,9 @@ button {
 
 .tool-call-summary-main {
   flex: 1 1 auto;
+  /* A name too long for the row clips at the column edge instead of
+   * painting under the meta column */
+  overflow: hidden;
 }
 
 .tool-call-summary-main > span:not(.tool-result-dot) {
@@ -3764,7 +3767,9 @@ button {
 }
 
 .tool-call-summary-meta {
-  flex: 0 1 auto;
+  /* Never shrink: a squeezed meta paints its log id / stats leftward
+   * over the excerpt (justify-content: flex-end overflow) */
+  flex: none;
   justify-content: flex-end;
 }
 
