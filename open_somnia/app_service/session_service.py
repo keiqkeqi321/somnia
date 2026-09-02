@@ -37,6 +37,11 @@ class SessionService:
     def load_session(self, session_id: str) -> AgentSession:
         return self.runtime.load_session(session_id)
 
+    def fork_session(self, session_id: str, message_count: int) -> AgentSession:
+        """Branch a new session off ``session_id`` keeping its first
+        ``message_count`` messages. The source session is left untouched."""
+        return self.runtime.fork_session(session_id, message_count)
+
     def delete_session(self, session_id: str) -> bool:
         return self.runtime.delete_session(session_id)
 

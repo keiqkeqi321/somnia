@@ -37,6 +37,8 @@ function relayResultFor(method: string): unknown {
       return { message: "Context compacted.", session: loadedSession };
     case "session.new":
       return { session: { ...loadedSession, id: "session-2", messages: [] }, previous_session_id: loadedSession.id };
+    case "session.fork":
+      return { session: { ...loadedSession, id: "session-3" }, previous_session_id: loadedSession.id };
     case "session.set_model":
       return { message: "Session pinned.", session: loadedSession, provider: "openai", model: "gpt-test", pinned: true };
     case "workspace.paths":
@@ -128,6 +130,7 @@ describe("Remote Somnia Connection", () => {
 
     await expect(connection.compactSession("session-1")).resolves.toMatchObject({ message: "Context compacted." });
     await expect(connection.newSession("session-1")).resolves.toMatchObject({ previous_session_id: "session-1", session: { id: "session-2" } });
+    await expect(connection.forkSession("session-1", 1)).resolves.toMatchObject({ previous_session_id: "session-1", session: { id: "session-3" } });
     await expect(connection.listWorkspacePaths("src", 30)).resolves.toEqual([{ path: "src", basename: "src", kind: "dir" }]);
     await expect(connection.stageInlineImage({ name: "paste.png", mediaType: "image/png", dataUrl: "data:image/png;base64,cG5n" })).resolves.toMatchObject({ media_type: "image/png" });
     connection.close();

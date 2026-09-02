@@ -2240,6 +2240,9 @@ class OpenAgentRuntime:
         self._current_working_file = None
         return self.session_manager.load(session_id)
 
+    def fork_session(self, session_id: str, message_count: int) -> AgentSession:
+        return self.session_manager.fork(session_id, message_count)
+
     def list_sessions(self) -> list[AgentSession]:
         return self.session_manager.list_all()
 

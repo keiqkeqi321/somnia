@@ -64,6 +64,12 @@ export interface SomniaClient extends SomniaConnection {
    */
   newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }>;
   /**
+   * Branch a new session off the given one, keeping its first `messageCount`
+   * messages. The source session is left untouched; the fork inherits the
+   * provider/model pin but starts with its own task board.
+   */
+  forkSession(sessionId: string, messageCount: number): Promise<{ session: AgentSession; previous_session_id: string }>;
+  /**
    * Pin a session to a provider/model (both set) or clear the pin so the
    * session follows the workspace default (both null). Only this session is
    * affected; the workspace-wide default and other sessions are untouched.
@@ -262,6 +268,10 @@ export class DirectSomniaClient implements SomniaClient {
 
   newSession(sessionId: string): Promise<{ session: AgentSession; previous_session_id: string }> {
     return this.rest.newSession(sessionId);
+  }
+
+  forkSession(sessionId: string, messageCount: number): Promise<{ session: AgentSession; previous_session_id: string }> {
+    return this.rest.forkSession(sessionId, messageCount);
   }
 
   setSessionModel(

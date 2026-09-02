@@ -76,6 +76,7 @@ import type {
   ContextWindowUsage,
   ConversationContentBlock,
   ConversationPendingTurn,
+  ConversationRow,
   ConversationRuntimeItem,
   ConversationThinkingLog,
   ConversationToolCall,
@@ -3181,6 +3182,31 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
     }
   }
 
+  async function handleForkSession(row: ConversationRow) {
+    const client = clientRef.current;
+    const session = currentSessionRef.current;
+    const projectPath = selectedProjectPathRef.current;
+    if (!client || !session || typeof row.messageEnd !== "number") {
+      return;
+    }
+    setBusyAction("session-fork");
+    try {
+      const result = await client.forkSession(session.id, row.messageEnd);
+      upsertProjectSession(projectPath, result.session);
+      setSelectedSessionId(result.session.id);
+      setCurrentSession(result.session);
+      if (projectPath) {
+        persistLastOpenedSession(projectPath, result.session.id);
+      }
+      clearConversationRuntimeState(projectPath, result.session.id);
+      setBannerMessage(t("message.forked"));
+    } catch (error) {
+      setBannerMessage(formatErrorMessage(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleAgentNewSession(projectPath: string, previousSessionId: string, handoff: string) {
     const client = projectClientsRef.current[projectPath] ?? clientRef.current;
     if (!client) {
@@ -4653,6 +4679,25 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
                         <span className="session-answering-indicator conversation-answering-indicator" aria-label={t("sidebar.agentResponding")}>
                                       <PixelLoader />
                                     </span>
+                      ) : null}
+                      {row.role === "assistant" && !row.isPending && !row.isStreaming && typeof row.messageEnd === "number" ? (
+                        <div className="message-actions">
+                          <button
+                            type="button"
+                            className="message-action-button"
+                            title={t("message.forkFromHere")}
+                            aria-label={t("message.forkFromHere")}
+                            disabled={busyAction !== null}
+                            onClick={() => void handleForkSession(row)}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <line x1="6" y1="3" x2="6" y2="15" />
+                              <circle cx="18" cy="6" r="3" />
+                              <circle cx="6" cy="18" r="3" />
+                              <path d="M18 9a9 9 0 0 1-9 9" />
+                            </svg>
+                          </button>
+                        </div>
                       ) : null}
                     </article>
                   </div>

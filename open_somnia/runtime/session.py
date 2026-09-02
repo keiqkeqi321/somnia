@@ -30,6 +30,9 @@ class AgentSession:
     # board. None means the session's own id (its own board). Inherited across
     # /new swaps so the task board survives context resets.
     task_session_id: str | None = None
+    # Lineage: id of the session this one was forked from. Informational only;
+    # a fork is fully self-contained and survives the parent's deletion.
+    forked_from: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "AgentSession":
@@ -47,6 +50,7 @@ class AgentSession:
             provider_override=payload.get("provider_override") or None,
             model_override=payload.get("model_override") or None,
             task_session_id=payload.get("task_session_id") or None,
+            forked_from=payload.get("forked_from") or None,
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -64,6 +68,7 @@ class AgentSession:
             "provider_override": self.provider_override,
             "model_override": self.model_override,
             "task_session_id": self.task_session_id,
+            "forked_from": self.forked_from,
         }
 
 
@@ -101,6 +106,28 @@ class SessionManager:
     def save(self, session: AgentSession) -> None:
         self.session_store.save(session.to_payload())
         self.transcript_store.save_snapshot(session.id, session.messages)
+
+    def fork(self, session_id: str, message_count: int) -> AgentSession:
+        """Branch a new session off ``session_id`` keeping its first
+        ``message_count`` messages.
+
+        The source session is only read, never mutated; the fork is a fresh
+        self-contained session (own task board, no undo/token state) that
+        inherits the provider/model pin so it keeps talking to the same model.
+        """
+        source = self.load(session_id)
+        if not 1 <= message_count <= len(source.messages):
+            raise ValueError(
+                f"message_count {message_count} out of range for session {session_id} "
+                f"({len(source.messages)} messages)"
+            )
+        forked = self.create()
+        forked.messages = deepcopy(source.messages[:message_count])
+        forked.provider_override = source.provider_override
+        forked.model_override = source.model_override
+        forked.forked_from = source.id
+        self.save(forked)
+        return forked
 
     def delete(self, session_id: str) -> bool:
         deleted = self.session_store.delete(session_id)

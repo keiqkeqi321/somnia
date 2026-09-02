@@ -34,6 +34,8 @@ export interface AgentSession {
    */
   provider_override?: string | null;
   model_override?: string | null;
+  /** Id of the session this one was forked from, if any. */
+  forked_from?: string | null;
   context_window_usage?: ContextWindowUsage | null;
   preview?: string;
   has_visible_exchange?: boolean;
@@ -316,6 +318,12 @@ export interface ConversationRow {
   parts?: ConversationRowPart[];
   toolCalls?: ConversationToolCall[];
   images?: ConversationImageReferenceBlock[];
+  /**
+   * Exclusive index into session.messages just past the last persisted
+   * message this row renders. Only set for rows built from persisted
+   * messages; used as the fork point for session forking.
+   */
+  messageEnd?: number;
 }
 
 export type ConversationRowPart =

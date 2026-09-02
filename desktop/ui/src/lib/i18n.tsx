@@ -248,6 +248,8 @@ const translations = {
     "conversation.startSessionHint": "Connect to a sidecar, choose a session, then send a prompt. Streaming output lands here.",
     "conversation.waitingAssistant": "Waiting for assistant response",
     "conversation.agentResponding": "Agent is responding",
+    "message.forkFromHere": "Fork session from here",
+    "message.forked": "Forked a new session from this point.",
 
     /* ── Composer ── */
     "composer.placeholder": "Ask Somnia to inspect, plan, or implement against the current workspace.",
@@ -700,6 +702,8 @@ const translations = {
     "conversation.startSessionHint": "连接 sidecar，选择会话，然后发送 prompt。流式输出将显示在此处。",
     "conversation.waitingAssistant": "等待助手回复",
     "conversation.agentResponding": "Agent 正在回复",
+    "message.forkFromHere": "从此处分叉会话",
+    "message.forked": "已从此处分叉出新会话。",
 
     /* ── Composer ── */
     "composer.placeholder": "让 Somnia 检查、规划或实现当前工作区。",

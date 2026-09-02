@@ -105,6 +105,16 @@ class LocalSidecarBridge:
         if method == "session.new":
             session_id = _required_text(params, "session_id")
             return self._request("POST", f"/sessions/{quote(session_id, safe='')}/new", {})
+        if method == "session.fork":
+            session_id = _required_text(params, "session_id")
+            message_count = params.get("message_count")
+            if not isinstance(message_count, int) or isinstance(message_count, bool):
+                raise ValueError("message_count must be an integer.")
+            return self._request(
+                "POST",
+                f"/sessions/{quote(session_id, safe='')}/fork",
+                {"message_count": message_count},
+            )
         if method == "session.set_model":
             session_id = _required_text(params, "session_id")
             body: dict[str, Any] = {}

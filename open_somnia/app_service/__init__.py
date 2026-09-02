@@ -49,6 +49,9 @@ class AppService:
     def load_session(self, session_id: str) -> AgentSession:
         return self.session_service.load_session(session_id)
 
+    def fork_session(self, session_id: str, message_count: int) -> AgentSession:
+        return self.session_service.fork_session(session_id, message_count)
+
     def delete_session(self, session_id: str) -> bool:
         return self.session_service.delete_session(session_id)
 

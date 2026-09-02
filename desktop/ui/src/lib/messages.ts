@@ -149,7 +149,7 @@ export function buildConversationRows(
         index += 1;
       }
       if (parts.length > 0) {
-        appendAssistantRow(rows, { id: rowId, role: "assistant", text, parts, toolCalls });
+        appendAssistantRow(rows, { id: rowId, role: "assistant", text, parts, toolCalls, messageEnd: index + 1 });
       }
       index += 1;
       continue;
@@ -251,6 +251,7 @@ function appendAssistantRow(rows: ConversationRow[], row: ConversationRow) {
     toolCalls: [...(last.toolCalls ?? []), ...(row.toolCalls ?? [])],
     isStreaming: Boolean(last.isStreaming || row.isStreaming),
     isLoading: Boolean(last.isLoading || row.isLoading),
+    messageEnd: row.messageEnd ?? last.messageEnd,
   };
 }
 

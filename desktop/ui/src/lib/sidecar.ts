@@ -140,6 +140,16 @@ export class SidecarClient {
     );
   }
 
+  async forkSession(sessionId: string, messageCount: number): Promise<{ session: AgentSession; previous_session_id: string }> {
+    return parseResponse<{ session: AgentSession; previous_session_id: string }>(
+      await fetch(`${this.baseUrl}/sessions/${sessionId}/fork`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message_count: messageCount }),
+      }),
+    );
+  }
+
   /**
    * Pin a session to a specific provider/model, or clear the pin (pass null for
    * both) so it follows the workspace default. Only this session is affected.

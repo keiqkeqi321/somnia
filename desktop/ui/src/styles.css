@@ -2904,6 +2904,47 @@ button {
   margin-top: 10px;
 }
 
+.message-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.conversation-virtual-item:hover .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+}
+
+.message-action-button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.message-action-button:hover:not(:disabled) {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.message-action-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.message-action-button svg {
+  width: 15px;
+  height: 15px;
+}
+
 .decision-card {
   align-self: stretch;
   width: min(100%, 48rem);

@@ -1113,6 +1113,19 @@ class SidecarServer:
         self.broadcast_event(make_sidecar_event("session_created", payload={"session": serialized}, session_id=fresh.id))
         return {"session": serialized, "previous_session_id": old.id}
 
+    def fork_session(self, session_id: str, message_count: int) -> dict[str, Any]:
+        try:
+            self.service.load_session(session_id)
+        except (FileNotFoundError, ValueError) as exc:
+            raise SidecarAPIError(HTTPStatus.NOT_FOUND, f"Session '{session_id}' was not found.") from exc
+        try:
+            forked = self.service.fork_session(session_id, message_count)
+        except ValueError as exc:
+            raise SidecarAPIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        serialized = self._serialize_session(forked)
+        self.broadcast_event(make_sidecar_event("session_created", payload={"session": serialized}, session_id=forked.id))
+        return {"session": serialized, "previous_session_id": session_id}
+
     def interrupt_turn(self, turn_id: str) -> dict[str, Any]:
         interrupted = self.service.interrupt_turn(turn_id)
         return {"turn_id": str(turn_id).strip(), "interrupted": bool(interrupted)}
@@ -1533,6 +1546,11 @@ class _SidecarRequestHandler(BaseHTTPRequestHandler):
             return self.sidecar.compact_session(path_parts[1]), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "new":
             return self.sidecar.new_session(path_parts[1]), HTTPStatus.OK
+        if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "fork":
+            raw_count = body.get("message_count")
+            if not isinstance(raw_count, int) or isinstance(raw_count, bool):
+                raise SidecarAPIError(HTTPStatus.BAD_REQUEST, "message_count must be an integer.")
+            return self.sidecar.fork_session(path_parts[1], raw_count), HTTPStatus.OK
         if len(path_parts) == 3 and path_parts[0] == "sessions" and path_parts[2] == "model":
             session_id = path_parts[1]
             raw_provider = body.get("provider_name")

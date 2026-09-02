@@ -171,6 +171,13 @@ export class RemoteSomniaConnection implements SomniaClient {
     return this.sendRequest<{ session: AgentSession; previous_session_id: string }>("session.new", { session_id: sessionId });
   }
 
+  forkSession(sessionId: string, messageCount: number): Promise<{ session: AgentSession; previous_session_id: string }> {
+    return this.sendRequest<{ session: AgentSession; previous_session_id: string }>("session.fork", {
+      session_id: sessionId,
+      message_count: messageCount,
+    });
+  }
+
   setSessionModel(
     sessionId: string,
     providerName: string | null,

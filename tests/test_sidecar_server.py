@@ -1048,6 +1048,81 @@ class SidecarServerTests(unittest.TestCase):
         finally:
             server.close()
 
+    def test_sidecar_fork_session_branches_messages_and_announces(self) -> None:
+        root = self._stable_test_dir("sidecar-session-fork")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            ws = self._connect_websocket(server.host, server.port)
+            try:
+                session = server.service.create_session()
+                session.messages.extend(
+                    [
+                        {"role": "user", "content": "first"},
+                        {"role": "assistant", "content": "one"},
+                        {"role": "user", "content": "second"},
+                        {"role": "assistant", "content": "two"},
+                    ]
+                )
+                server.runtime.session_manager.save(session)
+
+                status, fork_payload = self._request_json(
+                    "POST",
+                    f"{server.base_url}/sessions/{session.id}/fork",
+                    {"message_count": 2},
+                )
+                self.assertEqual(status, 200)
+                forked = fork_payload["session"]
+                self.assertEqual(fork_payload["previous_session_id"], session.id)
+                self.assertNotEqual(forked["id"], session.id)
+                self.assertEqual(forked["messages"], session.messages[:2])
+                self.assertEqual(forked["forked_from"], session.id)
+
+                # The source session keeps its full history.
+                _, source_payload = self._request_json("GET", f"{server.base_url}/sessions/{session.id}")
+                self.assertEqual(len(source_payload["session"]["messages"]), 4)
+
+                events = self._collect_events_until(
+                    ws,
+                    lambda event: event.get("type") == "session_created" and event.get("session_id") == forked["id"],
+                )
+                self.assertTrue(
+                    any(
+                        event.get("type") == "session_created" and event.get("session_id") == forked["id"]
+                        for event in events
+                    )
+                )
+            finally:
+                self._close_websocket(ws)
+        finally:
+            server.close()
+
+    def test_sidecar_fork_session_rejects_bad_requests(self) -> None:
+        root = self._stable_test_dir("sidecar-session-fork-400")
+        server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
+        try:
+            server.start_background()
+            self.assertTrue(server.wait_until_ready())
+            _, create_payload = self._request_json("POST", f"{server.base_url}/sessions", {})
+            session_id = create_payload["session"]["id"]
+
+            # message_count missing / wrong type -> 400
+            for body in ({}, {"message_count": "2"}):
+                with self.assertRaises(urllib.error.HTTPError) as context:
+                    self._request_json("POST", f"{server.base_url}/sessions/{session_id}/fork", body)
+                self.assertEqual(context.exception.code, 400)
+            # Empty session: any positive count is out of range -> 400
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("POST", f"{server.base_url}/sessions/{session_id}/fork", {"message_count": 1})
+            self.assertEqual(context.exception.code, 400)
+            # Unknown session -> 404
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                self._request_json("POST", f"{server.base_url}/sessions/nope/fork", {"message_count": 1})
+            self.assertEqual(context.exception.code, 404)
+        finally:
+            server.close()
+
     def test_sidecar_session_context_usage_uses_pinned_model_window(self) -> None:
         root = self._stable_test_dir("sidecar-session-context-usage-pin")
         server = SidecarServer.from_settings(self._make_settings(root), host="127.0.0.1", port=0)
