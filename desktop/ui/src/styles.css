@@ -793,6 +793,9 @@ button {
   grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
+  /* A long profile list must not stretch the form: the form grid's default
+   * align-content would inflate its rows and open huge gaps between fields. */
+  align-items: start;
 }
 
 .provider-profile-list {
@@ -873,16 +876,25 @@ button {
 
 .provider-profile-form {
   display: grid;
-  /* Auto-fit so fields wrap to one column on narrow viewports (phones) and
-   * keep two columns when there's room (desktop / landscape). The 180px floor
-   * keeps inputs/selects comfortably usable instead of being crushed. */
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  /* Two columns at desktop width; long values (Base URL, API Key) span both
+   * via .provider-profile-wide. Rows pack from the top — never stretch to
+   * match a taller profile list column. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
   gap: 12px;
   min-width: 0;
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 8px;
   background: rgba(10, 13, 18, 0.34);
+}
+
+/* The form pane only gets ~650px around a 1100px viewport (nav + list column
+ * eat the rest); below that, two columns crush the inputs — stack instead. */
+@media (max-width: 1100px) {
+  .provider-profile-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .provider-profile-form label {
@@ -1132,8 +1144,8 @@ button {
     max-width: 16rem;
   }
 
-  /* Form fields already auto-fit via .provider-profile-form; ensure the panel
-   * itself doesn't overflow on very narrow screens. */
+  /* The form already stacks to one column below 1100px; here just keep the
+   * panel padding from overflowing very narrow screens. */
   .provider-profile-form {
     padding: 10px;
   }

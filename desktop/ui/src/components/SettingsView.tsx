@@ -1068,11 +1068,11 @@ export function ProviderProfilesEditor({
                   <option value="anthropic">anthropic</option>
                 </select>
               </label>
-              <label>
+              <label className="provider-profile-wide">
                 {fieldLabel("settings.providerProfiles.baseUrl", "baseUrl")}
                 <input value={activeProvider.baseUrl} onChange={(event) => updateProfile(activeProvider.name, { baseUrl: event.currentTarget.value })} />
               </label>
-              <label>
+              <label className="provider-profile-wide">
                 {fieldLabel("settings.providerProfiles.apiKey", "apiKey")}
                 <input value={activeProvider.apiKey} onChange={(event) => updateProfile(activeProvider.name, { apiKey: event.currentTarget.value })} />
               </label>
