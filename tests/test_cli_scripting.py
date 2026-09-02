@@ -278,6 +278,74 @@ class CliEndToEndTests(unittest.TestCase):
         ids = [item["id"] for item in payload["sessions"]]
         self.assertIn(session["id"], ids)
 
+    def _create_session_with_messages(self, messages: list[dict]) -> str:
+        from open_somnia.config.settings import load_settings
+        from open_somnia.storage.sessions import SessionStore
+
+        settings = load_settings(str(self.workspace), allow_missing_provider=True)
+        store = SessionStore(settings.storage.sessions_dir)
+        session = store.create()
+        session["messages"] = messages
+        store.save(session)
+        return session["id"]
+
+    def test_sessions_fork_json(self) -> None:
+        source_id = self._create_session_with_messages(
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+                {"role": "assistant", "content": "a2"},
+            ]
+        )
+
+        code, out, _ = self._run_main(["sessions", "fork", source_id, "--at", "2", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["forked_from"], source_id)
+        self.assertEqual(payload["message_count"], 2)
+        self.assertNotEqual(payload["session_id"], source_id)
+
+        from open_somnia.config.settings import load_settings
+        from open_somnia.runtime.session import SessionManager
+        from open_somnia.storage.sessions import SessionStore
+        from open_somnia.storage.transcripts import TranscriptStore
+
+        settings = load_settings(str(self.workspace), allow_missing_provider=True)
+        manager = SessionManager(
+            SessionStore(settings.storage.sessions_dir),
+            TranscriptStore(settings.storage.transcripts_dir),
+        )
+        forked = manager.load(payload["session_id"])
+        self.assertEqual(
+            forked.messages,
+            [
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+            ],
+        )
+        self.assertEqual(forked.forked_from, source_id)
+        self.assertEqual(len(manager.load(source_id).messages), 4)
+
+    def test_sessions_fork_plain_output(self) -> None:
+        source_id = self._create_session_with_messages([{"role": "user", "content": "q1"}])
+        code, out, _ = self._run_main(["sessions", "fork", source_id, "--at", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn(f"from {source_id} @ 1", out)
+
+    def test_sessions_fork_unknown_session_exits_6(self) -> None:
+        code, _, err = self._run_main(["sessions", "fork", "nosuchid", "--at", "1", "--json"])
+        self.assertEqual(code, EXIT_SESSION_NOT_FOUND)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"]["code"], "session_not_found")
+
+    def test_sessions_fork_out_of_range_exits_64(self) -> None:
+        source_id = self._create_session_with_messages([{"role": "user", "content": "q1"}])
+        code, _, err = self._run_main(["sessions", "fork", source_id, "--at", "5", "--json"])
+        self.assertEqual(code, EXIT_USAGE_ERROR)
+        payload = json.loads(err)
+        self.assertEqual(payload["error"]["code"], "usage_error")
+
     def test_providers_list_json_masks_api_key(self) -> None:
         code, out, _ = self._run_main(["providers", "list", "--json"])
         self.assertEqual(code, 0)

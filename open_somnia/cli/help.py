@@ -42,6 +42,7 @@ OPTION_DESCRIPTIONS: dict[str, str] = {
     "--session": "Resume the saved session with this ID (chat/run); for traceviewer, only include provider payloads for this session ID.",
     "--continue-last": "Continue the latest saved session in this workspace.",
     "--plain": "Plain output: no ANSI styling and no bullet prefix (ideal for pipes).",
+    "--at": "Fork point: number of leading messages the forked session keeps.",
     "-f": "Read prompt text from this file (combined with the prompt argument and piped stdin).",
     "--global": "Use the global config file (~/.open_somnia/open_somnia.toml).",
     "--project": "Use the workspace config file (.open_somnia/open_somnia.toml).",
@@ -119,18 +120,21 @@ CLI_COMMANDS: list[CommandSpec] = [
     CommandSpec(
         name="sessions",
         description="Inspect saved sessions non-interactively.",
-        usage="somnia sessions list [--json]",
+        usage="somnia sessions list [--json] | somnia sessions fork <session-id> --at <n> [--json]",
         detail=(
             "Lists saved sessions for this workspace (id, timestamps, preview, "
-            "token usage) without opening the interactive picker. Does not require "
-            "a configured provider and never connects to MCP servers. Pair with "
-            "`somnia run --session <id>` to continue a session from a script."
+            "token usage) without opening the interactive picker, or forks a "
+            "session so the branch keeps only its first N messages. Does not "
+            "require a configured provider and never connects to MCP servers. "
+            "Pair with `somnia run --session <id>` to continue a session (or a "
+            "fresh fork) from a script."
         ),
         section="cli",
-        options=("--json",),
+        options=("--json", "--at"),
         examples=(
             "somnia sessions list",
             "somnia sessions list --json",
+            "somnia sessions fork 6b466a6d6a78 --at 12 --json",
         ),
     ),
     CommandSpec(
@@ -494,6 +498,22 @@ REPL_COMMANDS: list[CommandSpec] = [
         ),
         section="repl",
         examples=("/new", "/new Continue task #3; the spec is in .scratch/spec.md"),
+    ),
+    CommandSpec(
+        name="/fork",
+        description="Branch the session at a chosen message and switch to the fork.",
+        usage="/fork [message-count]",
+        detail=(
+            "Creates a new session that keeps the conversation up to a chosen "
+            "message and switches to it, so you can explore a different direction "
+            "without losing the original. Without an argument, a picker lists the "
+            "visible messages to fork after; with a number, forks after exactly "
+            "that many messages. The original session is untouched and stays "
+            "resumable. The fork inherits the provider/model pin but gets its own "
+            "task board."
+        ),
+        section="repl",
+        examples=("/fork", "/fork 12"),
     ),
     CommandSpec(
         name="/cancel",

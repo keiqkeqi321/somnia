@@ -539,6 +539,34 @@ def cmd_sessions_list(settings, *, as_json: bool = False) -> int:
     return 0
 
 
+def cmd_sessions_fork(settings, session_id: str, *, at: int, as_json: bool = False) -> int:
+    from open_somnia.runtime.session import SessionManager
+    from open_somnia.storage.sessions import SessionStore
+    from open_somnia.storage.transcripts import TranscriptStore
+
+    manager = SessionManager(
+        SessionStore(settings.storage.sessions_dir),
+        TranscriptStore(settings.storage.transcripts_dir),
+    )
+    try:
+        manager.load(session_id)
+    except ValueError:
+        raise CliError(
+            f"Unknown session '{session_id}'.",
+            code="session_not_found",
+            exit_code=EXIT_SESSION_NOT_FOUND,
+        ) from None
+    try:
+        forked = manager.fork(session_id, at)
+    except ValueError as exc:
+        raise CliError(str(exc), code="usage_error", exit_code=EXIT_USAGE_ERROR) from None
+    if as_json:
+        emit_json({"session_id": forked.id, "forked_from": session_id, "message_count": at})
+    else:
+        print(f"forked session {forked.id} from {session_id} @ {at}")
+    return 0
+
+
 def _provider_profile_payload(name: str, profile, *, default_name: str, active_name: str) -> dict[str, Any]:
     return {
         "name": name,

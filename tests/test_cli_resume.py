@@ -59,6 +59,20 @@ class CliResumeTests(unittest.TestCase):
         self.assertFalse(args.resume)
         self.assertEqual(args.command, "chat")
 
+    def test_parser_supports_sessions_fork(self) -> None:
+        args = build_parser().parse_args(["sessions", "fork", "abc123", "--at", "4", "--json"])
+
+        self.assertEqual(args.command, "sessions")
+        self.assertEqual(args.sessions_command, "fork")
+        self.assertEqual(args.session_id, "abc123")
+        self.assertEqual(args.at, 4)
+        self.assertTrue(args.json)
+
+    def test_parser_sessions_fork_requires_at(self) -> None:
+        with self.assertRaises(SystemExit) as exited:
+            build_parser().parse_args(["sessions", "fork", "abc123"])
+        self.assertEqual(exited.exception.code, 64)
+
     def test_parser_supports_provider_and_model_for_doctor_subcommand(self) -> None:
         args = build_parser().parse_args(["doctor", "--provider", "openai", "--model", "gpt-4.1"])
 

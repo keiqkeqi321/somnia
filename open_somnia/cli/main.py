@@ -248,6 +248,15 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command", required=True, parser_class=SomniaArgumentParser)
     sessions_list_parser = sessions_subparsers.add_parser("list", help="List saved sessions.")
     _add_json_flag(sessions_list_parser)
+    sessions_fork_parser = sessions_subparsers.add_parser("fork", help="Fork a session, keeping its first N messages.")
+    sessions_fork_parser.add_argument("session_id", help="Session id to fork from.")
+    sessions_fork_parser.add_argument(
+        "--at",
+        type=int,
+        required=True,
+        help="Number of leading messages the fork keeps (fork point).",
+    )
+    _add_json_flag(sessions_fork_parser)
 
     config_parser = subparsers.add_parser("config", help="Read or modify configuration non-interactively.")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True, parser_class=SomniaArgumentParser)
@@ -463,10 +472,13 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             cmd_config_get,
             cmd_config_set,
             cmd_providers_list,
+            cmd_sessions_fork,
             cmd_sessions_list,
         )
 
         if args.command == "sessions":
+            if args.sessions_command == "fork":
+                return cmd_sessions_fork(settings, args.session_id, at=args.at, as_json=as_json)
             return cmd_sessions_list(settings, as_json=as_json)
         if args.command == "providers":
             return cmd_providers_list(settings, as_json=as_json)

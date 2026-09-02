@@ -2815,6 +2815,77 @@ def _handle_rollback_command(runtime, session, command: str) -> None:
         print(f"[rollback] {result['orphaned_checkpoints_deleted']} later checkpoint(s) deleted")
 
 
+def _fork_message_has_block(message: dict, block_type: str) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == block_type for block in content
+    )
+
+
+def _handle_fork_command(service, runtime, session, runner: TurnQueueRunner, command: str) -> None:
+    """Fork the current session at a message boundary and switch to the branch."""
+    args = command.split()
+    arg = args[1].strip() if len(args) > 1 else ""
+    messages = list(getattr(session, "messages", []) or [])
+    if not messages:
+        print("[fork] No messages to fork from yet.")
+        return
+
+    if arg:
+        try:
+            message_count = int(arg)
+        except ValueError:
+            print("[fork] Usage: /fork [message-count]")
+            return
+        if not 1 <= message_count <= len(messages):
+            print(f"[fork] message-count must be between 1 and {len(messages)}.")
+            return
+    else:
+        items = []
+        for index, message in enumerate(messages):
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            if message.get("role") == "user" and _fork_message_has_block(message, "tool_result"):
+                continue
+            preview = render_text_content(message.get("content")).replace("\n", " ").strip()
+            if not preview:
+                continue
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            items.append((str(index + 1), f"#{index + 1} {message['role']}: {preview}"))
+        if not items:
+            print("[fork] No visible messages to fork from.")
+            return
+        items.append(("cancel", "Cancel (default)"))
+        selection = choose_item_interactively(
+            "Fork Session",
+            "Pick the message to fork after; the new session keeps everything up to it.",
+            items,
+        )
+        if not selection or selection == "cancel":
+            print("[fork cancelled]")
+            return
+        message_count = int(selection)
+        # Never split a tool call from its result: when the chosen boundary
+        # lands between them, include the trailing tool-result message too.
+        chosen = messages[message_count - 1]
+        if (
+            chosen.get("role") == "assistant"
+            and _fork_message_has_block(chosen, "tool_call")
+            and message_count < len(messages)
+            and _fork_message_has_block(messages[message_count], "tool_result")
+        ):
+            message_count += 1
+
+    try:
+        forked = (service or runtime).fork_session(session.id, message_count)
+    except ValueError as exc:
+        print(f"[fork failed] {exc}")
+        return
+    runner.session = forked
+    print(f"[forked session {forked.id} from {session.id} @ {message_count}]")
+
+
 def _handle_skills_command(runtime) -> str | None:
     entries = list(runtime.skill_loader.list_entries())
     if not entries:
@@ -3074,6 +3145,12 @@ def run_repl(runtime, session, resumed: bool = False, service: AppService | None
                     if handoff:
                         runner.enqueue(handoff)
                         print_user_message(handoff)
+                    continue
+                if stripped == "/fork" or stripped.startswith("/fork "):
+                    if runner.has_inflight_work():
+                        print("[busy; wait for queued responses before /fork]")
+                        continue
+                    _handle_fork_command(service, runtime, session, runner, stripped)
                     continue
                 if stripped == "/init" or stripped.startswith("/init "):
                     if runner.has_inflight_work():
