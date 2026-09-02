@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -169,6 +170,13 @@ class MCPRegistry:
         self.warnings: list[str] = []
         self.server_tools: dict[str, list[str]] = {}
         self.server_tool_details: dict[str, list[dict[str, Any]]] = {}
+        # Guards the mutable maps above plus background-connect bookkeeping.
+        # The eager paths (__init__ via register_tools, reloads) run on the
+        # caller thread; register_tools_background mutates from daemon
+        # threads while agent turns read tool schemas concurrently.
+        self._lock = threading.RLock()
+        self._connecting: set[str] = set()
+        self._closed = False
 
     def register_tools(self, registry) -> None:
         for server in self.servers:
@@ -176,28 +184,99 @@ class MCPRegistry:
                 self.warnings.append(
                     f"Duplicate MCP server name '{server.name}': tools from the earlier entry are replaced by the later one."
                 )
-            client: MCPClient | None = None
             try:
-                client = MCPClient(server)
-                tools = client.list_tools()
-                self.clients[server.name] = client
-                self.server_tools[server.name] = [tool["name"] for tool in tools]
-                self.server_tool_details[server.name] = list(tools)
+                client, tools = self._connect_server(server)
             except Exception as exc:
-                # The client may be partially initialized (live portal thread,
-                # SSE stream, httpx client) even though tool registration
-                # failed. Close it here or it leaks and gets torn down by GC
-                # in arbitrary order at interpreter exit — which surfaces as
-                # "Session termination failed: Cannot send a request, as the
-                # client has been closed." from the streamable-http teardown.
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
                 self.errors[server.name] = str(exc)
                 continue
             self._register_server_tool_definitions(registry, server.name, tools)
+
+    def _connect_server(self, server: MCPServerSettings) -> tuple[MCPClient, list[dict[str, Any]]]:
+        """Connect one server and record its client/tool inventory.
+
+        A failed client is closed here, not by the caller: the client may be
+        partially initialized (live portal thread, SSE stream, httpx client)
+        even though tool listing failed, and dropping it unclosed leaks and
+        gets torn down by GC in arbitrary order at interpreter exit — which
+        surfaces as "Session termination failed: Cannot send a request, as
+        the client has been closed." from the streamable-http teardown."""
+        client = MCPClient(server)
+        try:
+            tools = client.list_tools()
+        except BaseException:
+            try:
+                client.close()
+            except Exception:
+                pass
+            raise
+        with self._lock:
+            self.clients[server.name] = client
+            self.server_tools[server.name] = [tool["name"] for tool in tools]
+            self.server_tool_details[server.name] = list(tools)
+            self.errors.pop(server.name, None)
+        return client, tools
+
+    def register_tools_background(self, registry, on_settled=None) -> None:
+        """Connect every enabled server on its own daemon thread.
+
+        Each server's tools register as soon as it settles instead of
+        blocking construction on the slowest one; failures are isolated to
+        the failing server. A server already connecting or closed is skipped.
+        """
+        for server in self.servers:
+            with self._lock:
+                if self._closed or server.name in self._connecting or server.name in self.clients:
+                    continue
+                self._connecting.add(server.name)
+            thread = threading.Thread(
+                target=self._connect_server_in_background,
+                args=(server, registry, on_settled),
+                name=f"mcp-connect-{server.name}",
+                daemon=True,
+            )
+            thread.start()
+
+    def _connect_server_in_background(self, server: MCPServerSettings, registry, on_settled) -> None:
+        try:
+            client, tools = self._connect_server(server)
+        except Exception as exc:
+            with self._lock:
+                self.errors[server.name] = str(exc)
+                self._connecting.discard(server.name)
+            self._notify_settled(on_settled, server.name)
+            return
+        with self._lock:
+            if self._closed:
+                # The registry was closed (reload/shutdown) while connecting:
+                # registering into a superseded tool registry would leak the
+                # client, so drop it instead.
+                self.clients.pop(server.name, None)
+                self.server_tools.pop(server.name, None)
+                self.server_tool_details.pop(server.name, None)
+                self._connecting.discard(server.name)
+                close_client = True
+            else:
+                close_client = False
+        if close_client:
+            try:
+                client.close()
+            except Exception:
+                pass
+            self._notify_settled(on_settled, server.name)
+            return
+        self._register_server_tool_definitions(registry, server.name, tools)
+        with self._lock:
+            self._connecting.discard(server.name)
+        self._notify_settled(on_settled, server.name)
+
+    @staticmethod
+    def _notify_settled(on_settled, server_name: str) -> None:
+        if on_settled is None:
+            return
+        try:
+            on_settled(server_name)
+        except Exception:
+            pass
 
     def _register_server_tool_definitions(self, registry, server_name: str, tools: list[dict[str, Any]]) -> None:
         unregister_prefix = getattr(registry, "unregister_prefix", None)
@@ -242,14 +321,29 @@ class MCPRegistry:
             raise ValueError(f"MCP server '{name}' not found")
         if not server.enabled:
             raise ValueError(f"MCP server '{name}' is disabled")
-        client = self.clients.get(name)
+        with self._lock:
+            if name in self._connecting:
+                # A background connect is already in flight; a manual refresh
+                # must not double-connect (a second stdio child).
+                return {
+                    "name": server.name,
+                    "transport": server.transport,
+                    "target": server.url or server.command or "(unconfigured)",
+                    "enabled": server.enabled,
+                    "status": "connecting",
+                    "error": "",
+                    "tool_count": len(self.server_tools.get(name, [])),
+                    "tools": self.tool_summaries(name),
+                }
+            client = self.clients.get(name)
         if client is None:
-            client = MCPClient(server)
-            self.clients[name] = client
-        tools = client.list_tools()
-        self.server_tools[name] = [str(tool.get("name", "")) for tool in tools]
-        self.server_tool_details[name] = list(tools)
-        self.errors.pop(name, None)
+            client, tools = self._connect_server(server)
+        else:
+            tools = client.list_tools()
+            with self._lock:
+                self.server_tools[name] = [str(tool.get("name", "")) for tool in tools]
+                self.server_tool_details[name] = list(tools)
+                self.errors.pop(name, None)
         if registry is not None:
             self._register_server_tool_definitions(registry, name, list(tools))
         return {
@@ -274,12 +368,13 @@ class MCPRegistry:
             unregister_prefix = getattr(registry, "unregister_prefix", None)
             if callable(unregister_prefix):
                 unregister_prefix(f"mcp__{name}__")
-            client = self.clients.pop(name, None)
+            with self._lock:
+                client = self.clients.pop(name, None)
+                self.server_tools.pop(name, None)
+                self.server_tool_details.pop(name, None)
+                self.errors.pop(name, None)
             if client is not None:
                 client.close()
-            self.server_tools.pop(name, None)
-            self.server_tool_details.pop(name, None)
-            self.errors.pop(name, None)
             return {
                 "name": server.name,
                 "transport": server.transport,
@@ -303,6 +398,8 @@ class MCPRegistry:
                 target = server.url or server.command or "(unconfigured)"
                 tool_count = len(self.server_tools.get(server.name, []))
                 lines.append(f"{server.name}: connected [{server.transport}] {target} tools={tool_count}")
+            elif server.name in self._connecting:
+                lines.append(f"{server.name}: connecting [{server.transport}]")
             else:
                 lines.append(f"{server.name}: error - {self.errors.get(server.name, 'not initialized')}")
         lines.extend(f"warning: {warning}" for warning in self.warnings)
@@ -318,6 +415,8 @@ class MCPRegistry:
                 status = "disabled"
             elif server.name in self.clients:
                 status = "connected"
+            elif server.name in self._connecting:
+                status = "connecting"
             else:
                 status = f"error: {self.errors.get(server.name, 'not initialized')}"
             lines.append(f"- {server.name} [{server.transport}] {status}")
@@ -337,6 +436,8 @@ class MCPRegistry:
                 status = "disabled"
             elif server.name in self.clients:
                 status = "connected"
+            elif server.name in self._connecting:
+                status = "connecting"
             else:
                 status = "error"
             enabled_count = sum(
@@ -376,5 +477,12 @@ class MCPRegistry:
         return summaries
 
     def close(self) -> None:
-        for client in self.clients.values():
-            client.close()
+        with self._lock:
+            self._closed = True
+            clients = list(self.clients.values())
+            self.clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:
+                pass

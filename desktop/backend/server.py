@@ -409,8 +409,9 @@ class _SidecarHTTPServer(ThreadingHTTPServer):
 
 
 class SidecarServer:
-    def __init__(self, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def __init__(self, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765, defer_mcp_connect: bool = False) -> None:
         self.settings = settings
+        self._defer_mcp_connect = defer_mcp_connect
         self._instance_lock = SidecarInstanceLock(settings.workspace_root)
         self._instance_lock.acquire()
         try:
@@ -420,7 +421,8 @@ class SidecarServer:
             raise
 
     def _initialize(self, host: str, port: int) -> None:
-        self.runtime = OpenAgentRuntime(self.settings)
+        self.runtime = OpenAgentRuntime(self.settings, defer_mcp_connect=self._defer_mcp_connect)
+        self.runtime.mcp_status_changed_handler = self._on_mcp_status_changed
         self.service = AppService(self.runtime)
         self._lock = Lock()
         self._clients: dict[str, _WebSocketClient] = {}
@@ -440,8 +442,15 @@ class SidecarServer:
         )
 
     @classmethod
-    def from_settings(cls, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765) -> "SidecarServer":
-        return cls(settings, host=host, port=port)
+    def from_settings(cls, settings: AppSettings, *, host: str = "127.0.0.1", port: int = 8765, defer_mcp_connect: bool = False) -> "SidecarServer":
+        return cls(settings, host=host, port=port, defer_mcp_connect=defer_mcp_connect)
+
+    def _on_mcp_status_changed(self) -> None:
+        """A background-connected MCP server settled; push the fresh status."""
+        try:
+            self.broadcast_event(make_sidecar_event("mcp_updated", payload=self.mcp_servers_payload()))
+        except Exception:
+            pass
 
     @property
     def host(self) -> str:

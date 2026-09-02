@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::{Mutex, MutexGuard, Once},
+    sync::{Arc, Mutex, MutexGuard, Once},
     thread,
     time::{Duration, Instant},
 };
@@ -48,9 +48,9 @@ enum SidecarLauncher {
     },
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ManagedSidecar {
-    inner: Mutex<HashMap<String, ManagedSidecarState>>,
+    inner: Arc<Mutex<HashMap<String, Arc<Mutex<ManagedSidecarState>>>>>,
 }
 
 impl ManagedSidecar {
@@ -65,28 +65,39 @@ impl ManagedSidecar {
         if let Some(connection) = discover_connector_runtime(&workspace_root)? {
             return Ok(connection);
         }
-        let mut states = self.lock()?;
-        let state = states.entry(workspace_key.clone()).or_default();
-        if let Some(connection) = refresh_existing_connection(state)? {
+        // The global map is held only long enough to fetch this workspace's
+        // state; spawn + readiness wait run under the per-workspace lock, so
+        // different projects boot in parallel while a duplicate ensure of the
+        // same workspace waits and then reuses the fresh connection.
+        let state = {
+            let mut states = self.lock()?;
+            states.entry(workspace_key.clone()).or_default().clone()
+        };
+        let mut state = state
+            .lock()
+            .map_err(|_| "Managed sidecar state is unavailable.".to_string())?;
+        if let Some(connection) = refresh_existing_connection(&mut state)? {
             return Ok(connection);
         }
 
         let launcher = resolve_sidecar_launcher(app)?;
         let (stdout_log_path, stderr_log_path) = resolve_log_paths(app, &workspace_key)?;
-        let port = pick_available_port()?;
-        let connection = build_connection(port, &workspace_root);
 
         // A leftover sidecar from a previous app instance can still hold the
         // per-workspace instance lock. The once-per-launch orphan sweep may
         // have run before the old app finished exiting, so the first spawn
         // attempt can trip the lock; sweep again and retry once before
-        // surfacing the failure.
+        // surfacing the failure. Each attempt picks a fresh port: with
+        // projects booting in parallel, a just-picked port can be taken by a
+        // sibling boot before the child binds it.
         let mut last_error: Option<String> = None;
         for attempt in 0..2 {
             if attempt > 0 {
                 thread::sleep(Duration::from_secs(2));
                 sweep_orphan_sidecars();
             }
+            let port = pick_available_port()?;
+            let connection = build_connection(port, &workspace_root);
             let child = spawn_sidecar(
                 &launcher,
                 port,
@@ -100,11 +111,11 @@ impl ManagedSidecar {
             state.stdout_log_path = Some(stdout_log_path.clone());
             state.stderr_log_path = Some(stderr_log_path.clone());
 
-            match wait_for_sidecar_ready(state) {
+            match wait_for_sidecar_ready(&mut state) {
                 Ok(()) => return Ok(connection),
                 Err(error) => {
                     last_error = Some(error);
-                    stop_locked(state);
+                    stop_locked(&mut state);
                 }
             }
         }
@@ -112,12 +123,17 @@ impl ManagedSidecar {
     }
 
     pub fn stop_all(&self) -> Result<bool, String> {
-        let mut states = self.lock()?;
+        let states = {
+            let mut states = self.lock()?;
+            std::mem::take(&mut *states)
+        };
         let mut stopped = false;
-        for state in states.values_mut() {
-            stopped |= stop_locked(state);
+        for state in states.into_values() {
+            let mut state = state
+                .lock()
+                .map_err(|_| "Managed sidecar state is unavailable.".to_string())?;
+            stopped |= stop_locked(&mut state);
         }
-        states.clear();
         Ok(stopped)
     }
 
@@ -126,14 +142,16 @@ impl ManagedSidecar {
             .canonicalize()
             .map_err(|error| format!("Unable to resolve workspace path '{}': {error}", workspace_path.trim()))?;
         let workspace_key = workspace_key(&workspace_root)?;
-        let mut states = self.lock()?;
-        let Some(mut state) = states.remove(&workspace_key) else {
+        let Some(state) = self.lock()?.remove(&workspace_key) else {
             return Ok(false);
         };
+        let mut state = state
+            .lock()
+            .map_err(|_| "Managed sidecar state is unavailable.".to_string())?;
         Ok(stop_locked(&mut state))
     }
 
-    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, ManagedSidecarState>>, String> {
+    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, Arc<Mutex<ManagedSidecarState>>>>, String> {
         self.inner
             .lock()
             .map_err(|_| "Managed sidecar state is unavailable.".to_string())
@@ -536,23 +554,31 @@ fn stable_workspace_id(workspace_key: &str) -> String {
 }
 
 #[tauri::command]
-pub fn ensure_managed_sidecar(
+pub async fn ensure_managed_sidecar(
     app: tauri::AppHandle,
     sidecar: State<'_, ManagedSidecar>,
     workspace_path: Option<String>,
 ) -> Result<ManagedSidecarConnection, String> {
-    sidecar.ensure(&app, workspace_path)
+    // Boot is blocking (spawn + health polling); keep it off the async
+    // runtime's worker threads and let several projects boot concurrently.
+    let managed = sidecar.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || managed.ensure(&app, workspace_path))
+        .await
+        .map_err(|error| format!("Sidecar boot task failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn stop_managed_sidecar(
+pub async fn stop_managed_sidecar(
     sidecar: State<'_, ManagedSidecar>,
     workspace_path: Option<String>,
 ) -> Result<bool, String> {
-    match workspace_path {
-        Some(path) if !path.trim().is_empty() => sidecar.stop_workspace(path),
-        _ => sidecar.stop_all(),
-    }
+    let managed = sidecar.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || match workspace_path {
+        Some(path) if !path.trim().is_empty() => managed.stop_workspace(path),
+        _ => managed.stop_all(),
+    })
+    .await
+    .map_err(|error| format!("Sidecar stop task failed: {error}"))?
 }
 
 #[tauri::command]

@@ -18,6 +18,7 @@ from desktop.backend.server import SidecarServer
 from open_somnia.config.models import (
     AgentSettings,
     AppSettings,
+    MCPServerSettings,
     ModelTraits,
     ProviderProfileSettings,
     ProviderSettings,
@@ -544,6 +545,47 @@ class SidecarServerTests(unittest.TestCase):
             self.assertNotIn("mcp__old__stale", server.runtime.registry.names())
         finally:
             server.close()
+
+    def test_defer_mcp_connect_readiness_precedes_server_settlement(self) -> None:
+        root = self._stable_test_dir("sidecar-mcp-defer")
+        settings = self._make_settings(root)
+        settings.mcp_servers = [MCPServerSettings(name="slow", transport="stdio", command="python")]
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _SlowClient:
+            def list_tools(self):
+                started.set()
+                release.wait(timeout=15)
+                return [{"name": "ping", "description": "", "inputSchema": {"type": "object", "properties": {}}}]
+
+            def close(self):
+                pass
+
+        with patch("open_somnia.mcp.registry.MCPClient", side_effect=lambda server: _SlowClient()):
+            server = SidecarServer.from_settings(settings, host="127.0.0.1", port=0, defer_mcp_connect=True)
+            try:
+                server.start_background()
+                # The server answers health checks while the MCP server is
+                # still connecting in the background.
+                self.assertTrue(server.wait_until_ready())
+                self.assertTrue(started.wait(5))
+                self.assertEqual(server.mcp_servers_payload()["servers"][0]["status"], "connecting")
+
+                ws = self._connect_websocket(server.host, server.port)
+                try:
+                    release.set()
+                    events = self._collect_events_until(ws, lambda event: event.get("type") == "mcp_updated")
+                    self.assertTrue(any(event.get("type") == "mcp_updated" for event in events))
+                finally:
+                    self._close_websocket(ws)
+
+                self.assertEqual(server.mcp_servers_payload()["servers"][0]["status"], "connected")
+                self.assertIn("mcp__slow__ping", server.runtime.registry.names())
+            finally:
+                release.set()
+                server.close()
 
     def test_saving_provider_config_reloads_unconfigured_runtime_immediately(self) -> None:
         root = self._stable_test_dir("sidecar-provider-save")

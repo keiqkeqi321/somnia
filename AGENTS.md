@@ -108,6 +108,14 @@ Primary config files:
 
 Key sections: `[agent]`, `[providers]`, `[providers.<name>]`, `[runtime]`, `[mcp_servers.<name>]` / `[[mcp_servers]]` (per-server `include_tools`/`exclude_tools` subset the registered tools; exclude wins; manageable live from CLI `/mcp` and the desktop MCP panel, persisted back to TOML), `[hooks]`
 
+The desktop sidecar constructs its runtime with `defer_mcp_connect=True`: MCP
+servers connect on per-server daemon threads after `/health` is already
+serving, tools register as each server settles (statuses: `connecting` →
+`connected`/`error`, pushed to the desktop via the `mcp_updated` event). The
+CLI keeps eager connect so `somnia run` one-shots have the full tool list in
+round one. Reload paths (`/reloadplugin`, `/mcp` toggles, config saves) are
+always eager.
+
 On first run with no providers, the CLI bootstraps an interactive provider setup flow and saves to global config.
 
 ## Persistence Model

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from typing import Any, Callable
 
 from open_somnia.runtime.interrupts import TurnInterrupted
@@ -44,27 +45,35 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, ToolDefinition] = {}
         self.registration_warnings: list[str] = []
+        # MCP servers connect on background threads and register tools while
+        # agent turns concurrently snapshot schemas; guard the map so reads
+        # never iterate a mutating dict.
+        self._lock = threading.RLock()
 
     def register(self, tool: ToolDefinition) -> None:
-        previous = self._tools.get(tool.name)
-        if previous is not None:
-            self.registration_warnings.append(
-                f"Tool name collision: '{tool.name}' from {_tool_origin(tool)} "
-                f"overwrites {_tool_origin(previous)}."
-            )
-        self._tools[tool.name] = tool
+        with self._lock:
+            previous = self._tools.get(tool.name)
+            if previous is not None:
+                self.registration_warnings.append(
+                    f"Tool name collision: '{tool.name}' from {_tool_origin(tool)} "
+                    f"overwrites {_tool_origin(previous)}."
+                )
+            self._tools[tool.name] = tool
 
     def unregister_prefix(self, prefix: str) -> int:
-        names = [name for name in self._tools if name.startswith(prefix)]
-        for name in names:
-            self._tools.pop(name, None)
-        return len(names)
+        with self._lock:
+            names = [name for name in self._tools if name.startswith(prefix)]
+            for name in names:
+                self._tools.pop(name, None)
+            return len(names)
 
     def schemas(self) -> list[dict[str, Any]]:
-        return [tool.schema() for tool in self._tools.values()]
+        with self._lock:
+            return [tool.schema() for tool in list(self._tools.values())]
 
     def execute(self, ctx: Any, name: str, payload: dict[str, Any]) -> Any:
-        tool = self._tools.get(name)
+        with self._lock:
+            tool = self._tools.get(name)
         if tool is None:
             return make_tool_error(name, "unknown_tool", f"Unknown tool: {name}")
         runtime = getattr(ctx, "runtime", None)
@@ -107,4 +116,5 @@ class ToolRegistry:
         return normalized_output
 
     def names(self) -> list[str]:
-        return list(self._tools)
+        with self._lock:
+            return list(self._tools)

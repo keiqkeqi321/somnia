@@ -937,28 +937,43 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
         const savedProjectPaths = readStoredProjectPaths();
         const lastOpenedSession = readLastOpenedSession();
         const lastOpenedProjectKey = projectPathKey(lastOpenedSession?.projectPath);
-        const managedConnection = await ensureManagedSidecar();
-        if (managedConnection) {
-          const managedProjectKey = projectPathKey(managedConnection.workspaceRoot);
-          await connectManagedProject(managedConnection, {
-            selectProject: !lastOpenedProjectKey || managedProjectKey === lastOpenedProjectKey,
-            expandProject: !lastOpenedProjectKey || managedProjectKey === lastOpenedProjectKey,
-          });
-          for (const projectPath of savedProjectPaths) {
-            if (projectPathKey(projectPath) === projectPathKey(managedConnection.workspaceRoot)) {
-              continue;
-            }
+        // Boot every project's sidecar concurrently: each one is a Python
+        // process whose cold start dominates startup, so awaiting them in a
+        // loop multiplies the wait by the project count. The Rust side
+        // serializes duplicate ensures per workspace, and the connect order
+        // below stays deterministic (default workspace first).
+        const connections = await Promise.all(
+          [undefined, ...savedProjectPaths].map(async (projectPath) => {
             try {
-              const projectConnection = await ensureManagedSidecar(projectPath);
-              if (projectConnection) {
-                await connectManagedProject(projectConnection, {
-                  selectProject: projectPathKey(projectPath) === lastOpenedProjectKey,
-                  expandProject: projectPathKey(projectPath) === lastOpenedProjectKey,
-                });
-              }
+              return await ensureManagedSidecar(projectPath);
             } catch (error) {
+              if (projectPath === undefined) {
+                throw error;
+              }
               setBannerMessage(`Unable to restore project '${projectPath}': ${formatErrorMessage(error)}`);
+              return null;
             }
+          }),
+        );
+        const seenProjectKeys = new Set<string>();
+        const uniqueConnections: Array<{ key: string; connection: ManagedSidecarConnection }> = [];
+        for (const connection of connections) {
+          if (!connection) {
+            continue;
+          }
+          const key = projectPathKey(connection.workspaceRoot);
+          if (seenProjectKeys.has(key)) {
+            continue;
+          }
+          seenProjectKeys.add(key);
+          uniqueConnections.push({ key, connection });
+        }
+        if (uniqueConnections.length > 0) {
+          for (const { key, connection } of uniqueConnections) {
+            await connectManagedProject(connection, {
+              selectProject: !lastOpenedProjectKey || key === lastOpenedProjectKey,
+              expandProject: !lastOpenedProjectKey || key === lastOpenedProjectKey,
+            });
           }
           return;
         }
@@ -1954,6 +1969,15 @@ function App({ remoteMode = false }: { remoteMode?: boolean }) {
       const handoff = typeof event.payload.handoff === "string" ? event.payload.handoff.trim() : "";
       if (event.session_id) {
         void handleAgentNewSession(projectPath, event.session_id, handoff);
+      }
+      return;
+    }
+    if (event.type === "mcp_updated") {
+      // A background-connected MCP server settled; refresh the settings
+      // panel's server list so connecting → connected/error shows live.
+      const servers = event.payload.servers;
+      if (Array.isArray(servers)) {
+        setSettingsMcpServers(servers as McpServerSummary[]);
       }
       return;
     }

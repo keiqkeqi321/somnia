@@ -50,7 +50,10 @@ def main(argv: list[str] | None = None) -> int:
         settings.mcp_servers = []
 
     try:
-        server = SidecarServer.from_settings(settings, host=args.host, port=args.port)
+        # The desktop launcher health-polls until serve_forever starts, so MCP
+        # servers connect in background threads and readiness stops waiting on
+        # slow stdio servers.
+        server = SidecarServer.from_settings(settings, host=args.host, port=args.port, defer_mcp_connect=True)
     except SidecarInstanceLockError as exc:
         # A live sidecar already serves this workspace; exit quietly instead of
         # fighting over it. The launcher will adopt the existing one.

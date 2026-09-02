@@ -304,17 +304,24 @@ class OpenAgentRuntime:
         worker_registry: 工作器工具注册表。
     """
 
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, *, defer_mcp_connect: bool = False) -> None:
         """初始化 OpenAgent 运行时.
 
         Args:
             settings: 应用配置对象。
+            defer_mcp_connect: True 时 MCP 服务器在后台线程逐个连接（工具
+                随连随注册），构造不再阻塞在慢服务器上；False 保持构造期
+                同步连接（默认，CLI 路径依赖首轮工具列表完整性）。
         """
         self.settings = settings
         self.execution_mode = DEFAULT_EXECUTION_MODE
         self.authorization_request_handler = None
         self.mode_switch_request_handler = None
         self.ask_user_question_handler = None
+        # Called with no arguments each time a background-connected MCP
+        # server settles (connected or failed); the sidecar sets this to
+        # broadcast mcp_updated to desktop clients.
+        self.mcp_status_changed_handler = None
         # Sessions the agent asked to swap out of (via request_new_session),
         # keyed by session id -> handoff text. Consumed at the turn boundary
         # by whoever drives the session (REPL runner / RuntimeHost).
@@ -368,8 +375,21 @@ class OpenAgentRuntime:
         self.registry = ToolRegistry()
         self.worker_registry = ToolRegistry()
         self.tool_event_renderer = ToolEventRenderer(self)
-        self._register_core_tools(self.registry)
+        self._register_core_tools(self.registry, include_mcp=not defer_mcp_connect)
         self.register_worker_tools(self.worker_registry)
+        if defer_mcp_connect:
+            self.mcp_registry.register_tools_background(
+                self.registry,
+                on_settled=self._on_mcp_server_settled,
+            )
+
+    def _on_mcp_server_settled(self, server_name: str) -> None:
+        handler = self.mcp_status_changed_handler
+        if callable(handler):
+            try:
+                handler()
+            except Exception:
+                pass
 
     def _tool_event_renderer(self) -> ToolEventRenderer:
         renderer = getattr(self, "tool_event_renderer", None)
@@ -1912,7 +1932,7 @@ class OpenAgentRuntime:
             score -= 1
         return score
 
-    def _register_core_tools(self, registry: ToolRegistry) -> None:
+    def _register_core_tools(self, registry: ToolRegistry, *, include_mcp: bool = True) -> None:
         register_shell_tool(registry)
         register_filesystem_tools(registry)
         register_web_fetch_tool(registry)
@@ -1922,7 +1942,8 @@ class OpenAgentRuntime:
         register_background_tools(registry, self.background_manager)
         register_team_tools(registry, self.team_manager, self.bus, self.request_tracker)
         self._register_local_tools(registry)
-        register_mcp_tools(registry, self.mcp_registry)
+        if include_mcp:
+            register_mcp_tools(registry, self.mcp_registry)
 
     def register_worker_tools(self, registry: ToolRegistry) -> None:
         register_shell_tool(registry)
