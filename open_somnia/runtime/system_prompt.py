@@ -83,11 +83,14 @@ class SystemPromptBuilder:
             "from scratch; that discards the tokens already spent. Interrupted subagents leave a resume pointer in the "
             "conversation — use it to decide based on the user's intent.\n"
             "When collaborating, keep teammates informed through inbox messages and respect shutdown and plan protocols.\n"
-            "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing."
+            "After sending work to a teammate, use wait_for_inbox when their reply is needed before continuing.\n"
+            "You receive teammate_status messages when teammates go idle, complete tasks, or stop; treat them as cues to review and accept their work."
         )
         teammate_guidance = (
             "You are a persistent teammate following the s11 work/idle loop.\n"
             "Use tools to complete current work, send messages when needed, and call idle when you have finished the current unit of work.\n"
+            "Before calling idle, you MUST send_message to lead summarizing what you delivered, how you verified it, and any blockers or follow-ups. "
+            "The runtime notifies lead of state changes automatically, but your summary carries the details lead needs to review your work.\n"
             "While idle you may be resumed by inbox messages or unclaimed tasks."
         )
         runtime_guidance = lead_guidance if actor == "lead" else teammate_guidance

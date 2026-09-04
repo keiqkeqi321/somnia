@@ -1549,6 +1549,65 @@ class RuntimeToolOutputTests(unittest.TestCase):
         )
         self.assertEqual(runtime._worker_once_authorized_tools, {})
 
+    def test_wait_for_inbox_timeout_returns_team_status(self) -> None:
+        root = self._stable_test_dir("wait-inbox-timeout-status")
+        bus = MessageBus(InboxStore(root / "inbox"))
+        registry = ToolRegistry()
+        register_team_tools(
+            registry,
+            SimpleNamespace(
+                member_names=lambda session_id=None: ["Worker"],
+                status_snapshot=lambda session_id=None: [
+                    {
+                        "name": "Worker",
+                        "status": "shutdown",
+                        "activity": "idle timeout",
+                        "current_task_id": None,
+                        "shutdown_reason": "idle_timeout",
+                    }
+                ],
+            ),
+            bus,
+            RequestTracker(root / "requests"),
+        )
+
+        output = registry.execute(
+            ToolExecutionContext(runtime=SimpleNamespace(), session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "wait_for_inbox",
+            {"timeout_seconds": 1},
+        )
+
+        payload = json.loads(output)
+        self.assertTrue(payload["timed_out"])
+        self.assertEqual(payload["messages"], [])
+        self.assertEqual(payload["team_status"][0]["name"], "Worker")
+        self.assertEqual(payload["team_status"][0]["shutdown_reason"], "idle_timeout")
+
+    def test_wait_for_inbox_with_messages_keeps_plain_list_shape(self) -> None:
+        root = self._stable_test_dir("wait-inbox-messages")
+        bus = MessageBus(InboxStore(root / "inbox"))
+        bus.send("Worker", "lead", "done", session_id="session-1")
+        registry = ToolRegistry()
+        register_team_tools(
+            registry,
+            SimpleNamespace(
+                member_names=lambda session_id=None: ["Worker"],
+                status_snapshot=lambda session_id=None: [{"name": "Worker", "status": "idle"}],
+            ),
+            bus,
+            RequestTracker(root / "requests"),
+        )
+
+        output = registry.execute(
+            ToolExecutionContext(runtime=SimpleNamespace(), session=SimpleNamespace(id="session-1"), actor="lead", trace_id="lead"),
+            "wait_for_inbox",
+            {"timeout_seconds": 1},
+        )
+
+        payload = json.loads(output)
+        self.assertIsInstance(payload, list)
+        self.assertEqual(payload[0]["content"], "done")
+
     def test_authorization_approval_waits_for_lead_to_get_user_permission_first(self) -> None:
         root = self._stable_test_dir("worker-auth-lead-needs-user")
         requests: list[dict] = []

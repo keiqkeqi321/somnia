@@ -593,6 +593,12 @@ class TeammateRuntimeManager:
             lines.append(f"Description: {description}")
         return "\n".join(lines)
 
+    def _notify_lead(self, name: str, content: str, *, session_id: str | None = None, extra: dict | None = None) -> None:
+        try:
+            self.bus.send(name, "lead", content, msg_type="teammate_status", extra=extra, session_id=session_id)
+        except Exception:
+            pass
+
     def _sync_completed_task_state(self, name: str, tool_input: dict, tool_output, session_id: str | None) -> None:
         if str(tool_input.get("status") or "").strip() != "completed":
             return
@@ -618,6 +624,9 @@ class TeammateRuntimeManager:
             current_tool_name=None,
             session_id=session_id,
         )
+        subject = str(task.get("subject") or "").strip()
+        content = f"{name} completed task #{task_id}" + (f": {subject}" if subject else ".")
+        self._notify_lead(name, content, session_id=session_id, extra={"event": "task_completed", "task_id": task_id})
 
     def interrupt_active(self, reason: str = "lead_interrupt") -> int:
         self._refresh_thread_health()
@@ -767,6 +776,11 @@ class TeammateRuntimeManager:
                     current_task_id=retained_task_id,
                     session_id=normalized_session_id,
                 )
+                if retained_task_id is not None:
+                    idle_notice = f"{name} entered idle while owning open task #{retained_task_id}."
+                else:
+                    idle_notice = f"{name} entered idle; no owned open tasks."
+                self._notify_lead(name, idle_notice, session_id=normalized_session_id, extra={"event": "idle", "task_id": retained_task_id})
                 resume = False
                 poll_total = max(self.runtime.settings.runtime.teammate_idle_timeout_seconds, 1)
                 poll_interval = max(self.runtime.settings.runtime.teammate_poll_interval_seconds, 1)
@@ -873,6 +887,12 @@ class TeammateRuntimeManager:
                         current_task_id=None,
                         session_id=normalized_session_id,
                     )
+                    self._notify_lead(
+                        name,
+                        f"{name} shut down after {poll_total}s idle with no inbox messages or claimable tasks.",
+                        session_id=normalized_session_id,
+                        extra={"event": "idle_timeout"},
+                    )
                     return
                 self._update_member(name, status="working", activity="resuming_work", session_id=normalized_session_id)
         except Exception as exc:
@@ -887,6 +907,12 @@ class TeammateRuntimeManager:
                 current_task_id=None,
                 last_error=str(exc),
                 session_id=normalized_session_id,
+            )
+            self._notify_lead(
+                name,
+                f"{name} stopped with a runtime error: {exc}",
+                session_id=normalized_session_id,
+                extra={"event": "runtime_error"},
             )
             return
 
@@ -1042,6 +1068,25 @@ class TeammateRuntimeManager:
                 summary["recent_interactions"] = self._recent_interaction_summaries(str(member.get("name", "")))
                 members.append(summary)
         return members
+
+    def status_snapshot(self, session_id: str | None = None) -> list[dict]:
+        self._refresh_thread_health()
+        normalized_session_id = str(session_id or self._active_session_id or "").strip()
+        config = self._load_for_session(normalized_session_id) if normalized_session_id else self._load()
+        snapshot: list[dict] = []
+        for member in config.get("members", []):
+            if normalized_session_id and member.get("session_id") != normalized_session_id:
+                continue
+            snapshot.append(
+                {
+                    "name": member.get("name"),
+                    "status": member.get("status"),
+                    "activity": self._format_activity(member.get("activity", "unknown")),
+                    "current_task_id": member.get("current_task_id"),
+                    "shutdown_reason": member.get("shutdown_reason"),
+                }
+            )
+        return snapshot
 
     def render_log(self, name: str, session_id: str | None = None) -> str:
         normalized_session_id = str(session_id or "").strip() or None

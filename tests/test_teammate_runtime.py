@@ -958,8 +958,108 @@ class TeammateRuntimeTests(unittest.TestCase):
                 self.assertIsNotNone(member)
                 self.assertEqual(task_store.get(task["id"])["status"], "completed")
                 self.assertIsNone(member["current_task_id"])
+                completion_notices = [
+                    message
+                    for message in manager.bus.read_inbox("lead")
+                    if message.get("type") == "teammate_status" and message.get("event") == "task_completed"
+                ]
+                self.assertTrue(completion_notices)
+                self.assertIn("Finish owned task", completion_notices[0]["content"])
             finally:
                 self._stop_manager(manager)
+
+    def test_idle_entry_and_idle_timeout_notify_lead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            task_store = TaskStore(root / "tasks")
+            idle_called = threading.Event()
+
+            def register_worker_tools(registry) -> None:
+                registry.register(
+                    ToolDefinition(
+                        name="idle",
+                        description="Enter idle state.",
+                        input_schema={"type": "object", "properties": {}},
+                        handler=lambda ctx, payload: "Entering idle phase.",
+                    )
+                )
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                if not idle_called.is_set():
+                    idle_called.set()
+                    return AssistantTurn(stop_reason="tool_use", tool_calls=[ToolCall("call-1", "idle", {})])
+                return AssistantTurn(stop_reason="end_turn", text_blocks=["done"])
+
+            runtime = SimpleNamespace(
+                settings=SimpleNamespace(
+                    runtime=SimpleNamespace(
+                        max_agent_rounds=2,
+                        teammate_idle_timeout_seconds=1,
+                        teammate_poll_interval_seconds=1,
+                    )
+                ),
+                build_system_prompt=lambda actor, role: "system",
+                print_tool_event=lambda *args, **kwargs: "log-1",
+                _compact_preview=lambda text, limit=120: text[:limit],
+                register_worker_tools=register_worker_tools,
+                complete=fake_complete,
+            )
+            manager = TeammateRuntimeManager(
+                runtime=runtime,
+                team_store=TeamStore(root / "team"),
+                bus=MessageBus(InboxStore(root / "inbox")),
+                task_store=task_store,
+                request_tracker=RequestTracker(root / "requests"),
+            )
+
+            manager.spawn("Worker", "worker", "Finish quickly then idle.")
+            try:
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    member = manager._find("Worker")
+                    if member is not None and member.get("status") == "shutdown":
+                        break
+                    time.sleep(0.02)
+                member = manager._find("Worker")
+                self.assertIsNotNone(member)
+                self.assertEqual(member["status"], "shutdown")
+                self.assertEqual(member["shutdown_reason"], "idle_timeout")
+                events = [
+                    message.get("event")
+                    for message in manager.bus.read_inbox("lead")
+                    if message.get("type") == "teammate_status"
+                ]
+                self.assertIn("idle", events)
+                self.assertIn("idle_timeout", events)
+            finally:
+                self._stop_manager(manager)
+
+    def test_status_snapshot_lists_all_members(self) -> None:
+        team_store = self._make_memory_team_store(
+            {
+                "team_name": "default",
+                "members": [
+                    {"name": "Analyst", "role": "analyst", "status": "idle", "activity": "idle_polling", "current_task_id": 3},
+                    {"name": "Writer", "role": "writer", "status": "shutdown", "activity": "running_tool:grep", "shutdown_reason": "idle_timeout"},
+                ],
+            },
+            {},
+        )
+        manager = TeammateRuntimeManager(
+            runtime=SimpleNamespace(),
+            team_store=team_store,
+            bus=SimpleNamespace(),
+            task_store=SimpleNamespace(),
+            request_tracker=SimpleNamespace(),
+        )
+
+        snapshot = manager.status_snapshot()
+
+        self.assertEqual([item["name"] for item in snapshot], ["Analyst", "Writer"])
+        self.assertEqual(snapshot[0]["status"], "idle")
+        self.assertEqual(snapshot[0]["current_task_id"], 3)
+        self.assertEqual(snapshot[1]["activity"], "tool grep")
+        self.assertEqual(snapshot[1]["shutdown_reason"], "idle_timeout")
 
     def test_idle_teammate_with_owned_open_task_does_not_auto_claim_another_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

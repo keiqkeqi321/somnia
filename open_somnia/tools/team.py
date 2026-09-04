@@ -52,7 +52,17 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             timeout_seconds=timeout_seconds,
             should_interrupt=getattr(ctx, "should_interrupt", None),
         )
-        return json.dumps(messages, indent=2, ensure_ascii=False)
+        if messages:
+            return json.dumps(messages, indent=2, ensure_ascii=False)
+        snapshot_fn = getattr(teammate_manager, "status_snapshot", None)
+        snapshot = snapshot_fn(session_id=session_id) if callable(snapshot_fn) else []
+        if not snapshot:
+            return json.dumps(messages, indent=2, ensure_ascii=False)
+        return json.dumps(
+            {"messages": [], "timed_out": True, "team_status": snapshot},
+            indent=2,
+            ensure_ascii=False,
+        )
 
     def broadcast(ctx: Any, payload: dict[str, Any]) -> str:
         session_id = getattr(getattr(ctx, "session", None), "id", None)
@@ -219,7 +229,8 @@ def register_team_tools(registry, teammate_manager, bus, tracker) -> None:
             name="wait_for_inbox",
             description=(
                 "Wait briefly for the current actor inbox to receive messages, then read and drain them. "
-                "Use after messaging teammates when their reply is needed before continuing."
+                "Use after messaging teammates when their reply is needed before continuing. "
+                "On timeout with no messages, returns the current team status so idle or stopped teammates are visible."
             ),
             input_schema={
                 "type": "object",
