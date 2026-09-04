@@ -43,6 +43,22 @@ SUBAGENT_NO_TOOL_NUDGE = (
     "you intend to do."
 )
 
+# Budget-aware convergence: the model cannot see the round budget, so without a
+# warning it explores right up to the hard limit and gets truncated mid-work.
+# Inject one warning when the budget runs low and a hard directive on the final
+# round, turning hard truncation into a deliberate wrap-up.
+SUBAGENT_BUDGET_WARNING = (
+    "Budget notice: {used} of {max_rounds} rounds used ({remaining} left). "
+    "Stop opening new lines of investigation; consolidate what you have already "
+    "found and prepare to call submit_summary."
+)
+
+SUBAGENT_FINAL_ROUND_NOTICE = (
+    "This is your final round. Call submit_summary now with the most complete "
+    "summary your evidence supports -- the run ends after this round whether or "
+    "not you submit."
+)
+
 
 @dataclass(slots=True)
 class SubagentResult:
@@ -73,7 +89,7 @@ class SubagentResult:
         """
         if self.status == "completed":
             return {"status": "completed", "tool_result_text": self.summary or "(no summary)"}
-        return {
+        output: dict[str, Any] = {
             "status": self.status,
             "error_type": "subagent_" + self.status,
             "tool_name": "subagent",
@@ -83,6 +99,11 @@ class SubagentResult:
             "tool_calls": self.tool_calls,
             "is_error": True,
         }
+        # Surface the partial findings so the lead can judge "accept and move on"
+        # without being forced into a resume just to see what was found.
+        if self.summary:
+            output["partial_summary"] = self.summary
+        return output
 
     def _resume_guide(self) -> str:
         aid = self.activity_id or "?"
@@ -94,8 +115,9 @@ class SubagentResult:
                 f"或接受现状继续。{base}"
             )
         if self.status == "truncated":
+            partial_note = "已收集的部分结论附在 partial_summary 字段，可先评估是否够用。" if self.summary else ""
             return (
-                f"Subagent 轮次耗尽（rounds_used={self.rounds_used}），未输出完整总结。已落盘 checkpoint。"
+                f"Subagent 轮次耗尽（rounds_used={self.rounds_used}），未输出完整总结。已落盘 checkpoint。{partial_note}"
                 f"用 resume_from=\"{aid}\" 恢复，从中断处继续（低成本）；"
                 f"或接受现状继续。{base}"
             )
@@ -309,8 +331,26 @@ class SubagentRunner:
                     pass
 
         try:
+            warn_threshold = max(3, max_rounds // 5)
+            budget_warned = False
+            final_round_noticed = False
             while rounds_used < max_rounds:
                 self._raise_if_interrupted(should_interrupt)
+                remaining = max_rounds - rounds_used
+                if remaining == 1 and not final_round_noticed:
+                    final_round_noticed = True
+                    messages.append(make_user_text_message(SUBAGENT_FINAL_ROUND_NOTICE))
+                elif remaining <= warn_threshold and not budget_warned:
+                    budget_warned = True
+                    messages.append(
+                        make_user_text_message(
+                            SUBAGENT_BUDGET_WARNING.format(
+                                used=rounds_used,
+                                max_rounds=max_rounds,
+                                remaining=remaining,
+                            )
+                        )
+                    )
                 result = runner.run_round(
                     system_prompt=system_prompt,
                     messages=messages,

@@ -3,14 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 from open_somnia.tools.registry import ToolDefinition
+from open_somnia.tools.tool_errors import make_tool_error
 
 
 def register_subagent_tool(registry) -> None:
     def handler(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
         # Resume path: when resume_from is given, load the checkpoint and hand
         # it to run_subagent so it continues from the saved context instead of
-        # restarting. The prompt is still required by schema for traceability.
+        # restarting. The checkpoint already carries the original prompt, so
+        # prompt is optional on resume; it is required only for a fresh run.
         resume_aid = str(payload.get("resume_from") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt and not resume_aid:
+            return make_tool_error(
+                "subagent",
+                "missing_required_params",
+                "Missing required parameter(s) for 'subagent': prompt. "
+                "Provide prompt for a new subagent, or resume_from=<activity_id> to resume a prior one.",
+                missing_params=["prompt"],
+            )
         resume_from = None
         if resume_aid:
             store = getattr(ctx.runtime, "subagent_checkpoint_store", None)
@@ -35,7 +46,7 @@ def register_subagent_tool(registry) -> None:
             # trace_id for older call sites that don't set it.
             activity_id = getattr(ctx, "tool_call_id", None) or getattr(ctx, "trace_id", None)
         result = ctx.runtime.run_subagent(
-            payload["prompt"],
+            prompt,
             payload.get("agent_type", "Explore"),
             activity_id=activity_id,
             should_interrupt=getattr(ctx, "should_interrupt", None),
@@ -57,12 +68,16 @@ def register_subagent_tool(registry) -> None:
                 "instead of doing the exploration yourself. "
                 "If a prior subagent call returned status interrupted/truncated/failed, resume it with "
                 "resume_from=<activity_id> (inherits its accumulated context at low cost) rather than "
-                "starting over."
+                "starting over. On resume, prompt may be omitted -- the checkpoint keeps the original "
+                "task; pass extra_prompt for any refined direction."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string"},
+                    "prompt": {
+                        "type": "string",
+                        "description": "The task for a new subagent. Optional when resume_from is given.",
+                    },
                     "agent_type": {
                         "type": "string",
                         "enum": ["Explore", "general-purpose"],
@@ -83,7 +98,6 @@ def register_subagent_tool(registry) -> None:
                         ),
                     },
                 },
-                "required": ["prompt"],
             },
             handler=handler,
         )

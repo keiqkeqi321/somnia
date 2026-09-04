@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from open_somnia.config.models import AgentSettings, AppSettings, ProviderSettings, RuntimeSettings, StorageSettings
 from open_somnia.runtime.agent import OpenAgentRuntime
+from open_somnia.runtime.events import ToolExecutionContext
 from open_somnia.runtime.interrupts import TurnInterrupted
 from open_somnia.runtime.messages import AssistantTurn, ToolCall
 from open_somnia.runtime.subagent_runner import SubagentResult
@@ -420,6 +421,111 @@ class SubagentToolTests(unittest.TestCase):
             self.assertEqual(result.rounds_used, 2)
             # Truncated subagents leave a checkpoint for resume.
             self.assertIsNotNone(runtime.subagent_checkpoint_store.load("turn-1"))
+
+    def test_budget_warning_and_final_round_notice_injected(self) -> None:
+        """The loop warns the subagent when the round budget runs low and
+        directs it to submit on the final round, so truncation is a deliberate
+        wrap-up rather than a hard cut."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            runtime.settings.runtime.max_subagent_rounds = 5
+            seen_messages = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                seen_messages.append([dict(m) for m in messages])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    text_blocks=["still working"],
+                    tool_calls=[ToolCall("c", "tree", {"path": "."})],
+                )
+
+            runtime.complete = fake_complete
+            result = runtime.run_subagent("Inspect", "Explore", activity_id="turn-1")
+
+            self.assertEqual(result.status, "truncated")
+            self.assertEqual(result.rounds_used, 5)
+            # The final round's message list carries the full history, so each
+            # injected notice appears there exactly once.
+            final_round_user_texts = [
+                m["content"]
+                for m in seen_messages[-1]
+                if str(m.get("role", "")) == "user" and isinstance(m.get("content"), str)
+            ]
+            self.assertTrue(any("Budget notice: 2 of 5 rounds used (3 left)" in t for t in final_round_user_texts))
+            self.assertEqual(sum("Budget notice" in t for t in final_round_user_texts), 1)
+            self.assertTrue(any("This is your final round" in t for t in final_round_user_texts))
+
+    def test_resume_without_prompt_accepted(self) -> None:
+        """resume_from + extra_prompt is a complete resume call; prompt is
+        optional because the checkpoint carries the original task."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime = OpenAgentRuntime(self._make_settings(Path(tmpdir)))
+            runtime.execution_mode = "accept_edits"
+            runtime.subagent_checkpoint_store.save(
+                SubagentCheckpoint(
+                    activity_id="turn-1",
+                    prompt="original task",
+                    agent_type="Explore",
+                    messages=[{"role": "user", "content": "original task"}],
+                    pending_repair_hints=[],
+                    rounds_used=2,
+                    status="truncated",
+                    resume_count=0,
+                )
+            )
+            seen_messages = []
+
+            def fake_complete(system_prompt, messages, tools, text_callback=None, should_interrupt=None):
+                seen_messages.append([dict(m) for m in messages])
+                return AssistantTurn(
+                    stop_reason="tool_use",
+                    tool_calls=[ToolCall("c", "submit_summary", {"summary": "resumed answer"})],
+                )
+
+            runtime.complete = fake_complete
+            registry = ToolRegistry()
+            register_subagent_tool(registry)
+            ctx = ToolExecutionContext(runtime=runtime, session=SimpleNamespace(id="s1"), actor="lead", trace_id="t1")
+
+            output = registry.execute(ctx, "subagent", {"resume_from": "turn-1", "extra_prompt": "wrap up now"})
+
+            self.assertEqual(output["status"], "completed")
+            self.assertEqual(output["tool_result_text"], "resumed answer")
+            first_round_user_texts = [
+                m["content"]
+                for m in seen_messages[0]
+                if str(m.get("role", "")) == "user" and isinstance(m.get("content"), str)
+            ]
+            self.assertIn("original task", first_round_user_texts)
+            self.assertIn("wrap up now", first_round_user_texts)
+
+    def test_missing_prompt_and_resume_from_returns_structured_error(self) -> None:
+        registry = ToolRegistry()
+        register_subagent_tool(registry)
+        ctx = ToolExecutionContext(runtime=SimpleNamespace(), session=None, actor="lead", trace_id="t1")
+
+        output = registry.execute(ctx, "subagent", {"agent_type": "Explore"})
+
+        self.assertEqual(output["error_type"], "missing_required_params")
+        self.assertIn("prompt", output["message"])
+
+    def test_truncated_output_includes_partial_summary(self) -> None:
+        output = SubagentResult(
+            status="truncated",
+            summary="Found A and B so far",
+            rounds_used=5,
+            tool_calls=9,
+            activity_id="turn-1",
+        ).as_tool_output()
+
+        self.assertEqual(output["partial_summary"], "Found A and B so far")
+        self.assertIn("partial_summary", output["message"])
+
+    def test_interrupted_output_omits_empty_partial_summary(self) -> None:
+        output = SubagentResult(status="interrupted", activity_id="turn-1").as_tool_output()
+
+        self.assertNotIn("partial_summary", output)
+        self.assertNotIn("partial_summary", output["message"])
 
     def test_text_only_turn_does_not_complete_and_keeps_looping(self) -> None:
         """A text-only turn (no tool call) is NOT completion -- the loop injects
