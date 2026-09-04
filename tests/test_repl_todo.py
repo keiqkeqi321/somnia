@@ -581,18 +581,17 @@ class ReplTodoTests(unittest.TestCase):
                         "recent_interactions": ["assistant: Waiting for analysis results"],
                     }
                 ],
-                _format_member_summary=lambda member: f"{member['name']} ({member['role']}): {member['status']} View team logs: /teamlog {member['name']}",
+                _format_member_summary=lambda member: f"{member['name']} ({member['role']}): {member['status']}",
             )
         )
         runner = TurnQueueRunner(runtime, SimpleNamespace(todo_items=[]), stable_prompt=True)
 
         rendered = _render_prompt_text(runner.prompt_message())
 
-        self.assertIn("team (2 active)", rendered)
-        self.assertIn("View team logs: /teamlog Analyst", rendered)
-        self.assertIn("View team logs: /teamlog Writer", rendered)
-        self.assertIn("↳ Analyst: tool grep: Found 12 matches", rendered)
-        self.assertIn("↳ Writer: assistant: Waiting for analysis results", rendered)
+        self.assertIn("team (2 active) · View logs: /teamlog <name>", rendered)
+        self.assertEqual(rendered.count("/teamlog"), 1)
+        self.assertIn("  ↳ tool grep: Found 12 matches", rendered)
+        self.assertIn("  ↳ assistant: Waiting for analysis results", rendered)
         self.assertLess(rendered.index("team (2 active)"), rendered.index("accept edits on  (Shift+Tab to cycle)"))
 
     def test_prompt_message_shows_active_subagent_before_mode_and_prompt(self) -> None:

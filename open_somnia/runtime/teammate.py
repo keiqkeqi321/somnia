@@ -1017,6 +1017,7 @@ class TeammateRuntimeManager:
         lines = [f"Team: {config.get('team_name', 'default')}"]
         for member in members:
             lines.append("  " + self._format_member_summary(member))
+        lines.append("  View team logs: /teamlog <name>")
         return "\n".join(lines)
 
     def member_names(self, session_id: str | None = None) -> list[str]:
@@ -1113,7 +1114,12 @@ class TeammateRuntimeManager:
         event_type = str(entry.get("type", "event"))
         if event_type == "user_message":
             source = str(entry.get("source", "message")).strip() or "message"
-            return f"{source}: {self._compact_text(self._render_log_content(entry.get('content')), limit=140)}"
+            content = entry.get("content")
+            if isinstance(content, dict) and "content" in content:
+                sender = str(content.get("from", "")).strip()
+                label = f"{source}[{sender}]" if sender else source
+                return f"{label}: {self._compact_text(self._render_log_content(content.get('content')), limit=140)}"
+            return f"{source}: {self._compact_text(self._render_log_content(content), limit=140)}"
         if event_type == "assistant_message":
             return f"assistant: {self._compact_text(self._render_log_content(entry.get('content')), limit=140)}"
         if event_type == "tool_call":
@@ -1155,7 +1161,7 @@ class TeammateRuntimeManager:
         last_seen = self._format_age(member.get("last_activity_at"))
         return (
             f"{member['name']} ({member['role']}): {member['status']} "
-            f"[{', '.join(extras)}] last_seen={last_seen} View team logs: /teamlog {member['name']}"
+            f"[{', '.join(extras)}] last_seen={last_seen}"
         )
 
     def _display_tool_name(self, tool_name) -> str:

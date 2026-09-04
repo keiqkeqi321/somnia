@@ -2143,7 +2143,7 @@ class TurnQueueRunner:
             members = summaries()
         if not members:
             return []
-        lines: list[tuple[str, str]] = [("fg:#c4b5fd", f"team ({len(members)} active)")]
+        lines: list[tuple[str, str]] = [("fg:#c4b5fd", f"team ({len(members)} active) · View logs: /teamlog <name>")]
         for member in members:
             status = str(member.get("status", "")).strip()
             if status == "working":
@@ -2155,7 +2155,7 @@ class TurnQueueRunner:
             lines.append((style, formatter(member)))
             interactions = [str(item).strip() for item in list(member.get("recent_interactions", []) or []) if str(item).strip()]
             if interactions:
-                lines.append(("fg:#cbd5e1", f"↳ {member.get('name', 'teammate')}: {interactions[-1]}"))
+                lines.append(("fg:#cbd5e1", f"  ↳ {interactions[-1]}"))
         return lines
 
     def _summarize_preview(self, kind: str, payload: str) -> str:

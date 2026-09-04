@@ -192,7 +192,8 @@ class TeammateRuntimeTests(unittest.TestCase):
         log_output = manager.render_log("Analyst")
         summaries = manager.active_member_summaries()
 
-        self.assertIn("View team logs: /teamlog Analyst", roster)
+        self.assertIn("View team logs: /teamlog <name>", roster)
+        self.assertNotIn("/teamlog Analyst", roster)
         self.assertIn("tool grep", roster)
         self.assertIn("[team log Analyst]", log_output)
         self.assertIn("assistant: I will inspect crease generation.", log_output)
@@ -200,6 +201,37 @@ class TeammateRuntimeTests(unittest.TestCase):
         self.assertEqual(len(summaries), 1)
         self.assertIn("assistant: I will inspect crease generation.", summaries[0]["recent_interactions"])
         self.assertIn("tool grep: Found 12 matches", summaries[0]["recent_interactions"])
+
+    def test_interaction_summary_unwraps_inbox_envelope(self) -> None:
+        team_store = self._make_memory_team_store({"team_name": "default", "members": []}, {})
+        manager = TeammateRuntimeManager(
+            runtime=SimpleNamespace(),
+            team_store=team_store,
+            bus=SimpleNamespace(),
+            task_store=SimpleNamespace(),
+            request_tracker=SimpleNamespace(),
+        )
+
+        manager._upsert_member("Analyst", "algorithm analyst", "working", "waiting_for_model")
+        manager._append_log(
+            "Analyst",
+            "user_message",
+            {
+                "source": "inbox",
+                "content": {
+                    "type": "message",
+                    "from": "lead",
+                    "content": "情况确认: 任务引擎按会话隔离",
+                    "timestamp": 123.0,
+                },
+            },
+        )
+
+        summaries = manager.active_member_summaries()
+
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("inbox[lead]: 情况确认: 任务引擎按会话隔离", summaries[0]["recent_interactions"])
+        self.assertNotIn('{"type"', "\n".join(summaries[0]["recent_interactions"]))
 
     def test_team_ui_displays_update_for_edit_file_tool(self) -> None:
         class _MemoryTeamStore:
