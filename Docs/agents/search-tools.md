@@ -54,3 +54,43 @@ translated to `-g '!<name>/'` / `-g '!*.<ext>'` globs so projects without a
 `base_path` so glob variants are evaluated relative to `base_path` (matching
 the Python path's base-relative label matching); output paths are re-prefixed
 to workspace-relative form on parse.
+
+## find_symbol acceleration via ripgrep + scan budgets
+
+`find_symbol` (`open_somnia/tools/filesystem.py::find_symbol`) delegates to
+`run_ripgrep_symbols` in the same module when every query term is pure ASCII,
+falling back to the pure-Python scan under the same conditions as `grep`
+(no rg / `SOMNIA_NO_RG=1` / spawn failure / rg exit 2 / non-UTF-8 output).
+The Python path stays the source of correctness.
+
+Key differences from the grep frontend:
+
+- rg only generates *candidate* lines: the union of all `SYMBOL_PATTERNS`
+  regexes (multiple `-e`, deduped per line by rg). Symbol-name extraction,
+  kind detection, and query-term filtering are re-checked in Python via the
+  shared `_match_symbol_line` helper, so matching semantics are identical by
+  construction. Query terms never reach rg, so case sensitivity semantics
+  cannot drift.
+- **Outside-workspace `base_path` is supported** (grep's frontend falls back
+  there): the Python path labels outside results with absolute paths, so rg
+  output is re-prefixed to the absolute form instead — this is the
+  large-sibling-repo scan case.
+- **No `--sort path`**: it disables rg's parallel traversal (~4.5× slower,
+  measured). Results are collected as `(label, lineno, text)` tuples, sorted
+  in Python, then `limit` is applied — deterministic output with parallel
+  traversal. Collection is capped at 10 000 matches for pathological queries.
+- Early stop (limit cap / budget) kills rg *before* `wait()`, otherwise a
+  pipe-blocked rg trips the 5 s wait timeout and the partial results would be
+  mistaken for a fallback signal.
+- stderr goes to `DEVNULL` (permission-denied noise on messy trees can fill
+  the pipe and deadlock rg); exit code + stdout carry all needed signals.
+
+Scan budgets apply to both paths and are module constants in
+`filesystem.py`: `SYMBOL_SCAN_MAX_FILE_BYTES` (2 MB, Python path stats before
+reading — stat failure does *not* skip, preserving the old read-attempt
+behavior; rg path uses `--max-filesize`) and
+`SYMBOL_SCAN_TIME_BUDGET_SECONDS` (30 s wall clock). Exhausting the time
+budget returns partial results with a `stopped early: time budget exceeded`
+marker; an exhausted budget with zero hits never reports `(no matches)`,
+since the scan did not complete.
+

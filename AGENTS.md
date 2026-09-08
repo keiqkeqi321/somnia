@@ -77,12 +77,21 @@ skip `.gitignore`-ignored paths (nested rules, deepest wins, `!` negation) via
 rules. `list_ignored()` (`open_somnia/tools/filesystem.py`) is a diagnostic helper,
 not registered as an LLM tool.
 
-### grep acceleration via ripgrep
+### grep / find_symbol acceleration via ripgrep
 
 `grep` (`open_somnia/tools/filesystem.py::grep_search`) delegates to system `ripgrep`
 when available (`open_somnia/tools/ripgrep.py`), falling back to the pure-Python
 implementation whenever rg is unsuitable — **the Python path is the source of correctness
 and is preserved verbatim; never delete it**. Disabled by `SOMNIA_NO_RG=1`.
+
+`find_symbol` delegates the same way (`run_ripgrep_symbols`): rg emits candidate
+lines from the union of `SYMBOL_PATTERNS`, and the shared `_match_symbol_line`
+helper re-checks them, so matching semantics are identical on both paths. Unlike
+`grep`, the symbol frontend also accelerates paths **outside the workspace**
+(absolute-path labels). Scans carry budgets on both paths: files over
+`SYMBOL_SCAN_MAX_FILE_BYTES` (2 MB) are skipped and the whole scan stops after
+`SYMBOL_SCAN_TIME_BUDGET_SECONDS` (30 s), returning partial results with an
+explicit marker instead of scanning forever.
 
 ### Parallel tool dispatch
 

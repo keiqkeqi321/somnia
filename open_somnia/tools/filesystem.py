@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 from open_somnia.runtime.interrupts import TurnInterrupted
@@ -22,7 +23,7 @@ from open_somnia.runtime.messages import (
 from open_somnia.tools.gitignore import GitignoreMatcher
 from open_somnia.tools.process import drop_windows_extended_prefix
 from open_somnia.tools.registry import ToolDefinition
-from open_somnia.tools.ripgrep import run_ripgrep
+from open_somnia.tools.ripgrep import run_ripgrep, run_ripgrep_symbols
 
 READ_TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030", "cp936")
 EXPLORATION_IGNORED_DIR_NAMES = {
@@ -142,6 +143,66 @@ SYMBOL_PATTERNS: dict[str, list[tuple[re.Pattern[str], str, int]]] = {
     ],
 }
 MAX_SYMBOL_QUERY_TERMS = 10
+# find_symbol 扫描预算：超大文件多为生成物/压缩文本，逐行正则收益低、代价高，直接跳过
+# （rg 路径用 --max-filesize 对齐同一上限）；整树扫描设置墙钟预算，超时返回部分结果，
+# 避免无匹配查询在大仓库上把整棵树读到天荒地老。
+SYMBOL_SCAN_MAX_FILE_BYTES = 2 * 1024 * 1024
+SYMBOL_SCAN_TIME_BUDGET_SECONDS = 30.0
+
+
+def _match_symbol_line(
+    line: str,
+    patterns: list[tuple[re.Pattern[str], str, int]],
+    *,
+    kind_filter: str,
+    normalized_terms: list[str],
+    case_sensitive: bool,
+) -> tuple[str, str] | None:
+    """对单行按顺序尝试符号模式，命中并通过过滤时返回 ``(kind, name)``，否则 None。
+
+    find_symbol 的 Python 路径与 rg 路径共享这一份匹配语义：首个"匹配且通过
+    kind/查询词过滤"的模式胜出；匹配但过滤未过时继续尝试后续模式。
+    """
+    for pattern, default_kind, name_group in patterns:
+        match = pattern.search(line)
+        if not match:
+            continue
+        symbol_name = match.group(name_group)
+        detected_kind = (
+            match.group(1).lower()
+            if default_kind == "type" and match.lastindex and match.lastindex >= 2
+            else default_kind
+        )
+        if kind_filter and detected_kind != kind_filter:
+            continue
+        haystack = symbol_name if case_sensitive else symbol_name.lower()
+        if not any(term in haystack for term in normalized_terms):
+            continue
+        return detected_kind, symbol_name
+    return None
+
+
+def _format_symbol_results(
+    results: list[str],
+    *,
+    truncated: bool,
+    budget_exceeded: bool,
+    limit: int,
+    max_output_chars: int,
+) -> str:
+    """组装 find_symbol 输出；Python 与 rg 两条路径共用，保证格式一致。
+
+    预算耗尽且一无所获时不能返回 ``(no matches)``——扫描并未完成，必须如实标注。
+    """
+    if not results:
+        if budget_exceeded:
+            return "(no matches; scan stopped early: time budget exceeded, results may be incomplete)"
+        return "(no matches)"
+    if budget_exceeded:
+        results.append("... (stopped early: time budget exceeded, results may be incomplete)")
+    elif truncated:
+        results.append(f"... ({limit} matches shown)")
+    return "\n".join(results)[:max_output_chars]
 
 
 def safe_path(workspace_root: Path, relative_path: str, *, allow_outside: bool = False) -> Path:
@@ -768,8 +829,31 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
     limit = max(1, int(payload.get("limit", 50)))
     include_hidden = bool(payload.get("include_hidden", False))
     kind_filter = str(payload.get("kind", "")).strip().lower()
+
+    # rg 加速前端（grep 同款委托模式）：查询词全为 ASCII 时优先委托 rg。
+    # run_ripgrep_symbols 返回 None 表示不适合 rg（无 rg / spawn 失败 / exit 2 /
+    # 输出含 GBK 等非 UTF-8 字节），此时自然落入下方纯 Python 实现兜底，两条路径输出格式一致。
+    if all(term.isascii() for term in query_terms):
+        rg_result = run_ripgrep_symbols(
+            ctx,
+            workspace_root=workspace_root,
+            base_path=base_path,
+            kind_filter=kind_filter,
+            normalized_terms=normalized_terms,
+            case_sensitive=case_sensitive,
+            include_hidden=include_hidden,
+            limit=limit,
+            max_file_bytes=SYMBOL_SCAN_MAX_FILE_BYTES,
+            time_budget_seconds=SYMBOL_SCAN_TIME_BUDGET_SECONDS,
+            max_output_chars=ctx.runtime.settings.runtime.max_tool_output_chars,
+        )
+        if rg_result is not None:
+            return rg_result
+
     results: list[str] = []
     truncated = False
+    budget_exceeded = False
+    deadline = time.monotonic() + SYMBOL_SCAN_TIME_BUDGET_SECONDS
 
     if base_path.is_file():
         candidates = [base_path]
@@ -789,9 +873,20 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
 
     for candidate in candidates:
         _raise_if_tool_interrupted(ctx)
+        if time.monotonic() > deadline:
+            budget_exceeded = True
+            break
         extension = candidate.suffix.lower()
         patterns = SYMBOL_PATTERNS.get(extension, [])
         if not patterns:
+            continue
+        try:
+            # 超大文件多为生成物/压缩包级文本，跳过以守住扫描预算（rg 路径同款 --max-filesize）。
+            # stat 失败（如文件瞬时消失）不跳过——保持旧行为交给读取尝试决定。
+            oversized = candidate.stat().st_size > SYMBOL_SCAN_MAX_FILE_BYTES
+        except OSError:
+            oversized = False
+        if oversized:
             continue
         try:
             lines = _read_text_with_fallback(candidate).splitlines()
@@ -801,34 +896,33 @@ def find_symbol(ctx: Any, payload: dict[str, Any]) -> str:
         for line_number, line in enumerate(lines, start=1):
             if line_number == 1 or line_number % 128 == 0:
                 _raise_if_tool_interrupted(ctx)
-            for pattern, default_kind, name_group in patterns:
-                match = pattern.search(line)
-                if not match:
-                    continue
-                symbol_name = match.group(name_group)
-                detected_kind = (
-                    match.group(1).lower()
-                    if default_kind == "type" and match.lastindex and match.lastindex >= 2
-                    else default_kind
-                )
-                if kind_filter and detected_kind != kind_filter:
-                    continue
-                haystack = symbol_name if case_sensitive else symbol_name.lower()
-                if not any(term in haystack for term in normalized_terms):
-                    continue
-                results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
-                break
+                if time.monotonic() > deadline:
+                    budget_exceeded = True
+                    break
+            matched = _match_symbol_line(
+                line,
+                patterns,
+                kind_filter=kind_filter,
+                normalized_terms=normalized_terms,
+                case_sensitive=case_sensitive,
+            )
+            if matched is None:
+                continue
+            detected_kind, symbol_name = matched
+            results.append(f"{relative}:{line_number}:{detected_kind} {symbol_name}")
             if len(results) >= limit:
                 truncated = True
                 break
-        if truncated:
+        if truncated or budget_exceeded:
             break
 
-    if not results:
-        return "(no matches)"
-    if truncated:
-        results.append(f"... ({limit} matches shown)")
-    return "\n".join(results)[: ctx.runtime.settings.runtime.max_tool_output_chars]
+    return _format_symbol_results(
+        results,
+        truncated=truncated,
+        budget_exceeded=budget_exceeded,
+        limit=limit,
+        max_output_chars=ctx.runtime.settings.runtime.max_tool_output_chars,
+    )
 
 
 def _format_glob_no_matches(
@@ -1772,7 +1866,7 @@ def register_filesystem_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="find_symbol",
-            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. `path` may point to a directory or a single file. `query` also supports up to 10 alternative substrings joined by `|` for one broad pass before narrowing down.",
+            description="Locate classes, interfaces, structs, records, functions, or methods by symbol name substring across common code file types. `path` may point to a directory or a single file. `query` also supports up to 10 alternative substrings joined by `|` for one broad pass before narrowing down. Files larger than 2 MB are skipped; scans stop after a 30-second budget and return partial results.",
             input_schema={
                 "type": "object",
                 "properties": {

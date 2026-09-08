@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -395,3 +396,247 @@ def _normalize_relative_label(file_path_text: str, base_prefix: str) -> str:
     if base_prefix and base_prefix != ".":
         return f"{base_prefix}/{text}"
     return text
+
+
+# ---------------------------------------------------------------------------
+# find_symbol 的 rg 加速前端
+# ---------------------------------------------------------------------------
+
+# find_symbol rg 路径的收集上限：查询词极宽（如单字符）时命中可能数以万计，
+# 先收集再排序的策略需要一个硬顶来锁住内存与排序耗时。
+_SYMBOL_MAX_COLLECTED = 10_000
+
+
+def run_ripgrep_symbols(
+    ctx: Any,
+    *,
+    workspace_root: Path,
+    base_path: Path,
+    kind_filter: str,
+    normalized_terms: list[str],
+    case_sensitive: bool,
+    include_hidden: bool,
+    limit: int,
+    max_file_bytes: int,
+    time_budget_seconds: float,
+    max_output_chars: int,
+) -> str | None:
+    """find_symbol 的 rg 加速前端；返回格式化结果字符串，或 ``None`` 触发 Python 回退。
+
+    与 :func:`run_ripgrep`（grep 前端）同原则：rg 负责 C 级遍历与候选行生成，
+    符号名提取、kind 判定与查询词过滤由 Python 复核
+    （``filesystem._match_symbol_line``，与 find_symbol Python 路径共享同一份匹配语义），
+    因此 rg 只需用全部符号正则的并集产生"可能是符号定义"的超集候选，
+    跨语言误配的候选行在复核阶段自然被丢弃。
+
+    回退（返回 None）情形：无 rg / ``SOMNIA_NO_RG=1`` / spawn 失败 / rg exit 2 /
+    输出含非 UTF-8 字节（GBK 文件 → Python 解码链兜底）/ 不支持的路径类型。
+
+    与 grep 前端的两点差异：
+    - base_path 在工作空间外也支持——find_symbol 的 Python 路径对越界路径本来就用
+      绝对路径标注（``_relative_label`` 的 ``str(path)`` 分支），rg 输出按 base_path
+      拼回绝对路径即可对齐，这正是大仓库旁路扫描（LibiCrab 场景）的加速诉求；
+    - 预算对齐：``--max-filesize`` 与 Python 路径的单文件上限一致；
+      ``time_budget_seconds`` 约束后处理（rg 本体是亚秒级 C 扫描），超时返回部分结果
+      并附截断标注，不会为扫完整棵树无限烧 CPU。
+
+    排序说明：不传 ``--sort path``——它会禁掉 rg 的并行遍历，实测比无序慢约 4.5 倍
+    （0.44s → 2.0s）。改为在后处理阶段按 ``(标签, 行号)`` 排序再套用 limit，
+    结果确定性等价于排序输出，遍历保持并行。Python 路径仍是 os.walk 先序，
+    两条路径的结果顺序不做 parity 保证（内容等价）。
+    """
+    info = find_ripgrep()
+    if info is None:
+        return None
+
+    # 延迟 import：filesystem 顶层 import 本模块，循环导入只能单向打破。
+    from open_somnia.tools.filesystem import (
+        EXPLORATION_IGNORED_DIR_NAMES,
+        EXPLORATION_IGNORED_DIR_PREFIXES,
+        SYMBOL_PATTERNS,
+        _format_symbol_results,
+        _match_symbol_line,
+        _raise_if_tool_interrupted,
+    )
+
+    if base_path.is_dir():
+        path_arg, cwd, single_file = ".", str(base_path), False
+    elif base_path.is_file():
+        path_arg, cwd, single_file = base_path.name, str(base_path.parent), True
+    else:
+        # 不支持的路径类型：交给 Python 路径产生标准的 "Unsupported path type" 报错。
+        return None
+    try:
+        base_prefix: str | None = base_path.relative_to(workspace_root).as_posix() or "."
+    except ValueError:
+        try:
+            # Windows 8.3 短名场景：两侧解析为规范形式再判一次（与 _relative_label 对齐）。
+            base_prefix = base_path.resolve().relative_to(workspace_root.resolve()).as_posix() or "."
+        except (ValueError, OSError):
+            base_prefix = None  # 工作空间外：结果按绝对路径标注（与 Python 路径一致）。
+
+    argv: list[str] = [
+        info.path,
+        "-H",
+        "--line-number",
+        "--no-heading",
+        "--color=never",
+        "--null",
+        "--no-require-git",
+    ]
+    # 全部符号正则的并集（多个 -e 为 OR，同一行匹配多个 pattern 只输出一次）。
+    # 模式均为 ASCII 且无 backreference/lookaround，Rust regex 全部支持；
+    # 查询词不参与 rg 过滤，由 Python 复核阶段精确判定（大小写语义因此完全对齐）。
+    for symbol_patterns in SYMBOL_PATTERNS.values():
+        for symbol_pattern, _, _ in symbol_patterns:
+            argv.extend(["-e", symbol_pattern.pattern])
+    # 单文件预算与 Python 路径一致（rg 原生按字节上限跳过大文件）。
+    argv.extend(["--max-filesize", str(max_file_bytes)])
+    for extension in SYMBOL_PATTERNS:
+        argv.extend(["-g", f"*{extension}"])
+    # rg 默认跳过隐藏文件，与 include_hidden=False 的 Python 路径一致；True 时用 --hidden 对齐。
+    if include_hidden:
+        argv.append("--hidden")
+    # 内置目录黑名单：无 .gitignore 的项目里 node_modules/.venv 等仍须排除（parity 硬约束）。
+    for name in sorted(EXPLORATION_IGNORED_DIR_NAMES):
+        argv.extend(["-g", f"!{name}/"])
+    for prefix in EXPLORATION_IGNORED_DIR_PREFIXES:
+        argv.extend(["-g", f"!{prefix}*/"])
+    argv.append(path_arg)
+
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            # stderr 直接丢弃：权限拒绝等噪音在杂乱目录里可能灌满管道堵死 rg，
+            # 而我们只依据退出码与 stdout 判定（exit 2 → 回退）。
+            stderr=subprocess.DEVNULL,
+            cwd=cwd,
+        )
+    except (OSError, ValueError):
+        return None
+
+    # 收集 (标签, 行号, 格式化文本)：rg 并行遍历的输出顺序不确定，
+    # 统一按 (标签, 行号) 排序后再套用 limit，同一查询的结果集与顺序可复现。
+    collected: list[tuple[str, int, str]] = []
+    truncated = False
+    budget_exceeded = False
+    stopped_early = False
+    deadline = time.monotonic() + time_budget_seconds
+    processed = 0
+    try:
+        assert proc.stdout is not None
+        # 逐行读取原始字节；strict UTF-8 解码，遇 GBK 内容解码失败 → 整体回退 Python。
+        for raw_line in proc.stdout:
+            processed += 1
+            if processed % 256 == 1:
+                _raise_if_tool_interrupted(ctx)
+                if time.monotonic() > deadline:
+                    budget_exceeded = True
+                    stopped_early = True
+                    break
+            try:
+                line = raw_line.decode("utf-8").rstrip("\r\n")
+            except UnicodeDecodeError:
+                return None
+            parsed = _split_ripgrep_line(line)
+            if parsed is None:
+                continue
+            file_path_text, lineno_text, content = parsed
+            symbol_patterns = SYMBOL_PATTERNS.get(Path(file_path_text).suffix.lower(), [])
+            if not symbol_patterns:
+                continue
+            matched = _match_symbol_line(
+                content,
+                symbol_patterns,
+                kind_filter=kind_filter,
+                normalized_terms=normalized_terms,
+                case_sensitive=case_sensitive,
+            )
+            if matched is None:
+                continue
+            detected_kind, symbol_name = matched
+            label = _symbol_result_label(
+                file_path_text,
+                base_path=base_path,
+                base_prefix=base_prefix,
+                single_file=single_file,
+            )
+            collected.append((label, int(lineno_text), f"{label}:{lineno_text}:{detected_kind} {symbol_name}"))
+            if len(collected) >= _SYMBOL_MAX_COLLECTED:
+                # 收集上限：极端宽查询（如单字符）在巨型仓库也截得住，排序内存有界。
+                truncated = True
+                stopped_early = True
+                break
+        if stopped_early:
+            # 提前停止时 rg 往往还堵在满管道上，先 kill 再 wait——否则 wait 超时会把
+            # 已拿到的部分结果误判为回退，Python 路径白白重扫一遍。
+            proc.kill()
+        returncode = proc.wait(timeout=5.0)
+    except TurnInterrupted:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        _close_proc_streams(proc)
+
+    # exit 2 表示 rg 出错（如不支持的 regex）→ 回退 Python；已有部分结果时除外
+    # （结果已产生说明 pattern 本身没问题）。
+    if returncode == 2 and not stopped_early:
+        return None
+    collected.sort(key=lambda item: (item[0], item[1]))
+    if len(collected) > limit:
+        truncated = True
+    results = [formatted for _, _, formatted in collected[:limit]]
+    return _format_symbol_results(
+        results,
+        truncated=truncated,
+        budget_exceeded=budget_exceeded,
+        limit=limit,
+        max_output_chars=max_output_chars,
+    )
+
+
+def _split_ripgrep_line(line: str) -> tuple[str, str, str] | None:
+    """把 rg 的 ``path\\0lineno:text`` 输出行拆成三元组；解析失败返回 None。
+
+    与 :func:`_parse_ripgrep_line` 同款 NUL 分隔约定（规避 Windows 盘符冒号歧义），
+    但不做标签归一化——find_symbol 需要原始文件路径来判定扩展名。
+    """
+    nul_index = line.find("\x00")
+    if nul_index < 0:
+        return None
+    file_path_text = line[:nul_index]
+    rest = line[nul_index + 1 :]
+    colon_index = rest.find(":")
+    if colon_index < 0:
+        return None
+    lineno_text = rest[:colon_index]
+    if not lineno_text.isdigit():
+        return None
+    return file_path_text, lineno_text, rest[colon_index + 1 :]
+
+
+def _symbol_result_label(
+    file_path_text: str,
+    *,
+    base_path: Path,
+    base_prefix: str | None,
+    single_file: bool,
+) -> str:
+    """把 rg 输出的文件路径还原为 find_symbol 结果标签。
+
+    工作空间内：workspace 相对 posix 标签（与 ``_relative_label`` 一致）；
+    工作空间外：绝对路径（Python 路径 ``_relative_label`` 的 ``str(path)`` 分支一致，
+    Windows 下拼回反斜杠形式）。
+    """
+    if single_file:
+        return base_prefix if base_prefix is not None else str(base_path)
+    relative = _normalize_relative_label(file_path_text, ".")
+    if base_prefix is None:
+        return str(base_path / relative) if relative else str(base_path)
+    if base_prefix != ".":
+        return f"{base_prefix}/{relative}" if relative else base_prefix
+    return relative

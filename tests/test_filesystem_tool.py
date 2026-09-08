@@ -979,7 +979,7 @@ class FilesystemToolTests(unittest.TestCase):
         with patch("open_somnia.tools.filesystem._filtered_walk", return_value=[(candidate.parent, [], [candidate.name])]), patch(
             "open_somnia.tools.filesystem._read_text_with_fallback",
             return_value="public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
-        ):
+        ), patch("open_somnia.tools.ripgrep.find_ripgrep", return_value=None):
             type_result = find_symbol(ctx, {"query": "PaperComp"})
             method_result = find_symbol(ctx, {"query": "BuildMesh"})
 
@@ -1002,7 +1002,7 @@ class FilesystemToolTests(unittest.TestCase):
         with patch("open_somnia.tools.filesystem._filtered_walk", return_value=[(candidate.parent, [], [candidate.name])]), patch(
             "open_somnia.tools.filesystem._read_text_with_fallback",
             return_value="public class PaperComponent : MonoBehaviour {}\npublic void BuildMesh() {}\n",
-        ):
+        ), patch("open_somnia.tools.ripgrep.find_ripgrep", return_value=None):
             result = find_symbol(ctx, {"query": "PaperComp|BuildMesh"})
 
         self.assertIn("Runtime/Core/PaperComponent.cs:1:class PaperComponent", result)
@@ -1024,7 +1024,7 @@ class FilesystemToolTests(unittest.TestCase):
         with patch("open_somnia.tools.filesystem._filtered_walk") as mock_walk, patch(
             "open_somnia.tools.filesystem._read_text_with_fallback",
             return_value="def _create_executor_for_agent():\n    pass\n\ndef other_helper():\n    pass\n",
-        ):
+        ), patch("open_somnia.tools.ripgrep.find_ripgrep", return_value=None):
             result = find_symbol(
                 ctx,
                 {"query": "_create_executor_for_agent", "path": "open_somnia/tools/filesystem.py"},
@@ -1048,6 +1048,168 @@ class FilesystemToolTests(unittest.TestCase):
         result = find_symbol(ctx, {"query": "a|b|c|d|e|f|g|h|i|j|k"})
 
         self.assertEqual(result, "Error: query supports at most 10 terms separated by '|'.")
+
+    def test_find_symbol_rg_path_matches_python_path_when_available(self) -> None:
+        """同一 fixture：默认走 rg，强制无 rg 走 Python，两条路径结果集合必须一致。"""
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg-path parity test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text(
+                "class PaperComp:\n    pass\n\ndef build_mesh():\n    pass\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "util.ts").write_text(
+                "export function buildMesh() {}\n",
+                encoding="utf-8",
+            )
+            # 内置黑名单目录里的同名符号必须被两条路径同时排除。
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "dep.py").write_text(
+                "def build_mesh():\n    pass\n",
+                encoding="utf-8",
+            )
+            ctx = self._make_grep_ctx(root)
+
+            rg_module.reset_ripgrep_cache()
+            with_rg = find_symbol(ctx, {"query": "papercomp|build"})
+            rg_module.reset_ripgrep_cache()
+            with patch.object(rg_module, "find_ripgrep", return_value=None):
+                without_rg = find_symbol(ctx, {"query": "papercomp|build"})
+
+        expected = {
+            "src/app.py:1:class PaperComp",
+            "src/app.py:4:function build_mesh",
+            "src/util.ts:1:function buildMesh",
+        }
+        # 结果顺序不做 parity（Python walk 先序 vs rg 标签排序），比较行集合。
+        self.assertEqual(set(with_rg.splitlines()), expected)
+        self.assertEqual(set(without_rg.splitlines()), expected)
+
+    def test_find_symbol_rg_accepts_single_file_when_available(self) -> None:
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg single-file test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "a.py").write_text("def solo_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            result = find_symbol(ctx, {"query": "solo_marker", "path": "a.py"})
+
+        self.assertEqual(result, "a.py:1:function solo_marker")
+
+    def test_find_symbol_rg_supports_path_outside_workspace_when_available(self) -> None:
+        """base_path 在工作空间外：rg 路径用绝对路径标注，与 Python 路径逐字节一致。"""
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; outside-workspace rg test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir) / "workspace"
+            outside = Path(tmpdir) / "outside"
+            workspace.mkdir()
+            outside.mkdir()
+            (outside / "lib.py").write_text("def outside_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(workspace)
+
+            rg_module.reset_ripgrep_cache()
+            with_rg = find_symbol(ctx, {"query": "outside_marker", "path": str(outside)})
+            rg_module.reset_ripgrep_cache()
+            with patch.object(rg_module, "find_ripgrep", return_value=None):
+                without_rg = find_symbol(ctx, {"query": "outside_marker", "path": str(outside)})
+
+        self.assertEqual(with_rg, without_rg)
+        self.assertIn("lib.py:1:function outside_marker", with_rg)
+        self.assertIn("outside", with_rg)
+
+    def test_find_symbol_skips_files_over_size_budget(self) -> None:
+        """超过单文件预算的文件在 Python 路径被跳过（生成物/压缩文本防护）。"""
+        from open_somnia.tools import filesystem as fs_module
+        from open_somnia.tools import ripgrep as rg_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "small.py").write_text("def tiny_marker():\n    pass\n", encoding="utf-8")
+            (root / "big.py").write_text("# filler\n" * 40 + "def huge_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            with patch.object(fs_module, "SYMBOL_SCAN_MAX_FILE_BYTES", 100), patch.object(
+                rg_module, "find_ripgrep", return_value=None
+            ):
+                result = find_symbol(ctx, {"query": "marker"})
+
+        self.assertIn("small.py:1:function tiny_marker", result)
+        self.assertNotIn("huge_marker", result)
+
+    def test_find_symbol_rg_respects_size_budget_when_available(self) -> None:
+        """rg 路径用 --max-filesize 对齐同一单文件预算。"""
+        from open_somnia.tools import filesystem as fs_module
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg size-budget test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "small.py").write_text("def tiny_marker():\n    pass\n", encoding="utf-8")
+            (root / "big.py").write_text("# filler\n" * 40 + "def huge_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            with patch.object(fs_module, "SYMBOL_SCAN_MAX_FILE_BYTES", 100):
+                result = find_symbol(ctx, {"query": "marker"})
+
+        self.assertIn("small.py:1:function tiny_marker", result)
+        self.assertNotIn("huge_marker", result)
+
+    def test_find_symbol_time_budget_marks_partial_results(self) -> None:
+        """时间预算耗尽：Python 路径必须如实标注不完整，不能谎报 (no matches)。"""
+        from open_somnia.tools import filesystem as fs_module
+        from open_somnia.tools import ripgrep as rg_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "app.py").write_text("def budget_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            with patch.object(fs_module, "SYMBOL_SCAN_TIME_BUDGET_SECONDS", 0), patch.object(
+                rg_module, "find_ripgrep", return_value=None
+            ):
+                result = find_symbol(ctx, {"query": "budget_marker"})
+
+        self.assertIn("budget", result)
+        self.assertNotEqual(result, "(no matches)")
+
+    def test_find_symbol_rg_time_budget_marks_partial_results_when_available(self) -> None:
+        """时间预算耗尽：rg 路径同样返回部分结果并标注，而不是无结果。"""
+        from open_somnia.tools import filesystem as fs_module
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg budget test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "app.py").write_text("def budget_marker():\n    pass\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            with patch.object(fs_module, "SYMBOL_SCAN_TIME_BUDGET_SECONDS", 0):
+                result = find_symbol(ctx, {"query": "budget_marker"})
+
+        self.assertIn("budget", result)
+        self.assertNotEqual(result, "(no matches)")
 
     def test_read_file_auto_resolves_unique_missing_filename_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
