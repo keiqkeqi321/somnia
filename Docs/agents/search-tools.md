@@ -55,6 +55,29 @@ translated to `-g '!<name>/'` / `-g '!*.<ext>'` globs so projects without a
 the Python path's base-relative label matching); output paths are re-prefixed
 to workspace-relative form on parse.
 
+## grep pattern auto-detection
+
+Without an explicit `use_regex`, `grep_search` matches **literal substrings**
+and only switches to regex when `_grep_pattern_looks_regex_like` recognizes an
+"obvious regex" signal: `|` alternation, `^`/`$` anchors, `[...]` classes,
+`(...)` groups, `\d+`-style class escapes with a quantifier, `\b...\b` word
+boundaries, `.*`/`.+`/`.?` quantifiers, `\A`/`\Z` anchors, and escaped regex
+metacharacters (`\.`, `\(`, `\\`, … — `_GREP_REGEX_ESCAPED_METACHAR_PATTERN`).
+Escaped-metachar detection exists so patterns like `scope\.changed` are
+treated as regex instead of silently searching for the literal backslash text;
+alphanumeric escapes (Windows paths like `path\bin\file`) deliberately stay
+literal. Explicit `use_regex=true`/`false` always overrides detection.
+
+## glob semantics
+
+`**` matches **zero or more** path components everywhere (gitignore/pathlib/
+globset semantics): `frontend/src/**/*.ts` hits `frontend/src/app.ts` too.
+rg (globset) and `Path.glob` behave this way natively; the Python fnmatch path
+is not path-aware, so `_matches_glob_patterns` additionally tests each
+pattern's zero-component-collapsed variants (`_glob_zero_component_variants`,
+multiple `**/` expand to all combinations) to keep rg/Python parity.
+
+
 ## find_symbol acceleration via ripgrep + scan budgets
 
 `find_symbol` (`open_somnia/tools/filesystem.py::find_symbol`) delegates to

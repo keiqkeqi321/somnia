@@ -944,6 +944,31 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "backend/app/main.py")
 
+    def test_glob_search_doublestar_matches_root_level_files(self) -> None:
+        """``**/*.py`` 必须命中根级文件：fnmatch 的 ``**/`` 零组件折叠后与 pathlib/rg 对齐。
+
+        回归：递归 glob 路径用 fnmatch，``**/`` 要求字符串里真有斜杠，根级文件
+        （相对路径不含斜杠）此前被漏掉。
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "src").mkdir()
+            (root / "src" / "util.py").write_text("x = 2\n", encoding="utf-8")
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = glob_search(ctx, {"pattern": "**/*.py"})
+
+        self.assertEqual(result, "app.py\nsrc/util.py")
+
     def test_read_file_falls_back_for_gbk_encoded_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1684,6 +1709,36 @@ class FilesystemToolTests(unittest.TestCase):
 
         self.assertEqual(result, "src/app.py:1:error")
 
+    def test_grep_search_auto_enables_regex_for_escaped_metachar_pattern(self) -> None:
+        """``scope\\.changed`` 这类"转义元字符、无量词"的模式必须自动按 regex 处理。
+
+        回归：此前 ``\\.`` 不触发任何 regex 启发式，被静默降级为字面量子串搜索
+        （拿带反斜杠的原文 ``scope\\.changed`` 去搜），对确实存在的 ``scope.changed``
+        永远返回 ``(no matches)``，无任何提示。
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "src").mkdir()
+            (root / "src" / "app.ts").write_text(
+                "if (event.scope.changed) return;\ninput-state.replaced\nscopeXchanged\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    settings=SimpleNamespace(
+                        workspace_root=root,
+                        runtime=SimpleNamespace(max_tool_output_chars=50000),
+                    )
+                ),
+                session=None,
+            )
+
+            result = grep_search(ctx, {"pattern": r"scope\.changed", "glob": "*.ts"})
+            result_replaced = grep_search(ctx, {"pattern": r"input-state\.replaced", "glob": "*.ts"})
+
+        self.assertEqual(result, "src/app.ts:1:if (event.scope.changed) return;")
+        self.assertEqual(result_replaced, "src/app.ts:2:input-state.replaced")
+
     def test_grep_search_keeps_plain_text_quantifier_characters_literal(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -2043,6 +2098,43 @@ class FilesystemToolTests(unittest.TestCase):
         self.assertEqual(result_with_rg, result_python)
         # 确认确实搜到了内容（非空、非 no matches）。
         self.assertIn("beta", result_with_rg)
+
+    def test_grep_doublestar_glob_zero_component_parity(self) -> None:
+        """``dir/**/*.ext`` 必须命中直接放在 dir 下的文件，rg 与 Python 路径结果一致。
+
+        回归：rg globset 把 ``**`` 当"零个或多个路径组件"（命中零层文件），
+        Python 兜底的 fnmatch 要求 ``**/`` 后面真有斜杠（漏掉零层文件），
+        两条路径对同一个调用返回不同的结果。
+        """
+        from open_somnia.tools import ripgrep as rg_module
+
+        rg_module.reset_ripgrep_cache()
+        if rg_module.find_ripgrep() is None:
+            self.skipTest("ripgrep not installed; rg-path parity test N/A")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "frontend" / "src").mkdir(parents=True)
+            (root / "frontend" / "src" / "app.ts").write_text("event.scope.changed\n", encoding="utf-8")
+            (root / "frontend" / "src" / "deep").mkdir()
+            (root / "frontend" / "src" / "deep" / "nested.ts").write_text("event.scope.changed\n", encoding="utf-8")
+            ctx = self._make_grep_ctx(root)
+
+            rg_module.reset_ripgrep_cache()
+            result_with_rg = grep_search(
+                ctx, {"glob": "frontend/src/**/*.ts", "pattern": "scope.changed"}
+            )
+
+            rg_module.reset_ripgrep_cache()
+            with patch.object(rg_module, "find_ripgrep", return_value=None):
+                result_python = grep_search(
+                    ctx, {"glob": "frontend/src/**/*.ts", "pattern": "scope.changed"}
+                )
+
+        rg_module.reset_ripgrep_cache()
+        self.assertEqual(result_with_rg, result_python)
+        self.assertIn("frontend/src/app.ts:1:event.scope.changed", result_with_rg)
+        self.assertIn("frontend/src/deep/nested.ts:1:event.scope.changed", result_with_rg)
 
     def test_grep_backreference_regex_falls_back_to_python(self) -> None:
         """rg 不支持的 regex（如 backreference ``\\1``）应 exit 2 → 回退 Python re 并正确搜到。"""

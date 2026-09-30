@@ -585,10 +585,33 @@ def _candidate_glob_labels(workspace_root: Path, base_path: Path, candidate: Pat
     return labels
 
 
+def _glob_zero_component_variants(pattern: str) -> list[str]:
+    """为 glob 模式中的每个 ``**/`` 组件生成"零组件"折叠变体。
+
+    rg globset、pathlib glob 与 gitignore 都把 ``**`` 当作"零个或多个路径组件"
+    （``a/**/b`` 可命中 ``a/b``）；fnmatch 不感知路径，``**/`` 要求字符串里真有一个
+    斜杠，导致 ``frontend/src/**/*.ts`` 命不中直接放在 ``frontend/src`` 下的文件。
+    这里对每个 ``**/`` 出现位置生成删掉它之后的变体（多个 ``**/`` 递归展开为全部
+    组合），叠加原始模式，使 fnmatch 路径与其余引擎的零组件语义对齐。
+    """
+    variants = {pattern}
+    if pattern.startswith("**/"):
+        variants.update(_glob_zero_component_variants(pattern[3:]))
+    index = pattern.find("/**/")
+    while index != -1:
+        # 保留 ``**/`` 前的斜杠，只删 ``**/`` 三字符：``a/**/b`` → ``a/b``。
+        variants.update(_glob_zero_component_variants(pattern[:index] + pattern[index + 3 :]))
+        index = pattern.find("/**/", index + 1)
+    return sorted(variants)
+
+
 def _matches_glob_patterns(labels: list[str], patterns: list[str]) -> bool:
+    expanded_patterns: set[str] = set()
+    for pattern in patterns:
+        expanded_patterns.update(_glob_zero_component_variants(pattern))
     return any(
         fnmatch.fnmatch(label, pattern)
-        for pattern in patterns
+        for pattern in expanded_patterns
         for label in labels
     )
 
@@ -957,6 +980,10 @@ _GREP_REGEX_CHAR_CLASS_PATTERN = re.compile(r"(?<!\\)\[[^\]]+\]")
 _GREP_REGEX_GROUP_PATTERN = re.compile(r"(?<!\\)\([^)]*\)")
 _GREP_REGEX_ESCAPED_CLASS_WITH_QUANTIFIER_PATTERN = re.compile(r"\\[dDsSwW](?:[+*?]|\{[0-9]+(?:,[0-9]*)?\})")
 _GREP_REGEX_WORD_BOUNDARY_PATTERN = re.compile(r"\\b[^\\]+\\b")
+# 转义正则元字符（``\.``、``\(``、``\\`` 等）：只在 regex 意图下出现——字面量搜索几乎不会
+# 想匹配"反斜杠+元字符"的原文。字母数字转义（Windows 路径的 ``\t``/``\U`` 等）刻意不触发，
+# 保持字面量语义（见 test_grep_search_keeps_windows_like_paths_literal）。
+_GREP_REGEX_ESCAPED_METACHAR_PATTERN = re.compile(r"\\[.^$*+?()\[\]{}|\\]")
 _GREP_REGEX_ANCHOR_ESCAPE_PATTERN = re.compile(r"^(?:\\A.*|.*\\Z)$")
 _GREP_REGEX_QUANTIFIER_PATTERN = re.compile(r"(?<!\\)(?:\.\*|\.\+|\.\?|(?<![A-Za-z0-9_])\{[0-9]+(?:,[0-9]*)?\})")
 
@@ -964,7 +991,7 @@ GREP_TOOL_DESCRIPTION = (
     "Search file contents inside the workspace and return matching lines. "
     "The `path` may point to a directory or a single file; when it is a directory, "
     "use `glob` to narrow which files are searched. "
-    "Obvious regex patterns such as `foo|bar`, `^name$`, `\\berror\\b`, or `\\d+` "
+    "Obvious regex patterns such as `foo|bar`, `^name$`, `\\berror\\b`, `\\d+`, or `v1\\.2` "
     "are auto-detected; set `use_regex=false` to force literal substring matching."
 )
 
@@ -981,6 +1008,8 @@ def _grep_pattern_looks_regex_like(pattern: str) -> bool:
     if _GREP_REGEX_ESCAPED_CLASS_WITH_QUANTIFIER_PATTERN.search(pattern):
         return True
     if _GREP_REGEX_WORD_BOUNDARY_PATTERN.search(pattern):
+        return True
+    if _GREP_REGEX_ESCAPED_METACHAR_PATTERN.search(pattern):
         return True
     if _GREP_REGEX_ANCHOR_ESCAPE_PATTERN.search(pattern):
         return True
